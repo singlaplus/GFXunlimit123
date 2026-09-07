@@ -1,0 +1,127 @@
+{
+  "result": "FAIL",
+  "checks": [
+    {
+      "name": "Git",
+      "status": "PASS",
+      "detail": "main d5894457",
+      "critical": true
+    },
+    {
+      "name": "Node.js",
+      "status": "PASS",
+      "detail": "v22.23.1",
+      "critical": true
+    },
+    {
+      "name": "npm",
+      "status": "PASS",
+      "detail": "npm",
+      "critical": true
+    },
+    {
+      "name": "frontend",
+      "status": "PASS",
+      "detail": "package.json is valid",
+      "critical": true
+    },
+    {
+      "name": "backend",
+      "status": "PASS",
+      "detail": "package.json is valid",
+      "critical": true
+    },
+    {
+      "name": "Frontend build",
+      "status": "PASS",
+      "detail": "completed",
+      "critical": true
+    },
+    {
+      "name": "Backend",
+      "status": "PASS",
+      "detail": "completed; health=HTTP 200",
+      "critical": true
+    },
+    {
+      "name": "Upload storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+      "critical": true
+    },
+    {
+      "name": "Original storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+      "critical": false
+    },
+    {
+      "name": "Thumbnail storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+      "critical": true
+    },
+    {
+      "name": "Temporary storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/tmp",
+      "critical": false
+    },
+    {
+      "name": "PostgreSQL",
+      "status": "FAIL",
+      "detail": "psql: error: connection to server at \"localhost\" (::1), port 5432 failed: fe_sendauth: no password supplied DB_PASSWORD is not configured; no credential was guessed.",
+      "critical": true
+    },
+    {
+      "name": "Redis",
+      "status": "NOT AVAILABLE",
+      "detail": "Could not connect to Redis at localhost:6379: Connection refused",
+      "critical": false
+    },
+    {
+      "name": "BullMQ",
+      "status": "PASS",
+      "detail": "BullMQ and ioredis modules found",
+      "critical": false
+    },
+    {
+      "name": "PM2",
+      "status": "NOT TESTED",
+      "detail": "no ecosystem configuration found",
+      "critical": false
+    },
+    {
+      "name": "Sharp",
+      "status": "PASS",
+      "detail": "module found",
+      "critical": false
+    },
+    {
+      "name": "ImageMagick",
+      "status": "PASS",
+      "detail": "Version: ImageMagick 7.1.2-29 Q16-HDRI aarch64 b919b37fd:20260727 https://imagemagick.org",
+      "critical": false
+    },
+    {
+      "name": "Ghostscript",
+      "status": "PASS",
+      "detail": "10.07.1",
+      "critical": false
+    }
+  ],
+  "git": {
+    "branch": "main",
+    "commit": "d5894457425033eac1f4a1d93b0ac23b292dc500",
+    "status": "M GFX-Aanav/README.md\n M GFX-Aanav/config/aanav.config.json\n M GFX-Aanav/core/aanav.js\n M GFX-Aanav/core/checkpoint.js\n M GFX-Aanav/core/diagnostics.js\n M GFX-Aanav/core/platform.js\n M GFX-Aanav/core/repair.js\n M backend/.env\n M backend/db.js\n M backend/startup/bootstrap.log\n?? GFX-Aanav/backups/repair-emergency-20260820T152400Z/\n?? GFX-Aanav/backups/repair-emergency-20260820T153007Z/\n?? GFX-Aanav/backups/repair-emergency-20260820T153220Z/\n?? GFX-Aanav/backups/repair-emergency-20260820T153254Z/\n?? GFX-Aanav/backups/repair-emergency-20260820T153312Z/\n?? GFX-Aanav/backups/repair-emergency-20260820T153336Z/\n?? GFX-Aanav/backups/repair-emergency-20260820T153843Z/\n?? GFX-Aanav/backups/repair-emergency-20260820T153852Z/\n?? GFX-Aanav/logs/check-2026-08-20.log\n?? GFX-Aanav/logs/repair-2026-08-20.log\n?? GFX-Aanav/reports/check-2026-08-20T15-23-17-956Z.json\n?? GFX-Aanav/reports/check-2026-08-20T15-24-22-238Z.json\n?? GFX-Aanav/reports/check-2026-08-20T15-30-29-027Z.json\n?? GFX-Aanav/reports/check-2026-08-20T15-32-41-763Z.json\n?? GFX-Aanav/reports/check-2026-08-20T15-33-15-874Z.json\n?? GFX-Aanav/reports/check-2026-08-20T15-34-04-306Z.json\n?? GFX-Aanav/reports/check-2026-08-20T15-34-34-378Z.json\n?? GFX-Aanav/reports/check-2026-08-20T15-34-58-113Z.json\n?? GFX-Aanav/reports/repair-2026-08-20T15-24-22-275Z.json\n?? GFX-Aanav/reports/repair-2026-08-20T15-30-29-064Z.json\n?? GFX-Aanav/reports/repair-2026-08-20T15-32-41-800Z.json\n?? GFX-Aanav/reports/repair-2026-08-20T15-33-15-916Z.json\n?? GFX-Aanav/reports/repair-2026-08-20T15-34-04-346Z.json",
+    "available": true,
+    "detail": ""
+  },
+  "environment": {
+    "platform": "darwin",
+    "release": "25.5.0",
+    "arch": "arm64",
+    "node": "v22.23.1",
+    "npm": "npm"
+  }
+}

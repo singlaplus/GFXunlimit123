@@ -1,0 +1,133 @@
+{
+  "result": "PASS",
+  "checks": [
+    {
+      "name": "Git",
+      "status": "PASS",
+      "detail": "main 8ad4b6b5",
+      "critical": true
+    },
+    {
+      "name": "Node.js",
+      "status": "PASS",
+      "detail": "v22.23.1",
+      "critical": true
+    },
+    {
+      "name": "npm",
+      "status": "PASS",
+      "detail": "npm",
+      "critical": true
+    },
+    {
+      "name": "frontend",
+      "status": "PASS",
+      "detail": "package.json is valid",
+      "critical": true
+    },
+    {
+      "name": "backend",
+      "status": "PASS",
+      "detail": "package.json is valid",
+      "critical": true
+    },
+    {
+      "name": "Frontend build",
+      "status": "PASS",
+      "detail": "completed",
+      "critical": true
+    },
+    {
+      "name": "Backend",
+      "status": "PASS",
+      "detail": "completed; health=HTTP 200",
+      "critical": true
+    },
+    {
+      "name": "Backend process ownership",
+      "status": "WARNING",
+      "detail": "5 node server.js processes detected; inspect before restarting",
+      "critical": false
+    },
+    {
+      "name": "Upload storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+      "critical": true
+    },
+    {
+      "name": "Original storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+      "critical": false
+    },
+    {
+      "name": "Thumbnail storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+      "critical": true
+    },
+    {
+      "name": "Temporary storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/tmp",
+      "critical": false
+    },
+    {
+      "name": "PostgreSQL",
+      "status": "PASS",
+      "detail": "connected to stocksite; warning: configured credential is a placeholder",
+      "critical": true
+    },
+    {
+      "name": "Redis",
+      "status": "PASS",
+      "detail": "PONG",
+      "critical": false
+    },
+    {
+      "name": "BullMQ",
+      "status": "PASS",
+      "detail": "BullMQ and ioredis modules found",
+      "critical": false
+    },
+    {
+      "name": "PM2",
+      "status": "NOT TESTED",
+      "detail": "no ecosystem configuration found",
+      "critical": false
+    },
+    {
+      "name": "Sharp",
+      "status": "PASS",
+      "detail": "module found",
+      "critical": false
+    },
+    {
+      "name": "ImageMagick",
+      "status": "PASS",
+      "detail": "Version: ImageMagick 7.1.2-29 Q16-HDRI aarch64 b919b37fd:20260727 https://imagemagick.org",
+      "critical": false
+    },
+    {
+      "name": "Ghostscript",
+      "status": "PASS",
+      "detail": "10.07.1",
+      "critical": false
+    }
+  ],
+  "git": {
+    "branch": "main",
+    "commit": "8ad4b6b5df6a12c76646664383e9de9bb5e96ff5",
+    "status": "M backend/server.js\n M frontend/src/App.js\n M frontend/src/components/AdminPanel.js\n M frontend/src/components/AdminPromotionsPanel.css\n M frontend/src/components/AppRoutes.jsx\n M frontend/src/components/MyDownloads.js\n M frontend/src/components/MyFavorites.js\n M frontend/src/components/MyUploads.js\n M frontend/src/components/Profile.js\n M frontend/src/components/dashboard/CustomerDashboard.css\n M frontend/src/pages/MyUploadsPage.js",
+    "available": true,
+    "detail": ""
+  },
+  "environment": {
+    "platform": "darwin",
+    "release": "25.6.0",
+    "arch": "arm64",
+    "node": "v22.23.1",
+    "npm": "npm"
+  }
+}

@@ -1,0 +1,127 @@
+{
+  "result": "FAIL",
+  "checks": [
+    {
+      "name": "Git",
+      "status": "PASS",
+      "detail": "main 65f55370",
+      "critical": true
+    },
+    {
+      "name": "Node.js",
+      "status": "PASS",
+      "detail": "v22.23.1",
+      "critical": true
+    },
+    {
+      "name": "npm",
+      "status": "PASS",
+      "detail": "npm",
+      "critical": true
+    },
+    {
+      "name": "frontend",
+      "status": "PASS",
+      "detail": "package.json is valid",
+      "critical": true
+    },
+    {
+      "name": "backend",
+      "status": "PASS",
+      "detail": "package.json is valid",
+      "critical": true
+    },
+    {
+      "name": "Frontend build",
+      "status": "PASS",
+      "detail": "completed",
+      "critical": true
+    },
+    {
+      "name": "Backend",
+      "status": "PASS",
+      "detail": "completed; health=available",
+      "critical": true
+    },
+    {
+      "name": "Upload storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+      "critical": true
+    },
+    {
+      "name": "Original storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+      "critical": false
+    },
+    {
+      "name": "Thumbnail storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+      "critical": true
+    },
+    {
+      "name": "Temporary storage",
+      "status": "PASS",
+      "detail": "/Users/gfxunlimit/Documents/stocksite/backend/tmp",
+      "critical": false
+    },
+    {
+      "name": "PostgreSQL",
+      "status": "FAIL",
+      "detail": "psql: error: connection to server at \"localhost\" (::1), port 5432 failed: FATAL:  database \"gfx-aanav-test-do-not-create\" does not exist",
+      "critical": true
+    },
+    {
+      "name": "Redis",
+      "status": "NOT AVAILABLE",
+      "detail": "Could not connect to Redis at localhost:6379: Connection refused",
+      "critical": false
+    },
+    {
+      "name": "BullMQ",
+      "status": "PASS",
+      "detail": "BullMQ and ioredis modules found",
+      "critical": false
+    },
+    {
+      "name": "PM2",
+      "status": "NOT TESTED",
+      "detail": "no ecosystem configuration found",
+      "critical": false
+    },
+    {
+      "name": "Sharp",
+      "status": "PASS",
+      "detail": "module found",
+      "critical": false
+    },
+    {
+      "name": "ImageMagick",
+      "status": "PASS",
+      "detail": "Version: ImageMagick 7.1.2-29 Q16-HDRI aarch64 b919b37fd:20260727 https://imagemagick.org",
+      "critical": false
+    },
+    {
+      "name": "Ghostscript",
+      "status": "PASS",
+      "detail": "10.07.1",
+      "critical": false
+    }
+  ],
+  "git": {
+    "branch": "main",
+    "commit": "65f553703a3208c93dfbc268910a29592e596bb1",
+    "status": "M .DS_Store\n M .env\n M .gitignore.save\n M backend/.DS_Store\n M backend/.env\n M backend/db.js\n M backend/server.js\n M backend/thumbnail-engine/ai-processor.js\n M backend/thumbnail-engine/eps-processor.js\n M backend/uploads/.DS_Store\n M backend/uploads/Contri6/.DS_Store\n M backend/uploads/Contri6/2026/.DS_Store\n M backend/uploads/Contri6/2026/08/.DS_Store\n M frontend/src/App.js\n M frontend/src/components/AppHeader.jsx\n M frontend/src/components/AppRoutes.jsx\n M frontend/src/components/Pagination.js\n M frontend/src/components/home/BrowseCollections/BrowseCollections.jsx\n M frontend/src/components/home/ImageGallery.js\n M frontend/src/hooks/useFilteredImages.js\n M frontend/src/pages/BulkUploadPage.js\n M frontend/src/utils/routeState.js\n M package.json\n?? GFX-Aanav/\n?? backend/test/aiThumbnailProcessor.test.js",
+    "available": true,
+    "detail": ""
+  },
+  "environment": {
+    "platform": "darwin",
+    "release": "25.5.0",
+    "arch": "arm64",
+    "node": "v22.23.1",
+    "npm": "npm"
+  }
+}

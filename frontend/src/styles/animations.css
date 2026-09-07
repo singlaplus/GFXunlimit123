@@ -1,0 +1,200 @@
+/* ===========================================================
+   GFXunlimit Design System v1.0
+   Animations
+=========================================================== */
+
+/* ===========================
+   Fade In
+=========================== */
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+/* ===========================
+   Fade Up
+=========================== */
+
+@keyframes fadeUp {
+    from {
+        opacity: 0;
+        transform: translateY(40px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ===========================
+   Fade Down
+=========================== */
+
+@keyframes fadeDown {
+    from {
+        opacity: 0;
+        transform: translateY(-40px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ===========================
+   Slide Left
+=========================== */
+
+@keyframes slideLeft {
+    from {
+        opacity: 0;
+        transform: translateX(40px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* ===========================
+   Slide Right
+=========================== */
+
+@keyframes slideRight {
+    from {
+        opacity: 0;
+        transform: translateX(-40px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* ===========================
+   Floating
+=========================== */
+
+@keyframes floating {
+    0% {
+        transform: translateY(0px);
+    }
+
+    50% {
+        transform: translateY(-10px);
+    }
+
+    100% {
+        transform: translateY(0px);
+    }
+}
+
+/* ===========================
+   Pulse
+=========================== */
+
+@keyframes pulse {
+
+    0% {
+        transform: scale(1);
+    }
+
+    50% {
+        transform: scale(1.04);
+    }
+
+    100% {
+        transform: scale(1);
+    }
+}
+
+/* ===========================
+   Rotate
+=========================== */
+
+@keyframes rotate {
+
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ===========================================================
+   Animation Utility Classes
+=========================================================== */
+
+.animate-fade-in {
+    animation: fadeIn .5s ease both;
+}
+
+.animate-fade-up {
+    animation: fadeUp .6s ease both;
+}
+
+.animate-fade-down {
+    animation: fadeDown .6s ease both;
+}
+
+.animate-slide-left {
+    animation: slideLeft .6s ease both;
+}
+
+.animate-slide-right {
+    animation: slideRight .6s ease both;
+}
+
+.animate-floating {
+    animation: floating 4s ease-in-out infinite;
+}
+
+.animate-pulse {
+    animation: pulse 2s ease-in-out infinite;
+}
+
+.animate-rotate {
+    animation: rotate 12s linear infinite;
+}
+
+/* ===========================================================
+   Hover Effects
+=========================================================== */
+
+.hover-lift {
+    transition:
+        transform var(--transition-normal),
+        box-shadow var(--transition-normal);
+}
+
+.hover-lift:hover {
+    transform: translateY(-6px);
+    box-shadow: var(--shadow-lg);
+}
+
+.hover-scale {
+    transition: transform var(--transition-normal);
+}
+
+.hover-scale:hover {
+    transform: scale(1.04);
+}
+
+.hover-opacity {
+    transition: opacity var(--transition-normal);
+}
+
+.hover-opacity:hover {
+    opacity: .85;
+}

@@ -1,0 +1,26 @@
+{
+  "name": "stocksite",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "npm run start:frontend",
+    "start:frontend": "cd frontend && npm start",
+    "start:backend": "cd backend && npm start",
+    "setup": "node setup.js",
+    "setup:repair": "node setup.js --repair",
+    "setup:check": "node setup.js --check-only",
+    "setup:start": "node setup.js --start",
+    "gfx-aanav-start": "node GFX-Aanav/commands/start.js",
+    "gfx-aanav-check": "node GFX-Aanav/commands/check.js",
+    "gfx-aanav-repair": "node GFX-Aanav/commands/repair.js",
+    "gfx-aanav-save": "node GFX-Aanav/commands/save.js",
+    "gfx-aanav-rollback": "node GFX-Aanav/commands/rollback.js",
+    "gfx-aanav-status": "node GFX-Aanav/commands/status.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

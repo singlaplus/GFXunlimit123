@@ -1,0 +1,235 @@
+.promotions-panel {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 70vh;
+}
+
+.promotions-sidebar {
+  border-radius: 20px;
+  border: 1px solid #e2e8f0;
+  background: linear-gradient(180deg, #fff7f7 0%, #fff 100%);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.promotions-sidebar-title {
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: #ED2224;
+  margin-bottom: 10px;
+}
+
+.promotions-nav-item {
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  color: #334155;
+  font-weight: 600;
+}
+
+.promotions-nav-item.is-active {
+  background: #ED2224;
+  color: white;
+}
+
+.promotions-content {
+  border-radius: 20px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.promotions-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.promotions-eyebrow {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #ED2224;
+}
+
+.promotions-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.promotions-card {
+  border-radius: 18px;
+  border: 1px solid #e2e8f0;
+  background: linear-gradient(180deg, #fff 0%, #fbfdff 100%);
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
+}
+
+.promotions-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.promotions-card-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.promotions-card-value {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.promotions-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.promotions-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.promotions-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.promotions-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.promotions-form-grid input,
+.promotions-form-grid select,
+.promotions-form-grid textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #cbd5e1;
+  box-sizing: border-box;
+}
+
+.promotions-form-grid button,
+.promotions-inline-actions button,
+.promotions-inline-controls button {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: none;
+  background: #ED2224;
+  color: white;
+  cursor: pointer;
+}
+
+.promotions-inline-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.promotions-list {
+  display: grid;
+  gap: 10px;
+}
+
+.promotions-list-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.promotions-muted {
+  color: #64748b;
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.promotions-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.promotions-message {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff7ed;
+  color: #9a2c00;
+}
+
+.promotions-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dark-mode .promotions-sidebar,
+.dark-mode .promotions-content,
+.dark-mode .promotions-card {
+  background: #111827;
+  border-color: #334155;
+  color: #f8fafc;
+}
+
+.dark-mode .promotions-card-value,
+.dark-mode .promotions-muted,
+.dark-mode .promotions-nav-item {
+  color: #f8fafc;
+}
+
+.dark-mode .promotions-chip {
+  background: #3f1d24 !important;
+  color: #fecdd3 !important;
+}
+
+.dark-mode .promotions-message {
+  background: #422006 !important;
+  color: #fed7aa !important;
+}
+
+@media (max-width: 900px) {
+  .promotions-panel {
+    grid-template-columns: 1fr;
+  }
+  .promotions-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .promotions-hero,
+  .promotions-toolbar,
+  .promotions-card-header,
+  .promotions-list-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

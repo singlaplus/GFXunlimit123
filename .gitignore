@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+build/
+**/build/
+
+# Uploaded/generated content
+uploads/
+**/uploads/
+
+# Temporary and runtime files
+tmp/
+**/tmp/
+logs/
+**/logs/
+*.log
+*.rdb
+**/*.rdb
+.env
+**/.env
+**/.env.*
+.DS_Store
+**/.DS_Store
+
+# Backup and database dump artifacts
+backup/
+**/backup/
+backups/
+**/backups/
+*.backup
+**/*.backup
+*.gfxbackup
+**/*.gfxbackup
+Database/
+GFX-Aanav/database/
+GFX-Aanav/backups/

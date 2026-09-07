@@ -1,0 +1,131 @@
+/* ===========================================================
+   GFXunlimit Design System v1.0
+   Variables
+=========================================================== */
+
+:root {
+
+  /* ===========================
+     Brand Colors
+  =========================== */
+
+  --color-primary: #ED2224;
+  --color-primary-hover: #D51D1F;
+  --color-primary-light: #FFE5E5;
+
+  --color-secondary: #1E293B;
+  --color-accent: #F97316;
+
+  /* ===========================
+     Light Theme
+  =========================== */
+
+  --color-background: #F8FAFC;
+  --color-surface: #FFFFFF;
+  --color-surface-hover: #F1F5F9;
+
+  --color-text: #0F172A;
+  --color-text-secondary: #475569;
+  --color-text-muted: #94A3B8;
+
+  --color-border: #E2E8F0;
+
+  /* ===========================
+     Status Colors
+  =========================== */
+
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-danger: #EF4444;
+  --color-info: #3B82F6;
+
+  /* ===========================
+     Border Radius
+  =========================== */
+
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-round: 999px;
+
+  /* ===========================
+     Spacing
+  =========================== */
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+
+  /* ===========================
+     Container
+  =========================== */
+
+  --container-width: 1400px;
+
+  /* ===========================
+     Shadows
+  =========================== */
+
+  --shadow-sm:
+    0 2px 8px rgba(15, 23, 42, 0.05);
+
+  --shadow-md:
+    0 8px 24px rgba(15, 23, 42, 0.08);
+
+  --shadow-lg:
+    0 16px 40px rgba(15, 23, 42, 0.12);
+
+  --shadow-xl:
+    0 24px 60px rgba(15, 23, 42, 0.18);
+
+  /* ===========================
+     Transition
+  =========================== */
+
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+  --transition-slow: 400ms ease;
+
+  /* ===========================
+     Navbar
+  =========================== */
+
+  --navbar-height: 76px;
+
+  /* ===========================
+     Z-Index
+  =========================== */
+
+  --z-dropdown: 100;
+  --z-sticky: 500;
+  --z-overlay: 900;
+  --z-modal: 1000;
+  --z-toast: 1100;
+}
+/* ===========================================================
+   Dark Theme
+=========================================================== */
+
+[data-theme="dark"] {
+
+  --color-background: #020617;
+  --color-surface: #0F172A;
+  --color-surface-hover: #1E293B;
+
+  --color-text: #F8FAFC;
+  --color-text-secondary: #CBD5E1;
+  --color-text-muted: #94A3B8;
+
+  --color-border: #334155;
+
+}
