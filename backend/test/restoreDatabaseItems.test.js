@@ -6,14 +6,14 @@ function makePool() {
   return {
     async query(sql, params = []) {
       const text = String(sql).toLowerCase();
-      if (text.includes('from "users" where id =') || text.includes('from users where id =')) {
+      if (text.includes('from "users" where id =') || text.includes('from users where id =') || text.includes('from "users" where "id" =')) {
         const id = Number(params[0]);
         if (id === 1005) {
           return { rows: [{ id: 1005, full_name: 'Old User 1005', email: 'old@example.com' }] };
         }
         return { rows: [] };
       }
-      if (text.includes('from "assets" where id =') || text.includes('from assets where id =')) {
+      if (text.includes('from "assets" where id =') || text.includes('from assets where id =') || text.includes('from "assets" where "id" =')) {
         const id = Number(params[0]);
         if (id === 8001) {
           return { rows: [{ id: 8001, title: 'Old Asset', status: 'draft' }] };
@@ -231,6 +231,29 @@ test('restore analysis includes database insert and update records without delet
   assert.equal(destinationOnlyItems.length, 0, 'destination-only records are not removed or replaced');
 });
 
+test('restore analysis does not report an unchanged existing row as new', async () => {
+  const existingRow = { id: 1501, full_name: 'Same User', email: 'same@example.com' };
+  const pool = {
+    async query(sql, params = []) {
+      if (String(sql).toLowerCase().includes('from users where id =') || String(sql).toLowerCase().includes('from "users" where id =') || String(sql).toLowerCase().includes('from "users" where "id" =')) {
+        return params[0] === existingRow.id ? { rows: [{ ...existingRow }] } : { rows: [] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const items = await restoreRouter.analyzeBackup({
+    database: {
+      newRecords: [{
+        tableName: 'users',
+        rows: [{ ...existingRow, operation: 'INSERT', changedFields: ['full_name', 'email'], __recordIdentity: { tableName: 'users' } }]
+      }]
+    }
+  }, pool);
+
+  assert.equal(items.length, 0, 'same-system unchanged records should not be actionable');
+});
+
 test('restore analysis only lists changed files and excludes identical file copies', async () => {
   const fs = require('node:fs');
   const os = require('node:os');
@@ -268,6 +291,21 @@ test('restore analysis only lists changed files and excludes identical file copi
   assert.ok(fileItems.some((item) => item.name === 'backend/helpers/cacheService.js' && item.changeType === 'new'));
   assert.ok(!fileItems.some((item) => item.name === 'frontend/src/pages/DailyReports.jsx'));
   assert.ok(!fs.existsSync(newFilePath), 'new file row should be reported without creating the file itself');
+});
+
+test('restore analysis ignores package metadata files such as metadata/device.json', async () => {
+  const items = await restoreRouter.analyzeBackup({
+    fileInventory: [
+      { path: 'metadata/device.json', checksum: 'backup-device-checksum' },
+      { path: 'application/metadata/device.json', checksum: 'backup-nested-device-checksum' },
+      { path: 'database/metadata/database-summary.json', checksum: 'backup-database-checksum' },
+      { path: 'application/backend/services/restore-service.js', checksum: 'backup-service-checksum' }
+    ]
+  }, makePool());
+
+  const fileNames = items.filter((item) => item.type === 'file').map((item) => item.name);
+  assert.deepEqual(fileNames, ['backend/services/restore-service.js']);
+  assert.ok(!fileNames.includes('device.json'), 'metadata/device.json must not become a restorable project file');
 });
 
 test('restore analysis groups related files into a single feature row', async () => {

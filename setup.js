@@ -20,6 +20,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execSync, spawn } = require("child_process");
+const { createRequire } = require("module");
 const readline = require("readline");
 
 // ============================================================================
@@ -30,6 +31,7 @@ const ROOT_DIR = __dirname;
 const BACKEND_DIR = path.join(ROOT_DIR, "backend");
 const FRONTEND_DIR = path.join(ROOT_DIR, "frontend");
 const ENV_FILE = path.join(BACKEND_DIR, ".env");
+const backendRequire = createRequire(path.join(BACKEND_DIR, "package.json"));
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -163,7 +165,7 @@ async function testDatabaseConnection() {
   try {
     let pgModule;
     try {
-      pgModule = require("pg");
+      pgModule = backendRequire("pg");
     } catch (e) {
       // pg module not installed, backend dependencies might not be installed
       return { success: false, error: "pg module not loaded (dependencies might not be installed)" };
@@ -199,7 +201,7 @@ async function testRedisConnection() {
   try {
     let Redis;
     try {
-      Redis = require("ioredis");
+      Redis = backendRequire("ioredis");
     } catch (e) {
       // ioredis module not installed, backend dependencies might not be installed
       return { success: false, error: "ioredis module not loaded (dependencies might not be installed)" };

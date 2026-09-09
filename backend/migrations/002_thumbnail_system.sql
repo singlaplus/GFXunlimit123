@@ -27,6 +27,20 @@ CREATE TABLE IF NOT EXISTS asset_processing_jobs (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Upgrade installations that created this table before the full job schema.
+ALTER TABLE asset_processing_jobs
+ADD COLUMN IF NOT EXISTS contributor_id INTEGER,
+ADD COLUMN IF NOT EXISTS file_type VARCHAR(50),
+ADD COLUMN IF NOT EXISTS processor VARCHAR(50),
+ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0,
+ADD COLUMN IF NOT EXISTS max_retries INTEGER DEFAULT 3,
+ADD COLUMN IF NOT EXISTS error TEXT,
+ADD COLUMN IF NOT EXISTS error_stage VARCHAR(100),
+ADD COLUMN IF NOT EXISTS error_suggestion TEXT,
+ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(),
+ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
 CREATE INDEX IF NOT EXISTS idx_processing_jobs_asset_id ON asset_processing_jobs(asset_id);
 CREATE INDEX IF NOT EXISTS idx_processing_jobs_status ON asset_processing_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_processing_jobs_contributor_id ON asset_processing_jobs(contributor_id);

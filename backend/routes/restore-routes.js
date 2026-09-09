@@ -9,6 +9,7 @@ const AdmZip = require("adm-zip");
 
 // Restore directory path
 const RESTORE_DIR = path.join(__dirname, "../backup/restore");
+const PROJECT_ROOT = path.resolve(__dirname, "../..");
 
 // Ensure restore directory exists
 if (!fs.existsSync(RESTORE_DIR)) {
@@ -746,7 +747,7 @@ async function restoreArchiveFiles(backupPath, relatedFiles) {
     }
 
     const destination = path.resolve(__dirname, '..', relativePath);
-    const projectRoot = path.resolve(__dirname, '..');
+    const projectRoot = PROJECT_ROOT;
     if (destination !== projectRoot && !destination.startsWith(`${projectRoot}${path.sep}`)) {
       throw new Error(`Invalid restore file path: ${relativePath}`);
     }
@@ -1224,13 +1225,25 @@ async function analyzeBackup(backupData, pool) {
     const rawInventory = Array.isArray(backupData.fileInventory) ? backupData.fileInventory : [];
     const rawFiles = Array.isArray(backupData.files) ? backupData.files : [];
 
+    const isRestorableInventoryPath = (value) => {
+      const normalized = String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      const projectPath = normalized.replace(/^(application|assets)\//, '');
+      if (!projectPath || projectPath.startsWith('metadata/') || projectPath.startsWith('database/')) {
+        return false;
+      }
+      if (/^(manifest|checksums|metadata|device|version|sync)(\.json)?$/i.test(projectPath)) {
+        return false;
+      }
+      return normalized.startsWith('application/') || normalized.startsWith('assets/');
+    };
+
     for (const file of rawInventory) {
-      if (file && (file.path || file.relativePath || file.name)) {
+      if (file && isRestorableInventoryPath(file.path || file.relativePath || file.name)) {
         fileInventory.push(file);
       }
     }
     for (const file of rawFiles) {
-      if (file && (file.path || file.relativePath || file.name)) {
+      if (file && isRestorableInventoryPath(file.path || file.relativePath || file.name)) {
         const seen = fileInventory.some((entry) => {
           const left = String(entry.path || entry.relativePath || entry.name || '');
           const right = String(file.path || file.relativePath || file.name || '');
@@ -1248,7 +1261,7 @@ async function analyzeBackup(backupData, pool) {
 
       totalBackupItems++;
 
-      const projectRoot = backupData.projectRoot || path.resolve(__dirname, '..');
+      const projectRoot = backupData.projectRoot || PROJECT_ROOT;
       const liveFilePath = path.resolve(projectRoot, relativeProjectPath);
       const currentChecksum = computeFileChecksum(liveFilePath);
       const backupChecksum = file.checksum || file.sha256 || file.hash || null;
@@ -1333,6 +1346,20 @@ async function analyzeBackup(backupData, pool) {
         rows: change.data ? [change.data] : (Array.isArray(change.rows) ? change.rows : [])
       })));
     }
+    if (backupData.database && Array.isArray(backupData.database.tables)) {
+      databaseSections.push(...backupData.database.tables.map((entry) => ({
+        kind: 'snapshot',
+        table: entry.tableName || entry.table || 'unknown',
+        rows: Array.isArray(entry.rows) ? entry.rows : []
+      })));
+    }
+
+    const databaseTableCache = new Map();
+    const comparableRecord = (record) => {
+      if (!record || typeof record !== 'object') return record;
+      return Object.fromEntries(Object.entries(record)
+        .filter(([key]) => !['operation', 'changedFields', '__recordIdentity'].includes(key)));
+    };
 
     for (const section of databaseSections) {
       const table = section.table || 'unknown';
@@ -1344,8 +1371,10 @@ async function analyzeBackup(backupData, pool) {
 
         totalBackupItems++;
 
-        const recordId = row.id ?? row.recordId ?? row.record_id ?? row.uuid ?? row.slug ?? row.name ?? '?';
-        const identityValue = row.id ?? row.recordId ?? row.record_id ?? row.uuid ?? row.slug ?? null;
+        const recordId = row.id ?? row.recordId ?? row.record_id ?? row.uuid ?? row.session_id ?? row.code ?? row.slug ?? row.name ?? row.email ?? '?';
+        const identityColumns = ['id', 'recordId', 'record_id', 'uuid', 'session_id', 'code', 'slug', 'name', 'email'];
+        const identityColumn = identityColumns.find((column) => row[column] !== undefined && row[column] !== null);
+        const identityValue = identityColumn ? row[identityColumn] : null;
 
         let currentRecord = null;
         let conflictDetected = false;
@@ -1353,12 +1382,34 @@ async function analyzeBackup(backupData, pool) {
         try {
           const tableName = String(table).replace(/[^a-zA-Z0-9_]/g, '');
           if (identityValue !== null && identityValue !== undefined && identityValue !== '?') {
-            const lookupSql = `SELECT * FROM "${tableName}" WHERE id = $1 LIMIT 1`;
+            const lookupDatabaseColumn = identityColumn === 'recordId' || identityColumn === 'record_id'
+              ? 'id'
+              : identityColumn;
+            const lookupSql = `SELECT * FROM "${tableName}" WHERE "${lookupDatabaseColumn}" = $1 LIMIT 1`;
             const lookupResult = await pool.query(lookupSql, [identityValue]);
             currentRecord = lookupResult.rows?.[0] || null;
           }
         } catch (err) {
           currentRecord = null;
+        }
+
+        if (!currentRecord) {
+          try {
+            const tableName = String(table).replace(/[^a-zA-Z0-9_]/g, '');
+            if (!databaseTableCache.has(tableName)) {
+              const tableRowsResult = await pool.query(`SELECT * FROM "${tableName}"`);
+              databaseTableCache.set(tableName, tableRowsResult.rows || []);
+            }
+            const tableRows = databaseTableCache.get(tableName) || [];
+            currentRecord = tableRows.find((candidate) => {
+              if (identityColumn && candidate[identityColumn] !== undefined && candidate[identityColumn] !== null) {
+                return String(candidate[identityColumn]) === String(identityValue);
+              }
+              return JSON.stringify(comparableRecord(candidate)) === JSON.stringify(comparableRecord(row));
+            }) || null;
+          } catch (err) {
+            currentRecord = null;
+          }
         }
 
         if (currentRecord && row && Object.keys(row).length > 0) {
@@ -1371,15 +1422,18 @@ async function analyzeBackup(backupData, pool) {
         }
 
         const hasExistingRecord = Boolean(currentRecord);
-        const isSameRecord = hasExistingRecord && row && currentRecord && JSON.stringify(currentRecord) === JSON.stringify(row);
+        const isSameRecord = hasExistingRecord
+          && row
+          && currentRecord
+          && JSON.stringify(comparableRecord(currentRecord)) === JSON.stringify(comparableRecord(row));
 
         if (isSameRecord) {
           unchangedCount++;
           continue;
         }
 
-        const isNewRecord = section.kind === 'new' || (!hasExistingRecord && section.kind !== 'delete');
-        const isUpdateRecord = section.kind === 'update' || (hasExistingRecord && section.kind !== 'delete');
+        const isNewRecord = !hasExistingRecord && section.kind !== 'delete';
+        const isUpdateRecord = hasExistingRecord && section.kind !== 'delete';
         const changeType = conflictDetected ? 'conflict' : isNewRecord ? 'new' : 'update';
 
         items.push({
