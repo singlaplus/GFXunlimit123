@@ -35,6 +35,51 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 * 1024 } // 5GB limit
 });
 
+function readDatabasePayloadFromArchive(zip) {
+  const preferredPaths = [
+    'database/changes/database-delta.json',
+    'database/metadata/database-summary.json',
+    'database/full/full-database.json',
+    'database-full.json',
+    'database/database.json'
+  ];
+
+  const entries = preferredPaths
+    .map((entryPath) => zip.getEntry(entryPath))
+    .filter(Boolean);
+
+  for (const entry of entries) {
+    try {
+      const payload = JSON.parse(zip.readAsText(entry));
+      if (payload && typeof payload === 'object') {
+        return payload.database && typeof payload.database === 'object'
+          ? payload.database
+          : payload;
+      }
+    } catch (err) {
+      // Continue to the next compatible database payload.
+    }
+  }
+
+  const fallbackEntry = zip.getEntries().find((entry) => {
+    const entryName = String(entry.entryName || '').toLowerCase();
+    return !entry.isDirectory && entryName.endsWith('.json') && entryName.includes('database');
+  });
+
+  if (fallbackEntry) {
+    try {
+      const payload = JSON.parse(zip.readAsText(fallbackEntry));
+      return payload?.database && typeof payload.database === 'object'
+        ? payload.database
+        : payload;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 /**
  * POST /admin/restore/upload
  * Upload and analyze a backup file
@@ -72,18 +117,16 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
       const zip = new AdmZip(filePath);
       
       // Extract manifest.json from ZIP
-      const manifestEntry = zip.getEntry("manifest.json");
+      const manifestEntry = zip.getEntry("manifest.json") || zip.getEntry("package.json");
       if (!manifestEntry) {
-        throw new Error("Backup package missing manifest.json");
+        throw new Error("Backup package missing manifest.json or package.json");
       }
       
       const manifestContent = zip.readAsText(manifestEntry);
       backupData = JSON.parse(manifestContent);
 
-      const databasePayloadEntry = zip.getEntry("database/changes/database-delta.json")
-        || zip.getEntry("database/metadata/database-summary.json");
-      if (databasePayloadEntry) {
-        const databasePayload = JSON.parse(zip.readAsText(databasePayloadEntry));
+      const databasePayload = readDatabasePayloadFromArchive(zip);
+      if (databasePayload) {
         backupData.database = { ...(backupData.database || {}), ...databasePayload };
       }
     } catch (err) {
@@ -113,7 +156,7 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
         req.file.originalname,
         filePath,
         fs.statSync(filePath).size,
-        backupData.type || "incremental"
+        backupData.type || backupData.backupType || backupData.mode || "incremental"
       ]
     );
 
@@ -162,7 +205,7 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
         req.file.originalname,
         backupId,
         filePath,
-        backupData.type || "incremental",
+        backupData.type || backupData.backupType || backupData.mode || "incremental",
         backupData.sourceDevice || "unknown",
         JSON.stringify(comparisonResult),
         0,
@@ -769,12 +812,22 @@ function findDatabaseRowInBackup(database, tableName, recordId) {
     return null;
   }
 
+  const getIdentityColumns = (row) => {
+    const preferred = ['id', 'recordId', 'record_id', 'uuid', 'session_id', 'code', 'slug', 'name', 'email'];
+    const singleColumn = preferred.find((column) => row?.[column] !== undefined && row?.[column] !== null);
+    if (singleColumn) return [singleColumn];
+    return Object.keys(row || {})
+      .filter((column) => /(^|_)id$/i.test(column) && row[column] !== undefined && row[column] !== null)
+      .sort();
+  };
+
   const rowValue = (row) => {
     if (!row || typeof row !== 'object') {
       return null;
     }
-    const value = row.id ?? row.recordId ?? row.record_id ?? row.uuid ?? row.session_id ?? row.code ?? row.slug ?? row.name ?? row.email;
-    return value === undefined || value === null ? null : String(value);
+    const identityColumns = getIdentityColumns(row);
+    if (!identityColumns.length) return null;
+    return identityColumns.map((column) => `${column}=${row[column]}`).join('&');
   };
 
   const getTableRows = (entry) => {
@@ -806,7 +859,10 @@ function findDatabaseRowInBackup(database, tableName, recordId) {
       continue;
     }
 
-    const row = getTableRows(section).find((candidate) => rowValue(candidate) === normalizedId);
+    const row = getTableRows(section).find((candidate) => {
+      const value = rowValue(candidate);
+      return value === normalizedId || value?.split('=').pop() === normalizedId;
+    });
     if (row) {
       return row;
     }
@@ -817,7 +873,10 @@ function findDatabaseRowInBackup(database, tableName, recordId) {
     return name === normalizedTable;
   });
 
-  return (snapshotTable ? getTableRows(snapshotTable) : []).find((candidate) => rowValue(candidate) === normalizedId) || null;
+  return (snapshotTable ? getTableRows(snapshotTable) : []).find((candidate) => {
+    const value = rowValue(candidate);
+    return value === normalizedId || value?.split('=').pop() === normalizedId;
+  }) || null;
 }
 
 async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
@@ -826,13 +885,10 @@ async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
   }
 
   const zip = new AdmZip(backupPath);
-  const deltaEntry = zip.getEntry('database/changes/database-delta.json')
-    || zip.getEntry('database/metadata/database-summary.json');
-  if (!deltaEntry) {
-    throw new Error('Backup archive does not contain database delta rows');
+  const database = readDatabasePayloadFromArchive(zip);
+  if (!database) {
+    throw new Error('Backup archive does not contain a readable database payload');
   }
-
-  const database = JSON.parse(zip.readAsText(deltaEntry));
   const match = String(item.name || '').match(/^(.+?)\s*#\s*(.+)$/);
   if (!match) throw new Error(`Invalid database restore item: ${item.name}`);
   const tableName = match[1].replace(/[^a-zA-Z0-9_]/g, '');
@@ -844,20 +900,26 @@ async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
   const values = columns.map((column) => row[column]);
   const quotedColumns = columns.map((column) => `"${column}"`).join(', ');
   const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
-  const identityColumn = row.id !== undefined ? 'id' : row.uuid !== undefined ? 'uuid' : row.slug !== undefined ? 'slug' : null;
-  if (!identityColumn) throw new Error(`No supported identity column for ${item.name}`);
+  const identityColumns = ['id', 'uuid', 'slug'].filter((column) => row[column] !== undefined && row[column] !== null);
+  const identityColumn = identityColumns[0] || null;
 
   const updateColumns = columns.filter((column) => column !== identityColumn);
   let result;
-  if (updateColumns.length > 0) {
+  if (identityColumn && updateColumns.length > 0) {
     const assignments = updateColumns.map((column) => `"${column}" = EXCLUDED."${column}"`).join(', ');
     result = await pool.query(
       `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT ("${identityColumn}") DO UPDATE SET ${assignments} RETURNING *`,
       values
     );
-  } else {
+  } else if (identityColumn) {
     result = await pool.query(
       `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT ("${identityColumn}") DO NOTHING RETURNING *`,
+      values
+    );
+  } else {
+    const assignments = columns.map((column) => `"${column}" = EXCLUDED."${column}"`).join(', ');
+    result = await pool.query(
+      `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT DO UPDATE SET ${assignments} RETURNING *`,
       values
     );
   }
@@ -1224,11 +1286,12 @@ router.delete("/file/:id", async (req, res) => {
  * Helper function: Analyze backup and generate comparison items
  * Compares backup against current system state
  */
-async function analyzeBackup(backupData, pool) {
+async function analyzeBackup(backupData, pool, options = {}) {
   const items = [];
   let itemOrder = 0;
   let totalBackupItems = 0;
   let unchangedCount = 0;
+  const destinationProjectRoot = options.projectRoot || PROJECT_ROOT;
 
   try {
     // Helper: Check if versions are semantically different
@@ -1399,8 +1462,7 @@ async function analyzeBackup(backupData, pool) {
 
       totalBackupItems++;
 
-      const projectRoot = backupData.projectRoot || PROJECT_ROOT;
-      const liveFilePath = path.resolve(projectRoot, relativeProjectPath);
+      const liveFilePath = path.resolve(destinationProjectRoot, relativeProjectPath);
       const currentChecksum = computeFileChecksum(liveFilePath);
       const backupChecksum = file.checksum || file.sha256 || file.hash || null;
       const isSameFile = Boolean(currentChecksum && backupChecksum && currentChecksum === backupChecksum);
@@ -1509,17 +1571,25 @@ async function analyzeBackup(backupData, pool) {
 
         totalBackupItems++;
 
-        const recordId = row.id ?? row.recordId ?? row.record_id ?? row.uuid ?? row.session_id ?? row.code ?? row.slug ?? row.name ?? row.email ?? '?';
-        const identityColumns = ['id', 'recordId', 'record_id', 'uuid', 'session_id', 'code', 'slug', 'name', 'email'];
-        const identityColumn = identityColumns.find((column) => row[column] !== undefined && row[column] !== null);
-        const identityValue = identityColumn ? row[identityColumn] : null;
+        const preferredIdentityColumns = ['id', 'recordId', 'record_id', 'uuid', 'session_id', 'code', 'slug', 'name', 'email'];
+        const singleIdentityColumn = preferredIdentityColumns.find((column) => row[column] !== undefined && row[column] !== null);
+        const identityColumns = singleIdentityColumn
+          ? [singleIdentityColumn]
+          : Object.keys(row).filter((column) => /(^|_)id$/i.test(column) && row[column] !== undefined && row[column] !== null).sort();
+        const identityColumn = identityColumns[0] || null;
+        const identityValue = identityColumns.length === 1
+          ? row[identityColumns[0]]
+          : identityColumns.length > 1
+            ? identityColumns.map((column) => `${column}=${row[column]}`).join('&')
+            : null;
+        const recordId = identityValue || '?';
 
         let currentRecord = null;
         let conflictDetected = false;
 
         try {
           const tableName = String(table).replace(/[^a-zA-Z0-9_]/g, '');
-          if (identityValue !== null && identityValue !== undefined && identityValue !== '?') {
+          if (identityColumn && identityColumns.length === 1 && identityValue !== null && identityValue !== undefined && identityValue !== '?') {
             const lookupDatabaseColumn = identityColumn === 'recordId' || identityColumn === 'record_id'
               ? 'id'
               : identityColumn;
@@ -1540,8 +1610,8 @@ async function analyzeBackup(backupData, pool) {
             }
             const tableRows = databaseTableCache.get(tableName) || [];
             currentRecord = tableRows.find((candidate) => {
-              if (identityColumn && candidate[identityColumn] !== undefined && candidate[identityColumn] !== null) {
-                return String(candidate[identityColumn]) === String(identityValue);
+              if (identityColumns.length > 0 && identityColumns.every((column) => candidate[column] !== undefined && candidate[column] !== null)) {
+                return identityColumns.map((column) => `${column}=${candidate[column]}`).join('&') === String(identityValue);
               }
               return JSON.stringify(comparableRecord(candidate)) === JSON.stringify(comparableRecord(row));
             }) || null;

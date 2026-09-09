@@ -341,7 +341,7 @@ test('restore analysis only lists changed files and excludes identical file copi
     ]
   };
 
-  const items = await restoreRouter.analyzeBackup(backupData, makePool());
+  const items = await restoreRouter.analyzeBackup(backupData, makePool(), { projectRoot });
   const fileItems = items.filter((item) => item.type === 'file');
 
   assert.equal(fileItems.length, 2, 'only changed or new standalone files should appear');
