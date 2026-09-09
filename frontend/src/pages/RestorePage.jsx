@@ -167,6 +167,37 @@ function RestorePage() {
     }
   };
 
+  const handleRepairSession = async () => {
+    const confirmed = window.confirm(
+      'Repair stale or incomplete restore state?\n\nThis will reset the current session to a safe review state and keep the backup history intact.\n\n[ CANCEL ] [ REPAIR SESSION ]'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      const res = await axios.post(
+        `${API_BASE_URL}/admin/restore/repair`,
+        {},
+        {
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      );
+
+      if (res.data?.repaired) {
+        await loadRestoreSession();
+        toast.success('Restore session repaired and reset to a safe review state');
+        return;
+      }
+
+      toast.info(res.data?.message || 'No stale restore session needed repair');
+    } catch (err) {
+      console.error('Repair failed', err);
+      toast.error(err.response?.data?.error || 'Failed to repair restore session');
+    }
+  };
+
   const handleClearSession = async () => {
     const confirmed = window.confirm(
       'Are you sure?\n\nThis will clear the current restore comparison.\nThe uploaded backup file will remain in Restore History.\n\n[ CANCEL ] [ CLEAR CURRENT RESTORE ]'
@@ -238,6 +269,32 @@ function RestorePage() {
     );
   };
 
+  const isCriticalRestoreState = Boolean(
+    session && (
+      ['failed'].includes(String(session.status || '').toLowerCase()) ||
+      restoreItems.some((item) => ['failed'].includes(String(item.status || '').toLowerCase())) ||
+      (Number(session.pending_items || 0) > Number(session.total_items || 0)) ||
+      (session.comparison_result && ['failed'].includes(String(session.comparison_result.status || '').toLowerCase()))
+    )
+  );
+
+  const hasRepairableSession = Boolean(
+    session && (
+      ['stale', 'failed', 'in_progress'].includes(String(session.status || '').toLowerCase()) ||
+      restoreItems.some((item) => ['failed', 'stale', 'incomplete'].includes(String(item.status || '').toLowerCase())) ||
+      (Number(session.pending_items || 0) > Number(session.total_items || 0)) ||
+      (session.comparison_result && ['stale', 'failed'].includes(String(session.comparison_result.status || '').toLowerCase()))
+    )
+  );
+
+  const repairSeverity = isCriticalRestoreState ? 'critical' : hasRepairableSession ? 'stale' : null;
+
+  const repairNeededMessage = repairSeverity
+    ? repairSeverity === 'critical'
+      ? 'Immediate action required: this restore session is failed or inconsistent. Repair immediately before continuing.'
+      : 'Repair needed: this restore session is stale or incomplete. Review and repair before continuing.'
+    : null;
+
   const toggleFeatureRow = (itemId) => {
     setExpandedFeatureRows((prev) => ({
       ...prev,
@@ -304,9 +361,14 @@ function RestorePage() {
                 </div>
               </div>
             </div>
-            <div className="restore-summary-message">
-              📦 <strong>{session.backup_filename}</strong> — Ready to restore
+            <div className={`restore-summary-message ${repairSeverity ? `severity-${repairSeverity}` : ''}`}>
+              {repairSeverity === 'critical' ? '⛔' : '📦'} <strong>{session.backup_filename}</strong> — {repairSeverity ? (repairSeverity === 'critical' ? 'Immediate action required' : 'Repair needed') : 'Ready to restore'}
             </div>
+            {repairNeededMessage && (
+              <div className={`restore-repair-warning ${repairSeverity}`}>
+                {repairSeverity === 'critical' ? '🚨' : '⚠️'} {repairNeededMessage}
+              </div>
+            )}
           </section>
 
           <section className="restore-section">
@@ -315,6 +377,15 @@ function RestorePage() {
                 <h2>Comparison Details</h2>
               </div>
               <div className="restore-actions">
+                {hasRepairableSession && (
+                  <button
+                    onClick={handleRepairSession}
+                    disabled={loading}
+                    className="btn-warning"
+                  >
+                    [ REPAIR STALE SESSION ]
+                  </button>
+                )}
                 {restoreItems.some((item) => item.status === 'pending' && !['conflict', 'conflicted'].includes((item.change_type || item.changeType || '').toLowerCase())) && (
                   <button
                     onClick={handleUpdateAll}
@@ -338,6 +409,15 @@ function RestorePage() {
               <>
                 {restoreItems.some((item) => item.status === 'pending' && !['conflict', 'conflicted'].includes((item.change_type || item.changeType || '').toLowerCase())) && (
                   <div className="restore-actions restore-actions-inline">
+                    {hasRepairableSession && (
+                      <button
+                        onClick={handleRepairSession}
+                        disabled={loading}
+                        className="btn-warning"
+                      >
+                        [ REPAIR STALE SESSION ]
+                      </button>
+                    )}
                     <button
                       onClick={handleUpdateAll}
                       disabled={loading}

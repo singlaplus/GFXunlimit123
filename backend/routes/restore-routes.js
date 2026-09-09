@@ -758,6 +758,68 @@ async function restoreArchiveFiles(backupPath, relatedFiles) {
   return restoredFiles;
 }
 
+function findDatabaseRowInBackup(database, tableName, recordId) {
+  if (!database || typeof database !== 'object') {
+    return null;
+  }
+
+  const normalizedTable = String(tableName || '').replace(/[^a-zA-Z0-9_]/g, '');
+  const normalizedId = String(recordId ?? '').trim();
+  if (!normalizedTable || !normalizedId) {
+    return null;
+  }
+
+  const rowValue = (row) => {
+    if (!row || typeof row !== 'object') {
+      return null;
+    }
+    const value = row.id ?? row.recordId ?? row.record_id ?? row.uuid ?? row.session_id ?? row.code ?? row.slug ?? row.name ?? row.email;
+    return value === undefined || value === null ? null : String(value);
+  };
+
+  const getTableRows = (entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return [];
+    }
+    if (Array.isArray(entry.rows)) {
+      return entry.rows;
+    }
+    if (entry.data && Array.isArray(entry.data.rows)) {
+      return entry.data.rows;
+    }
+    if (entry.data && entry.data && typeof entry.data === 'object' && Array.isArray(entry.data)) {
+      return entry.data;
+    }
+    return [];
+  };
+
+  const sections = [
+    ...(Array.isArray(database.newRecords) ? database.newRecords : []),
+    ...(Array.isArray(database.updatedRecords) ? database.updatedRecords : []),
+    ...(Array.isArray(database.changes) ? database.changes : []),
+    ...(Array.isArray(database.tables) ? database.tables : [])
+  ];
+
+  for (const section of sections) {
+    const sectionTable = String(section?.tableName || section?.table || '').replace(/[^a-zA-Z0-9_]/g, '');
+    if (sectionTable !== normalizedTable) {
+      continue;
+    }
+
+    const row = getTableRows(section).find((candidate) => rowValue(candidate) === normalizedId);
+    if (row) {
+      return row;
+    }
+  }
+
+  const snapshotTable = (Array.isArray(database.tables) ? database.tables : []).find((entry) => {
+    const name = String(entry?.tableName || entry?.table || '').replace(/[^a-zA-Z0-9_]/g, '');
+    return name === normalizedTable;
+  });
+
+  return (snapshotTable ? getTableRows(snapshotTable) : []).find((candidate) => rowValue(candidate) === normalizedId) || null;
+}
+
 async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
   if (!backupPath || !fs.existsSync(backupPath)) {
     throw new Error('Backup archive is missing from the restore folder');
@@ -771,13 +833,11 @@ async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
   }
 
   const database = JSON.parse(zip.readAsText(deltaEntry));
-  const match = String(item.name || '').match(/^(.+) #(.+)$/);
+  const match = String(item.name || '').match(/^(.+?)\s*#\s*(.+)$/);
   if (!match) throw new Error(`Invalid database restore item: ${item.name}`);
   const tableName = match[1].replace(/[^a-zA-Z0-9_]/g, '');
   const recordId = match[2];
-  const sections = [...(database.newRecords || []), ...(database.updatedRecords || [])];
-  const section = sections.find((candidate) => candidate.tableName === tableName);
-  const row = section?.rows?.find((candidate) => String(candidate.id ?? candidate.recordId ?? candidate.record_id ?? candidate.uuid ?? candidate.slug) === recordId);
+  const row = findDatabaseRowInBackup(database, tableName, recordId);
   if (!row) throw new Error(`Database row not found in backup: ${item.name}`);
 
   const columns = Object.keys(row).filter((column) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column) && !column.startsWith('__') && !['operation', 'changedFields'].includes(column));
@@ -803,6 +863,84 @@ async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
   }
   return result.rows[0] || row;
 }
+
+/**
+ * POST /admin/restore/repair
+ * Repair stale restore state and reset the active session to a safe, reviewable state.
+ * This is a bounded self-healing pass: it does not delete historical backups,
+ * and it keeps the admin in control of final restore decisions.
+ */
+router.post("/repair", async (req, res) => {
+  try {
+    const { pool, JWT_SECRET } = req.app.locals;
+    const token = req.headers.authorization?.split(" ")[1];
+
+    if (!token) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET || "secretkey");
+    } catch (err) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    const adminUserId = decoded.user;
+    const sessionResult = await pool.query(
+      `SELECT * FROM restore_sessions
+       WHERE admin_user_id = $1
+         AND status IN ('analyzed', 'in_progress', 'failed', 'stale')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [adminUserId]
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res.status(200).json({ repaired: false, message: "No active session to repair" });
+    }
+
+    const session = sessionResult.rows[0];
+    const staleComparison = {
+      status: "repaired",
+      repaired_at: new Date().toISOString(),
+      message: "Restore session self-healed. Historical backup remains available for review.",
+      restored_session_id: session.id,
+      backup_filename: session.backup_filename
+    };
+
+    const repairItemsResult = await pool.query(
+      `UPDATE restore_items SET
+         status = 'pending',
+         updated_at = NOW()
+       WHERE session_id = $1
+         AND status IN ('failed', 'stale', 'incomplete')
+       RETURNING *`,
+      [session.id]
+    );
+
+    const updatedSession = await pool.query(
+      `UPDATE restore_sessions SET
+         status = 'analyzed',
+         pending_items = GREATEST(COALESCE(total_items, 0), 0),
+         comparison_result = $1,
+         updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [JSON.stringify(staleComparison), session.id]
+    );
+
+    res.json({
+      repaired: true,
+      session: updatedSession.rows[0],
+      repaired_items: repairItemsResult.rows.length,
+      message: "Restore session repaired and reset to a safe review state"
+    });
+  } catch (err) {
+    console.error("Repair session error", err);
+    res.status(500).json({ error: err.message || "Repair failed" });
+  }
+});
 
 /**
  * POST /admin/restore/all
@@ -1463,4 +1601,5 @@ async function analyzeBackup(backupData, pool) {
 }
 
 router.analyzeBackup = analyzeBackup;
+router.findDatabaseRowInBackup = findDatabaseRowInBackup;
 module.exports = router;

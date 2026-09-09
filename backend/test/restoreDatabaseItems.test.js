@@ -25,6 +25,64 @@ function makePool() {
   };
 }
 
+test('backup lookup self-heals by searching snapshot rows when delta rows are missing', async () => {
+  const database = {
+    tables: [{
+      tableName: 'earnings',
+      rows: [{ id: 54, amount: 1200, status: 'paid' }]
+    }],
+    newRecords: [],
+    updatedRecords: []
+  };
+
+  const row = restoreRouter.findDatabaseRowInBackup(database, 'earnings', '54');
+
+  assert.ok(row, 'backup snapshot should be searched as a repair fallback');
+  assert.equal(String(row.id), '54', 'snapshot row should match the missing record id');
+});
+
+test('restore repair route clears stale session state without deleting archive history', async () => {
+  const jwt = require('jsonwebtoken');
+  const express = require('express');
+
+  const repairedRows = [];
+  const app = express();
+  app.locals = {
+    JWT_SECRET: 'test-secret',
+    pool: {
+      async query(sql, params = []) {
+        const text = String(sql).toLowerCase();
+        if (text.includes('from restore_sessions') && text.includes('where status in')) {
+          return { rows: [{ id: 77, status: 'in_progress', backup_filename: 'old.gfxbackup', total_items: 2, pending_items: 1, comparison_result: { status: 'stale' } }] };
+        }
+        if (text.includes('update restore_sessions')) {
+          repairedRows.push(params[0] || 'session');
+          return { rows: [{ id: 77, status: 'completed' }] };
+        }
+        return { rows: [] };
+      }
+    }
+  };
+
+  app.use('/admin/restore', restoreRouter);
+
+  const server = app.listen(0, async () => {
+    const port = server.address().port;
+    const token = jwt.sign({ user: 42 }, 'test-secret');
+    const response = await fetch(`http://127.0.0.1:${port}/admin/restore/repair`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200, 'self-healing repair endpoint should clear stale restore sessions');
+    assert.equal(payload.repaired, true, 'repair should indicate it healed stale restore state');
+    assert.equal(repairedRows.length > 0, true, 'repair should persist the corrected session status');
+
+    server.close();
+  });
+});
+
 test('restore history sync removes orphaned logs whose files were manually deleted', async () => {
   const fs = require('node:fs');
   const os = require('node:os');
