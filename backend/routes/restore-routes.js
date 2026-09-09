@@ -218,8 +218,23 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
 
     const session = sessionResult.rows[0];
 
-    // Analyze backup and generate comparison items
-    const items = await analyzeBackup(backupData, pool);
+    // Analyze backup and generate comparison items. Progress is persisted so the
+    // admin page can report analysis status while the upload request is running.
+    await pool.query(
+      `UPDATE restore_sessions SET
+         comparison_result = JSONB_BUILD_OBJECT(
+           'status', 'in_progress',
+           'phase', 'analysis',
+           'processed_items', 0,
+           'total_items', 0,
+           'progress_percent', 0,
+           'estimated_remaining_seconds', NULL
+         ),
+         updated_at = NOW()
+       WHERE id = $1`,
+      [session.id]
+    );
+    const items = await analyzeBackup(backupData, pool, { sessionId: session.id });
 
     // Insert restore items (only actionable ones)
     for (const item of items) {
@@ -1134,12 +1149,12 @@ router.post("/all", async (req, res) => {
       await pool.query(
         `UPDATE restore_sessions SET
            completed_items = $1,
-           pending_items = GREATEST(0, $2 - $1),
+           pending_items = GREATEST(0, $2::numeric - $1::numeric),
            comparison_result = JSONB_BUILD_OBJECT(
              'status', 'in_progress',
              'processed_items', $1,
              'total_items', $2,
-             'progress_percent', CASE WHEN $2 = 0 THEN 100 ELSE ROUND(($1::numeric / $2::numeric) * 100, 1) END,
+             'progress_percent', CASE WHEN $2::numeric = 0 THEN 100 ELSE ROUND(($1::numeric / $2::numeric) * 100, 1) END,
              'estimated_remaining_seconds', $3,
              'updated_at', NOW()
            ),
@@ -1188,7 +1203,7 @@ router.post("/all", async (req, res) => {
           'status', CASE WHEN $4 > 0 THEN 'in_progress' ELSE 'completed' END,
           'processed_items', $1 + $4,
           'total_items', $1 + $2 + $4,
-          'progress_percent', CASE WHEN ($1 + $2 + $4) = 0 THEN 100 ELSE ROUND((($1 + $4)::numeric / ($1 + $2 + $4)::numeric) * 100, 1) END,
+          'progress_percent', CASE WHEN ($1::numeric + $2::numeric + $4::numeric) = 0 THEN 100 ELSE ROUND((($1::numeric + $4::numeric) / ($1::numeric + $2::numeric + $4::numeric)) * 100, 1) END,
           'failed_count', $4,
           'estimated_remaining_seconds', 0,
           'updated_at', NOW()
@@ -1377,6 +1392,37 @@ async function analyzeBackup(backupData, pool, options = {}) {
   let totalBackupItems = 0;
   let unchangedCount = 0;
   const destinationProjectRoot = options.projectRoot || PROJECT_ROOT;
+  const analysisStartedAt = Date.now();
+  let lastProgressUpdate = 0;
+  const estimatedAnalysisTotal = Math.max(1,
+    (Array.isArray(backupData.manifest?.features) ? backupData.manifest.features.length : 0) +
+    (Array.isArray(backupData.fileInventory) ? backupData.fileInventory.length : 0) +
+    (Array.isArray(backupData.files) ? backupData.files.length : 0) +
+    (Array.isArray(backupData.database?.newRecords) ? backupData.database.newRecords.reduce((sum, entry) => sum + (entry.rows?.length || 0), 0) : 0) +
+    (Array.isArray(backupData.database?.updatedRecords) ? backupData.database.updatedRecords.reduce((sum, entry) => sum + (entry.rows?.length || 0), 0) : 0) +
+    (Array.isArray(backupData.database?.tables) ? backupData.database.tables.reduce((sum, entry) => sum + (entry.rows?.length || 0), 0) : 0)
+  );
+  const reportAnalysisProgress = async () => {
+    if (!options.sessionId || totalBackupItems === lastProgressUpdate) return;
+    if (totalBackupItems - lastProgressUpdate < 10 && totalBackupItems > 0) return;
+    lastProgressUpdate = totalBackupItems;
+    const elapsedSeconds = Math.max(0.001, (Date.now() - analysisStartedAt) / 1000);
+    await pool.query(
+      `UPDATE restore_sessions SET
+         comparison_result = JSONB_BUILD_OBJECT(
+           'status', 'in_progress',
+           'phase', 'analysis',
+           'processed_items', $1,
+           'total_items', $2,
+           'progress_percent', LEAST(99, ROUND(($1::numeric / $2::numeric) * 100, 1)),
+           'estimated_remaining_seconds', CASE WHEN $1::numeric = 0 THEN NULL ELSE CEIL(($2::numeric - $1::numeric) * ($3::numeric / $1::numeric)) END,
+           'elapsed_seconds', $3
+         ),
+         updated_at = NOW()
+       WHERE id = $4`,
+      [totalBackupItems, estimatedAnalysisTotal, elapsedSeconds, options.sessionId]
+    );
+  };
 
   try {
     // Helper: Check if versions are semantically different
@@ -1390,6 +1436,7 @@ async function analyzeBackup(backupData, pool, options = {}) {
     if (backupData.manifest && backupData.manifest.features && Array.isArray(backupData.manifest.features)) {
       for (const feature of backupData.manifest.features) {
         totalBackupItems++;
+        await reportAnalysisProgress();
         
         // Try to find existing feature in database
         let currentVersion = null;
@@ -1546,6 +1593,7 @@ async function analyzeBackup(backupData, pool, options = {}) {
       if (!relativeProjectPath || relativeProjectPath === 'unknown') continue;
 
       totalBackupItems++;
+      await reportAnalysisProgress();
 
       const liveFilePath = path.resolve(destinationProjectRoot, relativeProjectPath);
       const currentChecksum = computeFileChecksum(liveFilePath);
@@ -1655,6 +1703,7 @@ async function analyzeBackup(backupData, pool, options = {}) {
         }
 
         totalBackupItems++;
+        await reportAnalysisProgress();
 
         const preferredIdentityColumns = ['id', 'recordId', 'record_id', 'uuid', 'session_id', 'code', 'slug', 'name', 'email'];
         const singleIdentityColumn = preferredIdentityColumns.find((column) => row[column] !== undefined && row[column] !== null);

@@ -45,6 +45,29 @@ function Pagination(props) {
     boxShadow: "0 10px 20px rgba(37, 99, 235, 0.35)",
   };
 
+  const pageItems = (() => {
+    if (totalPages <= 6) {
+      return Array.from({ length: totalPages }, (_, index) => index + 1);
+    }
+
+    const visiblePages = currentPage === 1
+      ? [1, 2]
+      : [currentPage - 1, currentPage, currentPage + 1];
+    const pages = [...new Set(visiblePages.filter((page) => page > 0 && page <= totalPages))];
+
+    if (pages[pages.length - 1] < totalPages - 2) {
+      pages.push("ellipsis-end");
+    }
+
+    if (!pages.includes(totalPages - 1)) {
+      pages.push(totalPages - 1);
+    }
+    if (!pages.includes(totalPages)) {
+      pages.push(totalPages);
+    }
+    return pages;
+  })();
+
   return (
     <div
       style={{
@@ -83,13 +106,30 @@ function Pagination(props) {
         ◀ Prev
       </button>
 
-      {[...Array(totalPages)].map((_, index) => {
-        const isCurrent = currentPage === index + 1;
+      {pageItems.map((page, index) => {
+        if (typeof page !== "number") {
+          return (
+            <span
+              key={page}
+              aria-hidden="true"
+              style={{
+                minWidth: "40px",
+                textAlign: "center",
+                color: darkMode ? "#cbd5e1" : "#475569",
+                fontWeight: 700,
+              }}
+            >
+              ..
+            </span>
+          );
+        }
+
+        const isCurrent = currentPage === page;
 
         return (
           <button
-            key={index}
-            onClick={() => goToPage(index + 1)}
+            key={page}
+            onClick={() => goToPage(page)}
             style={
               isCurrent
                 ? {
@@ -105,7 +145,7 @@ function Pagination(props) {
                   }
             }
           >
-            {index + 1}
+            {page}
           </button>
         );
       })}

@@ -13,6 +13,8 @@ function RestorePage() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadEtaSeconds, setUploadEtaSeconds] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [expandedFeatureRows, setExpandedFeatureRows] = useState({});
   const [restoreCurrentPage, setRestoreCurrentPage] = useState(1);
@@ -30,14 +32,14 @@ function RestorePage() {
   }, [token]);
 
   useEffect(() => {
-    if (!token || !loading) return undefined;
+    if (!token || (!loading && !uploading)) return undefined;
 
     const progressTimer = window.setInterval(() => {
       loadRestoreSession();
     }, 1000);
 
     return () => window.clearInterval(progressTimer);
-  }, [loading, token]);
+  }, [loading, token, uploading]);
 
   useEffect(() => {
     const totalPages = Math.max(1, Math.ceil(restoreItems.length / restorePageSize));
@@ -93,7 +95,10 @@ function RestorePage() {
     setRestoreItems([]);
     setRestoreCurrentPage(1);
 
+    const uploadStartedAt = Date.now();
     setUploading(true);
+    setUploadProgress(0);
+    setUploadEtaSeconds(null);
     const formData = new FormData();
     formData.append('backup', selectedFile);
 
@@ -105,6 +110,16 @@ function RestorePage() {
           headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
+          },
+          onUploadProgress: (progressEvent) => {
+            const loaded = Number(progressEvent.loaded || 0);
+            const total = Number(progressEvent.total || selectedFile.size || 0);
+            if (!total) return;
+            const percent = Math.min(100, Math.round((loaded / total) * 100));
+            setUploadProgress(percent);
+            const elapsedSeconds = Math.max(0.001, (Date.now() - uploadStartedAt) / 1000);
+            const bytesPerSecond = loaded / elapsedSeconds;
+            setUploadEtaSeconds(bytesPerSecond > 0 ? Math.ceil((total - loaded) / bytesPerSecond) : null);
           }
         }
       );
@@ -122,6 +137,8 @@ function RestorePage() {
       toast.error(err.response?.data?.error || 'Upload failed');
     } finally {
       setUploading(false);
+      setUploadProgress(0);
+      setUploadEtaSeconds(null);
     }
   };
 
@@ -328,6 +345,7 @@ function RestorePage() {
     ? Math.min(100, Math.round((progressProcessed / progressTotal) * 100))
     : 0;
   const estimatedSeconds = Number(restoreProgress.estimated_remaining_seconds);
+  const analysisActive = uploading && String(restoreProgress.phase || '').toLowerCase() === 'analysis';
   const formatRemainingTime = (seconds) => {
     if (!Number.isFinite(seconds) || seconds <= 0) return 'Finishing...';
     if (seconds < 60) return `About ${seconds}s remaining`;
@@ -371,6 +389,31 @@ function RestorePage() {
           </button>
           {selectedFile && <span className="file-name">{selectedFile.name}</span>}
         </div>
+        {uploading && (
+          <div className="restore-progress restore-transfer-progress" aria-live="polite">
+            <div className="restore-progress-heading">
+              <strong>{analysisActive ? 'Analyzing backup' : 'Uploading backup'}</strong>
+              <span>{analysisActive ? `${progressProcessed} of ${progressTotal} items` : `${uploadProgress}% uploaded`}</span>
+            </div>
+            <div
+              className="restore-progress-track"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow={analysisActive ? progressPercent : uploadProgress}
+              aria-label={analysisActive ? 'Backup analysis progress' : 'Backup upload progress'}
+            >
+              <div
+                className="restore-progress-fill"
+                style={{ width: `${analysisActive ? progressPercent : uploadProgress}%` }}
+              />
+            </div>
+            <div className="restore-progress-meta">
+              <span>{analysisActive ? `${progressPercent}% analyzed` : 'Transfer in progress'}</span>
+              <span>{analysisActive ? formatRemainingTime(estimatedSeconds) : formatRemainingTime(uploadEtaSeconds)}</span>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Current Restore Session */}
