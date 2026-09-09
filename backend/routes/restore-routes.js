@@ -1085,8 +1085,17 @@ router.post("/all", async (req, res) => {
       [session.id]
     );
 
+    const restoreStartedAt = Date.now();
+    const totalBatchItems = pendingItemsResult.rows.length;
     const appliedItemIds = [];
     const failedItems = [];
+    let processedBatchItems = 0;
+    await pool.query(
+      `UPDATE restore_sessions SET status = 'in_progress', updated_at = NOW()
+       WHERE id = $1`,
+      [session.id]
+    );
+
     for (const item of pendingItemsResult.rows || []) {
       const validation = validateRestoreItem(item);
       if (!validation.valid) {
@@ -1100,22 +1109,44 @@ router.post("/all", async (req, res) => {
            WHERE id = $2`,
           [validationError, item.id]
         );
-        continue;
+      } else {
+        try {
+          await applyRestoreItem(item, pool, session);
+          appliedItemIds.push(item.id);
+        } catch (itemError) {
+          failedItems.push({ item, error: itemError.message || 'Restore item failed' });
+          await pool.query(
+            `UPDATE restore_items SET
+               status = 'failed',
+               error_message = $1,
+               updated_at = NOW()
+             WHERE id = $2`,
+            [itemError.message || 'Restore item failed', item.id]
+          );
+        }
       }
-      try {
-        await applyRestoreItem(item, pool, session);
-        appliedItemIds.push(item.id);
-      } catch (itemError) {
-        failedItems.push({ item, error: itemError.message || 'Restore item failed' });
-        await pool.query(
-          `UPDATE restore_items SET
-             status = 'failed',
-             error_message = $1,
-             updated_at = NOW()
-           WHERE id = $2`,
-          [itemError.message || 'Restore item failed', item.id]
-        );
-      }
+
+      processedBatchItems++;
+      const elapsedSeconds = Math.max(0.001, (Date.now() - restoreStartedAt) / 1000);
+      const estimatedRemainingSeconds = processedBatchItems > 0
+        ? Math.max(0, Math.ceil(((elapsedSeconds / processedBatchItems) * (totalBatchItems - processedBatchItems))))
+        : null;
+      await pool.query(
+        `UPDATE restore_sessions SET
+           completed_items = $1,
+           pending_items = GREATEST(0, $2 - $1),
+           comparison_result = JSONB_BUILD_OBJECT(
+             'status', 'in_progress',
+             'processed_items', $1,
+             'total_items', $2,
+             'progress_percent', CASE WHEN $2 = 0 THEN 100 ELSE ROUND(($1::numeric / $2::numeric) * 100, 1) END,
+             'estimated_remaining_seconds', $3,
+             'updated_at', NOW()
+           ),
+           updated_at = NOW()
+         WHERE id = $4`,
+        [processedBatchItems, totalBatchItems, estimatedRemainingSeconds, session.id]
+      );
     }
 
     let updateResult = { rows: [] };
@@ -1152,12 +1183,23 @@ router.post("/all", async (req, res) => {
       `UPDATE restore_sessions SET
         completed_items = $1,
         pending_items = $2,
+        status = CASE WHEN $4 > 0 THEN 'in_progress' ELSE 'completed' END,
+        comparison_result = JSONB_BUILD_OBJECT(
+          'status', CASE WHEN $4 > 0 THEN 'in_progress' ELSE 'completed' END,
+          'processed_items', $1 + $4,
+          'total_items', $1 + $2 + $4,
+          'progress_percent', CASE WHEN ($1 + $2 + $4) = 0 THEN 100 ELSE ROUND((($1 + $4)::numeric / ($1 + $2 + $4)::numeric) * 100, 1) END,
+          'failed_count', $4,
+          'estimated_remaining_seconds', 0,
+          'updated_at', NOW()
+        ),
         updated_at = NOW()
       WHERE id = $3`,
       [
         Number(summary.completed_count || 0),
         Number(summary.pending_count || 0),
-        session.id
+        session.id,
+        failedItems.length
       ]
     );
 

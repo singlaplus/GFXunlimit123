@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import { getEffectiveAuthToken } from '../utils/authSession';
+import Pagination from '../components/Pagination';
 import './RestorePage.css';
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
@@ -14,7 +15,9 @@ function RestorePage() {
   const [uploading, setUploading] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
   const [expandedFeatureRows, setExpandedFeatureRows] = useState({});
+  const [restoreCurrentPage, setRestoreCurrentPage] = useState(1);
   const fileInputRef = useRef(null);
+  const restorePageSize = 10;
 
   const token = typeof window !== 'undefined' ? getEffectiveAuthToken() : null;
 
@@ -25,6 +28,21 @@ function RestorePage() {
       loadRestoreHistory();
     }
   }, [token]);
+
+  useEffect(() => {
+    if (!token || !loading) return undefined;
+
+    const progressTimer = window.setInterval(() => {
+      loadRestoreSession();
+    }, 1000);
+
+    return () => window.clearInterval(progressTimer);
+  }, [loading, token]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(restoreItems.length / restorePageSize));
+    setRestoreCurrentPage((page) => Math.min(page, totalPages));
+  }, [restoreItems.length]);
 
   const loadRestoreSession = async () => {
     try {
@@ -73,6 +91,7 @@ function RestorePage() {
     // This prevents old backup changes from being mixed with the new package.
     setSession(null);
     setRestoreItems([]);
+    setRestoreCurrentPage(1);
 
     setUploading(true);
     const formData = new FormData();
@@ -295,12 +314,40 @@ function RestorePage() {
       : 'Repair needed: this restore session is stale or incomplete. Review and repair before continuing.'
     : null;
 
+  const restoreProgress = session?.comparison_result || {};
+  const progressTotal = Number(restoreProgress.total_items || session?.total_items || 0);
+  const progressFailed = Number(restoreProgress.failed_count || 0);
+  const reportedProcessed = restoreProgress.processed_items !== undefined
+    ? Number(restoreProgress.processed_items)
+    : Number(session?.completed_items || 0) + progressFailed;
+  const progressProcessed = Math.min(
+    progressTotal,
+    reportedProcessed
+  );
+  const progressPercent = progressTotal > 0
+    ? Math.min(100, Math.round((progressProcessed / progressTotal) * 100))
+    : 0;
+  const estimatedSeconds = Number(restoreProgress.estimated_remaining_seconds);
+  const formatRemainingTime = (seconds) => {
+    if (!Number.isFinite(seconds) || seconds <= 0) return 'Finishing...';
+    if (seconds < 60) return `About ${seconds}s remaining`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `About ${minutes}m ${remainingSeconds}s remaining`;
+  };
+
   const toggleFeatureRow = (itemId) => {
     setExpandedFeatureRows((prev) => ({
       ...prev,
       [itemId]: !prev[itemId]
     }));
   };
+
+  const restoreTotalPages = Math.max(1, Math.ceil(restoreItems.length / restorePageSize));
+  const restorePageItems = restoreItems.slice(
+    (restoreCurrentPage - 1) * restorePageSize,
+    restoreCurrentPage * restorePageSize
+  );
 
   return (
     <div className="restore-page">
@@ -367,6 +414,28 @@ function RestorePage() {
             {repairNeededMessage && (
               <div className={`restore-repair-warning ${repairSeverity}`}>
                 {repairSeverity === 'critical' ? '🚨' : '⚠️'} {repairNeededMessage}
+              </div>
+            )}
+            {(loading || String(restoreProgress.status || '').toLowerCase() === 'in_progress') && (
+              <div className="restore-progress" aria-live="polite">
+                <div className="restore-progress-heading">
+                  <strong>Restoring safe items</strong>
+                  <span>{progressProcessed} of {progressTotal} items</span>
+                </div>
+                <div
+                  className="restore-progress-track"
+                  role="progressbar"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow={progressPercent}
+                  aria-label="Restore progress"
+                >
+                  <div className="restore-progress-fill" style={{ width: `${progressPercent}%` }} />
+                </div>
+                <div className="restore-progress-meta">
+                  <span>{progressPercent}% complete</span>
+                  <span>{formatRemainingTime(estimatedSeconds)}</span>
+                </div>
               </div>
             )}
           </section>
@@ -449,7 +518,7 @@ function RestorePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {restoreItems.map((item, idx) => {
+                  {restorePageItems.map((item, idx) => {
                     const isFeature = item.type === 'feature';
                     const isExpanded = Boolean(expandedFeatureRows[item.id]);
                     const relatedFiles = Array.isArray(item.related_files) ? item.related_files : Array.isArray(item.relatedFiles) ? item.relatedFiles : [];
@@ -461,7 +530,7 @@ function RestorePage() {
                           onClick={isFeature ? () => toggleFeatureRow(item.id) : undefined}
                           style={isFeature ? { cursor: 'pointer' } : undefined}
                         >
-                          <td className="item-number" data-label="#">{idx + 1}</td>
+                          <td className="item-number" data-label="#">{((restoreCurrentPage - 1) * restorePageSize) + idx + 1}</td>
                           <td className="item-type" data-label="Type">{item.type.charAt(0).toUpperCase() + item.type.slice(1)}</td>
                           <td className="item-name" data-label="Item">
                             <div className="item-name-main">
@@ -546,6 +615,15 @@ function RestorePage() {
                   })}
                 </tbody>
               </table>
+              {restoreTotalPages > 1 && (
+                <Pagination
+                  currentPage={restoreCurrentPage}
+                  totalPages={restoreTotalPages}
+                  totalImages={restoreItems.length}
+                  setCurrentPage={setRestoreCurrentPage}
+                  darkMode={false}
+                />
+              )}
               </>
             ) : (
               <div className="restore-empty-state">

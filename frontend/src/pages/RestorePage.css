@@ -133,6 +133,46 @@
   box-shadow: 0 10px 20px rgba(220, 38, 38, 0.12);
 }
 
+.restore-progress {
+  margin-top: 16px;
+  padding: 16px 18px;
+  border: 1px solid #bae6fd;
+  border-radius: 10px;
+  background: #f0f9ff;
+  color: #0c4a6e;
+}
+
+.restore-progress-heading,
+.restore-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.85rem;
+}
+
+.restore-progress-heading {
+  margin-bottom: 10px;
+}
+
+.restore-progress-track {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dbeafe;
+}
+
+.restore-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0284c7 0%, #06b6d4 100%);
+  transition: width 0.35s ease;
+}
+
+.restore-progress-meta {
+  margin-top: 8px;
+  color: #0369a1;
+}
+
 .restore-summary-message.severity-stale {
   border-left: 4px solid #f59e0b;
   background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
