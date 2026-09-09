@@ -185,6 +185,23 @@
   color: #991b1b;
 }
 
+.restore-compare-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 12px;
+  padding: 12px 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.82rem;
+}
+
+.restore-compare-summary strong {
+  color: #0f172a;
+}
+
 .restore-section h2 {
   margin-top: 0;
   margin-bottom: 24px;

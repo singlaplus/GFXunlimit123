@@ -332,6 +332,8 @@ function RestorePage() {
     : null;
 
   const restoreProgress = session?.comparison_result || {};
+  const sourceDatabase = restoreProgress.source_database || {};
+  const targetDatabase = restoreProgress.target_database || {};
   const progressTotal = Number(restoreProgress.total_items || session?.total_items || 0);
   const progressFailed = Number(restoreProgress.failed_count || 0);
   const reportedProcessed = restoreProgress.processed_items !== undefined
@@ -454,6 +456,16 @@ function RestorePage() {
             <div className={`restore-summary-message ${repairSeverity ? `severity-${repairSeverity}` : ''}`}>
               {repairSeverity === 'critical' ? '⛔' : '📦'} <strong>{session.backup_filename}</strong> — {repairSeverity ? (repairSeverity === 'critical' ? 'Immediate action required' : 'Repair needed') : 'Ready to restore'}
             </div>
+            {(sourceDatabase.users !== undefined || sourceDatabase.images !== undefined) && (
+              <div className="restore-compare-summary">
+                <span><strong>Source users:</strong> {sourceDatabase.users ?? '—'}</span>
+                <span><strong>PC1 users:</strong> {targetDatabase.users ?? '—'}</span>
+                <span><strong>Source assets:</strong> {sourceDatabase.images ?? '—'}</span>
+                <span><strong>PC1 assets:</strong> {targetDatabase.images ?? '—'}</span>
+                <span><strong>New users:</strong> {restoreProgress.new_users ?? 0}</span>
+                <span><strong>New assets:</strong> {restoreProgress.new_assets ?? 0}</span>
+              </div>
+            )}
             {repairNeededMessage && (
               <div className={`restore-repair-warning ${repairSeverity}`}>
                 {repairSeverity === 'critical' ? '🚨' : '⚠️'} {repairNeededMessage}

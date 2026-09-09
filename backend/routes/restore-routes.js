@@ -271,6 +271,29 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
     const updateItemCount = items.filter((i) => i.changeType === "update").length;
 
     const conflictCount = items.filter((i) => (i.changeType || i.change_type || '').toString().toLowerCase() === 'conflict').length;
+    const countBackupRows = (tableName) => {
+      const table = Array.isArray(backupData.database?.tables)
+        ? backupData.database.tables.find((entry) => entry.tableName === tableName || entry.table === tableName)
+        : null;
+      if (table) return Number(table.rowCount ?? table.rows?.length ?? 0);
+      return [...(backupData.database?.newRecords || []), ...(backupData.database?.updatedRecords || [])]
+        .filter((entry) => (entry.tableName || entry.table) === tableName)
+        .reduce((sum, entry) => sum + Number(entry.recordCount ?? entry.rows?.length ?? 0), 0);
+    };
+    const readTargetCount = async (tableName) => {
+      try {
+        const result = await pool.query(`SELECT COUNT(*)::int AS count FROM "${tableName}"`);
+        return Number(result.rows?.[0]?.count || 0);
+      } catch (err) {
+        return null;
+      }
+    };
+    const sourceUserCount = countBackupRows('users');
+    const sourceImageCount = countBackupRows('images');
+    const targetUserCount = await readTargetCount('users');
+    const targetImageCount = await readTargetCount('images');
+    const newUserCount = items.filter((item) => item.type === 'database' && item.category === 'users' && item.changeType === 'new').length;
+    const newImageCount = items.filter((item) => item.type === 'database' && ['images', 'assets'].includes(item.category) && item.changeType === 'new').length;
     const comparisonSummary = {
       restore_session_id: session.session_id,
       backup_id: session.backup_id || backupId,
@@ -282,7 +305,19 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
       completed_items: 0,
       pending_items: items.length,
       conflicts: conflictCount,
-      total_items: items.length
+      total_items: items.length,
+      source_database: {
+        full_dump: Boolean(backupData.database?.fullDump),
+        table_count: Array.isArray(backupData.database?.tables) ? backupData.database.tables.length : 0,
+        users: sourceUserCount,
+        images: sourceImageCount
+      },
+      target_database: {
+        users: targetUserCount,
+        images: targetImageCount
+      },
+      new_users: newUserCount,
+      new_assets: newImageCount
     };
 
     // Update session with item counts
@@ -325,6 +360,16 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
     res.json({
       session: updatedSession.rows[0],
       items: retrievedItems.rows,
+      source_database_summary: {
+        full_dump: Boolean(backupData.database?.fullDump),
+        table_count: Array.isArray(backupData.database?.tables) ? backupData.database.tables.length : 0,
+        source_user_count: sourceUserCount,
+        source_image_count: sourceImageCount,
+        target_user_count: targetUserCount,
+        target_image_count: targetImageCount,
+        new_user_count: newUserCount,
+        new_image_count: newImageCount
+      },
       message: message
     });
   } catch (err) {

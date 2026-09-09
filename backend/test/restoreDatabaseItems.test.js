@@ -289,6 +289,34 @@ test('restore analysis includes database insert and update records without delet
   assert.equal(destinationOnlyItems.length, 0, 'destination-only records are not removed or replaced');
 });
 
+test('restore analysis detects source-only rows in complete database snapshots', async () => {
+  const pool = {
+    async query(sql, params = []) {
+      const text = String(sql).toLowerCase();
+      if (text.includes('from "users" where "id" =') || text.includes('from "images" where "id" =')) {
+        return { rows: [] };
+      }
+      if (text.includes('select * from "users"') || text.includes('select * from "images"')) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const items = await restoreRouter.analyzeBackup({
+    database: {
+      fullDump: true,
+      tables: [
+        { tableName: 'users', rows: [{ id: 2001, username: 'new-contributor', role: 'contributor' }] },
+        { tableName: 'images', rows: [{ id: 3001, title: 'New Asset' }] }
+      ]
+    }
+  }, pool);
+
+  assert.ok(items.some((item) => item.name === 'users #2001' && item.changeType === 'new'));
+  assert.ok(items.some((item) => item.name === 'images #3001' && item.changeType === 'new'));
+});
+
 test('restore analysis does not report an unchanged existing row as new', async () => {
   const existingRow = { id: 1501, full_name: 'Same User', email: 'same@example.com' };
   const pool = {
