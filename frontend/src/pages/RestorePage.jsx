@@ -488,6 +488,8 @@ function RestorePage() {
                           <td className="item-status" data-label="Status">
                             {item.status === 'completed' ? (
                               <span className="status-completed">COMPLETED ✓</span>
+                            ) : ['failed', 'stale', 'incomplete'].includes(String(item.status || '').toLowerCase()) ? (
+                              <span className="status-failed">FAILED</span>
                             ) : (item.change_type || item.changeType || '').toString().toLowerCase() === 'conflict' ? (
                               <span className="status-conflict">CONFLICT</span>
                             ) : (
@@ -497,6 +499,10 @@ function RestorePage() {
                           <td className="item-action" data-label="Action">
                             {item.status === 'completed' ? (
                               <span className="action-completed">COMPLETED ✓</span>
+                            ) : ['failed', 'stale', 'incomplete'].includes(String(item.status || '').toLowerCase()) ? (
+                              <span className="action-failed" title={item.error_message || 'This item needs repair'}>
+                                {item.error_message || 'REPAIR NEEDED'}
+                              </span>
                             ) : (item.change_type || item.changeType || '').toString().toLowerCase() === 'conflict' ? (
                               <button
                                 onClick={(event) => {

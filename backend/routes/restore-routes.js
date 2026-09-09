@@ -904,8 +904,14 @@ async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
   const identityColumn = identityColumns[0] || null;
 
   const updateColumns = columns.filter((column) => column !== identityColumn);
+  const appendOnlyTables = new Set(['activity_events']);
   let result;
-  if (identityColumn && updateColumns.length > 0) {
+  if (appendOnlyTables.has(tableName)) {
+    result = await pool.query(
+      `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT DO NOTHING RETURNING *`,
+      values
+    );
+  } else if (identityColumn && updateColumns.length > 0) {
     const assignments = updateColumns.map((column) => `"${column}" = EXCLUDED."${column}"`).join(', ');
     result = await pool.query(
       `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT ("${identityColumn}") DO UPDATE SET ${assignments} RETURNING *`,
@@ -1079,25 +1085,54 @@ router.post("/all", async (req, res) => {
       [session.id]
     );
 
+    const appliedItemIds = [];
+    const failedItems = [];
     for (const item of pendingItemsResult.rows || []) {
       const validation = validateRestoreItem(item);
       if (!validation.valid) {
-        return res.status(400).json({ error: `Validation failed: ${validation.error}`, item });
+        const validationError = `Validation failed: ${validation.error}`;
+        failedItems.push({ item, error: validationError });
+        await pool.query(
+          `UPDATE restore_items SET
+             status = 'failed',
+             error_message = $1,
+             updated_at = NOW()
+           WHERE id = $2`,
+          [validationError, item.id]
+        );
+        continue;
       }
-      await applyRestoreItem(item, pool, session);
+      try {
+        await applyRestoreItem(item, pool, session);
+        appliedItemIds.push(item.id);
+      } catch (itemError) {
+        failedItems.push({ item, error: itemError.message || 'Restore item failed' });
+        await pool.query(
+          `UPDATE restore_items SET
+             status = 'failed',
+             error_message = $1,
+             updated_at = NOW()
+           WHERE id = $2`,
+          [itemError.message || 'Restore item failed', item.id]
+        );
+      }
     }
 
-    const updateResult = await pool.query(
+    let updateResult = { rows: [] };
+    if (appliedItemIds.length > 0) {
+      updateResult = await pool.query(
       `UPDATE restore_items
        SET status = 'completed',
            updated_at = NOW()
        WHERE session_id = $1
+         AND id = ANY($2::int[])
          AND status = 'pending'
          AND COALESCE(change_type, '') <> 'conflict'
          AND COALESCE(change_type, '') IN ('new', 'update')
        RETURNING *`,
-      [session.id]
-    );
+      [session.id, appliedItemIds]
+      );
+    }
 
     const updatedCount = updateResult.rows.length;
 
@@ -1132,6 +1167,14 @@ router.post("/all", async (req, res) => {
       pending_count: Number(summary.pending_count || 0),
       completed_count: Number(summary.completed_count || 0),
       conflict_count: Number(summary.conflict_count || 0),
+      failed_count: failedItems.length,
+      failed_items: failedItems.map(({ item, error }) => ({
+        id: item.id,
+        name: item.name,
+        type: item.type,
+        category: item.category,
+        error
+      })),
       message: updatedCount > 0 ? `Updated ${updatedCount} safe items` : `No safe items to update`
     });
   } catch (err) {
