@@ -13023,6 +13023,19 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(customSubscriptionCompletionMigration);
+      const restoreSystemMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "020_restore_system.sql"),
+        "utf8"
+      );
+      for (const statement of restoreSystemMigration.split(";").filter(s => s.trim())) {
+        try {
+          await pool.query(statement);
+        } catch (err) {
+          if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+            console.warn("Restore system migration statement error:", err.message);
+          }
+        }
+      }
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);
@@ -13134,7 +13147,7 @@ try {
 try {
   app.locals.pool = pool;
   app.locals.JWT_SECRET = JWT_SECRET;
-  app.use('/admin/restore', restoreRoutes);
+  app.use('/admin/restore', verifyAdmin, restoreRoutes);
 } catch (err) {
   console.error('Failed to mount restore routes', err);
 }

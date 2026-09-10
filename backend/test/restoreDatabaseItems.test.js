@@ -6,9 +6,9 @@ function makePool() {
   return {
     async query(sql, params = []) {
       const text = String(sql).toLowerCase();
-      if (text.includes('from "users" where id =') || text.includes('from users where id =') || text.includes('from "users" where "id" =')) {
+      if (text.includes('from "users" where id =') || text.includes('from users where id =') || text.includes('from "users" where "id" =') || text.includes('from "users" where "email" =')) {
         const id = Number(params[0]);
-        if (id === 1005) {
+        if (id === 1005 || params[0] === 'old@example.com') {
           return { rows: [{ id: 1005, full_name: 'Old User 1005', email: 'old@example.com' }] };
         }
         return { rows: [] };
@@ -260,7 +260,7 @@ test('restore analysis includes database insert and update records without delet
       updatedRecords: [
         {
           tableName: 'users',
-          rows: [{ id: 1005, full_name: 'Updated User 1005', email: 'updated1005@example.com' }]
+          rows: [{ id: 1005, full_name: 'Updated User 1005', email: 'old@example.com' }]
         },
         {
           tableName: 'assets',
@@ -321,8 +321,8 @@ test('restore analysis does not report an unchanged existing row as new', async 
   const existingRow = { id: 1501, full_name: 'Same User', email: 'same@example.com' };
   const pool = {
     async query(sql, params = []) {
-      if (String(sql).toLowerCase().includes('from users where id =') || String(sql).toLowerCase().includes('from "users" where id =') || String(sql).toLowerCase().includes('from "users" where "id" =')) {
-        return params[0] === existingRow.id ? { rows: [{ ...existingRow }] } : { rows: [] };
+      if (String(sql).toLowerCase().includes('from users where id =') || String(sql).toLowerCase().includes('from "users" where id =') || String(sql).toLowerCase().includes('from "users" where "id" =') || String(sql).toLowerCase().includes('from "users" where "email" =')) {
+        return params[0] === existingRow.id || params[0] === existingRow.email ? { rows: [{ ...existingRow }] } : { rows: [] };
       }
       return { rows: [] };
     }
@@ -392,6 +392,65 @@ test('restore analysis ignores package metadata files such as metadata/device.js
   const fileNames = items.filter((item) => item.type === 'file').map((item) => item.name);
   assert.deepEqual(fileNames, ['backend/services/restore-service.js']);
   assert.ok(!fileNames.includes('device.json'), 'metadata/device.json must not become a restorable project file');
+});
+
+test('restore analysis excludes protected runtime and OS metadata files', async () => {
+  const items = await restoreRouter.analyzeBackup({
+    fileInventory: [
+      { path: 'application/backend/.env', checksum: 'secret' },
+      { path: 'application/backend/.env.production', checksum: 'secret' },
+      { path: 'application/backend/node_modules/pkg/index.js', checksum: 'dependency' },
+      { path: 'application/backend/backup/old.gfxbackup', checksum: 'archive' },
+      { path: 'application/backend/.DS_Store', checksum: 'os-file' },
+      { path: 'application/backend/routes/new-route.js', checksum: 'new-route' }
+    ]
+  }, makePool());
+
+  assert.deepEqual(items.filter((item) => item.type === 'file').map((item) => item.name), ['backend/routes/new-route.js']);
+});
+
+test('restore file paths resolve from the project root', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const AdmZip = require('adm-zip');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'restore-root-path-'));
+  const archivePath = path.join(tempDir, 'root-path.gfxbackup');
+  const zip = new AdmZip();
+  zip.addFile('application/frontend/src/root-path-test.txt', Buffer.from('root target'));
+  zip.writeZip(archivePath);
+
+  const result = await restoreRouter.restoreArchiveFilesForTest(archivePath, ['frontend/src/root-path-test.txt']);
+
+  assert.deepEqual(result, ['frontend/src/root-path-test.txt']);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', '..', 'frontend', 'src', 'root-path-test.txt')), true);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'backend', 'frontend', 'src', 'root-path-test.txt')), false);
+  fs.unlinkSync(path.join(__dirname, '..', '..', 'frontend', 'src', 'root-path-test.txt'));
+});
+
+test('archive migration handling applies only new migrations transactionally', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const AdmZip = require('adm-zip');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'restore-migration-'));
+  const archivePath = path.join(tempDir, 'migration.gfxbackup');
+  const zip = new AdmZip();
+  zip.addFile('application/backend/migrations/999_restore_test.sql', Buffer.from('CREATE TABLE restore_test_marker (id integer PRIMARY KEY);'));
+  zip.writeZip(archivePath);
+
+  const queries = [];
+  const client = {
+    async query(sql) { queries.push(String(sql)); return { rows: [] }; },
+    release() {}
+  };
+  const pool = { async connect() { return client; } };
+  const applied = await restoreRouter.applyArchiveMigrationsForTest(archivePath, pool);
+
+  assert.deepEqual(applied, ['999_restore_test.sql']);
+  assert.equal(queries[0], 'BEGIN');
+  assert.equal(queries.includes('COMMIT'), true);
 });
 
 test('restore analysis groups related files into a single feature row', async () => {

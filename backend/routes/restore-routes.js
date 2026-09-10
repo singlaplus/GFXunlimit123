@@ -6,6 +6,7 @@ const multer = require("multer");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const AdmZip = require("adm-zip");
+const { buildIdentity, getIdentityColumns } = require("../services/restoreIdentityRegistry");
 
 // Restore directory path
 const RESTORE_DIR = path.join(__dirname, "../backup/restore");
@@ -249,8 +250,9 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
           backup_version,
           change_type,
           status,
-          related_files
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          related_files,
+          related_records
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           session.id,
           item.type,
@@ -261,7 +263,8 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
           item.backupVersion,
           item.changeType,
           "pending",
-          JSON.stringify(item.relatedFiles || [])
+          JSON.stringify(item.relatedFiles || []),
+          JSON.stringify(item.identity || null)
         ]
       );
     }
@@ -391,9 +394,11 @@ router.get("/session", async (req, res) => {
 
     const sessionResult = await pool.query(
       `SELECT * FROM restore_sessions
-       WHERE status IN ('analyzed', 'in_progress')
+       WHERE admin_user_id = $1
+         AND status IN ('analyzed', 'in_progress')
        ORDER BY created_at DESC
-       LIMIT 1`
+       LIMIT 1`,
+      [req.user?.id]
     );
 
     if (sessionResult.rows.length === 0) {
@@ -573,40 +578,8 @@ router.post("/item/:id", async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    // Step 1: Create a safety checkpoint if this is the first item in this session
-    const existingCheckpointResult = await pool.query(
-      "SELECT id FROM restore_checkpoints WHERE session_id = $1 AND checkpoint_type = 'pre_restore' LIMIT 1",
-      [session.id]
-    );
-
-    let checkpointId = null;
-    if (existingCheckpointResult.rows.length === 0) {
-      // Create pre_restore checkpoint
-      const checkpointResult = await pool.query(
-        `INSERT INTO restore_checkpoints (
-          session_id,
-          checkpoint_name,
-          checkpoint_type,
-          config_snapshot
-        ) VALUES ($1, $2, $3, $4)
-        RETURNING id`,
-        [
-          session.id,
-          `Checkpoint before restore - ${new Date().toISOString()}`,
-          'pre_restore',
-          JSON.stringify({
-            session_id: session.id,
-            backup_filename: session.backup_filename,
-            timestamp: new Date().toISOString(),
-            total_items: session.total_items,
-            description: 'Safety checkpoint created before starting restore operations'
-          })
-        ]
-      );
-      checkpointId = checkpointResult.rows[0].id;
-      console.log(`[Restore] Created checkpoint ${checkpointId} for session ${session.id}`);
-    } else {
-      checkpointId = existingCheckpointResult.rows[0].id;
+    if (req.user?.id != null && String(session.admin_user_id) !== String(req.user.id)) {
+      return res.status(404).json({ error: "Item not found" });
     }
 
     if ((item.change_type || item.changeType || '').toString().toLowerCase() === 'conflict' || (item.status || '').toString().toLowerCase() === 'conflict') {
@@ -646,6 +619,9 @@ router.post("/item/:id", async (req, res) => {
         item: item
       });
     }
+
+    const safetyCheckpoint = await createDestinationCheckpoint(session, [item], pool);
+    const checkpointId = safetyCheckpoint.id;
 
     // Step 3: Apply the specific change based on item type
     let applyResult = null;
@@ -931,10 +907,78 @@ function isProtectedRestorePath(relativePath) {
   const normalized = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   return normalized === '.env'
     || normalized.endsWith('/.env')
+    || normalized.split('/').some((segment) => segment === '.env' || segment.startsWith('.env.'))
     || normalized === '.git'
     || normalized.startsWith('.git/')
     || normalized === 'node_modules'
     || normalized.startsWith('node_modules/');
+}
+
+async function applyArchiveMigrations(backupPath, pool) {
+  if (!backupPath || !fs.existsSync(backupPath) || typeof pool.connect !== 'function') {
+    return [];
+  }
+
+  const zip = new AdmZip(backupPath);
+  const migrationEntries = zip.getEntries()
+    .filter((entry) => {
+      const name = String(entry.entryName || '').replace(/\\/g, '/');
+      return !entry.isDirectory && /(?:^|\/)migrations\/\d+_[^/]+\.sql$/i.test(name);
+    })
+    .map((entry) => ({
+      entry,
+      name: path.basename(entry.entryName)
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
+
+  if (!migrationEntries.length) return [];
+
+  const localMigrationDir = path.join(__dirname, '..', 'migrations');
+  const client = await pool.connect();
+  const applied = [];
+  try {
+    await client.query('BEGIN');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS restore_migrations (
+        migration_name TEXT PRIMARY KEY,
+        checksum TEXT NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    for (const migration of migrationEntries) {
+      const source = zip.readAsText(migration.entry);
+      const checksum = crypto.createHash('sha256').update(source).digest('hex');
+      const localPath = path.join(localMigrationDir, migration.name);
+      if (fs.existsSync(localPath)) continue;
+
+      const existing = await client.query(
+        'SELECT checksum FROM restore_migrations WHERE migration_name = $1',
+        [migration.name]
+      );
+      if (existing.rows.length) {
+        if (existing.rows[0].checksum !== checksum) {
+          throw new Error(`Migration checksum conflict: ${migration.name}`);
+        }
+        continue;
+      }
+
+      await client.query(source);
+      await client.query(
+        `INSERT INTO restore_migrations (migration_name, checksum) VALUES ($1, $2)`,
+        [migration.name, checksum]
+      );
+      applied.push(migration.name);
+    }
+
+    await client.query('COMMIT');
+    return applied;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 async function restoreArchiveFiles(backupPath, relatedFiles) {
@@ -955,7 +999,7 @@ async function restoreArchiveFiles(backupPath, relatedFiles) {
       throw new Error(`Backup archive does not contain file: ${relativePath}`);
     }
 
-    const destination = path.resolve(__dirname, '..', relativePath);
+    const destination = path.resolve(PROJECT_ROOT, relativePath);
     const projectRoot = PROJECT_ROOT;
     if (destination !== projectRoot && !destination.startsWith(`${projectRoot}${path.sep}`)) {
       throw new Error(`Invalid restore file path: ${relativePath}`);
@@ -1062,7 +1106,24 @@ async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
   const row = findDatabaseRowInBackup(database, tableName, recordId);
   if (!row) throw new Error(`Database row not found in backup: ${item.name}`);
 
-  const columns = Object.keys(row).filter((column) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column) && !column.startsWith('__') && !['operation', 'changedFields'].includes(column));
+  const persistedIdentity = typeof item.related_records === 'string'
+    ? (() => { try { return JSON.parse(item.related_records); } catch (err) { return null; } })()
+    : item.related_records;
+  const identity = persistedIdentity?.columns?.length ? persistedIdentity : buildIdentity(row, tableName);
+  let existingTarget = null;
+  if (identity?.columns?.length) {
+    const identitySql = `SELECT * FROM "${tableName}" WHERE ${identity.columns.map((column, index) => `"${column}" = $${index + 1}`).join(' AND ')} LIMIT 1`;
+    try {
+      existingTarget = (await pool.query(identitySql, identity.columns.map((column) => row[column]))).rows?.[0] || null;
+    } catch (err) {
+      existingTarget = null;
+    }
+  }
+
+  let columns = Object.keys(row).filter((column) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column) && !column.startsWith('__') && !['operation', 'changedFields'].includes(column));
+  if (!existingTarget && ['users', 'images'].includes(tableName) && identity?.columns?.some((column) => column !== 'id')) {
+    columns = columns.filter((column) => column !== 'id');
+  }
   const values = columns.map((column) => row[column]);
   const quotedColumns = columns.map((column) => `"${column}"`).join(', ');
   const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
@@ -1072,7 +1133,14 @@ async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
   const updateColumns = columns.filter((column) => column !== identityColumn);
   const appendOnlyTables = new Set(['activity_events']);
   let result;
-  if (appendOnlyTables.has(tableName)) {
+  if (existingTarget) {
+    const updateColumns = columns.filter((column) => column !== 'id' && column !== 'uuid' && column !== 'slug');
+    if (!updateColumns.length) return existingTarget;
+    result = await pool.query(
+      `UPDATE "${tableName}" SET ${updateColumns.map((column, index) => `"${column}" = $${index + 1}`).join(', ')} WHERE "id" = $${updateColumns.length + 1} RETURNING *`,
+      [...updateColumns.map((column) => row[column]), existingTarget.id]
+    );
+  } else if (appendOnlyTables.has(tableName)) {
     result = await pool.query(
       `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT DO NOTHING RETURNING *`,
       values
@@ -1186,9 +1254,11 @@ router.post("/all", async (req, res) => {
 
     const sessionResult = await pool.query(
       `SELECT * FROM restore_sessions
-       WHERE status IN ('analyzed', 'in_progress')
+       WHERE admin_user_id = $1
+         AND status IN ('analyzed', 'in_progress')
        ORDER BY created_at DESC
-       LIMIT 1`
+       LIMIT 1`,
+      [req.user?.id]
     );
 
     if (sessionResult.rows.length === 0) {
@@ -1213,6 +1283,20 @@ router.post("/all", async (req, res) => {
     const totalBatchItems = pendingItemsResult.rows.length;
     const safetyCheckpoint = await createDestinationCheckpoint(session, pendingItemsResult.rows, pool);
     checkpointId = safetyCheckpoint.id;
+    let appliedMigrations = [];
+    try {
+      appliedMigrations = await applyArchiveMigrations(session.backup_path, pool);
+    } catch (migrationError) {
+      await pool.query(
+        `UPDATE restore_sessions SET status = 'failed', error_message = $1, updated_at = NOW() WHERE id = $2`,
+        [migrationError.message || 'Migration failed', session.id]
+      );
+      return res.status(500).json({
+        error: `Migration failed: ${migrationError.message}`,
+        checkpoint: checkpointId,
+        applied_migrations: []
+      });
+    }
     const appliedItemIds = [];
     const failedItems = [];
     let processedBatchItems = 0;
@@ -1339,6 +1423,7 @@ router.post("/all", async (req, res) => {
       completed_count: Number(summary.completed_count || 0),
       conflict_count: Number(summary.conflict_count || 0),
       failed_count: failedItems.length,
+      applied_migrations: appliedMigrations,
       failed_items: failedItems.map(({ item, error }) => ({
         id: item.id,
         name: item.name,
@@ -1373,7 +1458,9 @@ router.post("/clear", async (req, res) => {
           'cleared_at', NOW(),
           'message', 'Current restore comparison cleared. Historical backup remains available.'
         )
-       WHERE status IN ('analyzed', 'in_progress')`
+       WHERE admin_user_id = $1
+         AND status IN ('analyzed', 'in_progress')`,
+      [req.user?.id]
     );
 
     res.json({ message: "Session cleared" });
@@ -1675,7 +1762,10 @@ async function analyzeBackup(backupData, pool, options = {}) {
     const isRestorableInventoryPath = (value) => {
       const normalized = String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
       const projectPath = normalized.replace(/^(application|assets)\//, '');
-      if (!projectPath || projectPath.startsWith('metadata/') || projectPath.startsWith('database/')) {
+      if (!projectPath || projectPath.startsWith('metadata/') || projectPath.startsWith('database/') || isProtectedRestorePath(projectPath)) {
+        return false;
+      }
+      if (projectPath.split('/').some((segment) => ['.git', 'node_modules', 'backup'].includes(segment)) || projectPath.endsWith('.DS_Store')) {
         return false;
       }
       if (/^(manifest|checksums|metadata|device|version|sync)(\.json)?$/i.test(projectPath)) {
@@ -1819,30 +1909,22 @@ async function analyzeBackup(backupData, pool, options = {}) {
         totalBackupItems++;
         await reportAnalysisProgress();
 
-        const preferredIdentityColumns = ['id', 'recordId', 'record_id', 'uuid', 'session_id', 'code', 'slug', 'name', 'email'];
-        const singleIdentityColumn = preferredIdentityColumns.find((column) => row[column] !== undefined && row[column] !== null);
-        const identityColumns = singleIdentityColumn
-          ? [singleIdentityColumn]
-          : Object.keys(row).filter((column) => /(^|_)id$/i.test(column) && row[column] !== undefined && row[column] !== null).sort();
+        const declaredIdentityColumns = section.identityColumns || [];
+        const identity = buildIdentity(row, table, declaredIdentityColumns);
+        const identityColumns = identity?.columns || [];
         const identityColumn = identityColumns[0] || null;
-        const identityValue = identityColumns.length === 1
-          ? row[identityColumns[0]]
-          : identityColumns.length > 1
-            ? identityColumns.map((column) => `${column}=${row[column]}`).join('&')
-            : null;
-        const recordId = identityValue || '?';
+        const identityValue = identity?.key || null;
+        const displayIdentity = row.id ?? row.recordId ?? row.record_id ?? row.uuid ?? row.slug ?? identityValue;
+        const recordId = displayIdentity || '?';
 
         let currentRecord = null;
         let conflictDetected = false;
 
         try {
           const tableName = String(table).replace(/[^a-zA-Z0-9_]/g, '');
-          if (identityColumn && identityColumns.length === 1 && identityValue !== null && identityValue !== undefined && identityValue !== '?') {
-            const lookupDatabaseColumn = identityColumn === 'recordId' || identityColumn === 'record_id'
-              ? 'id'
-              : identityColumn;
-            const lookupSql = `SELECT * FROM "${tableName}" WHERE "${lookupDatabaseColumn}" = $1 LIMIT 1`;
-            const lookupResult = await pool.query(lookupSql, [identityValue]);
+          if (identityColumn && identityColumns.length > 0 && identityValue) {
+            const lookupSql = `SELECT * FROM "${tableName}" WHERE ${identityColumns.map((column, index) => `"${column}" = $${index + 1}`).join(' AND ')} LIMIT 1`;
+            const lookupResult = await pool.query(lookupSql, identityColumns.map((column) => row[column]));
             currentRecord = lookupResult.rows?.[0] || null;
           }
         } catch (err) {
@@ -1901,6 +1983,7 @@ async function analyzeBackup(backupData, pool, options = {}) {
           backupVersion: 'in backup',
           changeType,
           relatedFiles: [],
+          identity,
           itemOrder: itemOrder++
         });
       }
@@ -1920,4 +2003,6 @@ async function analyzeBackup(backupData, pool, options = {}) {
 
 router.analyzeBackup = analyzeBackup;
 router.findDatabaseRowInBackup = findDatabaseRowInBackup;
+router.restoreArchiveFilesForTest = restoreArchiveFiles;
+router.applyArchiveMigrationsForTest = applyArchiveMigrations;
 module.exports = router;
