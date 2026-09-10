@@ -834,6 +834,109 @@ function getArchiveEntryForProjectPath(zip, relativePath) {
   return candidates.map((candidate) => zip.getEntry(candidate)).find(Boolean);
 }
 
+async function createDestinationCheckpoint(session, items, pool, existingCheckpointId = null) {
+  const checkpointRoot = path.join(
+    RESTORE_DIR,
+    'checkpoints',
+    `restore-${session.id}-${Date.now()}`
+  );
+  const filesRoot = path.join(checkpointRoot, 'files');
+  const databaseSnapshotPath = path.join(checkpointRoot, 'database.json');
+  fs.mkdirSync(filesRoot, { recursive: true });
+
+  const filePaths = new Set();
+  for (const item of items || []) {
+    const relatedFiles = Array.isArray(item.related_files)
+      ? item.related_files
+      : Array.isArray(item.relatedFiles)
+        ? item.relatedFiles
+        : item.type === 'file' ? [item.name] : [];
+    for (const fileName of relatedFiles) {
+      const relativePath = String(fileName || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      if (!relativePath || relativePath.includes('..') || isProtectedRestorePath(relativePath)) continue;
+      filePaths.add(relativePath);
+    }
+  }
+
+  for (const relativePath of filePaths) {
+    const sourcePath = path.resolve(PROJECT_ROOT, relativePath);
+    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) continue;
+    const destinationPath = path.resolve(filesRoot, relativePath);
+    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    fs.copyFileSync(sourcePath, destinationPath);
+  }
+
+  const databaseRows = [];
+  const databaseItems = (items || []).filter((item) => item.type === 'database');
+  for (const item of databaseItems) {
+    const tableName = String(item.category || '').replace(/[^a-zA-Z0-9_]/g, '');
+    if (!tableName) continue;
+    try {
+      const result = await pool.query(`SELECT * FROM "${tableName}"`);
+      databaseRows.push({ tableName, rows: result.rows || [] });
+    } catch (err) {
+      throw new Error(`Could not checkpoint database table ${tableName}: ${err.message}`);
+    }
+  }
+  fs.writeFileSync(databaseSnapshotPath, JSON.stringify({
+    session_id: session.id,
+    created_at: new Date().toISOString(),
+    tables: databaseRows
+  }, null, 2));
+
+  const checkpointSnapshot = JSON.stringify({
+    session_id: session.id,
+    backup_filename: session.backup_filename,
+    checkpoint_root: checkpointRoot,
+    file_count: filePaths.size,
+    database_table_count: databaseRows.length
+  });
+  const checkpointResult = existingCheckpointId
+    ? await pool.query(
+      `UPDATE restore_checkpoints SET
+         database_dump_path = $1,
+         files_backup_path = $2,
+         config_snapshot = $3
+       WHERE id = $4
+       RETURNING id`,
+      [databaseSnapshotPath, filesRoot, checkpointSnapshot, existingCheckpointId]
+    )
+    : await pool.query(
+      `INSERT INTO restore_checkpoints (
+         session_id,
+         checkpoint_name,
+         checkpoint_type,
+         database_dump_path,
+         files_backup_path,
+         config_snapshot
+       ) VALUES ($1, $2, 'pre_restore', $3, $4, $5)
+       RETURNING id`,
+      [
+        session.id,
+        `Pre-restore safety backup - ${new Date().toISOString()}`,
+        databaseSnapshotPath,
+        filesRoot,
+        checkpointSnapshot
+      ]
+    );
+
+  const checkpointId = checkpointResult.rows?.[0]?.id;
+  if (!checkpointId) {
+    throw new Error('Pre-restore safety checkpoint was not recorded');
+  }
+  return { id: checkpointId, root: checkpointRoot };
+}
+
+function isProtectedRestorePath(relativePath) {
+  const normalized = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  return normalized === '.env'
+    || normalized.endsWith('/.env')
+    || normalized === '.git'
+    || normalized.startsWith('.git/')
+    || normalized === 'node_modules'
+    || normalized.startsWith('node_modules/');
+}
+
 async function restoreArchiveFiles(backupPath, relatedFiles) {
   if (!backupPath || !fs.existsSync(backupPath)) {
     throw new Error('Backup archive is missing from the restore folder');
@@ -844,6 +947,9 @@ async function restoreArchiveFiles(backupPath, relatedFiles) {
   for (const fileName of relatedFiles || []) {
     const relativePath = String(fileName || '').replace(/\\/g, '/').replace(/^\/+/, '');
     if (!relativePath || relativePath.includes('..')) continue;
+    if (isProtectedRestorePath(relativePath)) {
+      throw new Error(`Protected path cannot be restored: ${relativePath}`);
+    }
     const entry = getArchiveEntryForProjectPath(zip, relativePath);
     if (!entry || entry.isDirectory) {
       throw new Error(`Backup archive does not contain file: ${relativePath}`);
@@ -1091,49 +1197,7 @@ router.post("/all", async (req, res) => {
 
     const session = sessionResult.rows[0];
 
-    const existingCheckpointResult = await pool.query(
-      "SELECT id FROM restore_checkpoints WHERE session_id = $1 AND checkpoint_type = 'pre_restore' LIMIT 1",
-      [session.id]
-    );
-
     let checkpointId = null;
-    if (existingCheckpointResult.rows.length === 0) {
-      const checkpointResult = await pool.query(
-        `INSERT INTO restore_checkpoints (
-          session_id,
-          checkpoint_name,
-          checkpoint_type,
-          config_snapshot
-        ) VALUES ($1, $2, $3, $4)
-        RETURNING id`,
-        [
-          session.id,
-          `Checkpoint before restore - ${new Date().toISOString()}`,
-          'pre_restore',
-          JSON.stringify({
-            session_id: session.id,
-            backup_filename: session.backup_filename,
-            timestamp: new Date().toISOString(),
-            total_items: session.total_items,
-            description: 'Safety checkpoint created before starting restore operations'
-          })
-        ]
-      );
-
-      const createdCheckpointRow = checkpointResult?.rows?.[0];
-      if (createdCheckpointRow?.id) {
-        checkpointId = createdCheckpointRow.id;
-        console.log(`[Restore] Created checkpoint ${checkpointId} for session ${session.id}`);
-      } else {
-        const fallbackResult = await pool.query(
-          "SELECT id FROM restore_checkpoints WHERE session_id = $1 AND checkpoint_type = 'pre_restore' ORDER BY created_at DESC LIMIT 1",
-          [session.id]
-        );
-        checkpointId = fallbackResult?.rows?.[0]?.id || null;
-      }
-    } else {
-      checkpointId = existingCheckpointResult.rows[0].id;
-    }
 
     const pendingItemsResult = await pool.query(
       `SELECT * FROM restore_items
@@ -1147,6 +1211,8 @@ router.post("/all", async (req, res) => {
 
     const restoreStartedAt = Date.now();
     const totalBatchItems = pendingItemsResult.rows.length;
+    const safetyCheckpoint = await createDestinationCheckpoint(session, pendingItemsResult.rows, pool);
+    checkpointId = safetyCheckpoint.id;
     const appliedItemIds = [];
     const failedItems = [];
     let processedBatchItems = 0;
@@ -1184,6 +1250,9 @@ router.post("/all", async (req, res) => {
             [itemError.message || 'Restore item failed', item.id]
           );
         }
+
+        const safetyCheckpoint = await createDestinationCheckpoint(session, [item], pool, checkpointId);
+        checkpointId = safetyCheckpoint.id;
       }
 
       processedBatchItems++;

@@ -462,6 +462,10 @@ test('restore batch update only applies safe pending items and keeps conflicts u
           return { rows: [session] };
         }
 
+        if (text.includes('insert into restore_checkpoints')) {
+          return { rows: [{ id: 88 }] };
+        }
+
         if (text.includes('update restore_items')) {
           const sessionId = params[0];
           const changed = items.filter((item) => item.session_id === sessionId && item.status === 'pending' && item.change_type !== 'conflict' && ['new', 'update'].includes(item.change_type));
