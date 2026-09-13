@@ -26,11 +26,11 @@ describe('authSession token resolution', () => {
     expect(buildAuthHeaders()).toEqual({});
   });
 
-  it('prefers the cookie token over localStorage when both values exist', () => {
+  it('prefers the refreshed local access token over a readable legacy cookie', () => {
     localStorage.setItem('token', 'local-token');
     document.cookie = 'authToken=cookie-token; path=/; SameSite=Lax';
 
-    expect(getEffectiveAuthToken()).toBe('cookie-token');
+    expect(getEffectiveAuthToken()).toBe('local-token');
   });
 
   it('clears the stored session token', () => {

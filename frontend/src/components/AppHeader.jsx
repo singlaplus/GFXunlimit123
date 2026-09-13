@@ -661,6 +661,12 @@ export default function AppHeader({
               </div>
               <button
                 className="nav-link-btn"
+                onClick={() => handleNavigate(`${adminBasePath}?tab=admin_dashboard`, "admin")}
+              >
+                Dashboard
+              </button>
+              <button
+                className="nav-link-btn"
                 onClick={() => handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=controls", "admin")}
               >
                 Controls

@@ -1,0 +1,194 @@
+.tax-center-section {
+  max-width: 1080px;
+  margin: 4px auto 0;
+  padding: 8px 0 56px;
+}
+
+.starttaxform-sidebar { width: 236px; flex: 0 0 236px; min-height: 360px; box-sizing: border-box; padding: 30px 18px 22px; color: #17191d; background: #ffffff; border-right: 1px solid #e5e7eb; }
+.starttaxform-sidebar .contributor-nav { display: grid; gap: 28px; }
+.starttaxform-sidebar .contributor-nav button { color: #747980; }
+.starttaxform-sidebar .contributor-nav button:hover, .starttaxform-sidebar .contributor-nav button.is-active { color: #17191d; background: rgba(225, 29, 46, .09); }
+.starttaxform-sidebar .contributor-nav button.is-active { font-weight: 700; }
+.starttaxform-layout { display: flex; align-items: stretch; min-height: 390px; background: #f4f5f7; }
+.starttaxform-options-panel { flex: 1; min-width: 0; padding: 24px 28px 40px; color: #20242b; font: 12px/1.45 Arial, sans-serif; }
+.starttaxform-options-panel h1 { width: min(1045px, 100%); margin: 0 auto 14px; font-size: 25px; letter-spacing: -0.04em; }
+.starttaxform-options-panel > p { width: min(1045px, 100%); margin: 0 auto 14px; color: #252a31; }
+.starttaxform-options-panel > p strong { color: #ed2224; }
+.starttaxform-options-box { width: min(1045px, 100%); margin: 14px auto 0; overflow: hidden; background: #fff; border: 1px solid #dfe3e8; border-radius: 5px; }
+.starttaxform-options-box label { display: grid; grid-template-columns: 235px 14px 150px; align-items: center; gap: 8px; min-height: 59px; padding: 9px 20px; border-bottom: 1px solid #e5e7eb; }
+.starttaxform-options-box label:last-child { border-bottom: 0; }
+.starttaxform-options-box em { color: #ed2224; font-style: normal; }
+.starttaxform-options-box select { min-height: 32px; padding: 0 10px; border: 1px solid #dfe3e8; border-radius: 18px; background: #fff; font: inherit; }
+.starttaxform-options-submit { display: flex; justify-content: flex-end; width: min(1045px, 100%); margin: 26px auto 0; }
+.starttaxform-options-submit button { min-width: 92px; padding: 9px 18px; color: #aeb5bf; background: #fff; border: 1px solid #dfe3e8; border-radius: 18px; font: inherit; font-weight: 700; cursor: not-allowed; }
+.starttaxform-options-submit button:not(:disabled) { color: #fff; background: #ed2224; border-color: #ed2224; cursor: pointer; }
+.starttaxform-options-submit button:not(:disabled):hover { background: #c9181b; border-color: #c9181b; }
+@media (max-width: 700px) { .starttaxform-layout { display: block; }.starttaxform-options-panel { padding: 20px; }.starttaxform-options-box label { grid-template-columns: 1fr 14px; }.starttaxform-options-box select { grid-column: 1 / -1; } }
+
+.tax-wizard-backdrop { position: absolute; z-index: 30; top: 0; right: 0; left: 236px; min-height: 100vh; padding: 28px; background: var(--creator-paper); }
+body:has(.tax-wizard-backdrop) .app-header { display: none; }
+.contributor-shell:has(.w8ben-page) .tax-wizard-backdrop { display: none; }
+.contributor-shell:has(.tax-wizard-backdrop) .contributor-sidebar { position: fixed; z-index: 31; top: 0; bottom: 0; width: 236px; height: 100vh; box-sizing: border-box; }
+.contributor-shell:has(.tax-wizard-backdrop) .contributor-main { margin-left: 236px; }
+.tax-wizard { max-width: 1045px; margin: 0 auto; color: var(--creator-ink); }
+.tax-wizard h2 { margin: 0 0 14px; font-size: 25px; letter-spacing: -.04em; }
+.tax-wizard p { max-width: 760px; margin: 0 0 14px; color: var(--creator-ink); font-size: 12px; line-height: 1.45; }
+.tax-wizard .brand-name { color: var(--creator-accent); font-weight: 700; }
+.contributor-shell.is-dark .tax-wizard .brand-name { color: #fff; }
+.tax-wizard-questions { margin-top: 8px; overflow: hidden; background: var(--creator-surface); border: 1px solid var(--creator-line); border-radius: 5px; }
+.tax-wizard-questions label { display: grid; grid-template-columns: 235px 14px 150px; align-items: center; gap: 8px; min-height: 59px; padding: 9px 20px; color: var(--creator-ink); border-bottom: 1px solid var(--creator-line); font-size: 12px; }
+.tax-wizard-questions label:last-child { border-bottom: 0; }.tax-wizard-questions label > span { color: var(--creator-accent); }.tax-wizard-questions label .tax-question-text { color: var(--creator-ink); }.tax-wizard-questions select { min-height: 32px; padding: 0 10px; border: 1px solid var(--creator-line); border-radius: 18px; background: var(--creator-surface); font: inherit; font-size: 11px; }
+.tax-wizard-actions { display: flex; justify-content: flex-end; gap: 14px; margin-top: 26px; }.tax-wizard-actions .tax-cancel-button { display: none; }
+@media (max-width: 700px) { .tax-wizard-backdrop { top: 0; right: 0; left: 0; min-height: 100vh; padding: 20px; }.contributor-shell:has(.tax-wizard-backdrop) .contributor-main { margin-left: 0; }.contributor-shell:has(.tax-wizard-backdrop) .contributor-sidebar { position: static; width: auto; height: auto; }.tax-wizard-questions label { grid-template-columns: 1fr 14px; }.tax-wizard-questions select { grid-column: 1 / -1; } }
+@media (max-width: 700px) { .starttaxform-sidebar { width: 100%; min-height: auto; padding: 18px 20px; border-right: 0; border-bottom: 1px solid #e5e7eb; } }
+
+.tax-center-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 30px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--creator-line);
+}
+
+.tax-center-heading h2 {
+  margin: 0;
+  color: var(--creator-ink);
+  font-size: 31px;
+  letter-spacing: -.05em;
+}
+
+.tax-center-block {
+  margin-bottom: 22px;
+  padding: 21px 22px 22px;
+  background: color-mix(in srgb, var(--creator-surface) 94%, var(--creator-paper));
+  border: 1px solid color-mix(in srgb, var(--creator-line) 80%, transparent);
+  border-radius: 16px;
+  box-shadow: 0 10px 28px rgba(30, 36, 42, .045);
+}
+
+.tax-block-heading {
+  margin-bottom: 15px;
+}
+
+.tax-block-heading h3 {
+  color: var(--creator-ink);
+  font-size: 13px;
+  letter-spacing: -.01em;
+}
+
+.tax-document-row,
+.tax-form-grid,
+.tax-address-form {
+  overflow: hidden;
+  background: var(--creator-surface);
+  border: 1px solid var(--creator-line);
+  border-radius: 10px;
+}
+
+.tax-document-row {
+  min-height: 56px;
+  padding: 0 17px;
+  box-shadow: inset 3px 0 0 var(--creator-green);
+}
+
+.tax-document-row > span {
+  color: var(--creator-ink);
+  font-weight: 600;
+}
+
+.tax-document-row strong {
+  color: var(--creator-green);
+  font-weight: 700;
+}
+
+.tax-link-button {
+  color: var(--creator-accent);
+  font-weight: 700;
+  transition: color .18s ease, transform .18s ease;
+}
+
+.tax-link-button:hover {
+  color: #a91423;
+  transform: translateY(-1px);
+}
+
+.tax-form-grid label,
+.tax-address-form label {
+  min-height: 62px;
+  padding: 10px 17px;
+  color: var(--creator-muted);
+  font-size: 11px;
+}
+
+.tax-form-grid label > select,
+.tax-address-form label > input,
+.tax-address-form label > select {
+  min-height: 36px;
+  padding: 0 12px;
+  border-color: #dfe3e8;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+
+.tax-form-grid select:focus,
+.tax-address-form input:focus,
+.tax-address-form select:focus {
+  border-color: color-mix(in srgb, var(--creator-accent) 60%, white);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--creator-accent) 12%, transparent);
+}
+
+.tax-form-grid select:disabled,
+.tax-address-form input:disabled,
+.tax-address-form select:disabled {
+  opacity: .8;
+  background: #f7f8fa;
+}
+
+.tax-center-actions {
+  margin-top: 20px;
+}
+
+.tax-cancel-button,
+.tax-save-button {
+  min-width: 92px;
+  min-height: 36px;
+  font-weight: 700;
+}
+
+.tax-cancel-button {
+  color: var(--creator-muted);
+}
+
+.tax-save-button:not(:disabled) {
+  color: #fff;
+  background: var(--creator-accent);
+  border-color: var(--creator-accent);
+  box-shadow: 0 7px 16px rgba(225, 29, 46, .2);
+}
+
+.tax-save-button:not(:disabled):hover {
+  background: #be1626;
+}
+
+@media (max-width: 700px) {
+  .tax-center-section {
+    padding: 0 0 35px;
+  }
+
+  .tax-center-heading h2 {
+    font-size: 26px;
+  }
+
+  .tax-center-block {
+    padding: 17px 14px;
+    border-radius: 13px;
+  }
+
+  .tax-document-row {
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px;
+  }
+}

@@ -145,13 +145,86 @@ function CardWrapper({ cardId, cardOrder, isLayoutEditMode, isDarkMode, moveCard
   );
 }
 
+function AdminDashboardContent({ images, users, collections, isDarkMode }) {
+  const [section, setSection] = useState("dashboard");
+  const pendingAssets = images.filter((image) => String(image?.status || "").toLowerCase() === "pending").length;
+  const pendingContributors = users.filter((user) => String(user?.role || "").toLowerCase() === "contributor" && String(user?.status || "").toLowerCase() === "pending");
+  const pendingCustomers = users.filter((user) => String(user?.role || "").toLowerCase() === "customer" && String(user?.status || "").toLowerCase() === "pending");
+  const approvalUsers = section === "contributor-approval" ? pendingContributors : pendingCustomers;
+  const approvalLabel = section === "contributor-approval" ? "Contributor Approval" : "Customer Approval";
+
+  const approveUser = async (userId) => {
+    try {
+      const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+      await axios.put(`${API_BASE_URL}/admin/users/${userId}/approve`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+    } catch (error) {
+      console.error("Failed to approve user", error);
+      toast.error("Failed to approve user.");
+    }
+  };
+
+  return (
+    <div style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "220px minmax(0, 1fr)", gap: "24px", alignItems: "start" }}>
+        <aside aria-label="Admin dashboard menu" style={{ display: "grid", gap: "6px", padding: "12px", borderRadius: "12px", background: isDarkMode ? "#111827" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0" }}>
+          {[
+            ["dashboard", "Dashboard"],
+            ["contributor-approval", `Contributor Approval (${pendingContributors.length})`],
+            ["customer-approval", `Customer Approval (${pendingCustomers.length})`]
+          ].map(([menuSection, label]) => (
+            <button key={menuSection} type="button" onClick={() => setSection(menuSection)} aria-pressed={section === menuSection} style={{ padding: "11px 12px", border: 0, borderRadius: "8px", background: section === menuSection ? "#1976d2" : "transparent", color: section === menuSection ? "#fff" : "inherit", textAlign: "left", fontWeight: 700, cursor: "pointer" }}>
+              {label}
+            </button>
+          ))}
+        </aside>
+
+        {section === "dashboard" ? (
+          <section aria-labelledby="admin-dashboard-heading" style={{ display: "grid", gap: "22px" }}>
+            <div>
+              <p style={{ margin: 0, color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.78rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>Admin overview</p>
+              <h1 id="admin-dashboard-heading" style={{ margin: "6px 0 0", fontSize: "2rem" }}>Dashboard</h1>
+              <p style={{ margin: "8px 0 0", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>Monitor marketplace activity and jump into the areas that need attention.</p>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "14px" }}>
+              {[["Total assets", images.length], ["Pending assets", pendingAssets], ["Users", users.length], ["Collections", collections.length]].map(([label, value]) => (
+                <div key={label} style={{ padding: "18px", borderRadius: "12px", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", background: isDarkMode ? "#111827" : "#ffffff", boxShadow: "0 8px 24px rgba(15, 23, 42, 0.08)" }}>
+                  <div style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.85rem" }}>{label}</div>
+                  <strong style={{ display: "block", marginTop: "8px", fontSize: "1.8rem" }}>{value.toLocaleString()}</strong>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : (
+          <section aria-labelledby="admin-approval-heading" style={{ display: "grid", gap: "16px" }}>
+            <div>
+              <p style={{ margin: 0, color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.78rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>User management</p>
+              <h1 id="admin-approval-heading" style={{ margin: "6px 0 0", fontSize: "2rem" }}>{approvalLabel}</h1>
+            </div>
+            {approvalUsers.length === 0 ? <p>No pending approvals.</p> : (
+              <div style={{ display: "grid", gap: "10px" }}>
+                {approvalUsers.map((user) => (
+                  <div key={user.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", padding: "16px", borderRadius: "10px", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", background: isDarkMode ? "#111827" : "#fff" }}>
+                    <div><strong>{user.full_name || user.username || user.email}</strong><div style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.9rem" }}>{user.email || user.username}</div></div>
+                    <button type="button" onClick={() => approveUser(user.id)} style={{ border: 0, borderRadius: "8px", padding: "9px 14px", background: "#2e7d32", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Approve</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReportPreviewPage = false }) {
   const location = useLocation();
   const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
   const [currentWindowPath, setCurrentWindowPath] = useState(() => (typeof window !== "undefined" ? window.location.pathname : location.pathname || "/"));
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
     const syncWindowPath = () => setCurrentWindowPath(window.location.pathname);
     syncWindowPath();
     window.addEventListener("popstate", syncWindowPath);
@@ -195,57 +268,24 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [selectedImage, setSelectedImage] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [thumbnailFile, setThumbnailFile] = useState(null);
-  const [editForm, setEditForm] = useState({
-    title: "",
-    categoryPrimary: "",
-    categorySecondary: "",
-    collection: "",
-    keywords: "",
-    description: "",
-    type: ""
-  });
+  const [editForm, setEditForm] = useState({ title: "", categoryPrimary: "", categorySecondary: "", collection: "", keywords: "", description: "", type: "" });
   const [editingUserId, setEditingUserId] = useState(null);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [deleteConfirmationUser, setDeleteConfirmationUser] = useState(null);
   const [userFilter, setUserFilter] = useState("all");
+  const [contributorSearch, setContributorSearch] = useState("");
+  const [selectedContributor, setSelectedContributor] = useState(null);
+  const [hoveredContributorId, setHoveredContributorId] = useState(null);
   const [isUserSaving, setIsUserSaving] = useState(false);
-    const [creditUserId, setCreditUserId] = useState("");
+  const [creditUserId, setCreditUserId] = useState("");
   const [creditAmount, setCreditAmount] = useState("");
   const [isAddingCredits, setIsAddingCredits] = useState(false);
-  const [otpSettings, setOtpSettings] = useState({
-    default_recipient: "",
-    bcc_recipients: "",
-    login_subject: "Login OTP",
-    registration_subject: "Account Verification OTP",
-    recovery_subject: "Password Recovery OTP",
-    login_body: "Hello {{full_name}},<br>Your login OTP is <strong>{{otp}}</strong>.<br>This code is valid for {{valid_minutes}} minutes.",
-    registration_body: "Hello {{full_name}},<br>Your account verification OTP is <strong>{{otp}}</strong>.<br>This code is valid for {{valid_minutes}} minutes.",
-    recovery_body: "Hello {{full_name}},<br>Your password recovery OTP is <strong>{{otp}}</strong>.<br>This code is valid for {{valid_minutes}} minutes.",
-    valid_minutes: 10,
-  });
+  const [otpSettings, setOtpSettings] = useState({ default_recipient: "", bcc_recipients: "", login_subject: "Login OTP", registration_subject: "Account Verification OTP", recovery_subject: "Password Recovery OTP", login_body: "Hello {{full_name}},<br>Your login OTP is <strong>{{otp}}</strong>.<br>This code is valid for {{valid_minutes}} minutes.", registration_body: "Hello {{full_name}},<br>Your account verification OTP is <strong>{{otp}}</strong>.<br>This code is valid for {{valid_minutes}} minutes.", recovery_body: "Hello {{full_name}},<br>Your password recovery OTP is <strong>{{otp}}</strong>.<br>This code is valid for {{valid_minutes}} minutes.", valid_minutes: 10 });
   const [otpSettingsMessage, setOtpSettingsMessage] = useState("");
   const [otpSettingsSaving, setOtpSettingsSaving] = useState(false);
   const [otpSettingsModal, setOtpSettingsModal] = useState(null);
-  const OTP_SETTINGS_MODAL_TITLES = {
-    general: "Default OTP Delivery Settings",
-    login: "Login OTP Settings",
-    registration: "Registration OTP Settings",
-    recovery: "Forgot Password OTP Settings"
-  };
-  const [userEditForm, setUserEditForm] = useState({
-    full_name: "",
-    username: "",
-    email: "",
-    role: "",
-    identity_number: "",
-    credits: "",
-    status: "",
-    password: "",
-    otp_enabled: true,
-    custom_permissions: {
-      bulk_upload: false
-    }
-  });
+  const OTP_SETTINGS_MODAL_TITLES = { general: "Default OTP Delivery Settings", login: "Login OTP Settings", registration: "Registration OTP Settings", recovery: "Forgot Password OTP Settings" };
+  const [userEditForm, setUserEditForm] = useState({ full_name: "", username: "", email: "", role: "", identity_number: "", credits: "", status: "", password: "", otp_enabled: true, custom_permissions: { bulk_upload: false } });
   const [viewingCategoryId, setViewingCategoryId] = useState(null);
   const [viewingCollectionId, setViewingCollectionId] = useState(null);
   const [showCategoryGrid, setShowCategoryGrid] = useState(false);
@@ -296,7 +336,18 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [paymentGatewaySettings, setPaymentGatewaySettings] = useState({});
   const [paymentGatewaySaving, setPaymentGatewaySaving] = useState(false);
   const [paymentGatewayMessage, setPaymentGatewayMessage] = useState("");
+  const [contributorCommission, setContributorCommission] = useState(0);
+  const [commissionModalOpen, setCommissionModalOpen] = useState(false);
+  const [commissionInput, setCommissionInput] = useState("0");
   const [isDarkMode, setIsDarkMode] = useState(() => typeof document !== "undefined" && document.body.classList.contains("dark-mode"));
+
+    useEffect(() => {
+      const savedCommission = Number(localStorage.getItem("contributorCommission") || "0");
+      if (Number.isFinite(savedCommission) && savedCommission >= 0 && savedCommission <= 100) {
+        setContributorCommission(savedCommission);
+        setCommissionInput(String(savedCommission));
+      }
+    }, []);
   const PAYMENT_GATEWAY_OPTIONS = ["Development", "Google Pay", "Paytm", "Credit Card", "Stripe", "PayPal", "Razorpay", "Cashfree"];
   const [paymentGatewayOptions, setPaymentGatewayOptions] = useState(PAYMENT_GATEWAY_OPTIONS);
   const SOCIAL_LINKS_STORAGE_KEY = "footer-social-links";
@@ -378,10 +429,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     const intervalId = setInterval(fetchPaymentGateways, 5000);
     const onFocus = () => fetchPaymentGateways();
     const onGatewayUpdated = () => fetchPaymentGateways();
-
     window.addEventListener("focus", onFocus);
     window.addEventListener("payment-gateways-updated", onGatewayUpdated);
-
     return () => {
       clearInterval(intervalId);
       window.removeEventListener("focus", onFocus);
@@ -391,24 +440,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-
-    const refreshCollectionsForAssetChanges = async () => {
-      try {
-        await fetchCollections();
-      } catch (err) {
-        console.error("Failed to refresh collections after asset update", err);
-      }
-    };
-
-    const onAssetCollectionRefresh = () => {
-      refreshCollectionsForAssetChanges();
-    };
-
+    const onAssetCollectionRefresh = () => fetchCollections();
     window.addEventListener("asset-refresh", onAssetCollectionRefresh);
     window.addEventListener("asset-updated", onAssetCollectionRefresh);
     window.addEventListener("asset-collections-updated", onAssetCollectionRefresh);
     window.addEventListener("home-assets-refresh", onAssetCollectionRefresh);
-
     return () => {
       window.removeEventListener("asset-refresh", onAssetCollectionRefresh);
       window.removeEventListener("asset-updated", onAssetCollectionRefresh);
@@ -418,12 +454,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   }, []);
 
   useEffect(() => {
-    const syncTheme = () => {
-      setIsDarkMode(typeof document !== "undefined" && document.body.classList.contains("dark-mode"));
-    };
-
+    const syncTheme = () => setIsDarkMode(typeof document !== "undefined" && document.body.classList.contains("dark-mode"));
     syncTheme();
-
     if (typeof document !== "undefined") {
       const observer = new MutationObserver(syncTheme);
       observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
@@ -432,27 +464,17 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   }, []);
 
   const isControlsTab = tabParam === "controls";
+  const isAdminDashboardTab = tabParam === "admin_dashboard";
   const isBackupTab = tabParam === "backup";
   const isEmptyAdminBodyTab = tabParam === "restore";
   const isLiveAssetsTab = tabParam === "live-assets";
   const isUsersTab = tabParam === "users";
+  const isContributorDetailsTab = tabParam === "contributordetails";
+  const isTaxFormsTab = tabParam === "taxforms";
+  const isCustomerDetailsTab = tabParam === "customerdetails";
   const isPromotionsTab = tabParam === "promotions";
-  const shouldShowImageGrid = !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isPromotionsTab;
-  const adminPageHeading = tabParam === "backup"
-    ? "GFX Backup"
-    : tabParam === "restore"
-      ? "Restore"
-      : tabParam === "controls"
-        ? "Controls"
-        : tabParam === "live-assets"
-          ? "Live Assets"
-          : tabParam === "users"
-            ? "Users"
-            : tabParam === "promotions"
-              ? "Promotions"
-              : tabParam === "myaccount"
-                ? "My Account"
-                : "Admin Panel";
+  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab;
+  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : "Admin Panel";
 
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
@@ -499,6 +521,92 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const liveTotalPages = Math.max(1, Math.ceil(liveFilteredImages.length / pageSize));
   const livePageImages = liveFilteredImages.slice((liveCurrentPage - 1) * pageSize, liveCurrentPage * pageSize);
   const renderedImages = isLiveAssetsTab ? livePageImages : pageImages;
+
+  if (false) {
+    const adminDashboardSection = "dashboard";
+    const setAdminDashboardSection = () => {};
+    const pendingAssets = images.filter((image) => String(image?.status || "").toLowerCase() === "pending").length;
+    const pendingContributors = users.filter((user) => String(user?.role || "").toLowerCase() === "contributor" && String(user?.status || "").toLowerCase() === "pending");
+    const pendingCustomers = users.filter((user) => String(user?.role || "").toLowerCase() === "customer" && String(user?.status || "").toLowerCase() === "pending");
+    const approveDashboardUser = async (userId) => {
+      try {
+        const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+        const response = await axios.put(`${API_BASE_URL}/admin/users/${userId}/approve`, {}, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setUsers((previous) => previous.map((user) => (user.id === userId ? response.data : user)));
+      } catch (error) {
+        console.error("Failed to approve user", error);
+        toast.error("Failed to approve user.");
+      }
+    };
+    const approvalUsers = adminDashboardSection === "contributor-approval" ? pendingContributors : pendingCustomers;
+    const approvalLabel = adminDashboardSection === "contributor-approval" ? "Contributor Approval" : "Customer Approval";
+
+    void (
+      <div style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "220px minmax(0, 1fr)", gap: "24px", alignItems: "start" }}>
+          <aside aria-label="Admin dashboard menu" style={{ display: "grid", gap: "6px", padding: "12px", borderRadius: "12px", background: isDarkMode ? "#111827" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0" }}>
+            {[
+              ["dashboard", "Dashboard"],
+              ["contributor-approval", `Contributor Approval (${pendingContributors.length})`],
+              ["customer-approval", `Customer Approval (${pendingCustomers.length})`]
+            ].map(([section, label]) => (
+              <button
+                key={section}
+                type="button"
+                onClick={() => setAdminDashboardSection(section)}
+                aria-pressed={adminDashboardSection === section}
+                style={{ padding: "11px 12px", border: 0, borderRadius: "8px", background: adminDashboardSection === section ? "#1976d2" : "transparent", color: adminDashboardSection === section ? "#fff" : "inherit", textAlign: "left", fontWeight: 700, cursor: "pointer" }}
+              >
+                {label}
+              </button>
+            ))}
+          </aside>
+
+          {adminDashboardSection === "dashboard" ? (
+            <section aria-labelledby="admin-dashboard-heading" style={{ display: "grid", gap: "22px" }}>
+              <div>
+                <p style={{ margin: 0, color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.78rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>Admin overview</p>
+                <h1 id="admin-dashboard-heading" style={{ margin: "6px 0 0", fontSize: "2rem" }}>Dashboard</h1>
+                <p style={{ margin: "8px 0 0", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>Monitor marketplace activity and jump into the areas that need attention.</p>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "14px" }}>
+                {[["Total assets", images.length], ["Pending assets", pendingAssets], ["Users", users.length], ["Collections", collections.length]].map(([label, value]) => (
+                  <div key={label} style={{ padding: "18px", borderRadius: "12px", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", background: isDarkMode ? "#111827" : "#ffffff", boxShadow: "0 8px 24px rgba(15, 23, 42, 0.08)" }}>
+                    <div style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.85rem" }}>{label}</div>
+                    <strong style={{ display: "block", marginTop: "8px", fontSize: "1.8rem" }}>{value.toLocaleString()}</strong>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <section aria-labelledby="admin-approval-heading" style={{ display: "grid", gap: "16px" }}>
+              <div>
+                <p style={{ margin: 0, color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.78rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>User management</p>
+                <h1 id="admin-approval-heading" style={{ margin: "6px 0 0", fontSize: "2rem" }}>{approvalLabel}</h1>
+              </div>
+              {approvalUsers.length === 0 ? (
+                <p>No pending approvals.</p>
+              ) : (
+                <div style={{ display: "grid", gap: "10px" }}>
+                  {approvalUsers.map((user) => (
+                    <div key={user.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", padding: "16px", borderRadius: "10px", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", background: isDarkMode ? "#111827" : "#fff" }}>
+                      <div>
+                        <strong>{user.full_name || user.username || user.email}</strong>
+                        <div style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.9rem" }}>{user.email || user.username}</div>
+                      </div>
+                      <button type="button" onClick={() => approveDashboardUser(user.id)} style={{ border: 0, borderRadius: "8px", padding: "9px 14px", background: "#2e7d32", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Approve</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const getGfxDeviceId = () => {
     if (typeof window === "undefined") return "GFX-DEVICE-001";
@@ -1004,7 +1112,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     "otp-settings",
     "customer-banner",
     "credits",
-    "credit-price-control"
+    "credit-price-control",
+    "contributor-details",
+    "customer-details"
   ];
 
   const normalizeCardOrder = (order) => {
@@ -2446,6 +2556,20 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     }
   };
 
+  const fetchContributorCommission = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/admin/settings/contributor-commission`, { headers: buildAuthHeaders() });
+      const percentage = Number(res.data?.percentage);
+      if (Number.isFinite(percentage) && percentage >= 0 && percentage <= 100) {
+        setContributorCommission(percentage);
+        setCommissionInput(String(percentage));
+        localStorage.setItem("contributorCommission", String(percentage));
+      }
+    } catch (err) {
+      console.error("Unable to load contributor commission", err);
+    }
+  };
+
   const savePricingSettings = async () => {
     sessionStorage.setItem('savePricingCalled', 'YES-' + Date.now());
     if (!pricingSettings) {
@@ -2956,6 +3080,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       fetchOtpSettings();
       fetchUsers();
       fetchCreditPrice();
+      fetchContributorCommission();
       // settings are loaded when their modal opens to avoid unnecessary calls
     } else if (tabParam === "live-assets") {
       fetchApprovedImages();
@@ -3235,11 +3360,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   // Ensure we refresh users when the users tab or the active user filter changes
   useEffect(() => {
-    if (tabParam === "users") {
+    if (tabParam === "users" || tabParam === "controls" || isContributorDetailsTab || isTaxFormsTab || isCustomerDetailsTab) {
       fetchUsers();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabParam, userFilter]);
+  }, [tabParam, userFilter, isContributorDetailsTab, isTaxFormsTab, isCustomerDetailsTab]);
 
   const fetchBrandingConfig = async () => {
     try {
@@ -3612,6 +3737,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     if (userFilter === "admin") return String(user.role || "").toLowerCase() === "admin";
     if (userFilter === "blocked") return String(user.status || "").toLowerCase() === "blocked";
     return String(user.status || "").toLowerCase() === userFilter;
+  });
+  const contributorUsers = users.filter((user) => String(user.role || "").toLowerCase() === "contributor");
+  const filteredContributorUsers = contributorUsers.filter((user) => {
+    const searchValue = contributorSearch.trim().toLowerCase();
+    if (!searchValue) return true;
+    return [user.username, user.email].some((value) => String(value || "").toLowerCase().includes(searchValue));
   });
 
   const startEditingUser = (user) => {
@@ -4478,11 +4609,13 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   return (
     <div style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}>
-      {!isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && <h2>{adminPageHeading}</h2>}
+      {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && <h2>{adminPageHeading}</h2>}
 
       {shouldShowImageGrid && <p>Total Images: {images.length}</p>}
 
-      {isDailyReportPreviewRouteOpen && !dailyReportSchedulingOpen ? (
+      {isAdminDashboardTab ? (
+        <AdminDashboardContent images={images} users={users} collections={collections} isDarkMode={isDarkMode} />
+      ) : isDailyReportPreviewRouteOpen && !dailyReportSchedulingOpen ? (
         <div style={{ display: "grid", gap: 18 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
             <div>
@@ -5210,6 +5343,92 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             </div>
           </div>
         </div>
+      ) : isContributorDetailsTab ? (
+        <div style={{ display: "grid", gap: "16px", width: "100%" }}>
+              <label htmlFor="contributor-search" style={{ display: "block", width: "100%" }}>
+              <input
+                id="contributor-search"
+                type="search"
+                aria-label="Search contributors"
+                placeholder="Search by username or email"
+                value={contributorSearch}
+                onChange={(event) => {
+                  setContributorSearch(event.target.value);
+                  setSelectedContributor(null);
+                }}
+                style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", border: "1px solid #cbd5e1", borderRadius: "8px", fontSize: "1rem" }}
+              />
+          </label>
+          {contributorSearch.trim() && !selectedContributor && (
+            <div style={{ display: "grid", gap: "10px", width: "100%" }}>
+              {filteredContributorUsers.map((user) => (
+                <button
+                  key={user.id}
+                  type="button"
+                  onClick={() => setSelectedContributor(user)}
+                  onMouseEnter={() => setHoveredContributorId(user.id)}
+                  onMouseLeave={() => setHoveredContributorId(null)}
+                  style={{ display: "grid", gap: "4px", padding: "12px", textAlign: "left", border: selectedContributor?.id === user.id ? "2px solid #1976d2" : "1px solid #ddd", borderRadius: "8px", background: hoveredContributorId === user.id ? "#eff6ff" : "white", cursor: "pointer" }}
+                >
+                  <strong>{user.full_name || user.username || "Unnamed contributor"}</strong>
+                  <span>Username: {user.username || "-"}</span>
+                  <span>Email: {user.email || "-"}</span>
+                </button>
+              ))}
+              {filteredContributorUsers.length === 0 && <p>No contributors match your search.</p>}
+            </div>
+          )}
+          {selectedContributor && (
+            <section aria-label="Selected contributor details" style={{ display: "grid", gap: "8px", padding: "16px", border: "1px solid #cbd5e1", borderRadius: "8px", background: "#f8fafc" }}>
+              <strong style={{ fontSize: "1.1rem" }}>{selectedContributor.full_name || selectedContributor.username || "Unnamed contributor"}</strong>
+              <span>Contributor ID: {selectedContributor.id || "-"}</span>
+              <span>Full name: {selectedContributor.full_name || "-"}</span>
+              <span>Username: {selectedContributor.username || "-"}</span>
+              <span>Email: {selectedContributor.email || "-"}</span>
+              <span>Role: {selectedContributor.role || "-"}</span>
+              <span>Status: {selectedContributor.status || "-"}</span>
+              <span>Identity number: {selectedContributor.identity_number || "-"}</span>
+              <span>Credits: {selectedContributor.credits ?? "-"}</span>
+              <span>OTP enabled: {selectedContributor.otp_enabled ? "Yes" : "No"}</span>
+              <span>Created: {selectedContributor.created_at ? new Date(selectedContributor.created_at).toLocaleDateString() : "-"}</span>
+              <span>Deletion requested: {selectedContributor.deletion_requested_at ? new Date(selectedContributor.deletion_requested_at).toLocaleString() : "-"}</span>
+            </section>
+          )}
+        </div>
+      ) : isTaxFormsTab ? (
+        <div style={{ display: "grid", gap: "20px" }}>
+          <div className="admin-panel-card" style={{ maxWidth: "760px" }}>
+            <h3>Tax Forms</h3>
+            <p>Open contributor tax profiles and review submitted tax information.</p>
+            <div style={{ display: "grid", gap: "10px", marginTop: "16px" }}>
+              {users.filter((user) => String(user.role || "").toLowerCase() === "contributor").map((user) => (
+                <div key={user.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", padding: "12px", border: "1px solid #ddd", borderRadius: "8px" }}>
+                  <span><strong>{user.full_name || user.username || "Unnamed contributor"}</strong><br />{user.email || "-"}</span>
+                  <span>{user.tax_form_status || "Not submitted"}</span>
+                </div>
+              ))}
+              {users.filter((user) => String(user.role || "").toLowerCase() === "contributor").length === 0 && <p>No contributor tax forms found.</p>}
+            </div>
+          </div>
+        </div>
+      ) : isCustomerDetailsTab ? (
+        <div style={{ display: "grid", gap: "20px" }}>
+          <div className="admin-panel-card" style={{ maxWidth: "760px" }}>
+            <h3>Customer Details</h3>
+            <p>Review customer account and contact details.</p>
+            <div style={{ display: "grid", gap: "10px", marginTop: "16px" }}>
+              {users.filter((user) => String(user.role || "").toLowerCase() === "customer").map((user) => (
+                <div key={user.id} style={{ display: "grid", gap: "4px", padding: "12px", border: "1px solid #ddd", borderRadius: "8px" }}>
+                  <strong>{user.full_name || user.username || "Unnamed customer"}</strong>
+                  <span>Username: {user.username || "-"}</span>
+                  <span>Email: {user.email || "-"}</span>
+                  <span>Status: {user.status || "-"}</span>
+                </div>
+              ))}
+              {users.filter((user) => String(user.role || "").toLowerCase() === "customer").length === 0 && <p>No customers found.</p>}
+            </div>
+          </div>
+        </div>
       ) : isPromotionsTab ? (
         <AdminPromotionsPanel />
       ) : isUsersTab ? (
@@ -5789,6 +6008,20 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             </button>
           </div>
           <div className="admin-panel-controls-grid" style={{ display: "flex", flexWrap: "wrap", gap: "20px", justifyContent: "flex-start" }}>
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="contributor-details">
+            <h3>Contributor Details</h3>
+            <p style={{ color: isDarkMode ? "#cbd5e1" : "#555", margin: "8px 0 16px" }}>Manage contributor accounts and submitted tax information.</p>
+            <div style={{ display: "grid", gap: "10px" }}>
+              <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=contributordetails`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer" }}>Contributor Details</button>
+              <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=taxforms`; }} style={{ background: "#43a047", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer" }}>Tax Forms</button>
+            </div>
+          </CardWrapper>
+
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="customer-details">
+            <h3>Customer Details</h3>
+            <p style={{ color: isDarkMode ? "#cbd5e1" : "#555", margin: "8px 0 16px" }}>Review and manage customer accounts.</p>
+            <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=customerdetails`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%" }}>Customer Details</button>
+          </CardWrapper>
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="manage-categories">
             <h3>Manage Categories</h3>
             <label style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "12px" }}>
@@ -7191,6 +7424,83 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               {contributorBannerMessage ? <p style={{ margin: "12px 0 0", color: contributorBannerMessage.includes("Failed") || contributorBannerMessage.includes("Choose") ? "#d32f2f" : "#2e7d32" }}>{contributorBannerMessage}</p> : null}
             </div>
           </CardWrapper>
+
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="contributor-commission">
+            <h3>Contributor Commission</h3>
+            <p style={{ margin: "0 0 12px", color: isDarkMode ? "#cbd5e1" : "#475569" }}>Current: {contributorCommission}%</p>
+            <button
+              type="button"
+              onClick={() => {
+                setCommissionInput(String(contributorCommission));
+                setCommissionModalOpen(true);
+              }}
+              style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 18px", borderRadius: "8px", cursor: "pointer", width: "100%" }}
+            >
+              Commission
+            </button>
+          </CardWrapper>
+
+          {commissionModalOpen && (
+            <div
+              className="admin-panel-modal-overlay"
+              onClick={() => setCommissionModalOpen(false)}
+              style={{ position: "fixed", inset: 0, background: "rgba(2,6,23,0.72)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 1450 }}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{ width: "100%", maxWidth: 420, padding: 24, background: isDarkMode ? "#111827" : "#ffffff", color: isDarkMode ? "#f8fafc" : "#111827", borderRadius: 16, boxShadow: "0 30px 90px rgba(2,6,23,0.35)" }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: 18 }}>
+                  <h3 style={{ margin: 0 }}>Contributor Commission</h3>
+                  <button type="button" aria-label="Close commission popup" onClick={() => setCommissionModalOpen(false)} style={{ border: 0, borderRadius: "50%", width: 34, height: 34, cursor: "pointer" }}>×</button>
+                </div>
+                <label style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "18px" }}>
+                  <span style={{ fontSize: "0.95rem", fontWeight: 600 }}>Percentage</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={commissionInput}
+                    onChange={(e) => setCommissionInput(e.target.value)}
+                    placeholder="Enter percent"
+                    style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid #ccc", fontSize: "1rem" }}
+                  />
+                </label>
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setCommissionModalOpen(false)}
+                    style={{ flex: 1, background: "#e2e8f0", color: "#111827", border: "none", padding: "10px 16px", borderRadius: "8px", cursor: "pointer" }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const parsedValue = Number(commissionInput);
+                      if (!Number.isFinite(parsedValue) || parsedValue < 0 || parsedValue > 100) {
+                        window.alert("Please enter a valid percentage between 0 and 100.");
+                        return;
+                      }
+
+                      try {
+                        await axios.post(`${API_BASE_URL}/admin/settings/contributor-commission`, { percentage: parsedValue }, { headers: buildAuthHeaders() });
+                        localStorage.setItem("contributorCommission", String(parsedValue));
+                        setContributorCommission(parsedValue);
+                        setCommissionModalOpen(false);
+                      } catch (err) {
+                        window.alert(err.response?.data?.error || "Unable to save contributor commission.");
+                      }
+                    }}
+                    style={{ flex: 1, background: "#1976d2", color: "white", border: "none", padding: "10px 16px", borderRadius: "8px", cursor: "pointer" }}
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="credits">
             <h3>Credits</h3>

@@ -13,8 +13,10 @@ function RestorePage() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState('idle');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadEtaSeconds, setUploadEtaSeconds] = useState(null);
+  const [analysisError, setAnalysisError] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [expandedFeatureRows, setExpandedFeatureRows] = useState({});
   const [restoreCurrentPage, setRestoreCurrentPage] = useState(1);
@@ -99,6 +101,8 @@ function RestorePage() {
     setUploading(true);
     setUploadProgress(0);
     setUploadEtaSeconds(null);
+    setAnalysisError(null);
+      setUploadPhase('uploading');
     const formData = new FormData();
     formData.append('backup', selectedFile);
 
@@ -117,6 +121,9 @@ function RestorePage() {
             if (!total) return;
             const percent = Math.min(100, Math.round((loaded / total) * 100));
             setUploadProgress(percent);
+            if (percent >= 100) {
+              setUploadPhase('analyzing');
+            }
             const elapsedSeconds = Math.max(0.001, (Date.now() - uploadStartedAt) / 1000);
             const bytesPerSecond = loaded / elapsedSeconds;
             setUploadEtaSeconds(bytesPerSecond > 0 ? Math.ceil((total - loaded) / bytesPerSecond) : null);
@@ -126,6 +133,7 @@ function RestorePage() {
 
       setSession(res.data.session);
       setRestoreItems(res.data.items || []);
+      setUploadPhase('complete');
       setSelectedFile(null);
       await loadRestoreHistory();
       if (fileInputRef.current) {
@@ -134,11 +142,16 @@ function RestorePage() {
       toast.success(`Analyzed ${res.data.items?.length || 0} changes`);
     } catch (err) {
       console.error('Upload failed', err);
-      toast.error(err.response?.data?.error || 'Upload failed');
+      const message = err.response?.data?.message || err.response?.data?.error || 'Upload failed';
+      if (err.response?.data?.error === 'ANALYSIS_FAILED') {
+        setAnalysisError(message);
+      }
+      toast.error(message);
     } finally {
       setUploading(false);
       setUploadProgress(0);
       setUploadEtaSeconds(null);
+      setUploadPhase('idle');
     }
   };
 
@@ -347,7 +360,10 @@ function RestorePage() {
     ? Math.min(100, Math.round((progressProcessed / progressTotal) * 100))
     : 0;
   const estimatedSeconds = Number(restoreProgress.estimated_remaining_seconds);
-  const analysisActive = uploading && String(restoreProgress.phase || '').toLowerCase() === 'analysis';
+  const analysisActive = uploading && (
+      uploadPhase === 'analyzing' ||
+      String(restoreProgress.phase || '').toLowerCase() === 'analysis'
+    );
   const formatRemainingTime = (seconds) => {
     if (!Number.isFinite(seconds) || seconds <= 0) return 'Finishing...';
     if (seconds < 60) return `About ${seconds}s remaining`;
@@ -371,6 +387,11 @@ function RestorePage() {
 
   return (
     <div className="restore-page">
+      {analysisError && (
+        <section className="restore-repair-warning critical" aria-live="assertive">
+          🚨 <strong>Analysis Failed:</strong> {analysisError}
+        </section>
+      )}
       {/* Upload Section */}
       <section className="restore-section">
         <h2>Upload Backup File</h2>
@@ -394,7 +415,7 @@ function RestorePage() {
         {uploading && (
           <div className="restore-progress restore-transfer-progress" aria-live="polite">
             <div className="restore-progress-heading">
-              <strong>{analysisActive ? 'Analyzing backup' : 'Uploading backup'}</strong>
+              <strong>{analysisActive ? 'Analyzing differences' : 'Uploading backup'}</strong>
               <span>{analysisActive ? `${progressProcessed} of ${progressTotal} items` : `${uploadProgress}% uploaded`}</span>
             </div>
             <div
@@ -683,12 +704,22 @@ function RestorePage() {
             ) : (
               <div className="restore-empty-state">
                 <div className="restore-empty-state-content">
-                  <div className="restore-empty-state-icon">✅</div>
-                  <h3 className="restore-empty-state-title">Backup is Up-to-Date</h3>
-                  <p className="restore-empty-state-message">
-                    All items in the backup are identical to the current version.<br />
-                    No restore actions required.
-                  </p>
+                  {String(session.status || '').toLowerCase() === 'failed' || String(restoreProgress.status || '').toLowerCase() === 'failed' ? (
+                    <>
+                      <div className="restore-empty-state-icon">🚨</div>
+                      <h3 className="restore-empty-state-title">Analysis Failed</h3>
+                      <p className="restore-empty-state-message">The backup comparison failed. Review the analysis error before continuing.</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="restore-empty-state-icon">✅</div>
+                      <h3 className="restore-empty-state-title">Backup is Up-to-Date</h3>
+                      <p className="restore-empty-state-message">
+                        All items in the backup are identical to the current version.<br />
+                        No restore actions required.
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
             )}

@@ -14,7 +14,6 @@ export default function useContributorStats(dashboardStats) {
   const uploads = Number(safeStats.uploads) || 0;
   const likes = Number(safeStats.likes) || 0;
   const downloads = Number(safeStats.downloads) || 0;
-  const rawScore = Number(safeStats.rawScore) || 0;
   const monthsOld = Number(safeStats.monthsOld) || 1;
 
   const {
@@ -23,10 +22,15 @@ export default function useContributorStats(dashboardStats) {
     maxUploads,
   } = getContributorRank(uploads);
 
-  const computedReputationScore = getCalculatedReputationScore(safeStats);
-  const reputationScore = Number.isFinite(Number(safeStats?.reputationScore))
-    ? Number(safeStats.reputationScore)
-    : computedReputationScore;
+  const agreedFormulaScore = (() => {
+    const totalContribution = uploads + downloads;
+    const viewCount = Number(safeStats.views) || 0;
+    if (viewCount <= 0) return 0;
+    return Number((totalContribution / Math.max(1, viewCount)).toFixed(2));
+  })();
+
+  const rawScore = agreedFormulaScore;
+  const reputationScore = agreedFormulaScore;
 
   const contributorLevel =
     getContributorLevel(

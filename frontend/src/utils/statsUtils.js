@@ -101,23 +101,11 @@ export const getViewDownloadRate = (stats) => {
 export const getCalculatedReputationScore = (stats) => {
   const uploadsCount = Number(stats?.uploads || 0);
   const downloadsCount = Number(stats?.downloads || 0);
-  const likesCount = Number(stats?.likes || 0);
   const viewsCount = Number(stats?.views || 0);
-  const months = Math.max(1, Number(stats?.monthsOld || 1));
 
-  const qualityMultiplier =
-    downloadsCount > 0 ? Math.max(0.1, 1 + viewsCount / downloadsCount) : 0.1;
+  if (viewsCount <= 0) {
+    return 0;
+  }
 
-  const engagementScore =
-    uploadsCount > 0
-      ? (viewsCount + downloadsCount + likesCount) / uploadsCount
-      : 0;
-
-  const maturityFactor = Math.max(1, 1 + uploadsCount / Math.max(1, months));
-  const consistencyFactor = months >= 6 ? 1.05 : 1;
-  const rawScore = Math.round(
-    engagementScore * qualityMultiplier * maturityFactor * consistencyFactor
-  );
-
-  return Math.round(engagementScore + qualityMultiplier + rawScore + maturityFactor);
+  return Number(((uploadsCount + downloadsCount) / viewsCount).toFixed(2));
 };

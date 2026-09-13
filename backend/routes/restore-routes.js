@@ -235,7 +235,30 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
        WHERE id = $1`,
       [session.id]
     );
-    const items = await analyzeBackup(backupData, pool, { sessionId: session.id });
+    let items;
+    try {
+      items = await analyzeBackup(backupData, pool, { sessionId: session.id });
+    } catch (analysisError) {
+      await pool.query(
+        `UPDATE restore_sessions SET
+           status = 'failed',
+           error_message = $1,
+           comparison_result = JSONB_BUILD_OBJECT(
+             'status', 'failed',
+             'phase', 'analysis',
+             'error', $1,
+             'failed_at', NOW()
+           ),
+           updated_at = NOW()
+         WHERE id = $2`,
+        [analysisError.message || 'Backup comparison failed', session.id]
+      );
+      return res.status(422).json({
+        error: 'ANALYSIS_FAILED',
+        message: analysisError.message || 'Backup comparison failed',
+        restore_session_id: session.session_id
+      });
+    }
 
     // Insert restore items (only actionable ones)
     for (const item of items) {
@@ -264,39 +287,21 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
           item.changeType,
           "pending",
           JSON.stringify(item.relatedFiles || []),
-          JSON.stringify(item.identity || null)
+          JSON.stringify({
+            identity: item.identity || null,
+            source: item.sourceRecord || null,
+            destination: item.destinationRecord || null,
+            changedFields: item.changedFields || []
+          })
         ]
       );
     }
 
-    // Count item types
-    const newItemCount = items.filter((i) => i.changeType === "new").length;
-    const updateItemCount = items.filter((i) => i.changeType === "update").length;
-
-    const conflictCount = items.filter((i) => (i.changeType || i.change_type || '').toString().toLowerCase() === 'conflict').length;
-    const countBackupRows = (tableName) => {
-      const table = Array.isArray(backupData.database?.tables)
-        ? backupData.database.tables.find((entry) => entry.tableName === tableName || entry.table === tableName)
-        : null;
-      if (table) return Number(table.rowCount ?? table.rows?.length ?? 0);
-      return [...(backupData.database?.newRecords || []), ...(backupData.database?.updatedRecords || [])]
-        .filter((entry) => (entry.tableName || entry.table) === tableName)
-        .reduce((sum, entry) => sum + Number(entry.recordCount ?? entry.rows?.length ?? 0), 0);
-    };
-    const readTargetCount = async (tableName) => {
-      try {
-        const result = await pool.query(`SELECT COUNT(*)::int AS count FROM "${tableName}"`);
-        return Number(result.rows?.[0]?.count || 0);
-      } catch (err) {
-        return null;
-      }
-    };
-    const sourceUserCount = countBackupRows('users');
-    const sourceImageCount = countBackupRows('images');
-    const targetUserCount = await readTargetCount('users');
-    const targetImageCount = await readTargetCount('images');
-    const newUserCount = items.filter((item) => item.type === 'database' && item.category === 'users' && item.changeType === 'new').length;
-    const newImageCount = items.filter((item) => item.type === 'database' && ['images', 'assets'].includes(item.category) && item.changeType === 'new').length;
+    const comparison = await buildComparisonSummary(backupData, items, pool, session);
+    const { summary } = comparison;
+    const newItemCount = summary.new;
+    const updateItemCount = summary.updated;
+    const conflictCount = summary.conflicts;
     const comparisonSummary = {
       restore_session_id: session.session_id,
       backup_id: session.backup_id || backupId,
@@ -306,21 +311,13 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
       backup_type: session.backup_type || 'incremental',
       status: 'analyzed',
       completed_items: 0,
-      pending_items: items.length,
+      pending_items: summary.total,
       conflicts: conflictCount,
-      total_items: items.length,
-      source_database: {
-        full_dump: Boolean(backupData.database?.fullDump),
-        table_count: Array.isArray(backupData.database?.tables) ? backupData.database.tables.length : 0,
-        users: sourceUserCount,
-        images: sourceImageCount
-      },
-      target_database: {
-        users: targetUserCount,
-        images: targetImageCount
-      },
-      new_users: newUserCount,
-      new_assets: newImageCount
+      total_items: summary.total,
+      source_database: summary.sourceDatabase,
+      target_database: summary.targetDatabase,
+      new_users: summary.newUsers,
+      new_assets: summary.newAssets
     };
 
     // Update session with item counts
@@ -336,12 +333,12 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
       WHERE id = $8
       RETURNING *`,
       [
-        items.length,
+        summary.total,
         newItemCount,
         updateItemCount,
         0,
         conflictCount,
-        items.length,
+        summary.total,
         JSON.stringify(comparisonSummary),
         session.id
       ]
@@ -363,16 +360,8 @@ router.post("/upload", upload.single("backup"), async (req, res) => {
     res.json({
       session: updatedSession.rows[0],
       items: retrievedItems.rows,
-      source_database_summary: {
-        full_dump: Boolean(backupData.database?.fullDump),
-        table_count: Array.isArray(backupData.database?.tables) ? backupData.database.tables.length : 0,
-        source_user_count: sourceUserCount,
-        source_image_count: sourceImageCount,
-        target_user_count: targetUserCount,
-        target_image_count: targetImageCount,
-        new_user_count: newUserCount,
-        new_image_count: newImageCount
-      },
+      source_database_summary: summary.sourceDatabase,
+      target_database_summary: summary.targetDatabase,
       message: message
     });
   } catch (err) {
@@ -1103,13 +1092,15 @@ async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
   if (!match) throw new Error(`Invalid database restore item: ${item.name}`);
   const tableName = match[1].replace(/[^a-zA-Z0-9_]/g, '');
   const recordId = match[2];
-  const row = findDatabaseRowInBackup(database, tableName, recordId);
-  if (!row) throw new Error(`Database row not found in backup: ${item.name}`);
-
   const persistedIdentity = typeof item.related_records === 'string'
     ? (() => { try { return JSON.parse(item.related_records); } catch (err) { return null; } })()
     : item.related_records;
-  const identity = persistedIdentity?.columns?.length ? persistedIdentity : buildIdentity(row, tableName);
+  const row = persistedIdentity?.source || findDatabaseRowInBackup(database, tableName, recordId);
+  if (!row) throw new Error(`Database row not found in backup: ${item.name}`);
+
+  const identity = persistedIdentity?.identity?.columns?.length
+    ? persistedIdentity.identity
+    : buildIdentity(row, tableName);
   let existingTarget = null;
   if (identity?.columns?.length) {
     const identitySql = `SELECT * FROM "${tableName}" WHERE ${identity.columns.map((column, index) => `"${column}" = $${index + 1}`).join(' AND ')} LIMIT 1`;
@@ -1587,6 +1578,43 @@ router.delete("/file/:id", async (req, res) => {
  * Helper function: Analyze backup and generate comparison items
  * Compares backup against current system state
  */
+async function buildComparisonSummary(backupData, items, pool, session) {
+  const countBackupRows = (tableName) => {
+    const table = Array.isArray(backupData.database?.tables)
+      ? backupData.database.tables.find((entry) => entry.tableName === tableName || entry.table === tableName)
+      : null;
+    if (table) return Number(table.rowCount ?? table.rows?.length ?? 0);
+    return [...(backupData.database?.newRecords || []), ...(backupData.database?.updatedRecords || [])]
+      .filter((entry) => (entry.tableName || entry.table) === tableName)
+      .reduce((sum, entry) => sum + Number(entry.recordCount ?? entry.rows?.length ?? 0), 0);
+  };
+  const readTargetCount = async (tableName) => {
+    const result = await pool.query(`SELECT COUNT(*)::int AS count FROM "${tableName}"`);
+    return Number(result.rows?.[0]?.count || 0);
+  };
+  const summary = {
+    total: items.length,
+    new: items.filter((item) => item.changeType === 'new').length,
+    updated: items.filter((item) => item.changeType === 'update').length,
+    unchanged: 0,
+    conflicts: items.filter((item) => String(item.changeType || '').toLowerCase() === 'conflict').length,
+    sourceUsers: countBackupRows('users'),
+    targetUsers: await readTargetCount('users'),
+    sourceAssets: countBackupRows('images'),
+    targetAssets: await readTargetCount('images'),
+    newUsers: items.filter((item) => item.type === 'database' && item.category === 'users' && item.changeType === 'new').length,
+    newAssets: items.filter((item) => item.type === 'database' && ['images', 'assets'].includes(item.category) && item.changeType === 'new').length
+  };
+  summary.sourceDatabase = {
+    full_dump: Boolean(backupData.database?.fullDump),
+    table_count: Array.isArray(backupData.database?.tables) ? backupData.database.tables.length : 0,
+    users: summary.sourceUsers,
+    images: summary.sourceAssets
+  };
+  summary.targetDatabase = { users: summary.targetUsers, images: summary.targetAssets };
+  return { items, summary, session_id: session?.session_id || null };
+}
+
 async function analyzeBackup(backupData, pool, options = {}) {
   const items = [];
   let itemOrder = 0;
@@ -1892,10 +1920,11 @@ async function analyzeBackup(backupData, pool, options = {}) {
     }
 
     const databaseTableCache = new Map();
-    const comparableRecord = (record) => {
+    const comparableRecord = (record, identityColumns = []) => {
       if (!record || typeof record !== 'object') return record;
       return Object.fromEntries(Object.entries(record)
-        .filter(([key]) => !['operation', 'changedFields', '__recordIdentity'].includes(key)));
+        .filter(([key]) => !['operation', 'changedFields', '__recordIdentity'].includes(key))
+        .filter(([key]) => !(key === 'id' && identityColumns.length > 0 && !identityColumns.includes('id'))));
     };
 
     for (const section of databaseSections) {
@@ -1943,7 +1972,7 @@ async function analyzeBackup(backupData, pool, options = {}) {
               if (identityColumns.length > 0 && identityColumns.every((column) => candidate[column] !== undefined && candidate[column] !== null)) {
                 return identityColumns.map((column) => `${column}=${candidate[column]}`).join('&') === String(identityValue);
               }
-              return JSON.stringify(comparableRecord(candidate)) === JSON.stringify(comparableRecord(row));
+              return JSON.stringify(comparableRecord(candidate, identityColumns)) === JSON.stringify(comparableRecord(row, identityColumns));
             }) || null;
           } catch (err) {
             currentRecord = null;
@@ -1963,7 +1992,7 @@ async function analyzeBackup(backupData, pool, options = {}) {
         const isSameRecord = hasExistingRecord
           && row
           && currentRecord
-          && JSON.stringify(comparableRecord(currentRecord)) === JSON.stringify(comparableRecord(row));
+          && JSON.stringify(comparableRecord(currentRecord, identityColumns)) === JSON.stringify(comparableRecord(row, identityColumns));
 
         if (isSameRecord) {
           unchangedCount++;
@@ -1973,6 +2002,9 @@ async function analyzeBackup(backupData, pool, options = {}) {
         const isNewRecord = !hasExistingRecord && section.kind !== 'delete';
         const isUpdateRecord = hasExistingRecord && section.kind !== 'delete';
         const changeType = conflictDetected ? 'conflict' : isNewRecord ? 'new' : 'update';
+        const changedFields = hasExistingRecord
+          ? Object.keys(row).filter((key) => !['id', 'operation', 'changedFields', '__recordIdentity'].includes(key) && JSON.stringify(currentRecord[key]) !== JSON.stringify(row[key]))
+          : Object.keys(row).filter((key) => !['operation', 'changedFields', '__recordIdentity'].includes(key));
 
         items.push({
           type: 'database',
@@ -1984,6 +2016,9 @@ async function analyzeBackup(backupData, pool, options = {}) {
           changeType,
           relatedFiles: [],
           identity,
+          sourceRecord: row,
+          destinationRecord: currentRecord,
+          changedFields,
           itemOrder: itemOrder++
         });
       }
@@ -1994,6 +2029,7 @@ async function analyzeBackup(backupData, pool, options = {}) {
 
   } catch (err) {
     console.error("Error analyzing backup:", err.message);
+    throw err;
   }
 
   // Return empty array if no actionable items

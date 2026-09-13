@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node startup/bootstrap.js",
     "dev": "node startup/bootstrap.js",
-    "test": "node --test test/bootstrap.test.js",
+    "test": "node --test test/*.test.js",
     "migrate:otp": "node scripts/ensure-otp-columns.js"
   },
   "keywords": [],

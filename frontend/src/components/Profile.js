@@ -120,31 +120,6 @@ function Profile({ darkMode = false }) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [checkoutMode, setCheckoutMode] = useState(null);
-  const [checkoutAmount, setCheckoutAmount] = useState(0);
-  const [googlePayId, setGooglePayId] = useState("");
-  const [paymentError, setPaymentError] = useState("");
-
-  const openGooglePayCheckout = async (credits) => {
-    try {
-      const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/payment-settings`, {
-        headers: buildAuthHeaders(token)
-      });
-      const googlePaySetting = res?.data?.["google pay"] || res?.data?.["google_pay"] || res?.data?.["Google Pay"];
-      if (googlePaySetting?.identifier) {
-        setGooglePayId(googlePaySetting.identifier);
-        setCheckoutAmount(credits);
-        setCheckoutMode("googlepay");
-        setPaymentError("");
-      } else {
-        setPaymentError("Google Pay is not configured yet.");
-      }
-    } catch (err) {
-      console.error(err);
-      setPaymentError("Unable to load Google Pay settings.");
-    }
-  };
 
   const submitChangePassword = async () => {
     if (!currentPassword || !newPassword) {
@@ -369,26 +344,6 @@ function Profile({ darkMode = false }) {
               </p>
             </div>
 
-            <h3 style={{ marginBottom: "10px" }}>Buy Credits</h3>
-            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-              <button onClick={() => openGooglePayCheckout(10)} style={buttonStyle}>₹99 → 10 Credits</button>
-              <button onClick={() => openGooglePayCheckout(50)} style={buttonStyle}>₹399 → 50 Credits</button>
-              <button onClick={() => openGooglePayCheckout(100)} style={buttonStyle}>₹699 → 100 Credits</button>
-            </div>
-
-            {checkoutMode === "googlepay" ? (
-              <div style={{ marginTop: "16px", padding: "16px", borderRadius: "14px", background: isDarkMode ? "rgba(255,255,255,0.05)" : "#ffffff", border: "1px solid rgba(74, 222, 128, 0.35)" }}>
-                <h4 style={{ marginTop: 0 }}>Google Pay Checkout</h4>
-                <p style={{ marginBottom: "8px", color: isDarkMode ? "#cbd5e1" : "#475569" }}>Pay ₹{checkoutAmount === 10 ? 99 : checkoutAmount === 50 ? 399 : 699} for {checkoutAmount} credits.</p>
-                <p style={{ marginBottom: "8px", color: isDarkMode ? "#cbd5e1" : "#475569" }}>Scan the QR code or use this ID: <strong>{googlePayId}</strong></p>
-                <div style={{ width: 180, height: 180, borderRadius: 10, background: "white", display: "flex", alignItems: "center", justifyContent: "center", color: "#111", fontWeight: 700 }}>
-                  QR for {googlePayId || "Google Pay"}
-                </div>
-                <button onClick={() => { setCheckoutMode(null); setPaymentError(""); }} style={{ ...secondaryButtonStyle, marginTop: "12px" }}>Close</button>
-              </div>
-            ) : null}
-
-            {paymentError ? <p style={{ color: "#ff8a80", marginTop: "12px" }}>{paymentError}</p> : null}
           </div>
         </>
       )}

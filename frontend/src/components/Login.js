@@ -113,8 +113,6 @@ function Login({ onSuccess, onClose }) {
       }
       localStorage.setItem("userPermissions", JSON.stringify(res.data.custom_permissions || {}));
 
-      document.cookie = `authToken=${encodeURIComponent(res.data.token)}; path=/; SameSite=Lax; max-age=${60 * 60 * 24 * 7}`;
-
       window.dispatchEvent(new Event("auth-changed"));
       toast.success("Login successful");
       clearOtpLogin();

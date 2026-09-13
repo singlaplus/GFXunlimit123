@@ -33,7 +33,7 @@ function StatisticsCards({
     },
     {
       title: "💰 Earnings",
-      value: `$${earningsStats.total_earnings || 0}`,
+      value: `₹${earningsStats.total_earnings || 0}`,
       color: "#673ab7",
     },
     {

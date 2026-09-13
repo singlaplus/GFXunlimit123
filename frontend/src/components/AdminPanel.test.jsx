@@ -43,6 +43,61 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByPlaceholderText(/new category name/i)).toBeInTheDocument();
   });
 
+  it("renders the admin dashboard overview tab", async () => {
+    useLocation.mockReturnValue({ search: "?tab=admin_dashboard" });
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: /^dashboard$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^dashboard$/i })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: /contributor approval/i }));
+    expect(await screen.findByRole("heading", { name: /contributor approval/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /customer approval/i }));
+    expect(await screen.findByRole("heading", { name: /customer approval/i })).toBeInTheDocument();
+  });
+
+  it("shows contributor and customer detail cards in the controls tab", async () => {
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [
+          { id: 1, full_name: "Contributor One", username: "contributor1", email: "creator@example.com", role: "contributor", status: "active" },
+          { id: 2, full_name: "Customer One", username: "customer1", email: "buyer@example.com", role: "customer", status: "pending" }
+        ] });
+      }
+      if (url.includes("/admin/categories")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: /contributor details/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /customer details/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^contributor details$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^tax forms$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^customer details$/i })).toBeInTheDocument();
+  });
+
+  it("searches contributor details by username or email", async () => {
+    useLocation.mockReturnValue({ search: "?tab=contributordetails" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [
+          { id: 1, full_name: "Alpha Creator", username: "alpha_creator", email: "alpha@example.com", role: "contributor", status: "active" },
+          { id: 2, full_name: "Beta Creator", username: "beta_creator", email: "beta@example.com", role: "contributor", status: "active" }
+        ] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    const search = await screen.findByPlaceholderText(/search by username or email/i);
+    fireEvent.change(search, { target: { value: "beta@example" } });
+    expect(search).toHaveValue("beta@example");
+  });
+
   it("renders actual asset counts from collection payloads that use count fields", async () => {
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/categories")) {
@@ -728,6 +783,22 @@ describe("AdminPanel collection controls", () => {
     expect(await screen.findByText(/manage categories/i)).toBeInTheDocument();
     expect(screen.queryByText(/contributor threshold/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /add new threshold/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the contributor commission card and opens a percentage prompt", async () => {
+    const promptSpy = jest.spyOn(window, "prompt").mockReturnValue("15");
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText(/contributor commission/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^commission$/i }));
+
+    expect(promptSpy).toHaveBeenCalledWith("Enter contributor commission percentage (%)", "");
+    await waitFor(() => {
+      expect(screen.getByText(/current: 15%/i)).toBeInTheDocument();
+    });
+
+    promptSpy.mockRestore();
   });
 
   it("opens a popup when a payment gateway label is clicked", async () => {

@@ -75,11 +75,11 @@ export const getEffectiveAuthToken = () => {
     return null;
   }
 
-  const cookieToken = normalizeAuthToken(readAuthTokenFromCookie());
   const localToken = normalizeAuthToken(localStorage.getItem("token"));
-  const token = cookieToken || localToken;
+  const cookieToken = normalizeAuthToken(readAuthTokenFromCookie());
+  const token = localToken || cookieToken;
 
-  if (token && localToken && localToken !== token) {
+  if (token && cookieToken && !localToken) {
     localStorage.setItem("token", token);
   }
 

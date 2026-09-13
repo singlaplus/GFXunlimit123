@@ -14,6 +14,37 @@ import reportWebVitals from "./reportWebVitals";
 
 axios.defaults.withCredentials = true;
 
+let refreshPromise = null;
+
+const refreshAccessToken = () => {
+  if (!refreshPromise) {
+    const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+    refreshPromise = axios.post(`${apiBaseUrl}/auth/refresh`, {}, {
+      withCredentials: true,
+      _authRefreshRequest: true,
+    }).then((response) => {
+      const token = normalizeAuthToken(response.data?.token);
+      if (!token) {
+        throw new Error("Refresh response did not include an access token");
+      }
+      localStorage.setItem("token", token);
+      if (response.data.username) localStorage.setItem("username", response.data.username);
+      if (response.data.userId) localStorage.setItem("userId", String(response.data.userId));
+      if (response.data.role) localStorage.setItem("userRole", response.data.role);
+      if (response.data.email) localStorage.setItem("email", response.data.email);
+      if (response.data.fullName) localStorage.setItem("fullName", response.data.fullName);
+      if (response.data.custom_permissions) {
+        localStorage.setItem("userPermissions", JSON.stringify(response.data.custom_permissions));
+      }
+      window.dispatchEvent(new Event("auth-changed"));
+      return token;
+    }).finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+};
+
 axios.interceptors.request.use((config) => {
   const lastActivityAt = readLastActivityAt();
   const headers = config.headers || {};
@@ -55,8 +86,17 @@ axios.interceptors.response.use(
       });
     }
 
-    if (shouldTriggerAuthSessionExpired(error)) {
-      window.dispatchEvent(new Event("auth-session-expired"));
+    const originalRequest = error?.config;
+    if (shouldTriggerAuthSessionExpired(error) && !originalRequest?._authRetry && !originalRequest?._authRefreshRequest) {
+      originalRequest._authRetry = true;
+      return refreshAccessToken().then((token) => {
+        originalRequest.headers = originalRequest.headers || {};
+        originalRequest.headers.Authorization = `Bearer ${token}`;
+        return axios(originalRequest);
+      }).catch((refreshError) => {
+        window.dispatchEvent(new Event("auth-session-expired"));
+        return Promise.reject(refreshError);
+      });
     }
 
     return Promise.reject(error);

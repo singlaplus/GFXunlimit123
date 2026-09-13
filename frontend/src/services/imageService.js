@@ -11,6 +11,7 @@ export const getImages = (page, limit, category = null, collection = null) => {
     },
   });
 };
+export const getRelatedImages = (id) => api.get(`/images/related/${id}`);
 export const likeImageRequest = (id) => {
   return api.put(`/images/${id}/like`);
 };

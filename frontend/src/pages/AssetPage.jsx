@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getSingleImage } from "../services/api";
 import axios from "axios";
-import { likeImageRequest, viewImageRequest, addFavoriteRequest } from "../services/imageService";
+import { getRelatedImages, likeImageRequest, viewImageRequest, addFavoriteRequest } from "../services/imageService";
 import { saveCartItems } from "../utils/cartPersistence";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
 
@@ -22,6 +22,8 @@ export default function AssetPage(props) {
   const [selectedCurrency, setSelectedCurrency] = useState(null);
   const [cartCurrency, setCartCurrency] = useState(null);
   const [subscriptionActive, setSubscriptionActive] = useState(false);
+  const [relatedImages, setRelatedImages] = useState([]);
+  const relatedSliderRef = useRef(null);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -59,6 +61,13 @@ export default function AssetPage(props) {
     };
     fetchAndViewImage();
   }, [imageId]);
+
+  useEffect(() => {
+    if (!image?.id) return;
+    getRelatedImages(image.id)
+      .then((response) => setRelatedImages(Array.isArray(response.data) ? response.data : []))
+      .catch(() => setRelatedImages([]));
+  }, [image]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -232,7 +241,7 @@ export default function AssetPage(props) {
   return (
     <div
       style={{
-        padding: "40px 20px",
+        padding: "40px 0",
         minHeight: "100vh",
         background: darkMode ? "linear-gradient(180deg, #020617 0%, #101828 100%)" : "#f3f4f6",
         color: darkMode ? "#f8fafc" : "#111827",
@@ -240,8 +249,7 @@ export default function AssetPage(props) {
     >
       <div
         style={{
-          maxWidth: 1200,
-          margin: "0 auto",
+          width: "100%",
           display: "grid",
           gridTemplateColumns: "1.45fr 0.85fr",
           gap: "32px",
@@ -603,6 +611,68 @@ export default function AssetPage(props) {
             </div>
           </div>
         </div>
+
+        {relatedImages.length > 0 && (
+          <section
+            aria-labelledby="related-assets-heading"
+            style={{
+              gridColumn: "1 / -1",
+              marginTop: "8px",
+              padding: "28px 0 4px",
+              borderTop: darkMode ? "1px solid rgba(255,255,255,0.1)" : "1px solid #e2e8f0",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", marginBottom: "16px" }}>
+              <h2 id="related-assets-heading" style={{ margin: 0, fontSize: "1.45rem" }}>Related assets</h2>
+              <div style={{ display: "flex", gap: "8px" }}>
+                {[-1, 1].map((direction) => (
+                  <button
+                    key={direction}
+                    type="button"
+                    aria-label={direction < 0 ? "Previous related assets" : "Next related assets"}
+                    onClick={() => relatedSliderRef.current?.scrollBy({ left: direction * 320, behavior: "smooth" })}
+                    style={{
+                      width: "38px",
+                      height: "38px",
+                      borderRadius: "50%",
+                      border: darkMode ? "1px solid rgba(255,255,255,0.15)" : "1px solid #cbd5e1",
+                      background: darkMode ? "rgba(255,255,255,0.06)" : "#ffffff",
+                      color: darkMode ? "#f8fafc" : "#111827",
+                      cursor: "pointer",
+                      fontSize: "20px",
+                    }}
+                  >
+                    {direction < 0 ? "‹" : "›"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div
+              ref={relatedSliderRef}
+              style={{ display: "flex", gap: "16px", overflowX: "auto", scrollBehavior: "smooth", paddingBottom: "12px" }}
+            >
+              {relatedImages.map((related) => {
+                const slug = String(related.title || "asset").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+                return (
+                  <a
+                    key={related.id}
+                    href={`/asset/${slug || "asset"}-${related.id}`}
+                    style={{ flex: "0 0 220px", textDecoration: "none", color: "inherit" }}
+                  >
+                    <img
+                      src={getAssetPreviewUrl(related, { quality: 50, watermark: false })}
+                      alt={related.title || "Related asset"}
+                      style={{ width: "100%", aspectRatio: "16 / 10", objectFit: "cover", display: "block", borderRadius: "14px" }}
+                    />
+                    <div style={{ marginTop: "10px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {related.title || "Untitled asset"}
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* Currency Selection Modal */}
         {showCurrencyModal && (

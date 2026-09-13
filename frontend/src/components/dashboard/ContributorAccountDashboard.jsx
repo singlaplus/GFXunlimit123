@@ -1,12 +1,13 @@
 import { useState } from "react";
 import axios from "axios";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../../utils/authSession";
+import { calculateLoyaltyPoints } from "../../utils/loyaltyPoints";
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const number = (value) => Number(value || 0).toLocaleString();
 const unavailable = "Not available";
 
-export default function ContributorAccountDashboard({ darkMode, profile = {}, stats = {}, reputationScore, reputationTier, onNavigate }) {
+export default function ContributorAccountDashboard({ darkMode, profile = {}, stats = {}, assets = [], reputationScore, reputationTier, onNavigate }) {
   const [showPassword, setShowPassword] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -15,7 +16,7 @@ export default function ContributorAccountDashboard({ darkMode, profile = {}, st
   const isDark = Boolean(darkMode);
   const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
   const displayName = profile.full_name || profile.username || "Contributor";
-  const loyalty = profile.loyalty_points != null ? Number(profile.loyalty_points) : Math.max(0, Number(stats.total_uploads || 0) - 2);
+  const loyalty = calculateLoyaltyPoints(assets);
   const updatePassword = async () => {
     if (!currentPassword || !newPassword || newPassword !== confirmPassword) { setMessage("Enter all password fields and make sure the new passwords match."); return; }
     try {

@@ -1,0 +1,25 @@
+.w9-page { --w9-ink: #30343b; --w9-muted: #707780; --w9-line: #e2e5e8; --w9-accent: #1681df; position: relative; z-index: 1; flex: 1 1 auto; min-width: 0; box-sizing: border-box; padding: 24px 28px 40px; color: var(--w9-ink); background: #fff; font: 12px/1.5 Arial, sans-serif; }
+.w9-topbar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; max-width: 1060px; margin: 0 auto 16px; }
+.w9-back, .w9-inline-link { color: var(--w9-accent); background: transparent; border: 0; font: inherit; font-size: 11px; cursor: pointer; padding: 0; }
+.w9-review { min-width: 135px; padding: 8px 18px; color: #111; background: #fff; border: 1px solid #9fa3a7; border-radius: 18px; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+.w9-review:disabled { color: #aeb4ba; border-color: #d7dadd; cursor: not-allowed; }
+.w9-header, .w9-section { max-width: 1060px; margin: 0 auto 20px; }
+.w9-header p { margin: 5px 0; color: var(--w9-ink); }
+.w9-header a, .w9-section a { color: var(--w9-accent); }
+.w9-section { overflow: hidden; border: 1px solid var(--w9-line); border-radius: 5px; background: #fff; }
+.w9-section h2 { margin: 0; padding: 13px 16px; font-size: 14px; }
+.w9-fields { display: grid; }
+.w9-row { display: grid; grid-template-columns: 235px minmax(180px, 1fr); align-items: center; gap: 12px; min-height: 46px; padding: 8px 17px; border-top: 1px solid var(--w9-line); }
+.w9-label { display: grid; gap: 3px; color: #3d444b; }
+.w9-label sup { color: #ed2224; margin-left: 2px; }
+.w9-label small, .w9-control > small { color: var(--w9-muted); font-size: 10px; line-height: 1.35; }
+.w9-control { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr); gap: 6px; min-width: 0; }
+.w9-control > input, .w9-control > select { width: 100%; min-height: 32px; box-sizing: border-box; padding: 6px 10px; color: var(--w9-ink); background: #fff; border: 1px solid #dfe2e5; border-radius: 4px; outline: 0; font: inherit; }
+.w9-control > small { grid-column: 2; }
+.w9-control > input:focus, .w9-control > select:focus { border-color: var(--w9-accent); box-shadow: 0 0 0 2px rgba(22, 129, 223, 0.12); }
+.w9-note, .w9-certification > p { margin: 16px; color: #697078; font-size: 10px; line-height: 1.55; }
+.w9-certification label { display: flex; align-items: flex-start; gap: 8px; margin: 10px 16px; line-height: 1.45; }
+.w9-certification label input { margin-top: 2px; }
+.w9-bottom { margin-top: 18px; }
+.w9-bottom .w9-back { margin-right: auto; }
+@media (max-width: 700px) { .w9-page { padding: 14px; }.w9-row { grid-template-columns: 1fr; gap: 6px; }.w9-control { grid-template-columns: 1fr; }.w9-control > small { grid-column: auto; }.w9-topbar { justify-content: space-between; } }

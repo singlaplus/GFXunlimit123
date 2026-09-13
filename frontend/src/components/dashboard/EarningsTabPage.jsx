@@ -3,6 +3,7 @@ import {
   getCalculatedReputationScore,
   getContributorReputationTier,
 } from "../../utils/statsUtils";
+import { calculateLoyaltyPoints } from "../../utils/loyaltyPoints";
 
 function AnalyticsTabPage({
   reputationScore,
@@ -13,7 +14,20 @@ function AnalyticsTabPage({
   likes,
   views,
   monthsOld,
+  assets = [],
   darkMode,
+  downloadsToday = 0,
+  downloadsLast7Days = 0,
+  downloadsLast30Days = 0,
+  downloadsLast365Days = 0,
+  uploadsToday = 0,
+  uploadsLast7Days = 0,
+  uploadsLast30Days = 0,
+  uploadsLast365Days = 0,
+  earningsToday = 0,
+  earningsLast7Days = 0,
+  earningsLast30Days = 0,
+  earningsLast365Days = 0,
 }) {
   const isDark = Boolean(darkMode);
   const cardBaseStyle = {
@@ -57,22 +71,19 @@ function AnalyticsTabPage({
     views: viewsCount,
     monthsOld: months,
   });
-  const loyaltyPoints = Math.max(0, Math.min(365, uploadsCount));
-  const loyaltyProgress = Math.min(100, Math.round((loyaltyPoints / 365) * 100));
-  const loyaltyDecayPoints = Math.max(0, loyaltyPoints - 2);
-  const effectiveLoyaltyPoints = loyaltyPoints > 0 ? loyaltyDecayPoints : 0;
-  const todayUploads = Math.max(0, Math.min(uploadsCount, Math.max(1, Math.round(uploadsCount / 365))));
-  const uploadsLast7Days = Math.max(0, Math.min(uploadsCount, Math.max(1, Math.round(uploadsCount / 52))));
-  const uploadsLast30Days = Math.max(0, Math.min(uploadsCount, Math.max(1, Math.round(uploadsCount / 12))));
-  const uploadsLast365Days = uploadsCount;
-  const todayDownloads = Math.max(0, Math.min(downloadsCount, Math.max(1, Math.round(downloadsCount / 365))));
-  const downloadsLast7Days = Math.max(0, Math.min(downloadsCount, Math.max(1, Math.round(downloadsCount / 52))));
-  const downloadsLast30Days = Math.max(0, Math.min(downloadsCount, Math.max(1, Math.round(downloadsCount / 12))));
-  const downloadsLast365Days = downloadsCount;
-  const todayEarnings = Math.max(0, Math.min(Number(totalEarnings || 0), Math.max(1, Number(totalEarnings || 0) / 365)));
-  const earningsLast7Days = Math.max(0, Math.min(Number(totalEarnings || 0), Math.max(1, Number(totalEarnings || 0) / 52)));
-  const earningsLast30Days = Math.max(0, Math.min(Number(totalEarnings || 0), Math.max(1, Number(totalEarnings || 0) / 12)));
-  const earningsLast365Days = Number(totalEarnings || 0);
+  const effectiveLoyaltyPoints = calculateLoyaltyPoints(assets);
+  const todayUploads = Number(uploadsToday || 0);
+  const periodUploadsLast7Days = Number(uploadsLast7Days || 0);
+  const periodUploadsLast30Days = Number(uploadsLast30Days || 0);
+  const periodUploadsLast365Days = Number(uploadsLast365Days || 0);
+  const todayDownloads = Number(downloadsToday || 0);
+  const periodDownloadsLast7Days = Number(downloadsLast7Days || 0);
+  const periodDownloadsLast30Days = Number(downloadsLast30Days || 0);
+  const periodDownloadsLast365Days = Number(downloadsLast365Days || 0);
+  const todayEarnings = Number(earningsToday || 0);
+  const periodEarningsLast7Days = Number(earningsLast7Days || 0);
+  const periodEarningsLast30Days = Number(earningsLast30Days || 0);
+  const periodEarningsLast365Days = Number(earningsLast365Days || 0);
   const scoreForTier = Number.isFinite(Number(reputationScore)) ? Number(reputationScore) : formulaScore;
   const thresholdTier = reputationTier || getContributorReputationTier(scoreForTier);
 
@@ -81,7 +92,7 @@ function AnalyticsTabPage({
   const cards = [
     {
       title: "Reputation Score",
-      value: formulaScore ?? 0,
+      value: Number.isFinite(Number(reputationScore)) ? Number(reputationScore) : formulaScore ?? 0,
       subtitle: "Your contributor standing",
       accent: "#8b5cf6",
       extra: (
@@ -93,26 +104,26 @@ function AnalyticsTabPage({
     },
     {
       title: "Total Earnings",
-      value: `$${Number(totalEarnings || 0).toFixed(2)}`,
+      value: `₹${Number(totalEarnings || 0).toFixed(2)}`,
       subtitle: "Lifetime balance",
       accent: "#10b981",
       extra: (
         <div style={{ marginTop: "10px", display: "grid", gap: "6px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Today</span>
-            <strong>${todayEarnings.toFixed(2)}</strong>
+            <strong>₹{todayEarnings.toFixed(2)}</strong>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Last 7 days</span>
-            <strong>${earningsLast7Days.toFixed(2)}</strong>
+            <strong>₹{periodEarningsLast7Days.toFixed(2)}</strong>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Last 30 days</span>
-            <strong>${earningsLast30Days.toFixed(2)}</strong>
+            <strong>₹{periodEarningsLast30Days.toFixed(2)}</strong>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Last 365 days</span>
-            <strong>${earningsLast365Days.toFixed(2)}</strong>
+            <strong>₹{periodEarningsLast365Days.toFixed(2)}</strong>
           </div>
         </div>
       ),
@@ -130,15 +141,15 @@ function AnalyticsTabPage({
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Last 7 days</span>
-            <strong>{downloadsLast7Days}</strong>
+            <strong>{periodDownloadsLast7Days}</strong>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Last 30 days</span>
-            <strong>{downloadsLast30Days}</strong>
+            <strong>{periodDownloadsLast30Days}</strong>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Last 365 days</span>
-            <strong>{downloadsLast365Days}</strong>
+            <strong>{periodDownloadsLast365Days}</strong>
           </div>
         </div>
       ),
@@ -156,15 +167,15 @@ function AnalyticsTabPage({
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Last 7 days</span>
-            <strong>{uploadsLast7Days}</strong>
+            <strong>{periodUploadsLast7Days}</strong>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Last 30 days</span>
-            <strong>{uploadsLast30Days}</strong>
+            <strong>{periodUploadsLast30Days}</strong>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", opacity: 0.8 }}>
             <span>Last 365 days</span>
-            <strong>{uploadsLast365Days}</strong>
+            <strong>{periodUploadsLast365Days}</strong>
           </div>
         </div>
       ),

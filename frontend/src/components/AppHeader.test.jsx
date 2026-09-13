@@ -366,6 +366,58 @@ describe('AppHeader customer navigation', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/orders');
   });
 
+  it('shows the Dashboard tab only for admin users and navigates to the admin dashboard', async () => {
+    localStorage.setItem('token', 'demo-token');
+    localStorage.setItem('userRole', 'admin');
+
+    const { unmount } = render(
+      <AppHeader
+        showNotifications={false}
+        setShowNotifications={jest.fn()}
+        notificationCount={0}
+        setNotificationCount={jest.fn()}
+        setShowLoginModal={jest.fn()}
+        setShowJoinModal={jest.fn()}
+        showLoginModal={false}
+        showJoinModal={false}
+        joinModalAccountType=""
+        setJoinModalAccountType={jest.fn()}
+        darkMode={false}
+        notifications={[]}
+        setActivePage={jest.fn()}
+        setDarkMode={jest.fn()}
+        userRole="admin"
+      />
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /^dashboard$/i }));
+    expect(mockNavigate).toHaveBeenCalledWith('/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=admin_dashboard');
+
+    unmount();
+    localStorage.setItem('userRole', 'customer');
+    render(
+      <AppHeader
+        showNotifications={false}
+        setShowNotifications={jest.fn()}
+        notificationCount={0}
+        setNotificationCount={jest.fn()}
+        setShowLoginModal={jest.fn()}
+        setShowJoinModal={jest.fn()}
+        showLoginModal={false}
+        showJoinModal={false}
+        joinModalAccountType=""
+        setJoinModalAccountType={jest.fn()}
+        darkMode={false}
+        notifications={[]}
+        setActivePage={jest.fn()}
+        setDarkMode={jest.fn()}
+        userRole="customer"
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: /^dashboard$/i })).not.toBeInTheDocument();
+  });
+
   it('shows unpaid earnings for contributor users near the dark mode toggle', () => {
     localStorage.setItem('token', 'demo-token');
     localStorage.setItem('userRole', 'contributor');

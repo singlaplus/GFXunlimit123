@@ -317,6 +317,124 @@ test('restore analysis detects source-only rows in complete database snapshots',
   assert.ok(items.some((item) => item.name === 'images #3001' && item.changeType === 'new'));
 });
 
+test('restore comparison detects one Mac-only user and image without counting stable-id matches as updates', async () => {
+  const sourceUsers = Array.from({ length: 12 }, (_, index) => ({
+    id: index + 1,
+    email: `user-${index}@mac.test`,
+    username: `user-${index}`,
+    role: 'contributor'
+  }));
+  const sourceImages = Array.from({ length: 161 }, (_, index) => ({
+    id: index + 1,
+    checksum: `image-checksum-${index}`,
+    filename: `image-${index}.png`,
+    uploaded_by: 1,
+    title: `Image ${index}`
+  }));
+  const targetUsers = sourceUsers.slice(0, 11).map((row) => ({ ...row, id: row.id + 100 }));
+  const targetImages = sourceImages.slice(0, 160).map((row) => ({ ...row, id: row.id + 1000 }));
+  const pool = {
+    async query(sql, params = []) {
+      const text = String(sql).toLowerCase();
+      if (text.includes('from "users" where')) {
+        return { rows: targetUsers.filter((row) => row.email === params[0] || row.username === params[0]) };
+      }
+      if (text.includes('from "images" where')) {
+        return { rows: targetImages.filter((row) => row.checksum === params[0] || (row.filename === params[0] && row.uploaded_by === params[1])) };
+      }
+      if (text.includes('select * from "users"')) return { rows: targetUsers };
+      if (text.includes('select * from "images"')) return { rows: targetImages };
+      return { rows: [] };
+    }
+  };
+
+  const items = await restoreRouter.analyzeBackup({
+    database: {
+      fullDump: true,
+      tables: [
+        { tableName: 'users', rows: sourceUsers },
+        { tableName: 'images', rows: sourceImages }
+      ]
+    }
+  }, pool);
+
+  assert.equal(items.filter((item) => item.changeType === 'new' && item.category === 'users').length, 1);
+  assert.equal(items.filter((item) => item.changeType === 'new' && item.category === 'images').length, 1);
+  assert.equal(items.filter((item) => item.changeType === 'update').length, 0);
+  assert.equal(items.some((item) => item.name === 'users #12'), true);
+  assert.equal(items.some((item) => item.name === 'images #161'), true);
+});
+
+test('restore upload endpoint returns actionable Mac-only records', async () => {
+  const express = require('express');
+  const jwt = require('jsonwebtoken');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const AdmZip = require('adm-zip');
+  const sourceUsers = [{ id: 1, email: 'existing@mac.test', username: 'existing' }, { id: 2, email: 'new@mac.test', username: 'new-user' }];
+  const sourceImages = [{ id: 1, checksum: 'existing-image', filename: 'existing.png', uploaded_by: 1 }, { id: 2, checksum: 'new-image', filename: 'new.png', uploaded_by: 1 }];
+  const insertedItems = [];
+  const session = { id: 901, session_id: 'restore-http-test', backup_id: 'http-test', backup_filename: 'http-test.gfxbackup', backup_path: '', status: 'analyzed' };
+  const pool = {
+    async query(sql, params = []) {
+      const text = String(sql).toLowerCase();
+      if (text.includes('insert into restore_history')) return { rows: [] };
+      if (text.includes('update restore_sessions') && text.includes('status = \'completed\'')) return { rows: [] };
+      if (text.includes('insert into restore_sessions')) { session.backup_path = params[3]; return { rows: [session] }; }
+      if (text.includes('insert into restore_items')) { insertedItems.push({ name: params[3], change_type: params[7] }); return { rows: [] }; }
+      if (text.includes('select * from restore_items')) return { rows: insertedItems };
+      if (text.includes('update restore_sessions')) return { rows: [{ ...session, total_items: insertedItems.length, pending_items: insertedItems.length }] };
+      if (text.includes('from "users" where')) return { rows: params[0] === 'existing@mac.test' ? [sourceUsers[0]] : [] };
+      if (text.includes('from "images" where')) return { rows: params[0] === 'existing-image' ? [sourceImages[0]] : [] };
+      if (text.includes('select * from "users"')) return { rows: [sourceUsers[0]] };
+      if (text.includes('select * from "images"')) return { rows: [sourceImages[0]] };
+      return { rows: [] };
+    }
+  };
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'restore-http-'));
+  const archivePath = path.join(tempDir, 'http-test.gfxbackup');
+  const zip = new AdmZip();
+  zip.addFile('manifest.json', Buffer.from(JSON.stringify({ format: 'GFXBACKUP', backupType: 'Complete Backup' })));
+  zip.addFile('database/full/full-database.json', Buffer.from(JSON.stringify({ fullDump: true, tables: [
+    { tableName: 'users', rows: sourceUsers },
+    { tableName: 'images', rows: sourceImages }
+  ] })));
+  zip.writeZip(archivePath);
+
+  const app = express();
+  app.locals.pool = pool;
+  app.locals.JWT_SECRET = 'restore-http-secret';
+  app.use('/admin/restore', (req, res, next) => { req.user = { id: 3 }; next(); }, restoreRouter);
+  const server = app.listen(0, async () => {
+    const form = new FormData();
+    form.append('backup', new Blob([fs.readFileSync(archivePath)]), 'http-test.gfxbackup');
+    const token = jwt.sign({ user: 3 }, 'restore-http-secret');
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/admin/restore/upload`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.items.filter((item) => item.change_type === 'new').length, 2);
+    server.close();
+  });
+});
+
+test('restore comparison keeps colliding numeric IDs separate by user email', async () => {
+  const pool = {
+    async query(sql, params = []) {
+      const text = String(sql).toLowerCase();
+      if (text.includes('from "users" where')) {
+        return params[0] === 'mac@example.com' ? { rows: [] } : { rows: [{ id: 12, email: 'pc1@example.com', username: 'pc1-user' }] };
+      }
+      if (text.includes('select * from "users"')) return { rows: [{ id: 12, email: 'pc1@example.com', username: 'pc1-user' }] };
+      return { rows: [] };
+    }
+  };
+  const items = await restoreRouter.analyzeBackup({ database: { tables: [{ tableName: 'users', rows: [{ id: 12, email: 'mac@example.com', username: 'mac-user' }] }] } }, pool);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].changeType, 'new');
+  assert.equal(items[0].name, 'users #12');
+});
+
 test('restore analysis does not report an unchanged existing row as new', async () => {
   const existingRow = { id: 1501, full_name: 'Same User', email: 'same@example.com' };
   const pool = {

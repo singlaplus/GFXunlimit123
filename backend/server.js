@@ -13,12 +13,12 @@ const AdmZip = require("adm-zip");
 const axios = require("axios");
 const sharp = require("sharp");
 const { sendMail } = require("./email/mailer");
-const { getDailyReportSubject } = require("./email/daily-report-subject");
 const { normalizeRecipients, resolveNotificationEventKey, buildNotificationEmailContent } = require("./email/notificationRules");
 const { createMessagingRouter, createAssetNotifications, createCouponNotifications, createDirectMessage, recordEvent, recordBusinessEvent, publishEvent } = require("./messaging");
 const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { applyCatalogFilters } = require("./imageQuery");
 const { registerOrderRoutes } = require("./orders");
+const { summarizeContributorDownloadWindowCounts, summarizeContributorUploadWindowCounts } = require("./dashboardStats");
 const thumbnailQueue = require("./thumbnail-queue-worker");
 const ProcessorDetector = require("./thumbnail-engine/processor-detector");
 const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
@@ -1060,7 +1060,7 @@ async function createGfxBackupPackage({ backupId, mode, from, to, deviceId, prev
     restorePlan: {
       analysisRequired: true,
       compareBy: "path-and-sha256",
-      databaseMergeStrategy: isCompleteBackup ? "replace-after-checkpoint" : "merge-by-identity-and-changed-fields",
+      databaseMergeStrategy: "merge-complete-source-with-existing-destination",
       conflictPolicy: "report-before-apply",
       checkpointRequired: true,
       verificationRequired: true,
@@ -2132,12 +2132,11 @@ app.get("/uploads/processed", async (req, res) => {
 // Scheduled emails runner (checks DB every minute)
 try {
   const cron = require('node-cron');
-  const { processDueScheduledEmails, processDueDailyReportSchedules } = require('./email/scheduler');
+  const { processDueScheduledEmails } = require('./email/scheduler');
 
   const runScheduledCheck = async () => {
     try {
       await processDueScheduledEmails({ poolRef: pool, now: new Date() });
-      await processDueDailyReportSchedules({ poolRef: pool, now: new Date() });
       await sendDailyWebsiteSummary({ poolRef: pool, now: new Date() });
     } catch (err) {
       console.error('Scheduled email runner startup check failed', err);
@@ -2156,7 +2155,6 @@ try {
         }
         lastRunAt = now;
         await processDueScheduledEmails({ poolRef: pool, now });
-        await processDueDailyReportSchedules({ poolRef: pool, now });
         await sendDailyWebsiteSummary({ poolRef: pool, now });
       } catch (err) {
         console.error('Scheduled email runner error', err);
@@ -2205,39 +2203,8 @@ const getDailySummaryEmailRecipients = (recipients = [], adminEmails = []) => {
   return { toRecipients, bccRecipients };
 };
 
-const isCollectionAwareLiveAsset = (image, availableCollections = []) => {
-  const status = String(image?.status || '').trim().toLowerCase();
-  const isLiveStatus = ['approved', 'published', 'live'].includes(status);
-  const collectionName = String(image?.collection || '').trim();
-
-  if (!isLiveStatus) return false;
-  if (!Array.isArray(availableCollections) || availableCollections.length === 0) return true;
-
-  return availableCollections.some((name) => String(name || '').trim().toLowerCase() === collectionName.toLowerCase());
-};
-
-const getCollectionAwareLiveAssetsQuery = () => `
-  SELECT COUNT(*)::int AS live_assets
-  FROM images i
-  WHERE (
-    i.status ILIKE 'approved' OR i.status ILIKE 'published' OR i.status ILIKE 'live'
-  )
-    AND (
-      NOT EXISTS (
-        SELECT 1
-        FROM collections c
-        WHERE TRIM(COALESCE(c.name, '')) <> ''
-      )
-      OR EXISTS (
-        SELECT 1
-        FROM collections c
-        WHERE LOWER(TRIM(c.name)) = LOWER(TRIM(i.collection))
-      )
-    )
-`;
-
 const buildDailyWebsiteSummary = async ({ poolRef = pool } = {}) => {
-  const [usersRes, contributorsRes, customersRes, adminsRes, pendingUsersRes, blockedUsersRes, activeContributorsRes, inactiveContributorsRes, pendingContributorsRes, blockedContributorsRes, deletedContributorsRes, activeCustomersRes, inactiveCustomersRes, pendingCustomersRes, blockedCustomersRes, deletedCustomersRes, totalAssetsRes, liveAssetsRes, pendingAssetsRes, rejectedAssetsRes, deletedAssetsRes, ordersRes, revenueRes, downloadsRes, last24HoursDownloadsRes, last7DaysDownloadsRes, last30DaysDownloadsRes, last365DaysDownloadsRes, currentMonthDownloadsRes, currentFyDownloadsRes, pricingRes] = await Promise.all([
+  const [usersRes, contributorsRes, customersRes, adminsRes, pendingUsersRes, blockedUsersRes, activeContributorsRes, inactiveContributorsRes, pendingContributorsRes, blockedContributorsRes, deletedContributorsRes, activeCustomersRes, inactiveCustomersRes, pendingCustomersRes, blockedCustomersRes, deletedCustomersRes, totalAssetsRes, liveAssetsRes, pendingAssetsRes, rejectedAssetsRes, deletedAssetsRes, ordersRes, revenueRes, downloadsRes, newTodayRes, pricingRes] = await Promise.all([
     poolRef.query("SELECT COUNT(*)::int AS total_users FROM users"),
     poolRef.query("SELECT COUNT(*)::int AS total_contributors FROM users WHERE role = 'contributor'"),
     poolRef.query("SELECT COUNT(*)::int AS total_customers FROM users WHERE role = 'customer'"),
@@ -2255,26 +2222,14 @@ const buildDailyWebsiteSummary = async ({ poolRef = pool } = {}) => {
     poolRef.query("SELECT COUNT(*)::int AS blocked_customers FROM users WHERE role ILIKE 'customer' AND status ILIKE 'blocked'"),
     poolRef.query("SELECT COUNT(*)::int AS deleted_customers FROM activity_events WHERE event_type = 'ACCOUNT_STATUS_CHANGED' AND user_role ILIKE 'customer' AND created_at >= NOW() - INTERVAL '30 days' AND (metadata->>'new_status' ILIKE 'deleted' OR metadata->>'action' ILIKE 'delete')"),
     poolRef.query("SELECT COUNT(*)::int AS total_assets FROM images"),
-    poolRef.query(getCollectionAwareLiveAssetsQuery()),
+    poolRef.query("SELECT COUNT(*)::int AS live_assets FROM images WHERE status ILIKE 'approved' OR status ILIKE 'published' OR status ILIKE 'live'"),
     poolRef.query("SELECT COUNT(*)::int AS pending_assets FROM images WHERE status ILIKE 'pending'"),
     poolRef.query("SELECT COUNT(*)::int AS rejected_assets FROM images WHERE status ILIKE 'rejected'"),
     poolRef.query("SELECT COUNT(*)::int AS deleted_assets_last_30_days FROM activity_events WHERE event_type = 'ASSET_DELETED' AND created_at >= NOW() - INTERVAL '30 days'"),
     poolRef.query("SELECT COUNT(*)::int AS total_orders FROM orders"),
-    poolRef.query("SELECT COALESCE(SUM(CASE WHEN LOWER(COALESCE(payment_status, '')) IN ('completed', 'paid') THEN total_amount ELSE 0 END), 0)::numeric AS total_revenue FROM orders"),
+    poolRef.query("SELECT COALESCE(SUM(CASE WHEN order_status IN ('completed', 'paid') THEN total_amount ELSE 0 END), 0)::numeric AS total_revenue FROM orders"),
     poolRef.query("SELECT COALESCE(SUM(downloads_count), 0)::int AS total_downloads FROM orders"),
-    poolRef.query("SELECT COUNT(*)::int AS download_count FROM downloads WHERE downloaded_at >= NOW() - INTERVAL '24 hours'"),
-    poolRef.query("SELECT COUNT(*)::int AS download_count FROM downloads WHERE downloaded_at >= NOW() - INTERVAL '7 days'"),
-    poolRef.query("SELECT COUNT(*)::int AS download_count FROM downloads WHERE downloaded_at >= NOW() - INTERVAL '30 days'"),
-    poolRef.query("SELECT COUNT(*)::int AS download_count FROM downloads WHERE downloaded_at >= NOW() - INTERVAL '365 days'"),
-    poolRef.query("SELECT COUNT(*)::int AS download_count FROM downloads WHERE downloaded_at >= date_trunc('month', NOW()) AND downloaded_at < date_trunc('month', NOW()) + INTERVAL '1 month'"),
-    poolRef.query(`SELECT COUNT(*)::int AS download_count FROM downloads WHERE downloaded_at >= CASE
-      WHEN EXTRACT(MONTH FROM NOW()) >= 4 THEN make_date(EXTRACT(YEAR FROM NOW())::int, 4, 1)
-      ELSE make_date(EXTRACT(YEAR FROM NOW())::int - 1, 4, 1)
-    END
-    AND downloaded_at < CASE
-      WHEN EXTRACT(MONTH FROM NOW()) >= 4 THEN make_date(EXTRACT(YEAR FROM NOW())::int + 1, 4, 1)
-      ELSE make_date(EXTRACT(YEAR FROM NOW())::int, 4, 1)
-    END`),
+    poolRef.query("SELECT COUNT(*)::int AS new_today FROM users WHERE created_at::date = CURRENT_DATE"),
     poolRef.query("SELECT exchange_rate FROM pricing_settings ORDER BY id DESC LIMIT 1")
   ]);
 
@@ -2311,13 +2266,7 @@ const buildDailyWebsiteSummary = async ({ poolRef = pool } = {}) => {
     totalRevenueInr,
     exchangeRate,
     totalDownloads: Number(downloadsRes.rows[0]?.total_downloads || 0),
-    last24HoursDownloads: Number(last24HoursDownloadsRes.rows[0]?.download_count || 0),
-    last7DaysDownloads: Number(last7DaysDownloadsRes.rows[0]?.download_count || 0),
-    last30DaysDownloads: Number(last30DaysDownloadsRes.rows[0]?.download_count || 0),
-    last365DaysDownloads: Number(last365DaysDownloadsRes.rows[0]?.download_count || 0),
-    currentMonthDownloads: Number(currentMonthDownloadsRes.rows[0]?.download_count || 0),
-    currentFyDownloads: Number(currentFyDownloadsRes.rows[0]?.download_count || 0),
-    newToday: Number(last24HoursDownloadsRes.rows[0]?.download_count || 0),
+    newToday: Number(newTodayRes.rows[0]?.new_today || 0),
   };
 };
 
@@ -2326,72 +2275,26 @@ const formatCurrency = (value) => {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(n);
 };
 
-const renderDailyMetricCards = (summary, selectedMetrics = null) => {
-  const number = (value) => Number(value || 0).toLocaleString('en-US');
-  const currency = (value) => `₹${Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
-  const list = (title, items, formatter = number) => Array.isArray(items) && items.length
-    ? `<div style="margin-top:8px;"><strong>${title}:</strong><ul style="margin:3px 0 0; padding-left:16px;">${items.map((item) => `<li>${item.name || item.label || 'Value'}: ${formatter(item.count ?? item.value)}</li>`).join('')}</ul></div>`
-    : '';
-  const revenueDetails = `${summary.currencyRevenueBreakdown?.length ? `<strong>Currencies:</strong><ul style="margin:3px 0 0; padding-left:16px;">${summary.currencyRevenueBreakdown.filter((item) => Number(item.count || 0) !== 0).map((item) => `<li>${item.name}: ${currency(item.count)}</li>`).join('')}</ul>` : ''}${(summary.revenueCurrencyBreakdown || []).map((item) => `<div style="margin-top:8px;"><strong>${item.currency}</strong>${list('Collections', item.collections, currency)}${list('Categories', item.categories, currency)}${list('Type', item.type, currency)}</div>`).join('')}`;
-  const discountDetails = `${(summary.discountCurrencyBreakdown || []).map((item) => `<div style="margin-top:8px;"><strong>${item.currency}</strong>${list('Collections', item.collections, currency)}${list('Categories', item.categories, currency)}${list('Type', item.type, currency)}</div>`).join('')}`;
-  const downloadDetails = `${list('Collections', summary.collectionTotalDownloads)}${list('Categories', summary.categoryTotalDownloads)}${list('Type', summary.typeTotalDownloads)}`;
-  const cards = [
-    ['totalAssets', 'Total Assets', summary.totalAssets, `Live Assets: ${number(summary.liveAssets)}<br>Pending Assets: ${number(summary.pendingAssets)}<br>Rejected Assets: ${number(summary.rejectedAssets)}<br>Deleted Assets (Last 30 Days): ${number(summary.deletedAssetsLast30Days)}`],
-    ['totalUsers', 'Total Users', summary.totalUsers, `Customers: ${number(summary.totalCustomers)}<br>Admins: ${number(summary.totalAdmins)}<br>Contributors: ${number(summary.totalContributors)}<br>Pending Users: ${number(summary.pendingUsers)}<br>Blocked Users: ${number(summary.blockedUsers)}`],
-    ['totalContributors', 'Total Contributors', summary.totalContributors, `Active: ${number(summary.activeContributors)}<br>Inactive: ${number(summary.inactiveContributors)}<br>Pending: ${number(summary.pendingContributors)}<br>Blocked: ${number(summary.blockedContributors)}`],
-    ['totalCustomers', 'Total Customers', summary.totalCustomers, `Active: ${number(summary.activeCustomers)}<br>Inactive: ${number(summary.inactiveCustomers)}<br>Pending: ${number(summary.pendingCustomers)}<br>Blocked: ${number(summary.blockedCustomers)}`],
-    ['liveAssets', 'Live Assets', summary.liveAssets, ''],
-    ['pendingAssets', 'Pending Assets', summary.pendingAssets, ''],
-    ['rejectedAssets', 'Rejected Assets', summary.rejectedAssets, ''],
-    ['deletedAssetsLast30Days', 'Deleted Assets (Last 30 Days)', summary.deletedAssetsLast30Days, ''],
-    ['totalOrders', 'Total Orders', summary.totalOrders, ''],
-    ['totalRevenueInr', 'Revenue (INR)', currency(summary.totalRevenueInr), revenueDetails],
-    ['totalDiscountInr', 'Discount (INR)', currency(summary.totalDiscountInr), discountDetails],
-    ['totalEarningsInr', 'Earnings', currency(summary.totalEarningsInr), ''],
-    ['totalDownloads', 'Total Downloads', summary.totalDownloads, downloadDetails],
-    ['last24HoursDownloads', 'Last 24 Hr Downloads', summary.last24HoursDownloads, ''],
-    ['last7DaysDownloads', 'Last 7 Days Downloads', summary.last7DaysDownloads, ''],
-    ['last30DaysDownloads', 'Last 30 Days Downloads', summary.last30DaysDownloads, ''],
-    ['last365DaysDownloads', 'Last 365 Days Downloads', summary.last365DaysDownloads, ''],
-    ['currentMonthDownloads', 'Current Month Downloads', summary.currentMonthDownloads, ''],
-    ['currentFyDownloads', 'Current FY Downloads', summary.currentFyDownloads, '']
-  ].filter(([key]) => !selectedMetrics || selectedMetrics[key]);
-
-  const cardWidth = cards.length === 1 ? '100%' : cards.length === 2 ? '48%' : '31.5%';
-  return `<div style="height:auto; max-height:720px; overflow-y:auto; scrollbar-width:thin; padding:2px; font-size:0;">
-    ${cards.map(([key, label, value, details]) => `<div style="display:inline-block; vertical-align:top; box-sizing:border-box; width:${cardWidth}; height:240px; overflow-y:scroll; scrollbar-width:thin; margin:0 1.5% 14px 0; padding:14px 12px; border:1px solid #c7d8ff; border-radius:14px; background:linear-gradient(135deg,#f1f5ff,#f8fbff); color:#23324d; font-size:13px;">
-      <div style="font-size:12px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:#2563eb;">${label}</div>
-      <div style="margin-top:8px; font-size:26px; line-height:1.15; font-weight:800; color:#1d4ed8; word-break:break-word;">${value}</div>
-      ${details ? `<div style="margin-top:14px; padding:9px; border:1px solid #dbe6ff; border-radius:10px; background:#fff; line-height:1.7; font-size:12px;">${details}</div>` : ''}
-    </div>`).join('')}
-  </div>`;
-};
-
-const renderDailyWebsiteSummaryHtml = (summary, selectedMetrics = null) => {
+const renderDailyWebsiteSummaryHtml = (summary) => {
   const dateText = new Intl.DateTimeFormat('en-US', {
     dateStyle: 'full',
     timeStyle: 'short'
   }).format(summary.generatedAt);
 
   const metricsData = [
-    ['totalUsers', 'Users', summary.totalUsers],
-    ['totalCustomers', 'Customers', summary.totalCustomers],
-    ['totalContributors', 'Contributors', summary.totalContributors],
-    ['liveAssets', 'Live Assets', summary.liveAssets],
-    ['pendingAssets', 'Pending Assets', summary.pendingAssets],
-    ['rejectedAssets', 'Rejected Assets', summary.rejectedAssets],
-    ['deletedAssetsLast30Days', 'Deleted Assets (Last 30 Days)', summary.deletedAssetsLast30Days],
-    ['totalOrders', 'Orders', summary.totalOrders],
-    ['totalRevenueUsd', 'Revenue (USD)', formatCurrency(summary.totalRevenueUsd)],
-    ['totalRevenueInr', 'Revenue (INR)', new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(summary.totalRevenueInr)],
-    ['totalDownloads', 'Downloads', summary.totalDownloads],
-    ['last24HoursDownloads', 'Last 24 Hr Downloads', summary.last24HoursDownloads],
-    ['last7DaysDownloads', 'Last 7 Days Downloads', summary.last7DaysDownloads],
-    ['last30DaysDownloads', 'Last 30 Days Downloads', summary.last30DaysDownloads],
-    ['last365DaysDownloads', 'Last 365 Days Downloads', summary.last365DaysDownloads],
-    ['currentMonthDownloads', 'Current Month Downloads', summary.currentMonthDownloads],
-    ['currentFyDownloads', 'Current FY Downloads', summary.currentFyDownloads]
-  ].filter(([key]) => !selectedMetrics || selectedMetrics[key]);
+    ['Users', summary.totalUsers],
+    ['Customers', summary.totalCustomers],
+    ['Contributors', summary.totalContributors],
+    ['Live Assets', summary.liveAssets],
+    ['Pending Assets', summary.pendingAssets],
+    ['Rejected Assets', summary.rejectedAssets],
+    ['Deleted Assets (Last 30 Days)', summary.deletedAssetsLast30Days],
+    ['Orders', summary.totalOrders],
+    ['Revenue (USD)', formatCurrency(summary.totalRevenueUsd)],
+    ['Revenue (INR)', new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(summary.totalRevenueInr)],
+    ['Downloads', summary.totalDownloads],
+    ['New Today', summary.newToday]
+  ];
 
   return `
     <div style="font-family: Arial, sans-serif; color: #111827; background: #f8fafc; padding: 24px;">
@@ -2402,11 +2305,26 @@ const renderDailyWebsiteSummaryHtml = (summary, selectedMetrics = null) => {
           <div style="margin-top: 8px; font-size: 13px; opacity: 0.88;">Generated: ${dateText}</div>
         </div>
         <div style="padding: 24px;">
-          ${renderDailyMetricCards(summary, selectedMetrics)}
-          ${selectedMetrics ? '' : `<div style="border-top: 1px solid #e2e8f0; padding-top: 18px; color: #334155; line-height: 1.6;">
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+            <thead>
+              <tr style="background: #f8fafc; border-bottom: 2px solid #1d4ed8;">
+                <th style="padding: 12px; text-align: left; font-weight: 700; color: #1d4ed8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;">Metric</th>
+                <th style="padding: 12px; text-align: right; font-weight: 700; color: #1d4ed8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${metricsData.map(([label, value], idx) => `
+                <tr style="border-bottom: 1px solid #e2e8f0; background: ${idx % 2 === 0 ? '#ffffff' : '#f9fafb'};">
+                  <td style="padding: 14px 12px; color: #334155; font-weight: 500;">${label}</td>
+                  <td style="padding: 14px 12px; text-align: right; color: #0f172a; font-weight: 700; font-size: 15px;">${value}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div style="border-top: 1px solid #e2e8f0; padding-top: 18px; color: #334155; line-height: 1.6;">
             <div><strong>Daily status:</strong> ${summary.liveAssets} live assets, ${summary.pendingAssets} pending review, ${summary.rejectedAssets} rejected, ${summary.totalOrders} orders processed, and ${formatCurrency(summary.totalRevenueUsd)} USD (₹${summary.totalRevenueInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })}) in completed revenue.</div>
-            <div style="margin-top: 8px;"><strong>Engagement:</strong> ${summary.totalDownloads} total asset downloads recorded so far, ${summary.last24HoursDownloads} in the last 24 hours, ${summary.last7DaysDownloads} in the last 7 days, and ${summary.currentFyDownloads} in the current FY.</div>
-          </div>`}
+            <div style="margin-top: 8px;"><strong>Engagement:</strong> ${summary.totalDownloads} total asset downloads recorded so far and ${summary.newToday} new users added today.</div>
+          </div>
         </div>
       </div>
     </div>
@@ -2414,9 +2332,6 @@ const renderDailyWebsiteSummaryHtml = (summary, selectedMetrics = null) => {
 };
 
 const sendDailyWebsiteSummary = async ({ poolRef = pool, now = new Date() } = {}) => {
-  const scheduleCountResult = await poolRef.query('SELECT COUNT(*)::int AS count FROM daily_report_schedules');
-  if (Number(scheduleCountResult.rows[0]?.count || 0) > 0) return false;
-
   const ruleRes = await poolRef.query("SELECT * FROM notification_rules WHERE event_key = 'daily_reports' AND enable_email IS NOT FALSE ORDER BY updated_at DESC LIMIT 1");
   const rule = ruleRes.rows[0];
   if (!rule) return false;
@@ -2442,17 +2357,13 @@ const sendDailyWebsiteSummary = async ({ poolRef = pool, now = new Date() } = {}
   if (!toRecipients.length) return false;
 
   const summary = await buildDailyWebsiteSummary({ poolRef });
-  const reportSettingsRes = await poolRef.query(
-    "SELECT daily_report_settings FROM users WHERE role = 'admin' AND daily_report_settings IS NOT NULL ORDER BY id LIMIT 1"
-  );
-  const selectedMetrics = reportSettingsRes.rows[0]?.daily_report_settings?.metrics || null;
   const settingsRes = await poolRef.query('SELECT * FROM email_settings ORDER BY id DESC LIMIT 1');
   const settings = settingsRes.rows[0] || {};
   const hasSmtp = Boolean(settings.smtp_host || settings.smtp_user || settings.sender_email);
   if (!hasSmtp) return false;
 
-  const subject = getDailyReportSubject({ siteName: summary.siteName, metrics: selectedMetrics || {}, date: new Date(summary.generatedAt) });
-  const html = renderDailyWebsiteSummaryHtml(summary, selectedMetrics);
+  const subject = `${summary.siteName} daily website summary - ${new Date().toDateString()}`;
+  const html = renderDailyWebsiteSummaryHtml(summary);
 
   await sendMail(settings, {
     to: toRecipients.join(', '),
@@ -4924,31 +4835,19 @@ const getCategoriesList = async () => {
 const getCollectionsList = async () => {
   try {
     const existing = await pool.query(`
-      SELECT c.id,
-             c.name,
-             COUNT(i.id)::int AS asset_count,
-             COUNT(i.id)::int AS count
-      FROM collections c
-      LEFT JOIN images i
-        ON LOWER(TRIM(COALESCE(i.collection, ''))) = LOWER(TRIM(c.name))
-       AND i.status = 'approved'
-      GROUP BY c.id, c.name
-      ORDER BY c.name
+      SELECT id, name
+      FROM collections
+      ORDER BY name
     `);
 
     if (existing.rows.length > 0) {
-      return existing.rows.map((collection) => ({
-        ...collection,
-        asset_count: Number(collection.asset_count || collection.count || 0),
-        count: Number(collection.count || collection.asset_count || 0)
-      }));
+      return existing.rows;
     }
 
     const imageCollections = await pool.query(`
       SELECT DISTINCT TRIM(collection) AS name
       FROM images
       WHERE TRIM(COALESCE(collection, '')) <> ''
-        AND status = 'approved'
       ORDER BY name
     `);
 
@@ -4972,24 +4871,7 @@ const getCollectionsList = async () => {
       }
     }
 
-    const refreshed = await pool.query(`
-      SELECT c.id,
-             c.name,
-             COUNT(i.id)::int AS asset_count,
-             COUNT(i.id)::int AS count
-      FROM collections c
-      LEFT JOIN images i
-        ON LOWER(TRIM(COALESCE(i.collection, ''))) = LOWER(TRIM(c.name))
-       AND i.status = 'approved'
-      GROUP BY c.id, c.name
-      ORDER BY c.name
-    `);
-
-    return refreshed.rows.map((collection) => ({
-      ...collection,
-      asset_count: Number(collection.asset_count || collection.count || 0),
-      count: Number(collection.count || collection.asset_count || 0)
-    }));
+    return inserted;
   } catch (err) {
     console.error("Failed to load collections", err.message || err);
     return [];
@@ -8461,9 +8343,7 @@ app.put(
 
           `
           UPDATE images
-          SET
-            downloads = COALESCE(downloads,0) + 1,
-            earnings = COALESCE(earnings,0) + 0.25
+          SET earnings = COALESCE(earnings,0) + 0.25
           WHERE id = $1
           RETURNING *
           `,
@@ -8673,6 +8553,16 @@ app.get(
       // Send file
       res.sendFile(filePath, async (downloadError) => {
         if (!downloadError) {
+          if (!isContributor && !isAdmin) {
+            await pool.query(
+              `INSERT INTO downloads (user_id, image_id, downloaded_at) VALUES ($1, $2, NOW())`,
+              [userId, image.id]
+            );
+            await pool.query(
+              `UPDATE images SET downloads = COALESCE(downloads, 0) + 1 WHERE id = $1`,
+              [image.id]
+            );
+          }
           await createAssetNotifications(pool, {
             userIds: [userId, image.uploaded_by],
             eventType: 'ASSET_DOWNLOADED',
@@ -8802,7 +8692,7 @@ app.delete(
       const image =
         await pool.query(
           `
-          SELECT filename, uploaded_by, title, collection, category
+          SELECT filename, uploaded_by, title
           FROM images
           WHERE id = $1
           `,
@@ -8821,29 +8711,6 @@ app.delete(
 
       const filename =
         image.rows[0].filename;
-
-      await pool.query(
-        `
-        INSERT INTO activity_events(
-          event_type, user_id, user_role, asset_id, description, metadata, success
-        )
-        VALUES($1, $2, 'contributor', $3, $4, $5, TRUE)
-        `,
-        [
-          'ASSET_DELETED',
-          image.rows[0].uploaded_by,
-          id,
-          `Asset "${image.rows[0].title || 'Untitled'}" was deleted`,
-          {
-            asset_title: image.rows[0].title || 'Untitled',
-            collection: image.rows[0].collection || '',
-            category: String(image.rows[0].category || '').split(',')[0].trim(),
-            type: image.rows[0].type || '',
-            contributor_id: image.rows[0].uploaded_by,
-            action: 'delete'
-          }
-        ]
-      );
 
       // Delete favorites
 
@@ -9366,7 +9233,6 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
 
     let coupon = null;
     let discount = 0;
-    let couponDiscountType = '';
     if (couponCode) {
       const couponResult = await pool.query(
         `SELECT * FROM coupon_codes WHERE LOWER(code) = LOWER($1) LIMIT 1`,
@@ -9374,8 +9240,9 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
       );
       if (couponResult.rows.length > 0) {
         coupon = couponResult.rows[0];
-        couponDiscountType = String(coupon.discount_type || '').trim().toLowerCase();
-        if (couponDiscountType === 'flat') {
+        if (coupon.discount_type === 'percentage') {
+          discount = 0;
+        } else if (coupon.discount_type === 'flat') {
           discount = Number(coupon.discount_value || 0);
         }
       }
@@ -9401,9 +9268,6 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
       return sum + unitPrice * quantity;
     }, 0);
 
-    if (couponDiscountType === 'percentage') {
-      discount = subtotal * (Number(coupon.discount_value || 0) / 100);
-    }
     const normalizedDiscount = Math.min(subtotal, Number(discount || 0));
     const tax = Number(((Math.max(0, subtotal - normalizedDiscount)) * Number(taxRate || 0)).toFixed(2));
     const total = Number(Math.max(0, subtotal - normalizedDiscount + tax).toFixed(2));
@@ -9639,12 +9503,20 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
         if (contributorId && !freeAsset) {
           const commissionRate = Number(item.commissionRate || 0.2);
           const contributorAmount = Number((lineTotal * commissionRate).toFixed(2));
+          const unitContributorAmount = Number((contributorAmount / quantity).toFixed(2));
+          let allocatedContributorAmount = 0;
+          for (let saleIndex = 0; saleIndex < quantity; saleIndex += 1) {
+            const saleAmount = saleIndex === quantity - 1
+              ? Number((contributorAmount - allocatedContributorAmount).toFixed(2))
+              : unitContributorAmount;
+            allocatedContributorAmount += saleAmount;
+            await pool.query(
+              `INSERT INTO earnings (contributor_id, order_id, asset_id, amount, currency, commission_rate, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,'pending',NOW())`,
+              [contributorId, orderId, assetId, saleAmount, String(currency).toUpperCase(), commissionRate]
+            );
+          }
           contributorEarnings += contributorAmount;
           platformCommission += Number((lineTotal - contributorAmount).toFixed(2));
-          await pool.query(
-            `INSERT INTO earnings (contributor_id, order_id, asset_id, amount, currency, commission_rate, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,'pending',NOW())`,
-            [contributorId, orderId, assetId, contributorAmount, String(currency).toUpperCase(), commissionRate]
-          );
         }
       }
 
@@ -9796,6 +9668,14 @@ app.post('/checkout/confirm-google-pay', authenticateToken, async (req, res) => 
       await pool.query(`UPDATE order_items SET download_status = 'available' WHERE order_id = $1`, [orderId]);
       await pool.query(`UPDATE customer_downloads SET is_active = TRUE WHERE order_id = $1`, [orderId]);
       await pool.query(
+        `INSERT INTO downloads (user_id, image_id, downloaded_at, order_id)
+         SELECT cd.user_id, cd.image_id, NOW(), cd.order_id
+         FROM customer_downloads cd
+         WHERE cd.order_id = $1 AND cd.is_active IS NOT FALSE
+         ON CONFLICT DO NOTHING`,
+        [orderId]
+      );
+      await pool.query(
         `UPDATE payments SET status = 'paid', response = COALESCE(response, '{}'::jsonb) || $1::jsonb WHERE order_id = $2`,
         [JSON.stringify({ upiId }), orderId]
       );
@@ -9856,6 +9736,14 @@ app.post('/checkout/confirm-google-pay', authenticateToken, async (req, res) => 
         console.debug('Serving customer download', { token, image_id: dl.image_id, user_id: dl.user_id, filename: dl.filename, suggestedName });
         res.download(filePath, suggestedName, async (downloadError) => {
           if (!downloadError) {
+            await pool.query(
+              `INSERT INTO downloads (user_id, image_id, downloaded_at, order_id) VALUES ($1, $2, NOW(), $3) ON CONFLICT DO NOTHING`,
+              [dl.user_id, dl.image_id, dl.order_id]
+            );
+            await pool.query(
+              `UPDATE images SET downloads = COALESCE(downloads, 0) + 1 WHERE id = $1`,
+              [dl.image_id]
+            );
             await createAssetNotifications(pool, {
               userIds: [dl.user_id, dl.uploaded_by],
               eventType: 'ASSET_DOWNLOADED',
@@ -9911,11 +9799,6 @@ app.get("/profile", async (req, res) => {
 
     const authHeader =
       req.headers["authorization"];
-
-    console.log(
-      "AUTH HEADER:",
-      authHeader
-    );
 
     if (!authHeader) {
 
@@ -10054,6 +9937,7 @@ app.get(
   authenticateToken,
   async (req, res) => {
     try {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
 
       const userId = req.user.id;
       console.log(
@@ -10064,6 +9948,10 @@ app.get(
       const uploads = await pool.query(
         `
         SELECT COUNT(*) AS total
+             , COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) AS uploads_today
+             , COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE - INTERVAL '6 days') AS uploads_last_7_days
+             , COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE - INTERVAL '29 days') AS uploads_last_30_days
+             , COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE - INTERVAL '364 days') AS uploads_last_365_days
         FROM images
         WHERE uploaded_by = $1
         `,
@@ -10096,6 +9984,22 @@ app.get(
         `,
         [userId]
       );
+
+      const downloadHistory = await pool.query(
+        `
+        SELECT
+          COUNT(*) AS total_downloads,
+          COUNT(*) FILTER (WHERE d.downloaded_at >= CURRENT_DATE) AS downloads_today,
+          COUNT(*) FILTER (WHERE d.downloaded_at >= CURRENT_DATE - INTERVAL '6 days') AS downloads_last_7_days,
+          COUNT(*) FILTER (WHERE d.downloaded_at >= CURRENT_DATE - INTERVAL '29 days') AS downloads_last_30_days,
+          COUNT(*) FILTER (WHERE d.downloaded_at >= CURRENT_DATE - INTERVAL '364 days') AS downloads_last_365_days
+        FROM downloads d
+        JOIN images i ON i.id = d.image_id
+        WHERE i.uploaded_by = $1
+        `,
+        [userId]
+      );
+
       const userInfo = await pool.query(
   `
   SELECT created_at
@@ -10109,10 +10013,11 @@ const uploadsCount =
   Number(
     uploads.rows[0].total
   );
+const uploadWindowCounts = summarizeContributorUploadWindowCounts(uploads.rows[0]);
 
 const downloadsCount =
   Number(
-    downloads.rows[0].total
+    downloadHistory.rows[0]?.total_downloads ?? downloads.rows[0].total
   );
 
 const viewsCount =
@@ -10148,45 +10053,24 @@ const monthsOld =
     )
   );
 
-const qualityMultiplier =
-  Math.min(
-    3,
-    1 +
-      (downloadsCount > 0 ? 0.2 : 0) +
-      (likesCount > 0 ? 0.15 : 0) +
-      (viewsCount > 0 ? 0.1 : 0) +
-      (uploadsCount >= 10 ? 0.25 : 0) +
-      (uploadsCount >= 50 ? 0.35 : 0)
-  );
-
-const engagementScore =
-  uploadsCount * 10 +
-  downloadsCount * 4 +
-  likesCount * 2.5 +
-  viewsCount * 0.75;
-
-const maturityFactor =
-  1 + Math.min(1.6, monthsOld / 18);
-
-const consistencyFactor =
-  monthsOld >= 6 ? 1.05 : 1;
-
+const totalContribution = uploadsCount + downloadsCount;
+const normalizedViews = Math.max(1, viewsCount);
 const rawScore =
-  Math.round(
-    engagementScore *
-      qualityMultiplier *
-      maturityFactor *
-      consistencyFactor
-  );
+  viewsCount > 0
+    ? Number((totalContribution / normalizedViews).toFixed(2))
+    : 0;
 
-const reputationScore =
-  Math.round(rawScore / Math.max(1, monthsOld / 4));
+const reputationScore = rawScore;
+const downloadHistoryRow = downloadHistory.rows[0] || {};
+const downloadWindowCounts = summarizeContributorDownloadWindowCounts(downloadHistoryRow);
 
 res.json({
   uploads: uploadsCount,
   downloads: downloadsCount,
   views: viewsCount,
   likes: likesCount,
+  ...uploadWindowCounts,
+  ...downloadWindowCounts,
 
   rawScore,
   monthsOld,
@@ -10214,19 +10098,10 @@ app.get(
 const authHeader =
   req.headers["authorization"];
 
-console.log(
-  "STATS AUTH:",
-  authHeader
-);
-
     try {
 
       const authHeader =
         req.headers["authorization"];
-        console.log(
-        "PROFILE STATS AUTH:",
-        authHeader
-      );
 
       if (!authHeader) {
 
@@ -12223,6 +12098,7 @@ app.get(
   async (req, res) => {
 
     try {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
 
       const authHeader =
         req.headers["authorization"];
@@ -12241,14 +12117,46 @@ app.get(
           `
           SELECT
 
-          COALESCE(SUM(i.earnings), 0) + COALESCE((
+          COALESCE((
+            SELECT SUM(e.amount)
+            FROM earnings e
+            WHERE e.contributor_id = $1 AND e.status <> 'rejected'
+          ), 0) + COALESCE((
             SELECT SUM(ch.amount_paid)
             FROM credits_history ch
             WHERE ch.user_id = $1 AND ch.payment_method = 'redeem'
           ), 0) AS total_earnings,
 
+          COALESCE((
+            SELECT SUM(e.amount) FILTER (WHERE e.created_at >= NOW() - INTERVAL '24 hours')
+            FROM earnings e
+            WHERE e.contributor_id = $1 AND e.status <> 'rejected'
+          ), 0) AS earnings_today,
+
+          COALESCE((
+            SELECT SUM(e.amount) FILTER (WHERE e.created_at >= NOW() - INTERVAL '7 days')
+            FROM earnings e
+            WHERE e.contributor_id = $1 AND e.status <> 'rejected'
+          ), 0) AS earnings_last_7_days,
+
+          COALESCE((
+            SELECT SUM(e.amount) FILTER (WHERE e.created_at >= NOW() - INTERVAL '30 days')
+            FROM earnings e
+            WHERE e.contributor_id = $1 AND e.status <> 'rejected'
+          ), 0) AS earnings_last_30_days,
+
+          COALESCE((
+            SELECT SUM(e.amount) FILTER (WHERE e.created_at >= NOW() - INTERVAL '365 days')
+            FROM earnings e
+            WHERE e.contributor_id = $1 AND e.status <> 'rejected'
+          ), 0) AS earnings_last_365_days,
+
           GREATEST(
-            COALESCE(SUM(i.earnings), 0) + COALESCE((
+            COALESCE((
+              SELECT SUM(e.amount)
+              FROM earnings e
+              WHERE e.contributor_id = $1 AND e.status <> 'rejected'
+            ), 0) + COALESCE((
               SELECT SUM(ch.amount_paid)
               FROM credits_history ch
               WHERE ch.user_id = $1 AND ch.payment_method = 'redeem'
@@ -12259,6 +12167,23 @@ app.get(
             ), 0),
             0
           ) AS unpaid_earnings,
+
+          GREATEST(
+            COALESCE((
+              SELECT SUM(e.amount)
+              FROM earnings e
+              WHERE e.contributor_id = $1 AND e.status <> 'rejected'
+            ), 0) + COALESCE((
+              SELECT SUM(ch.amount_paid)
+              FROM credits_history ch
+              WHERE ch.user_id = $1 AND ch.payment_method = 'redeem'
+            ), 0) - COALESCE((
+              SELECT SUM(pr.requested_credits)
+              FROM payout_requests pr
+              WHERE pr.contributor_id = $1 AND pr.status <> 'rejected'
+            ), 0),
+            0
+          ) AS available_balance,
 
           COALESCE(
             SUM(downloads),
@@ -12276,8 +12201,93 @@ app.get(
 
         );
 
+      const dailyEarningsResult = await pool.query(
+        `
+        SELECT
+          day::date AS date,
+          COALESCE(SUM(e.amount), 0) AS amount
+        FROM generate_series(CURRENT_DATE - INTERVAL '29 days', CURRENT_DATE, INTERVAL '1 day') AS days(day)
+        LEFT JOIN earnings e
+          ON e.contributor_id = $1
+          AND e.status <> 'rejected'
+          AND e.created_at >= day
+          AND e.created_at < day + INTERVAL '1 day'
+        GROUP BY day
+        ORDER BY day
+        `,
+        [userId]
+      );
+
+      const weeklyEarningsResult = await pool.query(
+        `
+        SELECT
+          week_start::date AS date,
+          COALESCE(SUM(e.amount), 0) AS amount
+        FROM generate_series(CURRENT_DATE - INTERVAL '42 days', CURRENT_DATE, INTERVAL '7 days') AS weeks(week_start)
+        LEFT JOIN earnings e
+          ON e.contributor_id = $1
+          AND e.status <> 'rejected'
+          AND e.created_at >= week_start
+          AND e.created_at < week_start + INTERVAL '7 days'
+        GROUP BY week_start
+        ORDER BY week_start
+        `,
+        [userId]
+      );
+
+      const soldAssetsResult = await pool.query(
+        `
+        SELECT
+          e.id AS sale_id,
+          e.order_id,
+          i.id,
+          i.title,
+          i.filename,
+          i.status,
+          i.created_at,
+          e.created_at AS sold_at,
+          e.amount AS earnings,
+          (
+            SELECT COUNT(*)
+            FROM downloads asset_downloads
+            WHERE asset_downloads.image_id = i.id
+          ) AS downloads
+        FROM images i
+        INNER JOIN earnings e
+          ON e.asset_id = i.id
+          AND e.contributor_id = $1
+          AND e.status <> 'rejected'
+        WHERE i.uploaded_by = $1
+        AND e.amount > 0
+        ORDER BY e.created_at DESC
+        `,
+        [userId]
+      );
+
       res.json(
-        result.rows[0]
+        {
+          ...result.rows[0],
+          earnings_daily: dailyEarningsResult.rows.map((row) => ({
+            date: row.date,
+            amount: Number(row.amount || 0),
+          })),
+          earnings_weekly: weeklyEarningsResult.rows.map((row) => ({
+            date: row.date,
+            amount: Number(row.amount || 0),
+          })),
+          sold_assets: soldAssetsResult.rows.map((row) => ({
+            sale_id: row.sale_id,
+            order_id: row.order_id,
+            id: row.id,
+            title: row.title,
+            filename: row.filename,
+            status: row.status,
+            created_at: row.created_at,
+            sold_at: row.sold_at,
+            earnings: Number(row.earnings || 0),
+            downloads: Number(row.downloads || 0),
+          })),
+        }
       );
 
     } catch (err) {
@@ -12867,8 +12877,8 @@ async function ensureGfxSyncChangeTracking() {
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS public.gfx_sync_changes (
-        change_id BIGSERIAL PRIMARY KEY,
-        device_id TEXT,
+        id BIGSERIAL PRIMARY KEY,
+        device_id TEXT NOT NULL,
         table_name TEXT NOT NULL,
         record_id TEXT,
         operation TEXT NOT NULL,
@@ -13023,19 +13033,16 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(customSubscriptionCompletionMigration);
-      const restoreSystemMigration = fs.readFileSync(
-        path.join(__dirname, "migrations", "020_restore_system.sql"),
+      const downloadCounterMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "016_download_counter_consistency.sql"),
         "utf8"
       );
-      for (const statement of restoreSystemMigration.split(";").filter(s => s.trim())) {
-        try {
-          await pool.query(statement);
-        } catch (err) {
-          if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
-            console.warn("Restore system migration statement error:", err.message);
-          }
-        }
-      }
+      await pool.query(downloadCounterMigration);
+      const orderDownloadIdentityMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "017_order_download_identity.sql"),
+        "utf8"
+      );
+      await pool.query(orderDownloadIdentityMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);
@@ -13133,6 +13140,7 @@ module.exports = {
   collectFileChangeStatusReport,
   ensureGfxSyncChangeTracking,
   recordGfxSyncChange,
+  summarizeContributorDownloadWindowCounts,
 };
 
 // Mount email admin routes (settings, templates, verify, send-test)
@@ -13147,7 +13155,7 @@ try {
 try {
   app.locals.pool = pool;
   app.locals.JWT_SECRET = JWT_SECRET;
-  app.use('/admin/restore', verifyAdmin, restoreRoutes);
+  app.use('/admin/restore', restoreRoutes);
 } catch (err) {
   console.error('Failed to mount restore routes', err);
 }

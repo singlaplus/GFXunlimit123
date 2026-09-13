@@ -10,7 +10,7 @@ describe("useContributorStats score-based tiers", () => {
     axios.get.mockReset();
   });
 
-  it("uses the score-based contributor reputation tier", () => {
+  it("ignores stale server reputation values and computes the agreed formula client-side", () => {
     const { result } = renderHook(() =>
       useContributorStats({
         uploads: 0,
@@ -23,7 +23,27 @@ describe("useContributorStats score-based tiers", () => {
       })
     );
 
-    expect(result.current.reputationTier).toBe("🟣 Verified Contributor");
+    expect(result.current.reputationScore).toBe(0);
+    expect(result.current.rawScore).toBe(0);
+    expect(result.current.reputationTier).toBe("🟢 New Contributor");
+  });
+
+  it("uses the agreed upload + downloads divided by views formula for the dashboard score", () => {
+    const { result } = renderHook(() =>
+      useContributorStats({
+        uploads: 3,
+        likes: 1,
+        downloads: 1,
+        views: 4,
+        reputationScore: 60,
+        rawScore: 60,
+        monthsOld: 1
+      })
+    );
+
+    expect(result.current.reputationScore).toBe(1);
+    expect(result.current.rawScore).toBe(1);
+    expect(result.current.reputationTier).toBe("🟢 New Contributor");
   });
 
   it("falls back to neutral defaults when stats are missing", () => {

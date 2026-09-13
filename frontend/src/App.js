@@ -35,6 +35,7 @@ import { getEffectiveAuthToken } from "./utils/authSession";
 function App() {
   const loc = useLocation();
   const location = loc || (typeof window !== 'undefined' ? window.location : { search: '', pathname: '/' });
+  const isStartTaxFormPage = location.pathname === "/dashboard" && new URLSearchParams(location.search).get("tab") === "starttaxform";
 
   const [authVersion, setAuthVersion] = useState(0);
   const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
@@ -756,9 +757,9 @@ const popupProps = {
     setShowJoinModal(true);
   }}
   isLoggedIn={Boolean(token)}
-/>
+      />
 
-      <div
+        <div
         style={{
           marginTop: "24px",
           padding: "20px",
@@ -775,8 +776,8 @@ const popupProps = {
           <div
             key={watch.label}
             style={{
-              minWidth: "min(180px, 100%)",
-              flex: "1 1 180px",
+              minWidth: "min(160px, 100%)",
+              flex: "1 1 160px",
               maxWidth: "220px",
               padding: "16px",
               borderRadius: "18px",
@@ -792,7 +793,7 @@ const popupProps = {
               <span>{watch.flag}</span>
               <span>{watch.label}</span>
             </div>
-            <div style={{ fontSize: "clamp(0.88rem, 1.84vw, 1.48rem)", fontWeight: 800, marginBottom: "6px", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <div style={{ fontSize: "clamp(0.82rem, 1.45vw, 1.2rem)", fontWeight: 800, marginBottom: "6px", lineHeight: 1.2, whiteSpace: "nowrap" }}>
               {liveTime.toLocaleTimeString("en-US", {
                 timeZone: watch.timezone,
                 hour: "2-digit",
