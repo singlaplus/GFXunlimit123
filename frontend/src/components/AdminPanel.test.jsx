@@ -79,6 +79,45 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByRole("button", { name: /^customer details$/i })).toBeInTheDocument();
   });
 
+  it("opens the controls tax forms tab with the controls_taxforms route", async () => {
+    render(<AdminPanel />);
+
+    const taxFormsButton = await screen.findByRole("button", { name: /^tax forms$/i });
+    fireEvent.click(taxFormsButton);
+
+    await waitFor(() => {
+      expect(window.location.href).toContain("tab=controls_taxforms");
+    });
+  });
+
+  it("shows submitted contributor tax forms in the controls tax forms tab", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_taxforms" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [{
+          id: 1,
+          full_name: "Submitted Contributor",
+          username: "submitted_creator",
+          email: "submitted@example.com",
+          role: "contributor",
+          status: "active",
+          tax_form_status: "submitted",
+          tax_form_submitted_at: "2026-09-14T10:00:00.000Z",
+          tax_form_data: { entityType: "Individual", city: "Patiala", country: "India" }
+        }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText("Submitted Contributor")).toBeInTheDocument();
+    expect(screen.getByText("submitted")).toBeInTheDocument();
+    expect(screen.getByText(/Sep 14, 2026|14 Sep 2026/)).toBeInTheDocument();
+    expect(screen.getByText("Individual")).toBeInTheDocument();
+    expect(screen.getByText("Patiala, India")).toBeInTheDocument();
+  });
+
   it("searches contributor details by username or email", async () => {
     useLocation.mockReturnValue({ search: "?tab=contributordetails" });
     axios.get.mockImplementation((url) => {
@@ -96,6 +135,119 @@ describe("AdminPanel collection controls", () => {
     const search = await screen.findByPlaceholderText(/search by username or email/i);
     fireEvent.change(search, { target: { value: "beta@example" } });
     expect(search).toHaveValue("beta@example");
+  });
+
+  it("adds the selected contributor username to the contributor details URL", async () => {
+    useLocation.mockReturnValue({ search: "?tab=contributordetails" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [
+          { id: 1, full_name: "Alpha Creator", username: "alpha_creator", email: "alpha@example.com", role: "contributor", status: "active" },
+          { id: 2, full_name: "Beta Creator", username: "beta_creator", email: "beta@example.com", role: "contributor", status: "active" }
+        ] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    const search = await screen.findByPlaceholderText(/search by username or email/i);
+    fireEvent.change(search, { target: { value: "alpha@example" } });
+
+    const alphaButton = await screen.findByRole("button", { name: /Alpha Creator/i });
+    fireEvent.click(alphaButton);
+
+    await waitFor(() => {
+      expect(window.location.search).toContain("username=alpha_creator");
+    });
+  });
+
+  it("normalizes legacy contributor analytics fields for the selected card", async () => {
+    useLocation.mockReturnValue({ search: "?tab=contributordetails" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [{
+          id: 1,
+          full_name: "Legacy Creator",
+          username: "legacy_creator",
+          email: "legacy@example.com",
+          role: "contributor",
+          status: "active",
+          order_count: 15,
+          accepted_upload_count: 4,
+          pending_upload_count: 0,
+          rejected_upload_count: 1,
+          order_details: [{ order_id: 22, order_number: "ORD-22", order_status: "completed", payment_status: "paid", title: "Approved asset sale", created_at: "2026-09-14T10:00:00Z" }]
+        }] });
+      }
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({ data: [
+          { id: 4, uploaded_by: 1, contributor_username: "legacy_creator", title: "Approved asset", status: "approved", created_at: "2026-09-14T10:00:00Z" },
+          { id: 5, uploaded_by: 1, contributor_username: "legacy_creator", title: "Pending asset", status: "pending", created_at: "2026-09-13T10:00:00Z" },
+          { id: 6, uploaded_by: 1, contributor_username: "legacy_creator", title: "Rejected asset", status: "rejected", created_at: "2026-09-12T10:00:00Z" }
+        ] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    const search = await screen.findByPlaceholderText(/search by username or email/i);
+    fireEvent.change(search, { target: { value: "legacy_creator" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Legacy Creator/i }));
+
+    const details = await screen.findByRole("region", { name: /selected contributor details/i });
+    expect(details).toHaveTextContent("Orders15");
+    expect(details).toHaveTextContent("Approved4");
+    expect(details).toHaveTextContent("Pending0");
+    expect(details).toHaveTextContent("Rejected1");
+    expect(details).toHaveTextContent("PermissionsBulk upload: No Upload limit: 20 GB");
+
+    fireEvent.click(screen.getByText("Orders").closest("article"));
+    const ordersDialog = await screen.findByRole("dialog", { name: "Orders" });
+    expect(ordersDialog).toHaveTextContent("Approved asset sale");
+    expect(within(ordersDialog).getByRole("table")).toBeInTheDocument();
+    expect(within(ordersDialog).getByText("Order status")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByText("Approved").closest("article"));
+    const approvedDialog = await screen.findByRole("dialog", { name: "Approved" });
+    expect(approvedDialog).toHaveTextContent("Approved asset");
+    expect(within(approvedDialog).getByRole("img", { name: "Approved asset" })).toBeInTheDocument();
+  });
+
+  it("renders the live reputation score returned by the admin user query", async () => {
+    useLocation.mockReturnValue({ search: "?tab=contributordetails&username=live_creator" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [{
+          id: 1,
+          full_name: "Live Creator",
+          username: "live_creator",
+          email: "live@example.com",
+          role: "contributor",
+          status: "active",
+          total_uploads: 4,
+          total_downloads: 6,
+          total_views: 5,
+          total_earnings: 123.45,
+          unpaid_earnings: 98.45,
+          loyalty_points: 3,
+          tax_form_submitted: true,
+          reputation_score: 2
+        }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    const details = await screen.findByRole("region", { name: /selected contributor details/i });
+    expect(details).toHaveTextContent("Reputation score2");
+    expect(details).toHaveTextContent("Total earnings123.45");
+    expect(details).toHaveTextContent("Unpaid earnings98.45");
+    expect(details).toHaveTextContent("Loyalty points3");
+    expect(details).toHaveTextContent("Tax Form SubmittedYes");
   });
 
   it("renders actual asset counts from collection payloads that use count fields", async () => {

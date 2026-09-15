@@ -9823,7 +9823,35 @@ app.get("/profile", async (req, res) => {
           email,
           role,
           credits,
-          custom_permissions
+          custom_permissions,
+          (
+            SELECT tf.status
+            FROM contributor_tax_forms tf
+            WHERE tf.contributor_id = users.id
+            ORDER BY tf.updated_at DESC NULLS LAST, tf.submitted_at DESC NULLS LAST
+            LIMIT 1
+          ) AS tax_form_status,
+          (
+            SELECT tf.form_type
+            FROM contributor_tax_forms tf
+            WHERE tf.contributor_id = users.id
+            ORDER BY tf.updated_at DESC NULLS LAST, tf.submitted_at DESC NULLS LAST
+            LIMIT 1
+          ) AS tax_form_type,
+          (
+            SELECT tf.form_data
+            FROM contributor_tax_forms tf
+            WHERE tf.contributor_id = users.id
+            ORDER BY tf.updated_at DESC NULLS LAST, tf.submitted_at DESC NULLS LAST
+            LIMIT 1
+          ) AS tax_form_data,
+          (
+            SELECT tf.submitted_at
+            FROM contributor_tax_forms tf
+            WHERE tf.contributor_id = users.id
+            ORDER BY tf.updated_at DESC NULLS LAST, tf.submitted_at DESC NULLS LAST
+            LIMIT 1
+          ) AS tax_form_submitted_at
         FROM users
         WHERE id = $1
         `,
@@ -10088,6 +10116,63 @@ res.json({
     }
   }
 );
+app.post("/profile/tax-form", authenticateToken, async (req, res) => {
+  try {
+    const formData = req.body && typeof req.body === "object" ? req.body : {};
+    await pool.query(
+      `
+      INSERT INTO contributor_tax_forms (contributor_id, form_type, status, form_data, submitted_at, updated_at)
+      VALUES ($1, $2, 'submitted', $3::jsonb, NOW(), NOW())
+      ON CONFLICT (contributor_id)
+      DO UPDATE SET form_type = EXCLUDED.form_type,
+                    status = EXCLUDED.status,
+                    form_data = EXCLUDED.form_data,
+                    submitted_at = EXCLUDED.submitted_at,
+                    updated_at = EXCLUDED.updated_at
+      `,
+      [req.user.id, String(formData.formType || "W-8BEN"), JSON.stringify(formData)]
+    );
+    res.json({ submitted: true, status: "submitted" });
+  } catch (err) {
+    console.error("Failed to save tax form", err);
+    res.status(500).json({ error: "Failed to save tax form" });
+  }
+});
+
+app.put("/admin/tax-forms/:contributorId/status", verifyAdmin, async (req, res) => {
+  try {
+    const status = String(req.body?.status || "").toLowerCase();
+    if (!["approved", "rejected"].includes(status)) {
+      return res.status(400).json({ error: "Invalid tax form status" });
+    }
+    const result = await pool.query(
+      `UPDATE contributor_tax_forms SET status = $1, updated_at = NOW() WHERE contributor_id = $2 RETURNING contributor_id, form_type, status, submitted_at, updated_at`,
+      [status, req.params.contributorId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: "Tax form not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Failed to update tax form status", err);
+    res.status(500).json({ error: "Failed to update tax form status" });
+  }
+});
+
+app.post("/admin/tax-forms/:contributorId/reminder", verifyAdmin, async (req, res) => {
+  try {
+    const userResult = await pool.query("SELECT username, email FROM users WHERE id = $1 AND LOWER(role) = 'contributor'", [req.params.contributorId]);
+    const user = userResult.rows[0];
+    if (!user) return res.status(404).json({ error: "Contributor not found" });
+    await pool.query(
+      "INSERT INTO notifications (username, message, is_read, created_at) VALUES ($1, $2, FALSE, NOW())",
+      [user.username, "Please submit or review your tax form so we can process your contributor payments."]
+    );
+    res.json({ sent: true });
+  } catch (err) {
+    console.error("Failed to send tax form reminder", err);
+    res.status(500).json({ error: "Failed to send tax form reminder" });
+  }
+});
+
 /* ---------------- PROFILE STATS ---------------- */
 
 app.get(
@@ -10753,29 +10838,180 @@ app.delete("/admin/collections/:id", verifyAdmin, async (req, res) => {
 
 /* ---------------- ADMIN CATEGORY MANAGEMENT ---------------- */
 
+const getIndiaUploadDay = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+};
+
+const calculateAdminLoyaltyPoints = (uploadDates = [], asOf = new Date()) => {
+  const uploadDays = new Set(uploadDates.map(getIndiaUploadDay).filter(Boolean));
+  const today = getIndiaUploadDay(asOf);
+  if (!today || uploadDays.size === 0) return 0;
+
+  const dayToNumber = (day) => {
+    const [year, month, date] = day.split("-").map(Number);
+    return Date.UTC(year, month - 1, date);
+  };
+  const firstUploadDay = Math.min(...[...uploadDays].map(dayToNumber));
+  const endDay = dayToNumber(today);
+  let points = 0;
+
+  for (let cursor = firstUploadDay; cursor <= endDay; cursor += 24 * 60 * 60 * 1000) {
+    const cursorDay = new Date(cursor).toISOString().slice(0, 10);
+    points = Math.max(0, points + (uploadDays.has(cursorDay) ? 1 : -1));
+  }
+
+  return points;
+};
+
 app.get("/admin/users", verifyAdmin, async (req, res) => {
   try {
     const users = await pool.query(`
       SELECT
-        id,
-        full_name,
-        username,
-        email,
-        role,
-        identity_number,
-        credits,
-        status,
-        contributor_cooling_until,
-        deletion_requested_at,
-        deletion_backup_status,
-        otp_enabled,
-        custom_permissions,
-        created_at
-      FROM users
-      ORDER BY created_at DESC
+        u.id,
+        u.full_name,
+        u.username,
+        u.email,
+        u.role,
+        u.identity_number,
+        u.credits,
+        u.status,
+        u.contributor_cooling_until,
+        u.deletion_requested_at,
+        u.deletion_backup_status,
+        u.otp_enabled,
+        u.custom_permissions,
+        u.created_at,
+        COALESCE(img.total_uploads, 0) AS total_uploads,
+        COALESCE(img.total_downloads, 0) AS total_downloads,
+        COALESCE(img.total_likes, 0) AS total_likes,
+        COALESCE(img.total_views, 0) AS total_views,
+        COALESCE(img.total_earnings, 0) AS total_earnings,
+        GREATEST(
+          COALESCE((
+            SELECT SUM(e.amount)
+            FROM earnings e
+            WHERE e.contributor_id = u.id AND e.status <> 'rejected'
+          ), 0) + COALESCE((
+            SELECT SUM(ch.amount_paid)
+            FROM credits_history ch
+            WHERE ch.user_id = u.id AND ch.payment_method = 'redeem'
+          ), 0) - COALESCE((
+            SELECT SUM(pr.requested_credits)
+            FROM payout_requests pr
+            WHERE pr.contributor_id = u.id AND pr.status <> 'rejected'
+          ), 0),
+          0
+        ) AS unpaid_earnings,
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'order_id', oi.order_id,
+            'order_number', o.order_number,
+            'payment_status', o.payment_status,
+            'order_status', o.order_status,
+            'title', oi.title,
+            'total_price', oi.total_price,
+            'currency', oi.currency,
+            'created_at', oi.created_at
+          ) ORDER BY oi.created_at DESC)
+          FROM order_items oi
+          LEFT JOIN orders o ON o.id = oi.order_id
+          WHERE oi.contributor_id = u.id
+        ), '[]'::json) AS order_details,
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'id', i.id,
+            'title', i.title,
+            'filename', i.filename,
+            'status', i.status,
+            'created_at', i.created_at,
+            'thumbnail_url', i.thumbnail_url
+          ) ORDER BY i.created_at DESC)
+          FROM images i
+          WHERE i.uploaded_by = u.id
+        ), '[]'::json) AS asset_details,
+        EXISTS (
+          SELECT 1
+          FROM contributor_tax_forms tf
+          WHERE tf.contributor_id = u.id AND tf.status = 'submitted'
+        ) AS tax_form_submitted,
+        (
+          SELECT tf.status
+          FROM contributor_tax_forms tf
+          WHERE tf.contributor_id = u.id
+          ORDER BY tf.updated_at DESC NULLS LAST, tf.submitted_at DESC NULLS LAST
+          LIMIT 1
+        ) AS tax_form_status,
+        (
+          SELECT tf.form_type
+          FROM contributor_tax_forms tf
+          WHERE tf.contributor_id = u.id
+          ORDER BY tf.updated_at DESC NULLS LAST, tf.submitted_at DESC NULLS LAST
+          LIMIT 1
+        ) AS tax_form_type,
+        (
+          SELECT tf.form_data
+          FROM contributor_tax_forms tf
+          WHERE tf.contributor_id = u.id
+          ORDER BY tf.updated_at DESC NULLS LAST, tf.submitted_at DESC NULLS LAST
+          LIMIT 1
+        ) AS tax_form_data,
+        (
+          SELECT tf.submitted_at
+          FROM contributor_tax_forms tf
+          WHERE tf.contributor_id = u.id
+          ORDER BY tf.updated_at DESC NULLS LAST, tf.submitted_at DESC NULLS LAST
+          LIMIT 1
+        ) AS tax_form_submitted_at,
+        COALESCE(img.upload_dates, ARRAY[]::timestamptz[]) AS upload_dates,
+        CASE
+          WHEN COALESCE(img.total_views, 0) > 0
+            THEN ROUND((COALESCE(img.total_uploads, 0) + COALESCE(img.total_downloads, 0))::numeric / img.total_views, 2)
+          ELSE 0
+        END AS reputation_score,
+        COALESCE(img.approved, 0) AS approved,
+        COALESCE(img.pending, 0) AS pending,
+        COALESCE(img.rejected, 0) AS rejected,
+        COALESCE(order_items.order_count, 0) AS orders
+      FROM users u
+      LEFT JOIN (
+        SELECT
+          uploaded_by,
+          COUNT(*)::int AS total_uploads,
+          COALESCE(SUM(downloads), 0)::int AS total_downloads,
+          COALESCE(SUM(likes), 0)::int AS total_likes,
+          COALESCE(SUM(views), 0)::int AS total_views,
+          COALESCE(SUM(earnings), 0) AS total_earnings,
+          ARRAY_AGG(created_at) AS upload_dates,
+          COUNT(*) FILTER (WHERE LOWER(status) = 'approved')::int AS approved,
+          COUNT(*) FILTER (WHERE LOWER(status) = 'pending')::int AS pending,
+          COUNT(*) FILTER (WHERE LOWER(status) = 'rejected')::int AS rejected
+        FROM images
+        GROUP BY uploaded_by
+      ) img ON img.uploaded_by = u.id
+      LEFT JOIN (
+        SELECT
+          contributor_id,
+          COUNT(*)::int AS order_count
+        FROM order_items
+        GROUP BY contributor_id
+      ) order_items ON order_items.contributor_id = u.id
+      ORDER BY u.created_at DESC
     `);
 
-    res.json(users.rows);
+    res.json(users.rows.map((user) => ({
+      ...user,
+      loyalty_points: calculateAdminLoyaltyPoints(user.upload_dates),
+      upload_dates: undefined
+    })));
   } catch (err) {
     console.error(err);
     res.status(500).send("Failed to fetch users");
@@ -13043,6 +13279,11 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(orderDownloadIdentityMigration);
+      const contributorTaxFormsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "022_contributor_tax_forms.sql"),
+        "utf8"
+      );
+      await pool.query(contributorTaxFormsMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);

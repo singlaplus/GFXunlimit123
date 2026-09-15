@@ -1,17 +1,22 @@
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import axios from "axios";
 import ContributorDashboard from "./ContributorDashboard";
 
+const mockNavigate = jest.fn();
+const mockLocation = { search: "" };
+
 jest.mock("react-router-dom", () => ({
-  useLocation: () => ({ search: "" }),
-  useNavigate: () => jest.fn(),
+  useLocation: () => mockLocation,
+  useNavigate: () => mockNavigate,
 }));
 
 jest.mock("axios");
 
 describe("ContributorDashboard", () => {
   beforeEach(() => {
+    mockLocation.search = "";
+    mockNavigate.mockClear();
     localStorage.clear();
     localStorage.setItem("token", "test-token");
 
@@ -55,5 +60,32 @@ describe("ContributorDashboard", () => {
 
     const availableBalance = screen.getByText("Available balance").parentElement;
     expect(availableBalance).toHaveTextContent("₹8.07");
+  });
+
+  it("shows the submitted tax form and opens it with View", async () => {
+    mockLocation.search = "?tab=taxcenter";
+    axios.get.mockImplementation((url) => {
+      if (typeof url === "string" && url.includes("/profile")) {
+        return Promise.resolve({ data: {
+          username: "asxc",
+          full_name: "A S",
+          email: "asxc@example.com",
+          tax_form_status: "submitted",
+          tax_form_type: "W-8BEN",
+          tax_form_data: { mailingAddress: "Mumbai" },
+          tax_form_submitted_at: "2026-09-14T10:00:00.000Z"
+        } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<ContributorDashboard darkMode={false} username="asxc" reputationScore={0} reputationTier="New Contributor" />);
+
+    expect(await screen.findByText("Form W-8BEN")).toBeInTheDocument();
+    expect(screen.getByText(/submitted/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^view$/i }));
+    expect(mockNavigate).toHaveBeenCalledWith("/dashboard?tab=filltaxform_review", expect.objectContaining({
+      state: expect.objectContaining({ formType: "W-8BEN" })
+    }));
   });
 });

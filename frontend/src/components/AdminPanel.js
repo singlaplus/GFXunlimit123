@@ -16,6 +16,8 @@ import AdminEmailQueue from "../pages/AdminEmailQueue";
 import AdminNotificationRules from "../pages/AdminNotificationRules";
 import AdminEmailAnalytics from "../pages/AdminEmailAnalytics";
 import RestorePage from "../pages/RestorePage";
+import TaxMailSMTPSettings from "./TaxMailSMTPSettings";
+import TaxMailTemplates from "./TaxMailTemplates";
 import { limitWords, formatKeywords } from "../utils/uploadInputLimits";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
 
@@ -23,6 +25,14 @@ const CATEGORY_STORAGE_KEY = "asset-categories";
 const COLLECTION_STORAGE_KEY = "asset-collections";
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const USER_DELETE_COOLING_PERIOD_MINUTES = 60;
+const normalizeAdminUser = (user = {}) => ({
+  ...user,
+  total_uploads: user.total_uploads ?? user.upload_count ?? user.accepted_upload_count ?? 0,
+  orders: user.orders ?? user.order_count ?? 0,
+  approved: user.approved ?? user.approved_upload_count ?? user.accepted_upload_count ?? 0,
+  pending: user.pending ?? user.pending_upload_count ?? 0,
+  rejected: user.rejected ?? user.rejected_upload_count ?? 0
+});
 const formatCoolingRemaining = (coolingUntil, now = Date.now()) => {
   const remainingSeconds = Math.max(0, Math.ceil((new Date(coolingUntil).getTime() - now) / 1000));
   if (!remainingSeconds) return "Live now";
@@ -53,6 +63,22 @@ const formatBackupCreatedAt = (createdAt) => {
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${values.day}-${values.month}-${values.year} ${values.hour}:${values.minute}`;
 };
+const formatTaxFormSubmittedAt = (submittedAt) => {
+  if (!submittedAt) return "—";
+  const parsedDate = new Date(submittedAt);
+  return Number.isNaN(parsedDate.getTime()) ? "—" : parsedDate.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+};
+const formatTaxFormLocation = (formData) => {
+  const safeFormData = formData && typeof formData === "object" ? formData : {};
+  const location = [safeFormData.city, safeFormData.country].filter(Boolean).join(", ");
+  return location || "—";
+};
+const formatTaxFormEntityType = (user) => {
+  if (user.tax_form_data?.entityType) return user.tax_form_data.entityType;
+  if (user.tax_form_type === "W-8BEN") return "Individual";
+  if (user.tax_form_type === "W-9") return "Business";
+  return "—";
+};
 const HERO_BADGE_DEFAULT = "✨ World's Next Creative Marketplace";
 const HERO_HEADING_LINE_1_DEFAULT = "Discover Millions of";
 const HERO_HEADING_LINE_2_DEFAULT = "Creative Stock Assets";
@@ -66,25 +92,26 @@ const DEFAULT_CATEGORY_OPTIONS = [
   { id: "default-templates", name: "Templates" }
 ];
 
-function CardWrapper({ cardId, cardOrder, isLayoutEditMode, isDarkMode, moveCard, children }) {
+function CardWrapper({ cardId, cardOrder, isLayoutEditMode, isDarkMode, moveCard, children, className = "", style = {} }) {
   const safeCardOrder = Array.isArray(cardOrder) ? cardOrder : [];
   const cardIndex = safeCardOrder.indexOf(cardId);
   const canMoveLeft = cardIndex > 0;
   const canMoveRight = cardIndex < safeCardOrder.length - 1;
 
   if (!isLayoutEditMode) {
-    return <div className="admin-panel-card" style={{ order: cardIndex, flexBasis: "calc(33.333% - 14px)" }}>{children}</div>;
+    return <div className={`admin-panel-card ${className}`.trim()} style={{ order: cardIndex, flexBasis: "calc(33.333% - 14px)", ...style }}>{children}</div>;
   }
 
   return (
     <div
-      className="admin-panel-card"
+      className={`admin-panel-card ${className}`.trim()}
       style={{
         position: "relative",
         border: "2px solid #2196f3",
         background: isDarkMode ? "#111827" : "#f0f8ff",
         order: cardIndex,
-        flexBasis: "calc(33.333% - 14px)"
+        flexBasis: "calc(33.333% - 14px)",
+        ...style
       }}
     >
       <div
@@ -274,9 +301,28 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [deleteConfirmationUser, setDeleteConfirmationUser] = useState(null);
   const [userFilter, setUserFilter] = useState("all");
   const [contributorSearch, setContributorSearch] = useState("");
+  const [taxFormSearch, setTaxFormSearch] = useState("");
   const [selectedContributor, setSelectedContributor] = useState(null);
+  const [selectedContributorMetric, setSelectedContributorMetric] = useState(null);
+  const [selectedTaxForm, setSelectedTaxForm] = useState(null);
   const [hoveredContributorId, setHoveredContributorId] = useState(null);
   const [isUserSaving, setIsUserSaving] = useState(false);
+
+  const syncContributorUrl = (username) => {
+    if (typeof window === "undefined") return;
+
+    const nextParams = new URLSearchParams(location.search || "");
+    nextParams.set("tab", "contributordetails");
+
+    if (username) {
+      nextParams.set("username", username);
+    } else {
+      nextParams.delete("username");
+    }
+
+    const nextUrl = `${window.location.pathname}?${nextParams.toString()}`;
+    window.history.pushState({}, "", nextUrl);
+  };
   const [creditUserId, setCreditUserId] = useState("");
   const [creditAmount, setCreditAmount] = useState("");
   const [isAddingCredits, setIsAddingCredits] = useState(false);
@@ -471,10 +517,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const isUsersTab = tabParam === "users";
   const isContributorDetailsTab = tabParam === "contributordetails";
   const isTaxFormsTab = tabParam === "taxforms";
+  const isControlsTaxFormsTab = tabParam === "controls_taxforms";
   const isCustomerDetailsTab = tabParam === "customerdetails";
   const isPromotionsTab = tabParam === "promotions";
-  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab;
-  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : "Admin Panel";
+  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab;
+  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : "Admin Panel";
 
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
@@ -967,6 +1014,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [accountMessage, setAccountMessage] = useState("");
 
   const [emailModal, setEmailModal] = useState(null);
+  const [taxMailModal, setTaxMailModal] = useState(null);
   const [dailyReportPreviewOpen, setDailyReportPreviewOpen] = useState(Boolean(initialDailyReportPreviewPage || isDailyReportPreviewPath));
   const [dailyReportPreviewData, setDailyReportPreviewData] = useState(null);
   const [dailyReportPreviewLoading, setDailyReportPreviewLoading] = useState(false);
@@ -3346,10 +3394,32 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           headers: { Authorization: `Bearer ${token}` }
         }
       );
-      setUsers(Array.isArray(res.data) ? res.data : []);
+      setUsers(Array.isArray(res.data) ? res.data.map(normalizeAdminUser) : []);
     } catch (err) {
       console.error(err);
       setUsers([]);
+    }
+  };
+
+  const updateTaxFormStatus = async (user, status) => {
+    try {
+      const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+      await axios.put(`${API_BASE_URL}/admin/tax-forms/${user.id}/status`, { status }, { headers: { Authorization: `Bearer ${token}` } });
+      await fetchUsers();
+    } catch (err) {
+      console.error(err);
+      toast.error(`Failed to ${status} tax form.`);
+    }
+  };
+
+  const sendTaxFormReminder = async (user) => {
+    try {
+      const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+      await axios.post(`${API_BASE_URL}/admin/tax-forms/${user.id}/reminder`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      toast.success("Tax form reminder sent.");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to send tax form reminder.");
     }
   };
 
@@ -3360,11 +3430,27 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   // Ensure we refresh users when the users tab or the active user filter changes
   useEffect(() => {
-    if (tabParam === "users" || tabParam === "controls" || isContributorDetailsTab || isTaxFormsTab || isCustomerDetailsTab) {
+    if (tabParam === "users" || tabParam === "controls" || isContributorDetailsTab || isTaxFormsTab || isControlsTaxFormsTab || isCustomerDetailsTab) {
       fetchUsers();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabParam, userFilter, isContributorDetailsTab, isTaxFormsTab, isCustomerDetailsTab]);
+  }, [tabParam, userFilter, isContributorDetailsTab, isTaxFormsTab, isControlsTaxFormsTab, isCustomerDetailsTab]);
+
+  useEffect(() => {
+    if (!isContributorDetailsTab || !Array.isArray(users) || users.length === 0) return;
+
+    const usernameParam = new URLSearchParams(location.search).get("username") || "";
+    const normalizedUsername = usernameParam.trim().toLowerCase();
+    if (!normalizedUsername) {
+      return;
+    }
+
+    const matchingContributor = users.find((user) => String(user.username || "").trim().toLowerCase() === normalizedUsername);
+    if (matchingContributor) {
+      setSelectedContributor(matchingContributor);
+      setContributorSearch("");
+    }
+  }, [isContributorDetailsTab, location.search, users]);
 
   const fetchBrandingConfig = async () => {
     try {
@@ -3744,6 +3830,38 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     if (!searchValue) return true;
     return [user.username, user.email].some((value) => String(value || "").toLowerCase().includes(searchValue));
   });
+  const filteredTaxFormUsers = contributorUsers.filter((user) => {
+    const searchValue = taxFormSearch.trim().toLowerCase();
+    if (!searchValue) return true;
+    return [user.full_name, user.username, user.email, user.tax_form_status, user.tax_form_type]
+      .some((value) => String(value || "").toLowerCase().includes(searchValue));
+  });
+  const getContributorMetricRows = (metricLabel) => {
+    if (!selectedContributor) return [];
+    if (metricLabel === "Orders") {
+      return Array.isArray(selectedContributor.order_details) ? selectedContributor.order_details : [];
+    }
+
+    const status = metricLabel.toLowerCase();
+    const contributorAssets = Array.isArray(selectedContributor.asset_details) && selectedContributor.asset_details.length > 0
+      ? selectedContributor.asset_details
+      : images;
+    return contributorAssets
+      .filter((image) => {
+        const matchesContributor = Number(image?.uploaded_by) === Number(selectedContributor.id)
+          || String(image?.contributor_username || "").toLowerCase() === String(selectedContributor.username || "").toLowerCase();
+        return matchesContributor && String(image?.status || "").toLowerCase() === status;
+      })
+      .map((image) => ({
+        id: image.id,
+        title: image.title || image.filename || "Untitled asset",
+        status: image.status,
+        created_at: image.created_at,
+        filename: image.filename,
+        preview_url: getAssetPreviewUrl(image, { quality: 70, watermark: false })
+      }));
+  };
+  const selectedMetricRows = selectedContributorMetric ? getContributorMetricRows(selectedContributorMetric.label) : [];
 
   const startEditingUser = (user) => {
     setEditingUserId(user.id);
@@ -4246,6 +4364,27 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       setUserExportStatus("CSV export failed.");
       alert("Unable to export users CSV right now.");
     }
+  };
+
+  const exportTaxFormsCsv = () => {
+    if (!Array.isArray(filteredTaxFormUsers) || filteredTaxFormUsers.length === 0) {
+      toast.info("No tax forms to export.");
+      return;
+    }
+
+    const rows = filteredTaxFormUsers.map((user) => ({
+      contributor: user.full_name || user.username || "",
+      username: user.username || "",
+      email: user.email || "",
+      status: user.tax_form_status || "Not submitted",
+      submitted: formatTaxFormSubmittedAt(user.tax_form_submitted_at),
+      entity_type: formatTaxFormEntityType(user),
+      location: formatTaxFormLocation(user.tax_form_data),
+      form_type: user.tax_form_type || "",
+      form_data: user.tax_form_data ? JSON.stringify(user.tax_form_data) : ""
+    }));
+    const headers = ["contributor", "username", "email", "status", "submitted", "entity_type", "location", "form_type", "form_data"];
+    downloadCsvFile(buildCsvContent(rows, headers), `tax-forms-${new Date().toISOString().slice(0, 10)}.csv`);
   };
 
   useEffect(() => {
@@ -5355,8 +5494,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 onChange={(event) => {
                   setContributorSearch(event.target.value);
                   setSelectedContributor(null);
+                  syncContributorUrl("");
                 }}
-                style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", border: "1px solid #cbd5e1", borderRadius: "8px", fontSize: "1rem" }}
+                style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", border: isDarkMode ? "1px solid rgba(148, 163, 184, 0.35)" : "1px solid #cbd5e1", borderRadius: "8px", fontSize: "1rem", background: isDarkMode ? "#111827" : "#ffffff", color: isDarkMode ? "#e2e8f0" : "#111827" }}
               />
           </label>
           {contributorSearch.trim() && !selectedContributor && (
@@ -5365,34 +5505,147 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 <button
                   key={user.id}
                   type="button"
-                  onClick={() => setSelectedContributor(user)}
+                  onClick={() => {
+                    setSelectedContributor(user);
+                    syncContributorUrl(user.username || "");
+                  }}
                   onMouseEnter={() => setHoveredContributorId(user.id)}
                   onMouseLeave={() => setHoveredContributorId(null)}
-                  style={{ display: "grid", gap: "4px", padding: "12px", textAlign: "left", border: selectedContributor?.id === user.id ? "2px solid #1976d2" : "1px solid #ddd", borderRadius: "8px", background: hoveredContributorId === user.id ? "#eff6ff" : "white", cursor: "pointer" }}
+                  style={{ display: "grid", gap: "4px", padding: "12px", textAlign: "left", border: selectedContributor?.id === user.id ? "2px solid #1976d2" : isDarkMode ? "1px solid rgba(148, 163, 184, 0.35)" : "1px solid #ddd", borderRadius: "8px", background: hoveredContributorId === user.id ? (isDarkMode ? "#1e293b" : "#eff6ff") : (isDarkMode ? "#0f172a" : "#ffffff"), color: isDarkMode ? "#e2e8f0" : "#111827", cursor: "pointer" }}
                 >
-                  <strong>{user.full_name || user.username || "Unnamed contributor"}</strong>
-                  <span>Username: {user.username || "-"}</span>
-                  <span>Email: {user.email || "-"}</span>
+                  <strong style={{ color: isDarkMode ? "#f8fafc" : undefined }}>{user.full_name || user.username || "Unnamed contributor"}</strong>
+                  <span style={{ color: isDarkMode ? "#cbd5e1" : undefined }}>Username: {user.username || "-"}</span>
+                  <span style={{ color: isDarkMode ? "#cbd5e1" : undefined }}>Email: {user.email || "-"}</span>
                 </button>
               ))}
-              {filteredContributorUsers.length === 0 && <p>No contributors match your search.</p>}
+              {filteredContributorUsers.length === 0 && <p style={{ color: isDarkMode ? "#cbd5e1" : undefined }}>No contributors match your search.</p>}
             </div>
           )}
           {selectedContributor && (
-            <section aria-label="Selected contributor details" style={{ display: "grid", gap: "8px", padding: "16px", border: "1px solid #cbd5e1", borderRadius: "8px", background: "#f8fafc" }}>
-              <strong style={{ fontSize: "1.1rem" }}>{selectedContributor.full_name || selectedContributor.username || "Unnamed contributor"}</strong>
-              <span>Contributor ID: {selectedContributor.id || "-"}</span>
-              <span>Full name: {selectedContributor.full_name || "-"}</span>
-              <span>Username: {selectedContributor.username || "-"}</span>
-              <span>Email: {selectedContributor.email || "-"}</span>
-              <span>Role: {selectedContributor.role || "-"}</span>
-              <span>Status: {selectedContributor.status || "-"}</span>
-              <span>Identity number: {selectedContributor.identity_number || "-"}</span>
-              <span>Credits: {selectedContributor.credits ?? "-"}</span>
-              <span>OTP enabled: {selectedContributor.otp_enabled ? "Yes" : "No"}</span>
-              <span>Created: {selectedContributor.created_at ? new Date(selectedContributor.created_at).toLocaleDateString() : "-"}</span>
-              <span>Deletion requested: {selectedContributor.deletion_requested_at ? new Date(selectedContributor.deletion_requested_at).toLocaleString() : "-"}</span>
+            <section aria-label="Selected contributor details" style={{ display: "grid", gap: "14px", padding: "16px", border: isDarkMode ? "1px solid rgba(148, 163, 184, 0.35)" : "1px solid #cbd5e1", borderRadius: "8px", background: isDarkMode ? "#0f172a" : "#f8fafc", color: isDarkMode ? "#e2e8f0" : "#111827" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+                <strong style={{ fontSize: "1.1rem", color: isDarkMode ? "#f8fafc" : undefined }}>{selectedContributor.full_name || selectedContributor.username || "Unnamed contributor"}</strong>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "12px" }}>
+                {[
+                  { label: "Contributor ID", value: selectedContributor.id || "-" },
+                  { label: "Full name", value: selectedContributor.full_name || "-" },
+                  { label: "Username", value: selectedContributor.username || "-" },
+                  { label: "Email", value: selectedContributor.email || "-" },
+                  { label: "Role", value: selectedContributor.role || "-" },
+                  { label: "Status", value: selectedContributor.status || "-" },
+                  { label: "Identity number", value: selectedContributor.identity_number || "-" },
+                  { label: "Credits", value: selectedContributor.credits ?? "-" },
+                  { label: "OTP enabled", value: selectedContributor.otp_enabled ? "Yes" : "No" },
+                  { label: "Permissions", value: (() => {
+                    const rawPermissions = selectedContributor.custom_permissions;
+                    const permissions = normalizeCustomPermissions(rawPermissions || {});
+                    const hasConfiguredLimit = rawPermissions && typeof rawPermissions === "object"
+                      && (rawPermissions.upload_limit_value != null || rawPermissions.upload_limit_unit);
+                    const uploadLimit = hasConfiguredLimit ? getUploadLimitDisplay(permissions) : "20 GB";
+                    return `Bulk upload: ${permissions.bulk_upload ? "Yes" : "No"}\nUpload limit: ${uploadLimit}`;
+                  })() },
+                  { label: "Created", value: selectedContributor.created_at ? new Date(selectedContributor.created_at).toLocaleDateString() : "-" },
+                  { label: "Deletion requested", value: selectedContributor.deletion_requested_at ? new Date(selectedContributor.deletion_requested_at).toLocaleString() : "-" },
+                  { label: "Reputation score", value: selectedContributor.reputation_score ?? selectedContributor.reputation ?? selectedContributor.score ?? "-" },
+                  { label: "Total earnings", value: selectedContributor.total_earnings ?? selectedContributor.earnings ?? "-" },
+                  { label: "Total downloads", value: selectedContributor.total_downloads ?? selectedContributor.downloads ?? "-" },
+                  { label: "Total uploads", value: selectedContributor.total_uploads ?? selectedContributor.uploads ?? "-" },
+                  { label: "Total likes", value: selectedContributor.total_likes ?? selectedContributor.likes ?? "-" },
+                  { label: "Total views", value: selectedContributor.total_views ?? selectedContributor.views ?? "-" },
+                  { label: "Loyalty points", value: selectedContributor.loyalty_points ?? selectedContributor.loyalty ?? "-" },
+                  { label: "Unpaid earnings", value: selectedContributor.unpaid_earnings ?? selectedContributor.unpaid ?? "-" },
+                  { label: "Tax Form Submitted", value: selectedContributor.tax_form_submitted ? "Yes" : "No" },
+                  { label: "Orders", value: Number(selectedContributor.orders ?? 0) },
+                  { label: "Approved", value: Number(selectedContributor.approved ?? 0) },
+                  { label: "Pending", value: Number(selectedContributor.pending ?? 0) },
+                  { label: "Rejected", value: Number(selectedContributor.rejected ?? 0) }
+                ].map((detail, index) => {
+                  const isInteractiveMetric = ["Orders", "Approved", "Pending", "Rejected"].includes(detail.label);
+                  return (
+                  <article
+                    key={detail.label}
+                    role={isInteractiveMetric ? "button" : undefined}
+                    tabIndex={isInteractiveMetric ? 0 : undefined}
+                    onClick={isInteractiveMetric ? () => setSelectedContributorMetric(detail) : undefined}
+                    onKeyDown={isInteractiveMetric ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedContributorMetric(detail);
+                      }
+                    } : undefined}
+                    style={{ padding: "12px", border: isDarkMode ? "1px solid rgba(148, 163, 184, 0.32)" : "1px solid #cbd5e1", borderRadius: "8px", background: isDarkMode ? "#111827" : "#ffffff", boxShadow: isDarkMode ? "0 10px 20px rgba(2, 6, 23, 0.35)" : "0 8px 16px rgba(15, 23, 42, 0.06)", cursor: isInteractiveMetric ? "pointer" : "default" }}
+                  >
+                    <div style={{ fontSize: "0.76rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "6px", color: isDarkMode ? "#93c5fd" : "#475569" }}>{detail.label}</div>
+                    <div style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#111827", wordBreak: "break-word", whiteSpace: detail.label === "Permissions" ? "pre-line" : "normal" }}>{detail.label === "Orders" || detail.label === "Approved" || detail.label === "Pending" || detail.label === "Rejected" ? Number(detail.value || 0).toLocaleString('en-US') : detail.value}</div>
+                  </article>
+                  );
+                })}
+              </div>
             </section>
+          )}
+          {selectedContributorMetric && (
+            <div
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setSelectedContributorMetric(null);
+              }}
+              style={{ position: "fixed", inset: 0, zIndex: 1600, display: "flex", alignItems: "stretch", justifyContent: "stretch", background: "rgba(15, 23, 42, 0.62)" }}
+            >
+              <section role="dialog" aria-modal="true" aria-labelledby="contributor-metric-title" style={{ display: "flex", flexDirection: "column", width: "100vw", height: "100vh", boxSizing: "border-box", overflow: "hidden", padding: "32px", background: isDarkMode ? "#0f172a" : "#ffffff", color: isDarkMode ? "#f8fafc" : "#111827" }}>
+                <h3 id="contributor-metric-title" style={{ margin: "0 0 12px" }}>{selectedContributorMetric.label}</h3>
+                <div style={{ fontSize: "2rem", fontWeight: 800 }}>{Number(selectedContributorMetric.value || 0).toLocaleString("en-US")}</div>
+                <div style={{ flex: 1, minHeight: 0, overflowY: "auto", margin: "16px 0 18px" }}>
+                  {selectedMetricRows.length === 0 ? (
+                    <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#64748b" }}>No records found.</p>
+                  ) : selectedContributorMetric.label === "Orders" ? (
+                    <div style={{ overflowX: "auto", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", borderRadius: "8px" }}>
+                      <table style={{ width: "100%", minWidth: "620px", borderCollapse: "collapse", fontSize: "0.82rem" }}>
+                        <thead>
+                          <tr style={{ background: isDarkMode ? "#1e293b" : "#f8fafc" }}>
+                            {[
+                              "Order",
+                              "Asset",
+                              "Order status",
+                              "Payment status",
+                              "Amount",
+                              "Date"
+                            ].map((heading) => <th key={heading} style={{ padding: "9px 10px", textAlign: "left", whiteSpace: "nowrap", color: isDarkMode ? "#cbd5e1" : "#475569" }}>{heading}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {selectedMetricRows.map((row, index) => (
+                            <tr key={`${row.order_id || "order"}-${index}`} style={{ borderTop: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0" }}>
+                              <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>#{row.order_number || row.order_id || "-"}</td>
+                              <td style={{ padding: "9px 10px" }}>{row.title || "-"}</td>
+                              <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>{row.order_status || "-"}</td>
+                              <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>{row.payment_status || "-"}</td>
+                              <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>{row.total_price ?? "-"} {row.currency || ""}</td>
+                              <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>{row.created_at ? new Date(row.created_at).toLocaleDateString() : "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(150px, 1fr))", gap: "12px", minWidth: "780px" }}>
+                      {selectedMetricRows.map((row, index) => (
+                        <div key={`${row.id || row.order_id || "record"}-${index}`} style={{ display: "grid", gridTemplateRows: "140px auto", gap: "10px", alignContent: "start", padding: "10px", borderRadius: "8px", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", background: isDarkMode ? "#111827" : "#f8fafc" }}>
+                          {row.preview_url ? <img src={row.preview_url} alt={row.title || "Asset preview"} style={{ width: "100%", height: "140px", objectFit: "cover", borderRadius: "6px", background: isDarkMode ? "#1e293b" : "#e2e8f0" }} /> : <div aria-hidden="true" style={{ width: "100%", height: "140px", borderRadius: "6px", background: isDarkMode ? "#1e293b" : "#e2e8f0" }} />}
+                          <div>
+                            <strong>{row.title || `Asset ${row.id}`}</strong>
+                            <div style={{ marginTop: "4px", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{row.status || "Unknown"} · Asset #{row.id}</div>
+                            {row.created_at && <div style={{ marginTop: "3px", fontSize: "0.8rem", color: isDarkMode ? "#94a3b8" : "#64748b" }}>{new Date(row.created_at).toLocaleDateString()}</div>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button type="button" onClick={() => setSelectedContributorMetric(null)} style={{ padding: "10px 16px", border: 0, borderRadius: "8px", background: "#2563eb", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Close</button>
+              </section>
+            </div>
           )}
         </div>
       ) : isTaxFormsTab ? (
@@ -5976,6 +6229,109 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         </div>
       ) : isEmptyAdminBodyTab ? (
         <RestorePage />
+      ) : isControlsTaxFormsTab ? (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "flex-end", width: "100%", margin: "0 0 12px" }}>
+            <button type="button" onClick={exportTaxFormsCsv} style={{ padding: "8px 12px", border: 0, borderRadius: "6px", background: "#1976d2", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Export CSV</button>
+            <button type="button" onClick={() => setTaxMailModal("settings")} style={{ padding: "8px 12px", border: 0, borderRadius: "6px", background: "#455a64", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Tax Mail Settings</button>
+            <button type="button" onClick={() => setTaxMailModal("templates")} style={{ padding: "8px 12px", border: 0, borderRadius: "6px", background: "#6a1b9a", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Tax Mail Templates</button>
+          </div>
+          <div className="admin-panel-controls-grid" style={{ display: "flex", flexWrap: "wrap", gap: "20px", justifyContent: "flex-start" }}>
+            <CardWrapper
+              cardOrder={cardOrder}
+              isLayoutEditMode={isLayoutEditMode}
+              isDarkMode={isDarkMode}
+              moveCard={moveCard}
+              cardId="tax-forms-card"
+              style={{
+                width: "100%",
+                maxWidth: "none",
+                flex: "1 1 100%",
+                flexBasis: "100%",
+                height: "auto",
+                minHeight: "300px"
+              }}
+            >
+              <h3>Tax Forms</h3>
+              <p style={{ color: isDarkMode ? "#cbd5e1" : "#555" }}>Open contributor tax profiles and review submitted tax information.</p>
+              <label style={{ display: "grid", gap: "4px", margin: "0 0 10px" }}>
+                <span style={{ fontSize: "0.72rem", color: isDarkMode ? "#cbd5e1" : "#64748b", fontWeight: 700 }}>Search tax forms</span>
+                <input type="search" value={taxFormSearch} onChange={(event) => setTaxFormSearch(event.target.value)} placeholder="Name, email, status..." aria-label="Search tax forms" style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1", borderRadius: "6px", background: isDarkMode ? "#0f172a" : "#fff", color: "inherit" }} />
+              </label>
+              {filteredTaxFormUsers.length > 0 ? (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "fit-content", minWidth: "760px", maxWidth: "100%", borderCollapse: "collapse", tableLayout: "auto", fontSize: "0.7rem" }}>
+                    <thead>
+                      <tr>
+                        {[
+                          ["Contributor", "150px"],
+                          ["Email", "220px"],
+                          ["Status", "110px"],
+                          ["Submitted", "120px"],
+                          ["Entity type", "120px"],
+                          ["Location", "140px"],
+                          ["Actions", "230px"]
+                        ].map(([label, width]) => <th key={label} scope="col" style={{ width, padding: "6px 3px", color: isDarkMode ? "#cbd5e1" : "#64748b", borderBottom: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", textAlign: "left", fontWeight: 700 }}>{label}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredTaxFormUsers.map((user) => (
+                        <tr key={user.id}>
+                          <td style={{ padding: "7px 3px", color: isDarkMode ? "#e2e8f0" : "#111827", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.full_name || user.username || "Unnamed contributor"}</td>
+                          <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#64748b", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email || "-"}</td>
+                          <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#475569", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", overflowWrap: "anywhere" }}>{user.tax_form_status || "Not submitted"}</td>
+                          <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#475569", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", whiteSpace: "nowrap" }}>{formatTaxFormSubmittedAt(user.tax_form_submitted_at)}</td>
+                          <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#475569", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", whiteSpace: "nowrap" }}>{formatTaxFormEntityType(user)}</td>
+                          <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#475569", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", whiteSpace: "nowrap" }}>{formatTaxFormLocation(user.tax_form_data)}</td>
+                          <td style={{ padding: "6px 3px", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0" }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                              <button type="button" onClick={() => setSelectedTaxForm(user)} disabled={!user.tax_form_data} style={{ padding: "4px 6px", border: 0, borderRadius: "5px", background: "#1976d2", color: "#fff", fontSize: "0.68rem", cursor: user.tax_form_data ? "pointer" : "not-allowed", opacity: user.tax_form_data ? 1 : 0.45 }}>View</button>
+                              <button type="button" onClick={() => updateTaxFormStatus(user, "approved")} disabled={!user.tax_form_data || user.tax_form_status === "approved"} style={{ padding: "4px 6px", border: 0, borderRadius: "5px", background: "#2e7d32", color: "#fff", fontSize: "0.68rem", cursor: user.tax_form_data ? "pointer" : "not-allowed", opacity: user.tax_form_data && user.tax_form_status !== "approved" ? 1 : 0.45 }}>Approve</button>
+                              <button type="button" onClick={() => updateTaxFormStatus(user, "rejected")} disabled={!user.tax_form_data || user.tax_form_status === "rejected"} style={{ padding: "4px 6px", border: 0, borderRadius: "5px", background: "#c62828", color: "#fff", fontSize: "0.68rem", cursor: user.tax_form_data ? "pointer" : "not-allowed", opacity: user.tax_form_data && user.tax_form_status !== "rejected" ? 1 : 0.45 }}>Reject</button>
+                              <button type="button" onClick={() => sendTaxFormReminder(user)} style={{ padding: "4px 6px", border: 0, borderRadius: "5px", background: "#757575", color: "#fff", fontSize: "0.68rem", cursor: "pointer" }}>Reminder</button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.82rem", lineHeight: 1.35 }}>{taxFormSearch.trim() ? "No matching tax forms found." : "No contributor tax forms found."}</p>}
+            </CardWrapper>
+            {selectedTaxForm && (
+              <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedTaxForm(null); }} style={{ position: "fixed", inset: 0, zIndex: 1200, display: "grid", placeItems: "center", padding: "20px", background: "rgba(15, 23, 42, 0.45)" }}>
+                <section role="dialog" aria-labelledby="tax-form-details-title" style={{ width: "min(720px, 100%)", maxHeight: "80vh", overflow: "auto", padding: "24px", borderRadius: "12px", background: isDarkMode ? "#111827" : "#fff", color: isDarkMode ? "#f8fafc" : "#111827", boxShadow: "0 20px 60px rgba(15, 23, 42, 0.25)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                    <h2 id="tax-form-details-title" style={{ margin: 0 }}>Tax form: {selectedTaxForm.username || selectedTaxForm.email}</h2>
+                    <button type="button" onClick={() => setSelectedTaxForm(null)} style={{ padding: "6px 10px", border: 0, borderRadius: "6px", cursor: "pointer" }}>Close</button>
+                  </div>
+                  <dl style={{ display: "grid", gridTemplateColumns: "minmax(140px, 0.35fr) minmax(0, 1fr)", gap: "8px 16px", margin: "20px 0 0" }}>
+                    {Object.entries(selectedTaxForm.tax_form_data || {}).filter(([, value]) => value !== "" && value !== null && value !== undefined && value !== false).map(([key, value]) => <React.Fragment key={key}><dt style={{ fontWeight: 700 }}>{key.replace(/([A-Z])/g, " $1").replace(/^./, (char) => char.toUpperCase())}</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{String(value)}</dd></React.Fragment>)}
+                  </dl>
+                </section>
+              </div>
+            )}
+            {taxMailModal && (
+              <div
+                className="admin-panel-modal-overlay"
+                onClick={() => setTaxMailModal(null)}
+                style={{ position: "fixed", inset: 0, background: "rgba(2,6,23,0.72)", backdropFilter: "blur(16px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 1300 }}
+              >
+                <div
+                  onClick={(event) => event.stopPropagation()}
+                  style={{ width: "100%", maxWidth: 1000, maxHeight: "90vh", overflow: "auto", background: isDarkMode ? "#0f172a" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", borderRadius: 16, boxShadow: "0 30px 90px rgba(2,6,23,0.35)" }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 22px", borderBottom: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0" }}>
+                    <h3 style={{ margin: 0 }}>{taxMailModal === "settings" ? "Tax Form SMTP Settings" : "Tax Mail Templates"}</h3>
+                    <button type="button" onClick={() => setTaxMailModal(null)} style={{ border: 0, borderRadius: "50%", width: 34, height: 34, cursor: "pointer" }}>x</button>
+                  </div>
+                  {taxMailModal === "settings" && <TaxMailSMTPSettings isDarkMode={isDarkMode} getEffectiveAuthToken={getEffectiveAuthToken} />}
+                  {taxMailModal === "templates" && <TaxMailTemplates isDarkMode={isDarkMode} getEffectiveAuthToken={getEffectiveAuthToken} />}
+                </div>
+              </div>
+            )}
+          </div>
+        </>
       ) : isControlsTab ? (
         <>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px" }}>
@@ -6013,7 +6369,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             <p style={{ color: isDarkMode ? "#cbd5e1" : "#555", margin: "8px 0 16px" }}>Manage contributor accounts and submitted tax information.</p>
             <div style={{ display: "grid", gap: "10px" }}>
               <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=contributordetails`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer" }}>Contributor Details</button>
-              <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=taxforms`; }} style={{ background: "#43a047", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer" }}>Tax Forms</button>
+              <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=controls_taxforms`; }} style={{ background: "#43a047", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer" }}>Tax Forms</button>
             </div>
           </CardWrapper>
 
@@ -7980,6 +8336,53 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         </div>
                       </div>
                     )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {taxMailModal && (
+              <div
+                className="admin-panel-modal-overlay"
+                onClick={() => setTaxMailModal(null)}
+                style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.72)', backdropFilter: 'blur(16px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, zIndex: 1300 }}
+              >
+                <div
+                  className="admin-panel-modal-panel"
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    width: '100%',
+                    maxWidth: 1000,
+                    background: isDarkMode
+                      ? 'linear-gradient(135deg, rgba(15,23,42,0.98), rgba(30,41,59,0.97))'
+                      : 'linear-gradient(135deg, rgba(255,255,255,0.98), rgba(248,250,252,0.97))',
+                    border: isDarkMode ? '1px solid rgba(148,163,184,0.24)' : '1px solid rgba(15,23,42,0.08)',
+                    borderRadius: 24,
+                    overflow: 'hidden',
+                    boxShadow: isDarkMode ? '0 30px 90px rgba(2,6,23,0.55)' : '0 24px 70px rgba(15,23,42,0.16)'
+                  }}
+                >
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '18px 22px',
+                    background: isDarkMode
+                      ? 'linear-gradient(90deg, rgba(37,99,235,0.16), rgba(14,165,233,0.08))'
+                      : 'linear-gradient(90deg, rgba(37,99,235,0.08), rgba(14,165,233,0.05))',
+                    borderBottom: isDarkMode ? '1px solid rgba(148,163,184,0.16)' : '1px solid rgba(15,23,42,0.08)'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#6a1b9a', boxShadow: '0 0 0 6px rgba(106,27,154,0.16)' }} />
+                      <h3 style={{ margin: 0, color: isDarkMode ? '#f8fafc' : '#0f172a', fontSize: 18 }}>
+                        {taxMailModal === 'settings' ? 'SMTP Server Settings' : 'Tax Mail Templates'}
+                      </h3>
+                    </div>
+                    <button onClick={() => setTaxMailModal(null)} style={{ background: isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.06)', border: isDarkMode ? '1px solid rgba(148,163,184,0.18)' : '1px solid rgba(15,23,42,0.08)', borderRadius: '999px', color: isDarkMode ? '#f8fafc' : '#0f172a', fontSize: 16, cursor: 'pointer', padding: '8px 11px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+                  </div>
+                  <div style={{ padding: 18, maxHeight: '88vh', overflow: 'auto', background: isDarkMode ? 'linear-gradient(180deg, rgba(2,6,23,0.88), rgba(15,23,42,0.92))' : 'linear-gradient(180deg, rgba(248,250,252,0.96), rgba(255,255,255,0.98))' }}>
+                    {taxMailModal === 'settings' && <TaxMailSMTPSettings isDarkMode={isDarkMode} getEffectiveAuthToken={getEffectiveAuthToken} />}
+                    {taxMailModal === 'templates' && <TaxMailTemplates isDarkMode={isDarkMode} getEffectiveAuthToken={getEffectiveAuthToken} />}
                   </div>
                 </div>
               </div>

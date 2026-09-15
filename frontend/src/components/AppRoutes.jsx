@@ -1,5 +1,6 @@
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useRef, useState } from "react";
+import axios from "axios";
 import HomeSection from "./HomeSection";
 import ExplorePage from "../pages/ExplorePage";
 import FavoritesPage from "../pages/FavoritesPage";
@@ -36,6 +37,9 @@ import MessagesPage from "../pages/MessagesPage";
 import "./dashboard/TaxCenter.css";
 import TaxW8BenForm from "./dashboard/TaxW8BenForm";
 import TaxW9Form from "./dashboard/TaxW9Form";
+import { getEffectiveAuthToken } from "../utils/authSession";
+
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 
 function StartTaxFormMenu() {
   const location = useLocation();
@@ -102,7 +106,7 @@ function FillTaxFormPage() {
   return (
     <TaxW8BenForm
       onBack={() => navigate("/dashboard?tab=starttaxform")}
-      onSubmit={() => navigate("/dashboard?tab=taxcenter")}
+      onSubmit={(formData) => navigate("/dashboard?tab=filltaxform_review", { state: { formType: "W-8BEN", formData } })}
     />
   );
 }
@@ -112,8 +116,72 @@ function FillTaxFormW9Page() {
   return (
     <TaxW9Form
       onBack={() => navigate("/dashboard?tab=starttaxform")}
-      onSubmit={() => navigate("/dashboard?tab=taxcenter")}
+      onSubmit={(formData) => navigate("/dashboard?tab=filltaxform_review", { state: { formType: "W-9", formData } })}
     />
+  );
+}
+
+function TaxFormReviewPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const formData = location.state?.formData || {};
+  const formType = location.state?.formType || "Tax form";
+  const detailEntries = Object.entries(formData).filter(([key, value]) => {
+    if (key === "certification" || key === "certifications") return false;
+    if (value === null || value === undefined || value === "") return false;
+    if (Array.isArray(value)) return false;
+    return true;
+  });
+  const submitTaxForm = async () => {
+    setIsSubmitting(true);
+    setSubmitError("");
+    try {
+      const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+      await axios.post(`${API_BASE_URL}/profile/tax-form`, { ...formData, formType }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      navigate("/dashboard?tab=taxcenter");
+    } catch (error) {
+      console.error("Failed to submit tax form", error);
+      setSubmitError("Unable to submit your tax form. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="starttaxform-layout">
+      <StartTaxFormMenu />
+      <main className="tax-form-review-panel">
+        <div className="tax-form-review-header">
+          <div>
+            <p className="tax-form-review-kicker">Tax form review</p>
+            <h1>Review tax form</h1>
+          </div>
+          <div className="tax-form-review-actions">
+            <button type="button" className="tax-form-review-back" onClick={() => navigate("/dashboard?tab=starttaxform")}>Back</button>
+            <button type="button" className="tax-form-review-submit" onClick={submitTaxForm} disabled={isSubmitting}>{isSubmitting ? "Submitting..." : "Submit"}</button>
+          </div>
+        </div>
+
+        <p className="tax-form-review-subtitle">Please confirm the details below before submitting your {formType} form.</p>
+        {submitError && <p role="alert" className="tax-form-review-error">{submitError}</p>}
+
+        <section className="tax-form-review-card">
+          <h2>{formType}</h2>
+          <dl className="tax-form-review-list">
+            {detailEntries.map(([key, value]) => (
+              <div key={key} className="tax-form-review-item">
+                <dt>{key.replace(/([A-Z])/g, " $1").replace(/^./, (char) => char.toUpperCase())}</dt>
+                <dd>{String(value)}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      </main>
+    </div>
   );
 }
 
@@ -130,6 +198,10 @@ export default function AppRoutes(props) {
 
   if (pathname === "/dashboard" && dashboardTab === "filltaxform") {
     return <div className="starttaxform-layout"><StartTaxFormMenu /><FillTaxFormPage /></div>;
+  }
+
+  if (pathname === "/dashboard" && dashboardTab === "filltaxform_review") {
+    return <TaxFormReviewPage />;
   }
 
   if (pathname === "/dashboard" && dashboardTab === "starttaxform") {

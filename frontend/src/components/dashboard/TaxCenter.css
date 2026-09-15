@@ -39,8 +39,144 @@ body:has(.tax-wizard-backdrop) .app-header { display: none; }
 .tax-wizard-questions label { display: grid; grid-template-columns: 235px 14px 150px; align-items: center; gap: 8px; min-height: 59px; padding: 9px 20px; color: var(--creator-ink); border-bottom: 1px solid var(--creator-line); font-size: 12px; }
 .tax-wizard-questions label:last-child { border-bottom: 0; }.tax-wizard-questions label > span { color: var(--creator-accent); }.tax-wizard-questions label .tax-question-text { color: var(--creator-ink); }.tax-wizard-questions select { min-height: 32px; padding: 0 10px; border: 1px solid var(--creator-line); border-radius: 18px; background: var(--creator-surface); font: inherit; font-size: 11px; }
 .tax-wizard-actions { display: flex; justify-content: flex-end; gap: 14px; margin-top: 26px; }.tax-wizard-actions .tax-cancel-button { display: none; }
+
+.tax-form-review-panel {
+  flex: 1;
+  min-width: 0;
+  padding: 22px 28px 42px;
+  color: #20242b;
+  font: 12px/1.45 Arial, sans-serif;
+}
+
+.tax-form-review-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(1045px, 100%);
+  margin: 0 auto 16px;
+}
+
+.tax-form-review-kicker {
+  margin: 0 0 8px;
+  color: #eb2d2d;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tax-form-review-header h1 {
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+}
+
+.tax-form-review-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.tax-form-review-back,
+.tax-form-review-submit {
+  min-width: 98px;
+  min-height: 34px;
+  padding: 8px 18px;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.tax-form-review-back {
+  color: #3d4755;
+  background: #fff;
+  border: 1px solid #dfe3e8;
+}
+
+.tax-form-review-submit {
+  color: #fff;
+  background: linear-gradient(135deg, #1d77f0 0%, #1259a6 100%);
+  border: 0;
+  box-shadow: 0 6px 14px rgba(18, 89, 166, 0.22);
+}
+
+.tax-form-review-submit:hover,
+.tax-form-review-back:hover {
+  transform: translateY(-1px);
+}
+
+.tax-form-review-subtitle {
+  width: min(1045px, 100%);
+  margin: 0 auto 18px;
+  color: #4f5b69;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tax-form-review-card {
+  width: min(1045px, 100%);
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid #dfe3e8;
+  border-radius: 4px;
+  box-shadow: 0 5px 14px rgba(11, 16, 22, 0.025);
+}
+
+.tax-form-review-card h2 {
+  margin: 0;
+  padding: 14px 18px 11px;
+  font-size: 16px;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.tax-form-review-list {
+  display: grid;
+  margin: 0;
+}
+
+.tax-form-review-item {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 18px;
+  border-bottom: 1px solid #edf1f4;
+}
+
+.tax-form-review-item:last-child {
+  border-bottom: 0;
+}
+
+.tax-form-review-item dt {
+  color: #596775;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.tax-form-review-item dd {
+  margin: 0;
+  color: #1f2630;
+  font-size: 12px;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
 @media (max-width: 700px) { .tax-wizard-backdrop { top: 0; right: 0; left: 0; min-height: 100vh; padding: 20px; }.contributor-shell:has(.tax-wizard-backdrop) .contributor-main { margin-left: 0; }.contributor-shell:has(.tax-wizard-backdrop) .contributor-sidebar { position: static; width: auto; height: auto; }.tax-wizard-questions label { grid-template-columns: 1fr 14px; }.tax-wizard-questions select { grid-column: 1 / -1; } }
 @media (max-width: 700px) { .starttaxform-sidebar { width: 100%; min-height: auto; padding: 18px 20px; border-right: 0; border-bottom: 1px solid #e5e7eb; } }
+@media (max-width: 700px) {
+  .tax-form-review-panel { padding: 20px; }
+  .tax-form-review-header { display: block; }
+  .tax-form-review-actions { margin-top: 16px; }
+  .tax-form-review-item { grid-template-columns: 1fr; gap: 6px; }
+}
 
 .tax-center-heading {
   display: flex;
