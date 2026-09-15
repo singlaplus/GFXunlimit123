@@ -1018,6 +1018,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [dailyReportPreviewOpen, setDailyReportPreviewOpen] = useState(Boolean(initialDailyReportPreviewPage || isDailyReportPreviewPath));
   const [dailyReportPreviewData, setDailyReportPreviewData] = useState(null);
   const [dailyReportPreviewLoading, setDailyReportPreviewLoading] = useState(false);
+  const [dailyReportPreviewError, setDailyReportPreviewError] = useState('');
   const [dailyReportSmtpFormOpen, setDailyReportSmtpFormOpen] = useState(false);
   const [dailyReportSmtpSaving, setDailyReportSmtpSaving] = useState(false);
   const [dailyReportSmtpMessage, setDailyReportSmtpMessage] = useState('');
@@ -1738,6 +1739,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const fetchDailyReportPreviewData = async () => {
     try {
       setDailyReportPreviewLoading(true);
+      setDailyReportPreviewError('');
       const token = localStorage.getItem('token');
       const response = await axios.get('/admin/email/daily-report-preview', {
         headers: { Authorization: `Bearer ${token}` }
@@ -1745,9 +1747,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       const summary = response.data?.summary ?? response.data;
       if (summary && (response.data?.ok !== false)) {
         setDailyReportPreviewData(summary);
+      } else {
+        setDailyReportPreviewError(response.data?.error || 'Daily report preview is unavailable.');
       }
     } catch (err) {
       console.error('Failed to fetch daily report preview:', err);
+      setDailyReportPreviewError(err.response?.data?.detail || err.response?.data?.error || 'Daily report preview could not be loaded. Check the backend database setup.');
     } finally {
       setDailyReportPreviewLoading(false);
     }
@@ -4765,6 +4770,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           </div>
           {dailyReportPreviewLoading ? (
             <div style={{ textAlign: "center", padding: "40px 20px", color: isDarkMode ? "#a8d4f5" : "#0369a1" }}>Loading real-time data...</div>
+          ) : dailyReportPreviewError ? (
+            <div role="alert" style={{ padding: 18, borderRadius: 12, color: isDarkMode ? '#fecaca' : '#991b1b', background: isDarkMode ? 'rgba(127,29,29,0.25)' : '#fef2f2', border: isDarkMode ? '1px solid rgba(248,113,113,0.35)' : '1px solid #fecaca' }}>
+              {dailyReportPreviewError}
+            </div>
           ) : (
             <div style={{ display: "grid", gap: 18, width: "100%" }}>
               {getDailyReportPreviewGroups().map((group) => (
@@ -8603,6 +8612,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                       <div style={{ fontSize: 28, marginBottom: 12 }}>⏳</div>
                       <div style={{ fontWeight: 600, marginBottom: 6 }}>Loading real-time data...</div>
                       <div style={{ fontSize: 12, opacity: 0.7 }}>Fetching your website metrics</div>
+                    </div>
+                  ) : dailyReportPreviewError ? (
+                    <div role="alert" style={{ padding: 18, borderRadius: 12, color: isDarkMode ? '#fecaca' : '#991b1b', background: isDarkMode ? 'rgba(127,29,29,0.25)' : '#fef2f2', border: isDarkMode ? '1px solid rgba(248,113,113,0.35)' : '1px solid #fecaca' }}>
+                      {dailyReportPreviewError}
                     </div>
                   ) : (
                     <div>

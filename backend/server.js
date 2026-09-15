@@ -13274,6 +13274,16 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(downloadCounterMigration);
+      const dailyReportSettingsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "017_daily_report_settings.sql"),
+        "utf8"
+      );
+      await pool.query(dailyReportSettingsMigration);
+      const dailyReportSchedulesMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "018_daily_report_schedules.sql"),
+        "utf8"
+      );
+      await pool.query(dailyReportSchedulesMigration);
       const orderDownloadIdentityMigration = fs.readFileSync(
         path.join(__dirname, "migrations", "017_order_download_identity.sql"),
         "utf8"
@@ -13355,11 +13365,9 @@ if (require.main === module) {
       return;
     }
 
-    app.listen(PORT, "0.0.0.0", async () => {
+    await initializeThumbnailSystem();
+    app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on port ${PORT}`);
-
-      // Initialize thumbnail system
-      await initializeThumbnailSystem();
     });
   })();
 }
