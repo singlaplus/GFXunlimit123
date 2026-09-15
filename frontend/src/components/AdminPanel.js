@@ -1649,16 +1649,17 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     try {
       setDailyReportSettingsMessage('Saving settings...');
       const token = getEffectiveAuthToken();
-      const response = await axios.post('/admin/email/daily-report-settings', dailyReportSettings, {
+      const response = await axios.post(`${API_BASE_URL}/admin/email/daily-report-settings`, dailyReportSettings, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      if (response.data?.ok) {
-        if (response.data.settings) {
-          setDailyReportSettings(response.data.settings);
-        }
-        setDailyReportSettingsMessage('Settings saved successfully.');
-        toast.success('Daily report settings saved successfully.');
+      if (!response.data?.ok) {
+        throw new Error(response.data?.error || 'Unexpected response while saving daily report settings.');
       }
+      if (response.data.settings) {
+        setDailyReportSettings(response.data.settings);
+      }
+      setDailyReportSettingsMessage('Settings saved successfully.');
+      toast.success('Daily report settings saved successfully.');
     } catch (err) {
       console.error('Failed to save daily report settings:', err);
       setDailyReportSettingsMessage('Failed to save settings. Please try again.');
@@ -1669,7 +1670,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const loadDailyReportSettings = async () => {
     try {
       const token = getEffectiveAuthToken();
-      const response = await axios.get('/admin/email/daily-report-settings', {
+      const response = await axios.get(`${API_BASE_URL}/admin/email/daily-report-settings`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       if (response.data?.ok && response.data.settings) {
@@ -1741,11 +1742,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       setDailyReportPreviewLoading(true);
       setDailyReportPreviewError('');
       const token = localStorage.getItem('token');
-      const response = await axios.get('/admin/email/daily-report-preview', {
+      const response = await axios.get(`${API_BASE_URL}/admin/email/daily-report-preview`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      const summary = response.data?.summary ?? response.data;
-      if (summary && (response.data?.ok !== false)) {
+      const summary = response.data?.summary;
+      if (response.data?.ok && summary) {
         setDailyReportPreviewData(summary);
       } else {
         setDailyReportPreviewError(response.data?.error || 'Daily report preview is unavailable.');
