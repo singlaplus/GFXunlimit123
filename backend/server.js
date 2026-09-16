@@ -2133,11 +2133,12 @@ app.get("/uploads/processed", async (req, res) => {
 // Scheduled emails runner (checks DB every minute)
 try {
   const cron = require('node-cron');
-  const { processDueScheduledEmails } = require('./email/scheduler');
+  const { processDueScheduledEmails, processDueDailyReportSchedules } = require('./email/scheduler');
 
   const runScheduledCheck = async () => {
     try {
       await processDueScheduledEmails({ poolRef: pool, now: new Date() });
+      await processDueDailyReportSchedules({ poolRef: pool, now: new Date() });
       await sendDailyWebsiteSummary({ poolRef: pool, now: new Date() });
     } catch (err) {
       console.error('Scheduled email runner startup check failed', err);
@@ -2156,6 +2157,7 @@ try {
         }
         lastRunAt = now;
         await processDueScheduledEmails({ poolRef: pool, now });
+        await processDueDailyReportSchedules({ poolRef: pool, now });
         await sendDailyWebsiteSummary({ poolRef: pool, now });
       } catch (err) {
         console.error('Scheduled email runner error', err);
