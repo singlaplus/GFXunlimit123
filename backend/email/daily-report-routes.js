@@ -145,6 +145,7 @@ module.exports = (router, pool, verifyAdminLocal) => {
   // Daily Report Schedules endpoints
   router.get('/daily-report-schedules', verifyAdminLocal, async (req, res) => {
     try {
+      await ensureDailyReportSchema();
       const r = await pool.query(
         'SELECT id, name, time, frequency, report_settings, created_at, updated_at FROM daily_report_schedules ORDER BY created_at DESC'
       );
@@ -157,6 +158,7 @@ module.exports = (router, pool, verifyAdminLocal) => {
 
   router.post('/daily-report-schedules', verifyAdminLocal, async (req, res) => {
     try {
+      await ensureDailyReportSchema();
       const { name, time, frequency, reportSettings } = req.body || {};
       
       if (!name || !time || !frequency) {
@@ -177,6 +179,7 @@ module.exports = (router, pool, verifyAdminLocal) => {
 
   router.put('/daily-report-schedules/:id', verifyAdminLocal, async (req, res) => {
     try {
+      await ensureDailyReportSchema();
       const { id } = req.params;
       const { name, time, frequency, reportSettings } = req.body || {};
       
@@ -204,6 +207,7 @@ module.exports = (router, pool, verifyAdminLocal) => {
 
   router.delete('/daily-report-schedules/:id', verifyAdminLocal, async (req, res) => {
     try {
+      await ensureDailyReportSchema();
       const { id } = req.params;
       
       const r = await pool.query(
