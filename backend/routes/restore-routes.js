@@ -1,0 +1,2044 @@
+const express = require("express");
+const router = express.Router();
+const fs = require("fs");
+const path = require("path");
+const multer = require("multer");
+const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
+const AdmZip = require("adm-zip");
+const { buildIdentity, getIdentityColumns } = require("../services/restoreIdentityRegistry");
+
+// Restore directory path
+const RESTORE_DIR = path.join(__dirname, "../backup/restore");
+const PROJECT_ROOT = path.resolve(__dirname, "../..");
+
+// Ensure restore directory exists
+if (!fs.existsSync(RESTORE_DIR)) {
+  fs.mkdirSync(RESTORE_DIR, { recursive: true });
+}
+
+// Multer upload configuration for restore files
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: RESTORE_DIR,
+    filename: (req, file, cb) => {
+      const timestamp = Date.now();
+      const random = crypto.randomBytes(4).toString("hex");
+      cb(null, `${timestamp}-${random}-${file.originalname}`);
+    }
+  }),
+  fileFilter: (req, file, cb) => {
+    if (!file.originalname.endsWith(".gfxbackup")) {
+      return cb(new Error("Only .gfxbackup files are allowed"));
+    }
+    cb(null, true);
+  },
+  limits: { fileSize: 5 * 1024 * 1024 * 1024 } // 5GB limit
+});
+
+function readDatabasePayloadFromArchive(zip) {
+  const preferredPaths = [
+    'database/changes/database-delta.json',
+    'database/metadata/database-summary.json',
+    'database/full/full-database.json',
+    'database-full.json',
+    'database/database.json'
+  ];
+
+  const entries = preferredPaths
+    .map((entryPath) => zip.getEntry(entryPath))
+    .filter(Boolean);
+
+  for (const entry of entries) {
+    try {
+      const payload = JSON.parse(zip.readAsText(entry));
+      if (payload && typeof payload === 'object') {
+        return payload.database && typeof payload.database === 'object'
+          ? payload.database
+          : payload;
+      }
+    } catch (err) {
+      // Continue to the next compatible database payload.
+    }
+  }
+
+  const fallbackEntry = zip.getEntries().find((entry) => {
+    const entryName = String(entry.entryName || '').toLowerCase();
+    return !entry.isDirectory && entryName.endsWith('.json') && entryName.includes('database');
+  });
+
+  if (fallbackEntry) {
+    try {
+      const payload = JSON.parse(zip.readAsText(fallbackEntry));
+      return payload?.database && typeof payload.database === 'object'
+        ? payload.database
+        : payload;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * POST /admin/restore/upload
+ * Upload and analyze a backup file
+ */
+router.post("/upload", upload.single("backup"), async (req, res) => {
+  try {
+    const { pool, JWT_SECRET } = req.app.locals;
+    const token = req.headers.authorization?.split(" ")[1];
+    
+    if (!token) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET || "secretkey");
+    } catch (err) {
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    const adminUserId = decoded.user;
+
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    // Read the uploaded file
+    const filePath = req.file.path;
+    let backupData;
+    try {
+      // Read .gfxbackup as ZIP file
+      const zip = new AdmZip(filePath);
+      
+      // Extract manifest.json from ZIP
+      const manifestEntry = zip.getEntry("manifest.json") || zip.getEntry("package.json");
+      if (!manifestEntry) {
+        throw new Error("Backup package missing manifest.json or package.json");
+      }
+      
+      const manifestContent = zip.readAsText(manifestEntry);
+      backupData = JSON.parse(manifestContent);
+
+      const databasePayload = readDatabasePayloadFromArchive(zip);
+      if (databasePayload) {
+        backupData.database = { ...(backupData.database || {}), ...databasePayload };
+      }
+    } catch (err) {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+      console.error("Restore file read error:", err.message);
+      return res.status(400).json({ error: "Invalid backup file format: " + err.message });
+    }
+
+    await pool.query(
+      `INSERT INTO restore_history (
+        admin_user_id,
+        backup_filename,
+        backup_path,
+        backup_size,
+        backup_type,
+        uploaded_at,
+        status,
+        total_changes,
+        completed_changes,
+        updated_at
+      ) VALUES ($1, $2, $3, $4, $5, NOW(), 'available', 0, 0, NOW())
+      ON CONFLICT DO NOTHING`,
+      [
+        adminUserId,
+        req.file.originalname,
+        filePath,
+        fs.statSync(filePath).size,
+        backupData.type || backupData.backupType || backupData.mode || "incremental"
+      ]
+    );
+
+    await pool.query(
+      `UPDATE restore_sessions SET
+        status = 'completed',
+        updated_at = NOW()
+      WHERE admin_user_id = $1 AND status IN ('analyzed', 'in_progress')`,
+      [adminUserId]
+    );
+
+    const backupId = (req.file.filename || req.file.originalname || 'restore-backup').replace(/\.gfxbackup$/i, '');
+    const comparisonResult = {
+      restore_session_id: null,
+      backup_id: backupId,
+      backup_filename: req.file.originalname,
+      uploaded_at: new Date().toISOString(),
+      source_device: backupData.sourceDevice || 'unknown',
+      backup_type: backupData.type || 'incremental',
+      status: 'analyzed',
+      completed_items: 0,
+      pending_items: 0,
+      conflicts: 0,
+      total_items: 0
+    };
+
+    // Create restore session
+    const sessionResult = await pool.query(
+      `INSERT INTO restore_sessions (
+        admin_user_id,
+        backup_filename,
+        backup_id,
+        backup_path,
+        backup_type,
+        source_device,
+        comparison_result,
+        total_items,
+        conflict_items,
+        completed_items,
+        pending_items,
+        status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      RETURNING *`,
+      [
+        adminUserId,
+        req.file.originalname,
+        backupId,
+        filePath,
+        backupData.type || backupData.backupType || backupData.mode || "incremental",
+        backupData.sourceDevice || "unknown",
+        JSON.stringify(comparisonResult),
+        0,
+        0,
+        0,
+        0,
+        "analyzed"
+      ]
+    );
+
+    const session = sessionResult.rows[0];
+
+    // Analyze backup and generate comparison items. Progress is persisted so the
+    // admin page can report analysis status while the upload request is running.
+    await pool.query(
+      `UPDATE restore_sessions SET
+         comparison_result = JSONB_BUILD_OBJECT(
+           'status', 'in_progress',
+           'phase', 'analysis',
+           'processed_items', 0,
+           'total_items', 0,
+           'progress_percent', 0,
+           'estimated_remaining_seconds', NULL
+         ),
+         updated_at = NOW()
+       WHERE id = $1`,
+      [session.id]
+    );
+    let items;
+    try {
+      items = await analyzeBackup(backupData, pool, { sessionId: session.id });
+    } catch (analysisError) {
+      await pool.query(
+        `UPDATE restore_sessions SET
+           status = 'failed',
+           error_message = $1,
+           comparison_result = JSONB_BUILD_OBJECT(
+             'status', 'failed',
+             'phase', 'analysis',
+             'error', $1,
+             'failed_at', NOW()
+           ),
+           updated_at = NOW()
+         WHERE id = $2`,
+        [analysisError.message || 'Backup comparison failed', session.id]
+      );
+      return res.status(422).json({
+        error: 'ANALYSIS_FAILED',
+        message: analysisError.message || 'Backup comparison failed',
+        restore_session_id: session.session_id
+      });
+    }
+
+    // Insert restore items (only actionable ones)
+    for (const item of items) {
+      await pool.query(
+        `INSERT INTO restore_items (
+          session_id,
+          type,
+          category,
+          name,
+          description,
+          current_version,
+          backup_version,
+          change_type,
+          status,
+          related_files,
+          related_records
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          session.id,
+          item.type,
+          item.category,
+          item.name,
+          item.description,
+          item.currentVersion,
+          item.backupVersion,
+          item.changeType,
+          "pending",
+          JSON.stringify(item.relatedFiles || []),
+          JSON.stringify({
+            identity: item.identity || null,
+            source: item.sourceRecord || null,
+            destination: item.destinationRecord || null,
+            changedFields: item.changedFields || []
+          })
+        ]
+      );
+    }
+
+    const comparison = await buildComparisonSummary(backupData, items, pool, session);
+    const { summary } = comparison;
+    const newItemCount = summary.new;
+    const updateItemCount = summary.updated;
+    const conflictCount = summary.conflicts;
+    const comparisonSummary = {
+      restore_session_id: session.session_id,
+      backup_id: session.backup_id || backupId,
+      backup_filename: session.backup_filename,
+      uploaded_at: session.uploaded_at || new Date().toISOString(),
+      source_device: session.source_device || 'unknown',
+      backup_type: session.backup_type || 'incremental',
+      status: 'analyzed',
+      completed_items: 0,
+      pending_items: summary.total,
+      conflicts: conflictCount,
+      total_items: summary.total,
+      source_database: summary.sourceDatabase,
+      target_database: summary.targetDatabase,
+      new_users: summary.newUsers,
+      new_assets: summary.newAssets
+    };
+
+    // Update session with item counts
+    const updatedSession = await pool.query(
+      `UPDATE restore_sessions SET
+        total_items = $1,
+        new_items = $2,
+        updated_items = $3,
+        unchanged_items = $4,
+        conflict_items = $5,
+        pending_items = $6,
+        comparison_result = $7
+      WHERE id = $8
+      RETURNING *`,
+      [
+        summary.total,
+        newItemCount,
+        updateItemCount,
+        0,
+        conflictCount,
+        summary.total,
+        JSON.stringify(comparisonSummary),
+        session.id
+      ]
+    );
+
+    const retrievedItems = await pool.query(
+      "SELECT * FROM restore_items WHERE session_id = $1 ORDER BY item_order ASC",
+      [session.id]
+    );
+
+    // Generate comparison summary message
+    let message = `Analysis complete`;
+    if (items.length === 0) {
+      message = `✓ Backup is up-to-date. No changes detected.`;
+    } else {
+      message = `Found ${items.length} actionable changes: ${newItemCount} new + ${updateItemCount} updated`;
+    }
+
+    res.json({
+      session: updatedSession.rows[0],
+      items: retrievedItems.rows,
+      source_database_summary: summary.sourceDatabase,
+      target_database_summary: summary.targetDatabase,
+      message: message
+    });
+  } catch (err) {
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    console.error("Restore upload error", err);
+    res.status(500).json({ error: err.message || "Upload failed" });
+  }
+});
+
+/**
+ * GET /admin/restore/session
+ * Get current restore session with items
+ */
+router.get("/session", async (req, res) => {
+  try {
+    const { pool } = req.app.locals;
+
+    const sessionResult = await pool.query(
+      `SELECT * FROM restore_sessions
+       WHERE admin_user_id = $1
+         AND status IN ('analyzed', 'in_progress')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [req.user?.id]
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res.status(404).json({ error: "No active session" });
+    }
+
+    const session = sessionResult.rows[0];
+
+    const itemsResult = await pool.query(
+      "SELECT * FROM restore_items WHERE session_id = $1 ORDER BY item_order ASC",
+      [session.id]
+    );
+
+    const normalizedSession = {
+      ...session,
+      restore_session_id: session.session_id,
+      backup_id: session.backup_id || session.backup_filename,
+      conflicts: Number(session.conflict_items || 0),
+      uploaded_at: session.uploaded_at || session.created_at,
+      status: session.status || 'analyzed',
+      comparison_result: session.comparison_result || {
+        restore_session_id: session.session_id,
+        backup_id: session.backup_id || session.backup_filename,
+        backup_filename: session.backup_filename,
+        uploaded_at: session.uploaded_at || session.created_at,
+        source_device: session.source_device || 'unknown',
+        backup_type: session.backup_type || 'incremental',
+        status: session.status || 'analyzed',
+        completed_items: Number(session.completed_items || 0),
+        pending_items: Number(session.pending_items || 0),
+        conflicts: Number(session.conflict_items || 0),
+        total_items: Number(session.total_items || 0)
+      }
+    };
+
+    res.json({
+      session: normalizedSession,
+      items: itemsResult.rows
+    });
+  } catch (err) {
+    console.error("Get session error", err);
+    res.status(500).json({ error: err.message || "Failed to load session" });
+  }
+});
+
+/**
+ * Get uploaded .gfxbackup files from disk, ordered by newest first.
+ * This reflects the actual files contained in backend/backup/restore/.
+ */
+function listRestoreHistoryFiles() {
+  if (!fs.existsSync(RESTORE_DIR)) {
+    return [];
+  }
+
+  return fs.readdirSync(RESTORE_DIR)
+    .filter((name) => name.toLowerCase().endsWith('.gfxbackup'))
+    .map((name) => {
+      const filePath = path.join(RESTORE_DIR, name);
+      const stats = fs.statSync(filePath);
+      const date = new Date(stats.mtime);
+      const lowerName = name.toLowerCase();
+      const backupType = lowerName.includes('full')
+        ? 'Full'
+        : lowerName.includes('incremental')
+          ? 'Incremental'
+          : 'Standard';
+
+      return {
+        id: name,
+        backup_filename: name,
+        backup_path: filePath,
+        backup_type: backupType,
+        uploaded_at: date.toISOString(),
+        created_at: date.toISOString(),
+        total_changes: 0,
+        completed_changes: 0,
+        status: 'completed',
+        action: 'DELETE'
+      };
+    })
+    .sort((a, b) => new Date(b.uploaded_at) - new Date(a.uploaded_at));
+}
+
+/**
+ * GET /admin/restore/history
+ * Get restore history
+ */
+router.get("/history", async (req, res) => {
+  try {
+    const { pool } = req.app.locals;
+    const result = await pool.query(
+      `SELECT * FROM restore_history
+       ORDER BY uploaded_at DESC
+       LIMIT 50`
+    );
+
+    const dbRows = (result.rows || []).filter((row) => {
+      const fileName = row.backup_filename || path.basename(row.backup_path || '');
+      const filePath = row.backup_path || (fileName ? path.join(RESTORE_DIR, fileName) : null);
+
+      if (!fileName) {
+        return false;
+      }
+
+      if (!filePath || !fs.existsSync(filePath)) {
+        if (row.id) {
+          pool.query("DELETE FROM restore_history WHERE id = $1", [row.id]).catch((deleteErr) => {
+            console.error("Cleanup orphaned restore history row error", deleteErr.message);
+          });
+        }
+        return false;
+      }
+
+      return true;
+    });
+
+    const diskRows = listRestoreHistoryFiles();
+    const seen = new Set();
+    const merged = [];
+
+    for (const row of [...dbRows, ...diskRows]) {
+      const key = row.backup_filename || row.backup_path || row.id;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push({
+        ...row,
+        id: row.id || row.backup_filename || row.backup_path,
+        backup_filename: row.backup_filename || path.basename(row.backup_path || row.id || 'unknown.gfxbackup'),
+        backup_path: row.backup_path || path.join(RESTORE_DIR, row.backup_filename || row.id || 'unknown.gfxbackup'),
+        backup_type: row.backup_type || 'Standard',
+        uploaded_at: row.uploaded_at || row.created_at || new Date().toISOString(),
+        total_changes: Number(row.total_changes || 0),
+        completed_changes: Number(row.completed_changes || 0),
+        status: row.status || 'completed',
+        action: 'DELETE'
+      });
+    }
+
+    merged.sort((a, b) => new Date(b.uploaded_at) - new Date(a.uploaded_at));
+    return res.json(merged);
+  } catch (err) {
+    console.error("Get history error", err);
+    res.status(500).json({ error: err.message || "Failed to load history" });
+  }
+});
+
+/**
+ * POST /admin/restore/item/:id
+ * Apply individual restore item with safety checkpoint and validation
+ */
+router.post("/item/:id", async (req, res) => {
+  try {
+    const { pool } = req.app.locals;
+    const itemId = parseInt(req.params.id);
+
+    // Get the item and session
+    const itemResult = await pool.query(
+      "SELECT * FROM restore_items WHERE id = $1",
+      [itemId]
+    );
+
+    if (itemResult.rows.length === 0) {
+      return res.status(404).json({ error: "Item not found" });
+    }
+
+    const item = itemResult.rows[0];
+
+    // Get session
+    const sessionResult = await pool.query(
+      "SELECT * FROM restore_sessions WHERE id = $1",
+      [item.session_id]
+    );
+
+    const session = sessionResult.rows[0];
+    
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    if (req.user?.id != null && String(session.admin_user_id) !== String(req.user.id)) {
+      return res.status(404).json({ error: "Item not found" });
+    }
+
+    if ((item.change_type || item.changeType || '').toString().toLowerCase() === 'conflict' || (item.status || '').toString().toLowerCase() === 'conflict') {
+      const conflictDetails = {
+        item_id: item.id,
+        item_name: item.name,
+        type: item.type,
+        current_version: item.current_version,
+        backup_version: item.backup_version,
+        description: item.description || 'Local changes detected.',
+        requires_review: true,
+        resolution_required: true
+      };
+
+      await pool.query(
+        `UPDATE restore_items SET
+          error_message = $1,
+          restore_action = $2,
+          updated_at = NOW()
+        WHERE id = $3`,
+        [JSON.stringify(conflictDetails), JSON.stringify(conflictDetails), item.id]
+      );
+
+      return res.status(409).json({
+        error: 'Conflict detected. Manual review required before restore.',
+        details: conflictDetails,
+        item,
+        status: 'conflict'
+      });
+    }
+
+    // Step 2: Validate the specific change
+    const validation = validateRestoreItem(item);
+    if (!validation.valid) {
+      return res.status(400).json({
+        error: `Validation failed: ${validation.error}`,
+        item: item
+      });
+    }
+
+    const safetyCheckpoint = await createDestinationCheckpoint(session, [item], pool);
+    const checkpointId = safetyCheckpoint.id;
+
+    // Step 3: Apply the specific change based on item type
+    let applyResult = null;
+    let restoreAction = {
+      type: item.type,
+      category: item.category,
+      name: item.name,
+      timestamp: new Date().toISOString(),
+      checkpoint_id: checkpointId
+    };
+
+    try {
+      applyResult = await applyRestoreItem(item, pool, session);
+      restoreAction.result = applyResult;
+      restoreAction.success = true;
+    } catch (applyErr) {
+      console.error(`[Restore] Failed to apply item ${itemId}:`, applyErr.message);
+      restoreAction.error = applyErr.message;
+      restoreAction.success = false;
+      
+      // Update item with error and return
+      await pool.query(
+        `UPDATE restore_items SET 
+          status = 'failed',
+          error_message = $1,
+          restore_action = $2,
+          updated_at = NOW()
+        WHERE id = $3`,
+        [applyErr.message, JSON.stringify(restoreAction), itemId]
+      );
+
+      return res.status(500).json({
+        error: `Failed to apply change: ${applyErr.message}`,
+        item: item
+      });
+    }
+
+    // Step 4: Verify the update was successful
+    if (!restoreAction.success) {
+      return res.status(500).json({
+        error: "Update verification failed",
+        item: item,
+        action: restoreAction
+      });
+    }
+
+    // Step 5: Mark item as completed and update session
+    const updateResult = await pool.query(
+      `UPDATE restore_items SET 
+        status = 'completed',
+        restore_action = $1,
+        restore_result = $2,
+        updated_at = NOW()
+      WHERE id = $3
+      RETURNING *`,
+      [JSON.stringify(restoreAction), JSON.stringify(applyResult), itemId]
+    );
+
+    // Update session counts
+    await pool.query(
+      `UPDATE restore_sessions SET
+        completed_items = completed_items + 1,
+        pending_items = GREATEST(0, pending_items - 1),
+        updated_at = NOW()
+      WHERE id = $1`,
+      [item.session_id]
+    );
+
+    console.log(`[Restore] Successfully applied item ${itemId} (${item.type}): ${item.name}`);
+
+    res.json({
+      item: updateResult.rows[0],
+      checkpoint: checkpointId,
+      message: `Item "${item.name}" successfully restored`
+    });
+  } catch (err) {
+    console.error("Item restore error", err);
+    res.status(500).json({ error: err.message || "Update failed" });
+  }
+});
+
+/**
+ * Validate a restore item before applying
+ */
+function validateRestoreItem(item) {
+  // Basic validation
+  if (!item.id) {
+    return { valid: false, error: "Item ID missing" };
+  }
+
+  if (!item.type || !['feature', 'file', 'database', 'config'].includes(item.type)) {
+    return { valid: false, error: "Invalid item type" };
+  }
+
+  if (!item.name) {
+    return { valid: false, error: "Item name missing" };
+  }
+
+  const normalizedChangeType = String(item.change_type || item.changeType || '').toLowerCase();
+  if (normalizedChangeType === 'conflict' || String(item.status || '').toLowerCase() === 'conflict') {
+    return { valid: false, error: "Conflict requires manual review before restore" };
+  }
+
+  if (item.status !== 'pending') {
+    return { valid: false, error: `Cannot apply non-pending item (status: ${item.status})` };
+  }
+
+  // Type-specific validation
+  if (item.type === 'file' && !item.name) {
+    return { valid: false, error: "File path missing" };
+  }
+
+  if (item.type === 'database' && !item.category) {
+    return { valid: false, error: "Database table missing" };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Apply a restore item based on its type
+ */
+async function applyRestoreItem(item, pool, session) {
+  const timestamp = new Date().toISOString();
+
+  if (item.type === 'feature') {
+    const restoredFiles = await restoreArchiveFiles(session.backup_path, item.related_files || []);
+    return {
+      type: 'feature',
+      action: 'restore_feature',
+      feature_name: item.name,
+      category: item.category,
+      version: item.backup_version,
+      restored_files: restoredFiles,
+      timestamp,
+      status: 'applied',
+      notes: `Feature "${item.name}" v${item.backup_version} restoration recorded`
+    };
+  } else if (item.type === 'file') {
+    const restoredFiles = await restoreArchiveFiles(session.backup_path, item.related_files || [item.name]);
+    return {
+      type: 'file',
+      action: 'restore_file',
+      file_path: item.name,
+      backup_checksum: item.backup_checksum,
+      restored_files: restoredFiles,
+      timestamp,
+      status: 'applied',
+      notes: `File "${item.name}" restoration recorded`
+    };
+  } else if (item.type === 'database') {
+    const restoredRecord = await restoreArchiveDatabaseRecord(session.backup_path, item, pool);
+    return {
+      type: 'database',
+      action: 'restore_database_record',
+      table: item.category,
+      record_id: item.name,
+      change_type: item.change_type,
+      restored_record: restoredRecord,
+      timestamp,
+      status: 'applied',
+      notes: `Database record "${item.name}" in table "${item.category}" restoration recorded`
+    };
+  } else if (item.type === 'config') {
+    // Apply config restoration
+    return {
+      type: 'config',
+      action: 'restore_config',
+      config_name: item.name,
+      timestamp,
+      status: 'applied',
+      notes: `Configuration "${item.name}" restoration recorded`
+    };
+  }
+
+  throw new Error(`Unsupported item type: ${item.type}`);
+}
+
+function getArchiveEntryForProjectPath(zip, relativePath) {
+  const normalizedPath = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const candidates = [
+    `application/${normalizedPath}`,
+    `assets/${normalizedPath}`,
+    normalizedPath
+  ];
+  return candidates.map((candidate) => zip.getEntry(candidate)).find(Boolean);
+}
+
+async function createDestinationCheckpoint(session, items, pool, existingCheckpointId = null) {
+  const checkpointRoot = path.join(
+    RESTORE_DIR,
+    'checkpoints',
+    `restore-${session.id}-${Date.now()}`
+  );
+  const filesRoot = path.join(checkpointRoot, 'files');
+  const databaseSnapshotPath = path.join(checkpointRoot, 'database.json');
+  fs.mkdirSync(filesRoot, { recursive: true });
+
+  const filePaths = new Set();
+  for (const item of items || []) {
+    const relatedFiles = Array.isArray(item.related_files)
+      ? item.related_files
+      : Array.isArray(item.relatedFiles)
+        ? item.relatedFiles
+        : item.type === 'file' ? [item.name] : [];
+    for (const fileName of relatedFiles) {
+      const relativePath = String(fileName || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      if (!relativePath || relativePath.includes('..') || isProtectedRestorePath(relativePath)) continue;
+      filePaths.add(relativePath);
+    }
+  }
+
+  for (const relativePath of filePaths) {
+    const sourcePath = path.resolve(PROJECT_ROOT, relativePath);
+    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) continue;
+    const destinationPath = path.resolve(filesRoot, relativePath);
+    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    fs.copyFileSync(sourcePath, destinationPath);
+  }
+
+  const databaseRows = [];
+  const databaseItems = (items || []).filter((item) => item.type === 'database');
+  for (const item of databaseItems) {
+    const tableName = String(item.category || '').replace(/[^a-zA-Z0-9_]/g, '');
+    if (!tableName) continue;
+    try {
+      const result = await pool.query(`SELECT * FROM "${tableName}"`);
+      databaseRows.push({ tableName, rows: result.rows || [] });
+    } catch (err) {
+      throw new Error(`Could not checkpoint database table ${tableName}: ${err.message}`);
+    }
+  }
+  fs.writeFileSync(databaseSnapshotPath, JSON.stringify({
+    session_id: session.id,
+    created_at: new Date().toISOString(),
+    tables: databaseRows
+  }, null, 2));
+
+  const checkpointSnapshot = JSON.stringify({
+    session_id: session.id,
+    backup_filename: session.backup_filename,
+    checkpoint_root: checkpointRoot,
+    file_count: filePaths.size,
+    database_table_count: databaseRows.length
+  });
+  const checkpointResult = existingCheckpointId
+    ? await pool.query(
+      `UPDATE restore_checkpoints SET
+         database_dump_path = $1,
+         files_backup_path = $2,
+         config_snapshot = $3
+       WHERE id = $4
+       RETURNING id`,
+      [databaseSnapshotPath, filesRoot, checkpointSnapshot, existingCheckpointId]
+    )
+    : await pool.query(
+      `INSERT INTO restore_checkpoints (
+         session_id,
+         checkpoint_name,
+         checkpoint_type,
+         database_dump_path,
+         files_backup_path,
+         config_snapshot
+       ) VALUES ($1, $2, 'pre_restore', $3, $4, $5)
+       RETURNING id`,
+      [
+        session.id,
+        `Pre-restore safety backup - ${new Date().toISOString()}`,
+        databaseSnapshotPath,
+        filesRoot,
+        checkpointSnapshot
+      ]
+    );
+
+  const checkpointId = checkpointResult.rows?.[0]?.id;
+  if (!checkpointId) {
+    throw new Error('Pre-restore safety checkpoint was not recorded');
+  }
+  return { id: checkpointId, root: checkpointRoot };
+}
+
+function isProtectedRestorePath(relativePath) {
+  const normalized = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  return normalized === '.env'
+    || normalized.endsWith('/.env')
+    || normalized.split('/').some((segment) => segment === '.env' || segment.startsWith('.env.'))
+    || normalized === '.git'
+    || normalized.startsWith('.git/')
+    || normalized === 'node_modules'
+    || normalized.startsWith('node_modules/');
+}
+
+async function applyArchiveMigrations(backupPath, pool) {
+  if (!backupPath || !fs.existsSync(backupPath) || typeof pool.connect !== 'function') {
+    return [];
+  }
+
+  const zip = new AdmZip(backupPath);
+  const migrationEntries = zip.getEntries()
+    .filter((entry) => {
+      const name = String(entry.entryName || '').replace(/\\/g, '/');
+      return !entry.isDirectory && /(?:^|\/)migrations\/\d+_[^/]+\.sql$/i.test(name);
+    })
+    .map((entry) => ({
+      entry,
+      name: path.basename(entry.entryName)
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
+
+  if (!migrationEntries.length) return [];
+
+  const localMigrationDir = path.join(__dirname, '..', 'migrations');
+  const client = await pool.connect();
+  const applied = [];
+  try {
+    await client.query('BEGIN');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS restore_migrations (
+        migration_name TEXT PRIMARY KEY,
+        checksum TEXT NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    for (const migration of migrationEntries) {
+      const source = zip.readAsText(migration.entry);
+      const checksum = crypto.createHash('sha256').update(source).digest('hex');
+      const localPath = path.join(localMigrationDir, migration.name);
+      if (fs.existsSync(localPath)) continue;
+
+      const existing = await client.query(
+        'SELECT checksum FROM restore_migrations WHERE migration_name = $1',
+        [migration.name]
+      );
+      if (existing.rows.length) {
+        if (existing.rows[0].checksum !== checksum) {
+          throw new Error(`Migration checksum conflict: ${migration.name}`);
+        }
+        continue;
+      }
+
+      await client.query(source);
+      await client.query(
+        `INSERT INTO restore_migrations (migration_name, checksum) VALUES ($1, $2)`,
+        [migration.name, checksum]
+      );
+      applied.push(migration.name);
+    }
+
+    await client.query('COMMIT');
+    return applied;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function restoreArchiveFiles(backupPath, relatedFiles) {
+  if (!backupPath || !fs.existsSync(backupPath)) {
+    throw new Error('Backup archive is missing from the restore folder');
+  }
+
+  const zip = new AdmZip(backupPath);
+  const restoredFiles = [];
+  for (const fileName of relatedFiles || []) {
+    const relativePath = String(fileName || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!relativePath || relativePath.includes('..')) continue;
+    if (isProtectedRestorePath(relativePath)) {
+      throw new Error(`Protected path cannot be restored: ${relativePath}`);
+    }
+    const entry = getArchiveEntryForProjectPath(zip, relativePath);
+    if (!entry || entry.isDirectory) {
+      throw new Error(`Backup archive does not contain file: ${relativePath}`);
+    }
+
+    const destination = path.resolve(PROJECT_ROOT, relativePath);
+    const projectRoot = PROJECT_ROOT;
+    if (destination !== projectRoot && !destination.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Invalid restore file path: ${relativePath}`);
+    }
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, entry.getData());
+    restoredFiles.push(relativePath);
+  }
+  return restoredFiles;
+}
+
+function findDatabaseRowInBackup(database, tableName, recordId) {
+  if (!database || typeof database !== 'object') {
+    return null;
+  }
+
+  const normalizedTable = String(tableName || '').replace(/[^a-zA-Z0-9_]/g, '');
+  const normalizedId = String(recordId ?? '').trim();
+  if (!normalizedTable || !normalizedId) {
+    return null;
+  }
+
+  const getIdentityColumns = (row) => {
+    const preferred = ['id', 'recordId', 'record_id', 'uuid', 'session_id', 'code', 'slug', 'name', 'email'];
+    const singleColumn = preferred.find((column) => row?.[column] !== undefined && row?.[column] !== null);
+    if (singleColumn) return [singleColumn];
+    return Object.keys(row || {})
+      .filter((column) => /(^|_)id$/i.test(column) && row[column] !== undefined && row[column] !== null)
+      .sort();
+  };
+
+  const rowValue = (row) => {
+    if (!row || typeof row !== 'object') {
+      return null;
+    }
+    const identityColumns = getIdentityColumns(row);
+    if (!identityColumns.length) return null;
+    return identityColumns.map((column) => `${column}=${row[column]}`).join('&');
+  };
+
+  const getTableRows = (entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return [];
+    }
+    if (Array.isArray(entry.rows)) {
+      return entry.rows;
+    }
+    if (entry.data && Array.isArray(entry.data.rows)) {
+      return entry.data.rows;
+    }
+    if (entry.data && entry.data && typeof entry.data === 'object' && Array.isArray(entry.data)) {
+      return entry.data;
+    }
+    return [];
+  };
+
+  const sections = [
+    ...(Array.isArray(database.newRecords) ? database.newRecords : []),
+    ...(Array.isArray(database.updatedRecords) ? database.updatedRecords : []),
+    ...(Array.isArray(database.changes) ? database.changes : []),
+    ...(Array.isArray(database.tables) ? database.tables : [])
+  ];
+
+  for (const section of sections) {
+    const sectionTable = String(section?.tableName || section?.table || '').replace(/[^a-zA-Z0-9_]/g, '');
+    if (sectionTable !== normalizedTable) {
+      continue;
+    }
+
+    const row = getTableRows(section).find((candidate) => {
+      const value = rowValue(candidate);
+      return value === normalizedId || value?.split('=').pop() === normalizedId;
+    });
+    if (row) {
+      return row;
+    }
+  }
+
+  const snapshotTable = (Array.isArray(database.tables) ? database.tables : []).find((entry) => {
+    const name = String(entry?.tableName || entry?.table || '').replace(/[^a-zA-Z0-9_]/g, '');
+    return name === normalizedTable;
+  });
+
+  return (snapshotTable ? getTableRows(snapshotTable) : []).find((candidate) => {
+    const value = rowValue(candidate);
+    return value === normalizedId || value?.split('=').pop() === normalizedId;
+  }) || null;
+}
+
+async function restoreArchiveDatabaseRecord(backupPath, item, pool) {
+  if (!backupPath || !fs.existsSync(backupPath)) {
+    throw new Error('Backup archive is missing from the restore folder');
+  }
+
+  const zip = new AdmZip(backupPath);
+  const database = readDatabasePayloadFromArchive(zip);
+  if (!database) {
+    throw new Error('Backup archive does not contain a readable database payload');
+  }
+  const match = String(item.name || '').match(/^(.+?)\s*#\s*(.+)$/);
+  if (!match) throw new Error(`Invalid database restore item: ${item.name}`);
+  const tableName = match[1].replace(/[^a-zA-Z0-9_]/g, '');
+  const recordId = match[2];
+  const persistedIdentity = typeof item.related_records === 'string'
+    ? (() => { try { return JSON.parse(item.related_records); } catch (err) { return null; } })()
+    : item.related_records;
+  const row = persistedIdentity?.source || findDatabaseRowInBackup(database, tableName, recordId);
+  if (!row) throw new Error(`Database row not found in backup: ${item.name}`);
+
+  const identity = persistedIdentity?.identity?.columns?.length
+    ? persistedIdentity.identity
+    : buildIdentity(row, tableName);
+  let existingTarget = null;
+  if (identity?.columns?.length) {
+    const identitySql = `SELECT * FROM "${tableName}" WHERE ${identity.columns.map((column, index) => `"${column}" = $${index + 1}`).join(' AND ')} LIMIT 1`;
+    try {
+      existingTarget = (await pool.query(identitySql, identity.columns.map((column) => row[column]))).rows?.[0] || null;
+    } catch (err) {
+      existingTarget = null;
+    }
+  }
+
+  let columns = Object.keys(row).filter((column) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column) && !column.startsWith('__') && !['operation', 'changedFields'].includes(column));
+  if (!existingTarget && ['users', 'images'].includes(tableName) && identity?.columns?.some((column) => column !== 'id')) {
+    columns = columns.filter((column) => column !== 'id');
+  }
+  const values = columns.map((column) => row[column]);
+  const quotedColumns = columns.map((column) => `"${column}"`).join(', ');
+  const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
+  const identityColumns = ['id', 'uuid', 'slug'].filter((column) => row[column] !== undefined && row[column] !== null);
+  const identityColumn = identityColumns[0] || null;
+
+  const updateColumns = columns.filter((column) => column !== identityColumn);
+  const appendOnlyTables = new Set(['activity_events']);
+  let result;
+  if (existingTarget) {
+    const updateColumns = columns.filter((column) => column !== 'id' && column !== 'uuid' && column !== 'slug');
+    if (!updateColumns.length) return existingTarget;
+    result = await pool.query(
+      `UPDATE "${tableName}" SET ${updateColumns.map((column, index) => `"${column}" = $${index + 1}`).join(', ')} WHERE "id" = $${updateColumns.length + 1} RETURNING *`,
+      [...updateColumns.map((column) => row[column]), existingTarget.id]
+    );
+  } else if (appendOnlyTables.has(tableName)) {
+    result = await pool.query(
+      `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT DO NOTHING RETURNING *`,
+      values
+    );
+  } else if (identityColumn && updateColumns.length > 0) {
+    const assignments = updateColumns.map((column) => `"${column}" = EXCLUDED."${column}"`).join(', ');
+    result = await pool.query(
+      `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT ("${identityColumn}") DO UPDATE SET ${assignments} RETURNING *`,
+      values
+    );
+  } else if (identityColumn) {
+    result = await pool.query(
+      `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT ("${identityColumn}") DO NOTHING RETURNING *`,
+      values
+    );
+  } else {
+    const assignments = columns.map((column) => `"${column}" = EXCLUDED."${column}"`).join(', ');
+    result = await pool.query(
+      `INSERT INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders}) ON CONFLICT DO UPDATE SET ${assignments} RETURNING *`,
+      values
+    );
+  }
+  return result.rows[0] || row;
+}
+
+/**
+ * POST /admin/restore/repair
+ * Repair stale restore state and reset the active session to a safe, reviewable state.
+ * This is a bounded self-healing pass: it does not delete historical backups,
+ * and it keeps the admin in control of final restore decisions.
+ */
+router.post("/repair", async (req, res) => {
+  try {
+    const { pool, JWT_SECRET } = req.app.locals;
+    const token = req.headers.authorization?.split(" ")[1];
+
+    if (!token) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET || "secretkey");
+    } catch (err) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    const adminUserId = decoded.user;
+    const sessionResult = await pool.query(
+      `SELECT * FROM restore_sessions
+       WHERE admin_user_id = $1
+         AND status IN ('analyzed', 'in_progress', 'failed', 'stale')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [adminUserId]
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res.status(200).json({ repaired: false, message: "No active session to repair" });
+    }
+
+    const session = sessionResult.rows[0];
+    const staleComparison = {
+      status: "repaired",
+      repaired_at: new Date().toISOString(),
+      message: "Restore session self-healed. Historical backup remains available for review.",
+      restored_session_id: session.id,
+      backup_filename: session.backup_filename
+    };
+
+    const repairItemsResult = await pool.query(
+      `UPDATE restore_items SET
+         status = 'pending',
+         updated_at = NOW()
+       WHERE session_id = $1
+         AND status IN ('failed', 'stale', 'incomplete')
+       RETURNING *`,
+      [session.id]
+    );
+
+    const updatedSession = await pool.query(
+      `UPDATE restore_sessions SET
+         status = 'analyzed',
+         pending_items = GREATEST(COALESCE(total_items, 0), 0),
+         comparison_result = $1,
+         updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [JSON.stringify(staleComparison), session.id]
+    );
+
+    res.json({
+      repaired: true,
+      session: updatedSession.rows[0],
+      repaired_items: repairItemsResult.rows.length,
+      message: "Restore session repaired and reset to a safe review state"
+    });
+  } catch (err) {
+    console.error("Repair session error", err);
+    res.status(500).json({ error: err.message || "Repair failed" });
+  }
+});
+
+/**
+ * POST /admin/restore/all
+ * Apply all safe items
+ */
+router.post("/all", async (req, res) => {
+  try {
+    const { pool } = req.app.locals;
+
+    const sessionResult = await pool.query(
+      `SELECT * FROM restore_sessions
+       WHERE admin_user_id = $1
+         AND status IN ('analyzed', 'in_progress')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [req.user?.id]
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res.status(404).json({ error: "No active session" });
+    }
+
+    const session = sessionResult.rows[0];
+
+    let checkpointId = null;
+
+    const pendingItemsResult = await pool.query(
+      `SELECT * FROM restore_items
+       WHERE session_id = $1
+         AND status = 'pending'
+         AND COALESCE(change_type, '') <> 'conflict'
+         AND COALESCE(change_type, '') IN ('new', 'update')
+       ORDER BY item_order ASC`,
+      [session.id]
+    );
+
+    const restoreStartedAt = Date.now();
+    const totalBatchItems = pendingItemsResult.rows.length;
+    const safetyCheckpoint = await createDestinationCheckpoint(session, pendingItemsResult.rows, pool);
+    checkpointId = safetyCheckpoint.id;
+    let appliedMigrations = [];
+    try {
+      appliedMigrations = await applyArchiveMigrations(session.backup_path, pool);
+    } catch (migrationError) {
+      await pool.query(
+        `UPDATE restore_sessions SET status = 'failed', error_message = $1, updated_at = NOW() WHERE id = $2`,
+        [migrationError.message || 'Migration failed', session.id]
+      );
+      return res.status(500).json({
+        error: `Migration failed: ${migrationError.message}`,
+        checkpoint: checkpointId,
+        applied_migrations: []
+      });
+    }
+    const appliedItemIds = [];
+    const failedItems = [];
+    let processedBatchItems = 0;
+    await pool.query(
+      `UPDATE restore_sessions SET status = 'in_progress', updated_at = NOW()
+       WHERE id = $1`,
+      [session.id]
+    );
+
+    for (const item of pendingItemsResult.rows || []) {
+      const validation = validateRestoreItem(item);
+      if (!validation.valid) {
+        const validationError = `Validation failed: ${validation.error}`;
+        failedItems.push({ item, error: validationError });
+        await pool.query(
+          `UPDATE restore_items SET
+             status = 'failed',
+             error_message = $1,
+             updated_at = NOW()
+           WHERE id = $2`,
+          [validationError, item.id]
+        );
+      } else {
+        try {
+          await applyRestoreItem(item, pool, session);
+          appliedItemIds.push(item.id);
+        } catch (itemError) {
+          failedItems.push({ item, error: itemError.message || 'Restore item failed' });
+          await pool.query(
+            `UPDATE restore_items SET
+               status = 'failed',
+               error_message = $1,
+               updated_at = NOW()
+             WHERE id = $2`,
+            [itemError.message || 'Restore item failed', item.id]
+          );
+        }
+
+        const safetyCheckpoint = await createDestinationCheckpoint(session, [item], pool, checkpointId);
+        checkpointId = safetyCheckpoint.id;
+      }
+
+      processedBatchItems++;
+      const elapsedSeconds = Math.max(0.001, (Date.now() - restoreStartedAt) / 1000);
+      const estimatedRemainingSeconds = processedBatchItems > 0
+        ? Math.max(0, Math.ceil(((elapsedSeconds / processedBatchItems) * (totalBatchItems - processedBatchItems))))
+        : null;
+      await pool.query(
+        `UPDATE restore_sessions SET
+           completed_items = $1,
+           pending_items = GREATEST(0, $2::numeric - $1::numeric),
+           comparison_result = JSONB_BUILD_OBJECT(
+             'status', 'in_progress',
+             'processed_items', $1,
+             'total_items', $2,
+             'progress_percent', CASE WHEN $2::numeric = 0 THEN 100 ELSE ROUND(($1::numeric / $2::numeric) * 100, 1) END,
+             'estimated_remaining_seconds', $3,
+             'updated_at', NOW()
+           ),
+           updated_at = NOW()
+         WHERE id = $4`,
+        [processedBatchItems, totalBatchItems, estimatedRemainingSeconds, session.id]
+      );
+    }
+
+    let updateResult = { rows: [] };
+    if (appliedItemIds.length > 0) {
+      updateResult = await pool.query(
+      `UPDATE restore_items
+       SET status = 'completed',
+           updated_at = NOW()
+       WHERE session_id = $1
+         AND id = ANY($2::int[])
+         AND status = 'pending'
+         AND COALESCE(change_type, '') <> 'conflict'
+         AND COALESCE(change_type, '') IN ('new', 'update')
+       RETURNING *`,
+      [session.id, appliedItemIds]
+      );
+    }
+
+    const updatedCount = updateResult.rows.length;
+
+    const summaryResult = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+         COUNT(*) FILTER (WHERE status = 'completed') AS completed_count,
+         COUNT(*) FILTER (WHERE LOWER(COALESCE(change_type, '')) = 'conflict') AS conflict_count
+       FROM restore_items
+       WHERE session_id = $1`,
+      [session.id]
+    );
+
+    const summary = summaryResult.rows[0] || {};
+
+    await pool.query(
+      `UPDATE restore_sessions SET
+        completed_items = $1,
+        pending_items = $2,
+        status = CASE WHEN $4 > 0 THEN 'in_progress' ELSE 'completed' END,
+        comparison_result = JSONB_BUILD_OBJECT(
+          'status', CASE WHEN $4 > 0 THEN 'in_progress' ELSE 'completed' END,
+          'processed_items', $1 + $4,
+          'total_items', $1 + $2 + $4,
+          'progress_percent', CASE WHEN ($1::numeric + $2::numeric + $4::numeric) = 0 THEN 100 ELSE ROUND((($1::numeric + $4::numeric) / ($1::numeric + $2::numeric + $4::numeric)) * 100, 1) END,
+          'failed_count', $4,
+          'estimated_remaining_seconds', 0,
+          'updated_at', NOW()
+        ),
+        updated_at = NOW()
+      WHERE id = $3`,
+      [
+        Number(summary.completed_count || 0),
+        Number(summary.pending_count || 0),
+        session.id,
+        failedItems.length
+      ]
+    );
+
+    res.json({
+      updated: updatedCount,
+      checkpoint: checkpointId,
+      pending_count: Number(summary.pending_count || 0),
+      completed_count: Number(summary.completed_count || 0),
+      conflict_count: Number(summary.conflict_count || 0),
+      failed_count: failedItems.length,
+      applied_migrations: appliedMigrations,
+      failed_items: failedItems.map(({ item, error }) => ({
+        id: item.id,
+        name: item.name,
+        type: item.type,
+        category: item.category,
+        error
+      })),
+      message: updatedCount > 0 ? `Updated ${updatedCount} safe items` : `No safe items to update`
+    });
+  } catch (err) {
+    console.error("Batch update error", err);
+    res.status(500).json({ error: err.message || "Batch update failed" });
+  }
+});
+
+/**
+ * POST /admin/restore/clear
+ * Clear current restore session
+ */
+router.post("/clear", async (req, res) => {
+  try {
+    const { pool } = req.app.locals;
+
+    // Clear only the active comparison/session state.
+    // Historical backup archives remain on disk and in Restore History unless explicitly deleted.
+    await pool.query(
+      `UPDATE restore_sessions SET
+        status = 'completed',
+        updated_at = NOW(),
+        comparison_result = JSONB_BUILD_OBJECT(
+          'status', 'cleared',
+          'cleared_at', NOW(),
+          'message', 'Current restore comparison cleared. Historical backup remains available.'
+        )
+       WHERE admin_user_id = $1
+         AND status IN ('analyzed', 'in_progress')`,
+      [req.user?.id]
+    );
+
+    res.json({ message: "Session cleared" });
+  } catch (err) {
+    console.error("Clear session error", err);
+    res.status(500).json({ error: err.message || "Clear failed" });
+  }
+});
+
+/**
+ * DELETE /admin/restore/file/:id
+ * Delete restore history file
+ */
+router.delete("/file/:id", async (req, res) => {
+  try {
+    const { pool, JWT_SECRET } = req.app.locals;
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+
+    if (!token) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET || "secretkey");
+    } catch (err) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    const userResult = await pool.query(
+      "SELECT role, status FROM users WHERE id = $1",
+      [decoded.user]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const user = userResult.rows[0];
+    if (user.role !== "admin" || user.status === "inactive" || user.status === "disabled") {
+      return res.status(403).json({ error: "Admin access only" });
+    }
+
+    const historyIdParam = req.params.id;
+    const directFileName = decodeURIComponent(historyIdParam);
+    const historyId = /^\d+$/.test(String(historyIdParam).trim())
+      ? Number.parseInt(historyIdParam, 10)
+      : Number.NaN;
+
+    let deletedPath = null;
+    let deletedRowId = null;
+
+    if (!Number.isNaN(historyId)) {
+      const historyResult = await pool.query(
+        "SELECT * FROM restore_history WHERE id = $1",
+        [historyId]
+      );
+
+      if (historyResult.rows.length > 0) {
+        const history = historyResult.rows[0];
+        deletedRowId = history.id;
+        deletedPath = history.backup_path;
+
+        if (deletedPath && fs.existsSync(deletedPath)) {
+          fs.unlinkSync(deletedPath);
+          deletedPath = deletedPath;
+        }
+
+        await pool.query(
+          "DELETE FROM restore_history WHERE id = $1",
+          [historyId]
+        );
+      }
+    }
+
+    if (!deletedRowId) {
+      const directHistoryResult = await pool.query(
+        "SELECT * FROM restore_history WHERE backup_filename = $1",
+        [directFileName]
+      );
+
+      if (directHistoryResult.rows.length > 0) {
+        const history = directHistoryResult.rows[0];
+        deletedRowId = history.id;
+        deletedPath = history.backup_path || path.join(RESTORE_DIR, history.backup_filename || directFileName);
+
+        if (deletedPath && fs.existsSync(deletedPath)) {
+          fs.unlinkSync(deletedPath);
+        }
+
+        await pool.query(
+          "DELETE FROM restore_history WHERE backup_filename = $1",
+          [directFileName]
+        );
+      }
+    }
+
+    const directFilePath = path.join(RESTORE_DIR, directFileName);
+    if (fs.existsSync(directFilePath)) {
+      fs.unlinkSync(directFilePath);
+      deletedPath = directFilePath;
+    }
+
+    if (!deletedRowId && !deletedPath) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    if (deletedRowId) {
+      await pool.query(
+        "DELETE FROM restore_history WHERE id = $1",
+        [deletedRowId]
+      ).catch(() => {});
+    }
+
+    res.json({ message: "File deleted" });
+  } catch (err) {
+    console.error("Delete file error", err);
+    res.status(500).json({ error: err.message || "Delete failed" });
+  }
+});
+
+/**
+ * Helper function: Analyze backup and generate comparison items
+ * Compares backup against current system state
+ */
+async function buildComparisonSummary(backupData, items, pool, session) {
+  const countBackupRows = (tableName) => {
+    const table = Array.isArray(backupData.database?.tables)
+      ? backupData.database.tables.find((entry) => entry.tableName === tableName || entry.table === tableName)
+      : null;
+    if (table) return Number(table.rowCount ?? table.rows?.length ?? 0);
+    return [...(backupData.database?.newRecords || []), ...(backupData.database?.updatedRecords || [])]
+      .filter((entry) => (entry.tableName || entry.table) === tableName)
+      .reduce((sum, entry) => sum + Number(entry.recordCount ?? entry.rows?.length ?? 0), 0);
+  };
+  const readTargetCount = async (tableName) => {
+    const result = await pool.query(`SELECT COUNT(*)::int AS count FROM "${tableName}"`);
+    return Number(result.rows?.[0]?.count || 0);
+  };
+  const summary = {
+    total: items.length,
+    new: items.filter((item) => item.changeType === 'new').length,
+    updated: items.filter((item) => item.changeType === 'update').length,
+    unchanged: 0,
+    conflicts: items.filter((item) => String(item.changeType || '').toLowerCase() === 'conflict').length,
+    sourceUsers: countBackupRows('users'),
+    targetUsers: await readTargetCount('users'),
+    sourceAssets: countBackupRows('images'),
+    targetAssets: await readTargetCount('images'),
+    newUsers: items.filter((item) => item.type === 'database' && item.category === 'users' && item.changeType === 'new').length,
+    newAssets: items.filter((item) => item.type === 'database' && ['images', 'assets'].includes(item.category) && item.changeType === 'new').length
+  };
+  summary.sourceDatabase = {
+    full_dump: Boolean(backupData.database?.fullDump),
+    table_count: Array.isArray(backupData.database?.tables) ? backupData.database.tables.length : 0,
+    users: summary.sourceUsers,
+    images: summary.sourceAssets
+  };
+  summary.targetDatabase = { users: summary.targetUsers, images: summary.targetAssets };
+  return { items, summary, session_id: session?.session_id || null };
+}
+
+async function analyzeBackup(backupData, pool, options = {}) {
+  const items = [];
+  let itemOrder = 0;
+  let totalBackupItems = 0;
+  let unchangedCount = 0;
+  const destinationProjectRoot = options.projectRoot || PROJECT_ROOT;
+  const analysisStartedAt = Date.now();
+  let lastProgressUpdate = 0;
+  const estimatedAnalysisTotal = Math.max(1,
+    (Array.isArray(backupData.manifest?.features) ? backupData.manifest.features.length : 0) +
+    (Array.isArray(backupData.fileInventory) ? backupData.fileInventory.length : 0) +
+    (Array.isArray(backupData.files) ? backupData.files.length : 0) +
+    (Array.isArray(backupData.database?.newRecords) ? backupData.database.newRecords.reduce((sum, entry) => sum + (entry.rows?.length || 0), 0) : 0) +
+    (Array.isArray(backupData.database?.updatedRecords) ? backupData.database.updatedRecords.reduce((sum, entry) => sum + (entry.rows?.length || 0), 0) : 0) +
+    (Array.isArray(backupData.database?.tables) ? backupData.database.tables.reduce((sum, entry) => sum + (entry.rows?.length || 0), 0) : 0)
+  );
+  const reportAnalysisProgress = async () => {
+    if (!options.sessionId || totalBackupItems === lastProgressUpdate) return;
+    if (totalBackupItems - lastProgressUpdate < 10 && totalBackupItems > 0) return;
+    lastProgressUpdate = totalBackupItems;
+    const elapsedSeconds = Math.max(0.001, (Date.now() - analysisStartedAt) / 1000);
+    await pool.query(
+      `UPDATE restore_sessions SET
+         comparison_result = JSONB_BUILD_OBJECT(
+           'status', 'in_progress',
+           'phase', 'analysis',
+           'processed_items', $1,
+           'total_items', $2,
+           'progress_percent', LEAST(99, ROUND(($1::numeric / $2::numeric) * 100, 1)),
+           'estimated_remaining_seconds', CASE WHEN $1::numeric = 0 THEN NULL ELSE CEIL(($2::numeric - $1::numeric) * ($3::numeric / $1::numeric)) END,
+           'elapsed_seconds', $3
+         ),
+         updated_at = NOW()
+       WHERE id = $4`,
+      [totalBackupItems, estimatedAnalysisTotal, elapsedSeconds, options.sessionId]
+    );
+  };
+
+  try {
+    // Helper: Check if versions are semantically different
+    const isVersionDifferent = (current, backup) => {
+      if (!current || !backup) return true;
+      const normalize = (v) => String(v).toLowerCase().trim();
+      return normalize(current) !== normalize(backup);
+    };
+
+    // Analyze features from backup manifest
+    if (backupData.manifest && backupData.manifest.features && Array.isArray(backupData.manifest.features)) {
+      for (const feature of backupData.manifest.features) {
+        totalBackupItems++;
+        await reportAnalysisProgress();
+        
+        // Try to find existing feature in database
+        let currentVersion = null;
+        try {
+          const featureQuery = await pool.query(
+            "SELECT version FROM features WHERE name = $1 LIMIT 1",
+            [feature.name]
+          );
+          currentVersion = featureQuery.rows[0]?.version || null;
+        } catch (err) {
+          // features table might not exist
+        }
+
+        const backupVersion = feature.version || "1.0.0";
+        const isNew = !currentVersion;
+        const isChanged = currentVersion && isVersionDifferent(currentVersion, backupVersion);
+
+        // Only include if new or changed
+        if (isNew || isChanged) {
+          items.push({
+            type: "feature",
+            category: feature.category || "general",
+            name: feature.name || "Unknown Feature",
+            description: feature.description || "",
+            currentVersion: currentVersion || "not installed",
+            backupVersion: backupVersion,
+            changeType: isNew ? "new" : "update",
+            relatedFiles: Array.isArray(feature.files) ? feature.files : [],
+            itemOrder: itemOrder++
+          });
+        } else {
+          unchangedCount++;
+        }
+      }
+    }
+
+    // Analyze files from backup using the manifest's file inventory, comparing the
+    // normalized backup path to the live project file checksum. This keeps the
+    // restore list limited to actionable files only.
+    const normalizeBackupRelativePath = (value) => {
+      if (!value || typeof value !== 'string') return '';
+      return value.replace(/\\/g, '/').replace(/^\.?\//, '').replace(/^application\//, '').replace(/^assets\//, '').replace(/^database\//, '').replace(/^metadata\//, '');
+    };
+
+    const computeFileChecksum = (absolutePath) => {
+      try {
+        if (!absolutePath || !fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+          return null;
+        }
+        const fileBuffer = fs.readFileSync(absolutePath);
+        return crypto.createHash('sha256').update(fileBuffer).digest('hex');
+      } catch (err) {
+        return null;
+      }
+    };
+
+    const inferFeatureKey = (relativePath) => {
+      const normalized = normalizeBackupRelativePath(relativePath || '');
+      if (!normalized) return null;
+
+      const fileName = normalized.split('/').pop() || normalized;
+      const stem = fileName.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ');
+      const spaced = stem.replace(/([a-z])([A-Z])/g, '$1 $2');
+      const words = spaced.split(/\s+/).filter(Boolean);
+
+      if (!words.length) return null;
+
+      const stripped = words
+        .filter((word) => !['routes', 'route', 'controller', 'controllers', 'page', 'pages', 'view', 'views', 'style', 'styles', 'css', 'js', 'jsx', 'ts', 'tsx', 'config', 'helper', 'helpers', 'service', 'services'].includes(word.toLowerCase()))
+        .map((word) => word.replace(/[^a-zA-Z0-9]/g, ''))
+        .filter(Boolean);
+
+      if (!stripped.length) return null;
+
+      const base = stripped.join(' ').toLowerCase();
+      const normalizedBase = base.replace(/s$/, '');
+      if (normalizedBase.length < 3) return null;
+      return normalizedBase;
+    };
+
+    const featureTitleMap = {
+      dailyreport: 'Daily Reports',
+      dailyreports: 'Daily Reports',
+      'daily report': 'Daily Reports',
+      'daily reports': 'Daily Reports',
+      report: 'Reports',
+      reports: 'Reports',
+      order: 'Orders',
+      orders: 'Orders',
+      product: 'Products',
+      products: 'Products',
+      user: 'Users',
+      users: 'Users',
+      payment: 'Payments',
+      payments: 'Payments',
+      setting: 'Settings',
+      settings: 'Settings',
+      dashboard: 'Dashboard',
+      notification: 'Notifications',
+      notifications: 'Notifications',
+      email: 'Emails',
+      emails: 'Emails',
+      analytics: 'Analytics',
+      analytic: 'Analytics'
+    };
+
+    const inferFeatureName = (relativePath) => {
+      const key = inferFeatureKey(relativePath);
+      if (!key) return null;
+      const directMatch = featureTitleMap[key] || featureTitleMap[key.replace(/s$/, '')] || featureTitleMap[key.trim()];
+      if (directMatch) return directMatch;
+
+      const words = key.split(/\s+/).filter(Boolean);
+      if (!words.length) return null;
+      return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+    };
+
+    const fileInventory = [];
+    const rawInventory = Array.isArray(backupData.fileInventory) ? backupData.fileInventory : [];
+    const rawFiles = Array.isArray(backupData.files) ? backupData.files : [];
+
+    const isRestorableInventoryPath = (value) => {
+      const normalized = String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      const projectPath = normalized.replace(/^(application|assets)\//, '');
+      if (!projectPath || projectPath.startsWith('metadata/') || projectPath.startsWith('database/') || isProtectedRestorePath(projectPath)) {
+        return false;
+      }
+      if (projectPath.split('/').some((segment) => ['.git', 'node_modules', 'backup'].includes(segment)) || projectPath.endsWith('.DS_Store')) {
+        return false;
+      }
+      if (/^(manifest|checksums|metadata|device|version|sync)(\.json)?$/i.test(projectPath)) {
+        return false;
+      }
+      return normalized.startsWith('application/') || normalized.startsWith('assets/');
+    };
+
+    for (const file of rawInventory) {
+      if (file && isRestorableInventoryPath(file.path || file.relativePath || file.name)) {
+        fileInventory.push(file);
+      }
+    }
+    for (const file of rawFiles) {
+      if (file && isRestorableInventoryPath(file.path || file.relativePath || file.name)) {
+        const seen = fileInventory.some((entry) => {
+          const left = String(entry.path || entry.relativePath || entry.name || '');
+          const right = String(file.path || file.relativePath || file.name || '');
+          return left === right;
+        });
+        if (!seen) fileInventory.push(file);
+      }
+    }
+
+    const actionableFiles = [];
+    for (const file of fileInventory) {
+      const rawFilePath = file.path || file.relativePath || file.name || 'unknown';
+      const relativeProjectPath = normalizeBackupRelativePath(rawFilePath);
+      if (!relativeProjectPath || relativeProjectPath === 'unknown') continue;
+
+      totalBackupItems++;
+      await reportAnalysisProgress();
+
+      const liveFilePath = path.resolve(destinationProjectRoot, relativeProjectPath);
+      const currentChecksum = computeFileChecksum(liveFilePath);
+      const backupChecksum = file.checksum || file.sha256 || file.hash || null;
+      const isSameFile = Boolean(currentChecksum && backupChecksum && currentChecksum === backupChecksum);
+
+      if (isSameFile) {
+        unchangedCount++;
+        continue;
+      }
+
+      actionableFiles.push({
+        type: 'file',
+        category: 'code',
+        name: relativeProjectPath,
+        description: `File: ${relativeProjectPath}`,
+        currentVersion: currentChecksum ? `checksum: ${currentChecksum.substring(0, 8)}...` : 'not found',
+        backupVersion: backupChecksum ? `checksum: ${backupChecksum.substring(0, 8)}...` : 'backup',
+        changeType: currentChecksum ? 'update' : 'new',
+        relatedFiles: [relativeProjectPath],
+        itemOrder: itemOrder++
+      });
+    }
+
+    const featureGroups = new Map();
+    const standaloneFiles = [];
+
+    for (const fileItem of actionableFiles) {
+      const featureKey = inferFeatureKey(fileItem.name);
+      if (featureKey) {
+        const relatedGroup = featureGroups.get(featureKey) || [];
+        relatedGroup.push(fileItem);
+        featureGroups.set(featureKey, relatedGroup);
+      } else {
+        standaloneFiles.push(fileItem);
+      }
+    }
+
+    for (const [featureKey, groupedFiles] of featureGroups.entries()) {
+      if (groupedFiles.length < 2) {
+        standaloneFiles.push(...groupedFiles);
+        continue;
+      }
+
+      const featureName = inferFeatureName(groupedFiles[0].name) || 'Feature Update';
+      const featureChangeType = groupedFiles.some((file) => file.changeType === 'new') && groupedFiles.some((file) => file.changeType === 'update')
+        ? 'update'
+        : groupedFiles.some((file) => file.changeType === 'new') ? 'new' : 'update';
+
+      items.push({
+        type: 'feature',
+        category: 'code',
+        name: featureName,
+        description: `Feature: ${featureName} • ${groupedFiles.length} files affected`,
+        currentVersion: `${groupedFiles.length} files affected`,
+        backupVersion: `${groupedFiles.length} files affected`,
+        changeType: featureChangeType,
+        relatedFiles: groupedFiles.flatMap((file) => file.relatedFiles || []),
+        itemOrder: itemOrder++
+      });
+    }
+
+    for (const fileItem of standaloneFiles) {
+      items.push(fileItem);
+    }
+
+    // Analyze database changes from backup using merge-safe semantics:
+    // INSERT new records, UPDATE changed records, KEEP destination-only records,
+    // and DETECT conflicts without deleting existing rows.
+    const databaseSections = [];
+    const explicitConflicts = Array.isArray(backupData.database?.conflicts) ? backupData.database.conflicts : [];
+
+    if (backupData.database && Array.isArray(backupData.database.newRecords)) {
+      databaseSections.push(...backupData.database.newRecords.map((entry) => ({ kind: 'new', table: entry.tableName || entry.table || 'unknown', rows: Array.isArray(entry.rows) ? entry.rows : [] })));
+    }
+    if (backupData.database && Array.isArray(backupData.database.updatedRecords)) {
+      databaseSections.push(...backupData.database.updatedRecords.map((entry) => ({ kind: 'update', table: entry.tableName || entry.table || 'unknown', rows: Array.isArray(entry.rows) ? entry.rows : [] })));
+    }
+    if (backupData.database && Array.isArray(backupData.database.changes)) {
+      databaseSections.push(...backupData.database.changes.map((change) => ({
+        kind: (change.operation || 'update').toString().toLowerCase(),
+        table: change.table || change.tableName || 'unknown',
+        rows: change.data ? [change.data] : (Array.isArray(change.rows) ? change.rows : [])
+      })));
+    }
+    if (backupData.database && Array.isArray(backupData.database.tables)) {
+      databaseSections.push(...backupData.database.tables.map((entry) => ({
+        kind: 'snapshot',
+        table: entry.tableName || entry.table || 'unknown',
+        rows: Array.isArray(entry.rows) ? entry.rows : []
+      })));
+    }
+
+    const databaseTableCache = new Map();
+    const comparableRecord = (record, identityColumns = []) => {
+      if (!record || typeof record !== 'object') return record;
+      return Object.fromEntries(Object.entries(record)
+        .filter(([key]) => !['operation', 'changedFields', '__recordIdentity'].includes(key))
+        .filter(([key]) => !(key === 'id' && identityColumns.length > 0 && !identityColumns.includes('id'))));
+    };
+
+    for (const section of databaseSections) {
+      const table = section.table || 'unknown';
+      const rows = Array.isArray(section.rows) ? section.rows : [];
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') {
+          continue;
+        }
+
+        totalBackupItems++;
+        await reportAnalysisProgress();
+
+        const declaredIdentityColumns = section.identityColumns || [];
+        const identity = buildIdentity(row, table, declaredIdentityColumns);
+        const identityColumns = identity?.columns || [];
+        const identityColumn = identityColumns[0] || null;
+        const identityValue = identity?.key || null;
+        const displayIdentity = row.id ?? row.recordId ?? row.record_id ?? row.uuid ?? row.slug ?? identityValue;
+        const recordId = displayIdentity || '?';
+
+        let currentRecord = null;
+        let conflictDetected = false;
+
+        try {
+          const tableName = String(table).replace(/[^a-zA-Z0-9_]/g, '');
+          if (identityColumn && identityColumns.length > 0 && identityValue) {
+            const lookupSql = `SELECT * FROM "${tableName}" WHERE ${identityColumns.map((column, index) => `"${column}" = $${index + 1}`).join(' AND ')} LIMIT 1`;
+            const lookupResult = await pool.query(lookupSql, identityColumns.map((column) => row[column]));
+            currentRecord = lookupResult.rows?.[0] || null;
+          }
+        } catch (err) {
+          currentRecord = null;
+        }
+
+        if (!currentRecord) {
+          try {
+            const tableName = String(table).replace(/[^a-zA-Z0-9_]/g, '');
+            if (!databaseTableCache.has(tableName)) {
+              const tableRowsResult = await pool.query(`SELECT * FROM "${tableName}"`);
+              databaseTableCache.set(tableName, tableRowsResult.rows || []);
+            }
+            const tableRows = databaseTableCache.get(tableName) || [];
+            currentRecord = tableRows.find((candidate) => {
+              if (identityColumns.length > 0 && identityColumns.every((column) => candidate[column] !== undefined && candidate[column] !== null)) {
+                return identityColumns.map((column) => `${column}=${candidate[column]}`).join('&') === String(identityValue);
+              }
+              return JSON.stringify(comparableRecord(candidate, identityColumns)) === JSON.stringify(comparableRecord(row, identityColumns));
+            }) || null;
+          } catch (err) {
+            currentRecord = null;
+          }
+        }
+
+        if (currentRecord && row && Object.keys(row).length > 0) {
+          const rowKey = `${table}#${recordId}`;
+          const explicitConflict = explicitConflicts.some((conflict) => {
+            const conflictKey = `${conflict.table || conflict.tableName || ''}#${conflict.recordId ?? conflict.id ?? conflict.record_id ?? ''}`;
+            return conflictKey === rowKey || String(conflict.recordId ?? conflict.id ?? conflict.record_id ?? '') === String(recordId);
+          });
+          conflictDetected = explicitConflict && section.kind !== 'new';
+        }
+
+        const hasExistingRecord = Boolean(currentRecord);
+        const isSameRecord = hasExistingRecord
+          && row
+          && currentRecord
+          && JSON.stringify(comparableRecord(currentRecord, identityColumns)) === JSON.stringify(comparableRecord(row, identityColumns));
+
+        if (isSameRecord) {
+          unchangedCount++;
+          continue;
+        }
+
+        const isNewRecord = !hasExistingRecord && section.kind !== 'delete';
+        const isUpdateRecord = hasExistingRecord && section.kind !== 'delete';
+        const changeType = conflictDetected ? 'conflict' : isNewRecord ? 'new' : 'update';
+        const changedFields = hasExistingRecord
+          ? Object.keys(row).filter((key) => !['id', 'operation', 'changedFields', '__recordIdentity'].includes(key) && JSON.stringify(currentRecord[key]) !== JSON.stringify(row[key]))
+          : Object.keys(row).filter((key) => !['operation', 'changedFields', '__recordIdentity'].includes(key));
+
+        items.push({
+          type: 'database',
+          category: table,
+          name: `${table} #${recordId}`,
+          description: `Database ${changeType} in ${table}`,
+          currentVersion: hasExistingRecord ? 'exists' : 'not found',
+          backupVersion: 'in backup',
+          changeType,
+          relatedFiles: [],
+          identity,
+          sourceRecord: row,
+          destinationRecord: currentRecord,
+          changedFields,
+          itemOrder: itemOrder++
+        });
+      }
+    }
+
+    // Log summary
+    console.log(`[Restore Analysis] Total items: ${totalBackupItems}, Unchanged: ${unchangedCount}, Actionable: ${items.length}`);
+
+  } catch (err) {
+    console.error("Error analyzing backup:", err.message);
+    throw err;
+  }
+
+  // Return empty array if no actionable items
+  // (User will see "No changes detected in this backup")
+  return items;
+}
+
+router.analyzeBackup = analyzeBackup;
+router.findDatabaseRowInBackup = findDatabaseRowInBackup;
+router.restoreArchiveFilesForTest = restoreArchiveFiles;
+router.applyArchiveMigrationsForTest = applyArchiveMigrations;
+module.exports = router;

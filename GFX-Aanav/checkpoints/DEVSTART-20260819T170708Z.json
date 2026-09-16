@@ -1,0 +1,223 @@
+{
+  "checkpointId": "DEVSTART-20260819T170708Z",
+  "type": "development-start",
+  "status": "KNOWN_GOOD",
+  "createdAt": "2026-08-19T17:07:08.390Z",
+  "platform": {
+    "platform": "darwin",
+    "release": "25.5.0",
+    "arch": "arm64",
+    "node": "v22.23.1",
+    "npm": "npm"
+  },
+  "gitCommit": "65f553703a3208c93dfbc268910a29592e596bb1",
+  "gitBranch": "main",
+  "testResults": {
+    "result": "PASS",
+    "checks": [
+      {
+        "name": "Git",
+        "status": "PASS",
+        "detail": "main 65f55370",
+        "critical": true
+      },
+      {
+        "name": "Node.js",
+        "status": "PASS",
+        "detail": "v22.23.1",
+        "critical": true
+      },
+      {
+        "name": "npm",
+        "status": "PASS",
+        "detail": "npm",
+        "critical": true
+      },
+      {
+        "name": "frontend",
+        "status": "PASS",
+        "detail": "package.json is valid",
+        "critical": true
+      },
+      {
+        "name": "backend",
+        "status": "PASS",
+        "detail": "package.json is valid",
+        "critical": true
+      },
+      {
+        "name": "Frontend build",
+        "status": "PASS",
+        "detail": "completed",
+        "critical": true
+      },
+      {
+        "name": "Backend",
+        "status": "PASS",
+        "detail": "completed; health=available",
+        "critical": true
+      },
+      {
+        "name": "Upload storage",
+        "status": "PASS",
+        "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+        "critical": true
+      },
+      {
+        "name": "Original storage",
+        "status": "PASS",
+        "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+        "critical": false
+      },
+      {
+        "name": "Thumbnail storage",
+        "status": "PASS",
+        "detail": "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+        "critical": true
+      },
+      {
+        "name": "Temporary storage",
+        "status": "PASS",
+        "detail": "/Users/gfxunlimit/Documents/stocksite/backend/tmp",
+        "critical": false
+      },
+      {
+        "name": "PostgreSQL",
+        "status": "PASS",
+        "detail": "connected to stocksite",
+        "critical": true
+      },
+      {
+        "name": "Redis",
+        "status": "NOT AVAILABLE",
+        "detail": "Could not connect to Redis at localhost:6379: Connection refused",
+        "critical": false
+      },
+      {
+        "name": "BullMQ",
+        "status": "PASS",
+        "detail": "BullMQ and ioredis modules found",
+        "critical": false
+      },
+      {
+        "name": "PM2",
+        "status": "NOT TESTED",
+        "detail": "no ecosystem configuration found",
+        "critical": false
+      },
+      {
+        "name": "Sharp",
+        "status": "PASS",
+        "detail": "module found",
+        "critical": false
+      },
+      {
+        "name": "ImageMagick",
+        "status": "PASS",
+        "detail": "Version: ImageMagick 7.1.2-29 Q16-HDRI aarch64 b919b37fd:20260727 https://imagemagick.org",
+        "critical": false
+      },
+      {
+        "name": "Ghostscript",
+        "status": "PASS",
+        "detail": "10.07.1",
+        "critical": false
+      }
+    ],
+    "git": {
+      "branch": "main",
+      "commit": "65f553703a3208c93dfbc268910a29592e596bb1",
+      "status": "M .DS_Store\n M .env\n M .gitignore.save\n M backend/.DS_Store\n M backend/.env\n M backend/db.js\n M backend/server.js\n M backend/thumbnail-engine/ai-processor.js\n M backend/thumbnail-engine/eps-processor.js\n M backend/uploads/.DS_Store\n M backend/uploads/Contri6/.DS_Store\n M backend/uploads/Contri6/2026/.DS_Store\n M backend/uploads/Contri6/2026/08/.DS_Store\n M frontend/src/App.js\n M frontend/src/components/AppHeader.jsx\n M frontend/src/components/AppRoutes.jsx\n M frontend/src/components/Pagination.js\n M frontend/src/components/home/BrowseCollections/BrowseCollections.jsx\n M frontend/src/components/home/ImageGallery.js\n M frontend/src/hooks/useFilteredImages.js\n M frontend/src/pages/BulkUploadPage.js\n M frontend/src/utils/routeState.js\n M package.json\n?? GFX-Aanav/\n?? backend/test/aiThumbnailProcessor.test.js",
+      "available": true,
+      "detail": ""
+    },
+    "environment": {
+      "platform": "darwin",
+      "release": "25.5.0",
+      "arch": "arm64",
+      "node": "v22.23.1",
+      "npm": "npm"
+    }
+  },
+  "configuration": {
+    "version": "1.0.0",
+    "projectRoot": "/Users/gfxunlimit/Documents/stocksite",
+    "frontend": {
+      "path": "frontend",
+      "installCommand": "npm install",
+      "buildScript": "build",
+      "testScript": "test",
+      "url": "http://127.0.0.1:3000"
+    },
+    "backend": {
+      "path": "backend",
+      "installCommand": "npm install",
+      "testScript": "test",
+      "startCommand": "node startup/bootstrap.js",
+      "url": "http://127.0.0.1:5000/",
+      "portEnvironmentVariable": "PORT"
+    },
+    "database": {
+      "enabled": true,
+      "required": true,
+      "hostEnvironmentVariable": "DB_HOST",
+      "portEnvironmentVariable": "DB_PORT",
+      "nameEnvironmentVariable": "DB_NAME",
+      "userEnvironmentVariable": "DB_USER",
+      "passwordEnvironmentVariable": "DB_PASSWORD",
+      "defaultHost": "localhost",
+      "defaultPort": 5432,
+      "defaultName": "stocksite",
+      "defaultUser": "postgres",
+      "backupFormat": "custom"
+    },
+    "redis": {
+      "enabled": true,
+      "required": false,
+      "hostEnvironmentVariable": "REDIS_HOST",
+      "portEnvironmentVariable": "REDIS_PORT",
+      "defaultHost": "localhost",
+      "defaultPort": 6379,
+      "queues": [
+        "thumbnail-processing",
+        "emails"
+      ]
+    },
+    "pm2": {
+      "ecosystemFiles": [
+        "ecosystem.config.js",
+        "ecosystem.config.cjs",
+        "ecosystem.config.json"
+      ]
+    },
+    "storage": {
+      "uploads": "backend/uploads",
+      "originals": "backend/uploads",
+      "thumbnails": "backend/uploads",
+      "temporary": "backend/tmp",
+      "generated": "backend/uploads"
+    },
+    "checkpointRetention": 20,
+    "criticalChecks": [
+      "Git",
+      "Frontend",
+      "Backend",
+      "PostgreSQL",
+      "Redis",
+      "Upload storage",
+      "Thumbnail storage"
+    ],
+    "internetAssistance": {
+      "enabled": false,
+      "officialSourcesOnly": true
+    }
+  },
+  "storage": {
+    "uploads": "backend/uploads",
+    "originals": "backend/uploads",
+    "thumbnails": "backend/uploads",
+    "temporary": "backend/tmp",
+    "generated": "backend/uploads"
+  },
+  "version": "1.0.0"
+}

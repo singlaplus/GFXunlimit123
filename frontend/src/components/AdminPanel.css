@@ -1,0 +1,401 @@
+.admin-panel-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 2px;
+  align-items: stretch;
+}
+
+.admin-panel-controls-grid .profile-icons-card {
+  order: 9999;
+}
+
+.profile-icons-active-preview {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding-top: 4px;
+}
+
+.profile-icon-active-item {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: #64748b;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.profile-icon-default-preview {
+  display: inline-flex;
+  position: relative;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.profile-icon-default-customer {
+  width: 29px;
+  height: 17px;
+  background: #e5a928;
+  border: 1px solid #b8780c;
+  clip-path: polygon(0 100%, 9% 26%, 30% 61%, 50% 5%, 70% 61%, 91% 26%, 100% 100%);
+}
+
+.profile-icon-default-contributor {
+  width: 30px;
+  height: 11px;
+  background: #b91c2c;
+  border: 1px solid #86121b;
+  border-radius: 8px;
+}
+
+.profile-icon-default-contributor::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 50%;
+  width: 7px;
+  height: 16px;
+  transform: translateX(-50%);
+  background: #c52231;
+  border: 1px solid #94151d;
+  clip-path: polygon(0 0, 100% 0, 82% 72%, 50% 100%, 18% 72%);
+}
+
+.profile-icon-default-admin {
+  width: 23px;
+  height: 23px;
+  color: #c51f32;
+  font-size: 23px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.admin-panel-card,
+.admin-panel-card--brand,
+.admin-panel-card--email,
+.admin-panel-social-card {
+  width: 300px;
+  height: 300px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.admin-panel-card {
+  padding: 20px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.94));
+  min-width: 0;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255,255,255,0.8);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.admin-panel-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.admin-panel-card > h3,
+.admin-panel-card--brand > h3,
+.admin-panel-card--email > div:first-child h3,
+.admin-panel-social-card > h3 {
+  margin: 0 0 6px;
+}
+
+.admin-panel-card > p,
+.admin-panel-card--brand p,
+.admin-panel-card--email p,
+.admin-panel-social-card p {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.admin-panel-card label,
+.admin-panel-card input,
+.admin-panel-card button,
+.admin-panel-card select,
+.admin-panel-card textarea,
+.admin-panel-social-card input,
+.admin-panel-social-card select,
+.admin-panel-social-card button,
+.admin-panel-card--brand input,
+.admin-panel-card--brand button,
+.admin-panel-card--email button {
+  font-size: 0.82rem;
+}
+
+.admin-panel-card form,
+.admin-panel-card--brand form,
+.admin-panel-card--email form {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-panel-card > *:last-child,
+.admin-panel-card--brand > *:last-child,
+.admin-panel-card--email > *:last-child,
+.admin-panel-social-card > *:last-child {
+  margin-bottom: 0;
+}
+
+.admin-panel-card--brand {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 100%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,247,255,0.94));
+  border: 1px solid rgba(147, 197, 253, 0.38);
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.06);
+}
+
+.admin-panel-card--hero-banner {
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid #c7d2fe;
+  background: linear-gradient(135deg, #eef4ff 0%, #f8fbff 52%, #fff7ed 100%);
+  box-shadow: 0 18px 42px rgba(37, 99, 235, 0.12);
+  position: relative;
+  overflow: hidden;
+}
+
+.admin-panel-card--hero-banner::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 120px;
+  height: 120px;
+  background: radial-gradient(circle at center, rgba(37, 99, 235, 0.22), rgba(37, 99, 235, 0));
+  pointer-events: none;
+}
+
+.admin-panel-card--email {
+  padding: 22px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  background: linear-gradient(180deg, #f9fbff 0%, #edf4ff 100%);
+  box-shadow: 0 16px 40px rgba(25, 118, 210, 0.08);
+  border-left: 5px solid #1976d2;
+  width: 300px;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.admin-panel-card--payment-gateway {
+  width: 300px;
+  height: 300px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.admin-panel-card--payment-gateway h3 {
+  margin: 0 0 6px;
+}
+
+.admin-panel-payment-gateway-copy {
+  color: inherit;
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.admin-panel-payment-gateway-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.admin-panel-payment-gateway-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: linear-gradient(180deg, rgba(255,255,255,0.8), rgba(248,250,252,0.85));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
+  cursor: pointer;
+  min-height: 38px;
+  font-size: 0.85rem;
+}
+
+.admin-panel-payment-gateway-option button {
+  font-size: 0.85rem;
+}
+
+.admin-panel-payment-gateway-option input[type="checkbox"] {
+  transform: scale(0.9);
+  margin-left: 8px;
+}
+
+.admin-panel-email-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  overflow-y: auto;
+  max-height: 210px;
+  padding-right: 4px;
+}
+
+.admin-panel-email-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.admin-panel-email-button,
+.admin-panel-email-button--special {
+  font-size: clamp(0.58rem, 1.5vw, 0.8rem);
+  line-height: 1.2;
+  white-space: normal;
+  text-align: center;
+  overflow-wrap: anywhere;
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.12);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+}
+
+.admin-panel-email-button:hover,
+.admin-panel-email-button--special:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 22px rgba(15, 23, 42, 0.16);
+  filter: saturate(1.05);
+}
+
+.admin-panel-social-card {
+  padding: 10px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.94));
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  max-width: 520px;
+  align-self: start;
+}
+
+.admin-panel-social-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-panel-social-row select,
+.admin-panel-social-row input {
+  width: 100%;
+}
+
+.dark-mode .admin-panel-card,
+.dark-mode .admin-panel-card--brand,
+.dark-mode .admin-panel-social-card,
+.dark-mode .admin-panel-card--email {
+  background: #1f1f1f;
+  border-color: #3c3c3c;
+  color: #f5f5f5;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
+}
+
+.dark-mode .admin-panel-card--hero-banner {
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.98), rgba(17, 24, 39, 0.98));
+  border-color: #60a5fa;
+  box-shadow: 0 22px 55px rgba(15, 23, 42, 0.5);
+}
+
+@keyframes admin-live-badge-glow {
+  0%, 100% {
+    box-shadow: 0 8px 18px rgba(168, 27, 45, 0.25);
+    transform: rotate(-2deg) translateY(0px) scale(1);
+  }
+  25% {
+    transform: rotate(-1deg) translateY(-1px) scale(1.01);
+  }
+  50% {
+    box-shadow: 0 12px 24px rgba(168, 27, 45, 0.34);
+    transform: rotate(2deg) translateY(-1px) scale(1.02);
+  }
+  75% {
+    transform: rotate(1deg) translateY(-1px) scale(1.01);
+  }
+}
+
+.dark-mode .admin-panel-card h3,
+.dark-mode .admin-panel-card p,
+.dark-mode .admin-panel-card span,
+.dark-mode .admin-panel-card label,
+.dark-mode .admin-panel-social-card h3,
+.dark-mode .admin-panel-social-card p,
+.dark-mode .admin-panel-social-card span,
+.dark-mode .admin-panel-social-card label,
+.dark-mode .admin-panel-card--email h3,
+.dark-mode .admin-panel-card--email p,
+.dark-mode .admin-panel-card--email div {
+  color: #f5f5f5;
+}
+
+.dark-mode .admin-panel-card input,
+.dark-mode .admin-panel-card select,
+.dark-mode .admin-panel-card textarea,
+.dark-mode .admin-panel-social-card input,
+.dark-mode .admin-panel-social-card select,
+.dark-mode .admin-panel-social-card textarea {
+  background: #2a2a2a;
+  color: #ffffff;
+  border-color: #555;
+}
+
+.dark-mode .admin-panel-modal-panel {
+  background: #1f1f1f;
+  color: #f5f5f5;
+}
+
+.dark-mode .admin-panel-modal-panel h3,
+.dark-mode .admin-panel-modal-panel button {
+  color: #f5f5f5;
+}
+
+@media (max-width: 1200px) {
+  .admin-panel-controls-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-panel-email-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .admin-panel-controls-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-panel-email-row {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-panel-social-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .admin-panel-card,
+  .admin-panel-card--brand,
+  .admin-panel-card--email,
+  .admin-panel-social-card {
+    padding: 16px;
+  }
+}

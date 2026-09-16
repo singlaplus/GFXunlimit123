@@ -1,0 +1,94 @@
+.dark-mode,
+.dark-mode body,
+.dark-mode #root {
+  background: #121212 !important;
+  color: #f5f5f5 !important;
+  min-height: 100vh;
+}
+
+.dark-mode .card,
+.dark-mode .popup {
+  background: #1e1e1e !important;
+  color: #f5f5f5 !important;
+}
+
+.dark-mode input,
+.dark-mode textarea,
+.dark-mode select {
+  background: #2a2a2a !important;
+  color: #f5f5f5 !important;
+  border: 1px solid #444 !important;
+}
+
+.dark-mode button {
+  color: #f5f5f5 !important;
+}
+
+.dark-mode p,
+.dark-mode h1,
+.dark-mode h2,
+.dark-mode h3,
+.dark-mode h4,
+.dark-mode h5,
+.dark-mode h6,
+.dark-mode strong,
+.dark-mode span,
+.dark-mode label,
+.dark-mode a,
+.dark-mode li,
+.dark-mode div,
+.dark-mode td,
+.dark-mode th,
+.dark-mode small,
+.dark-mode pre,
+.dark-mode code {
+  color: #f5f5f5 !important;
+}
+
+.dark-mode a {
+  color: #8ec5ff !important;
+}
+
+.dark-mode ::placeholder {
+  color: #c7c7c7 !important;
+}
+
+.dark-mode [style*="background: white"],
+.dark-mode [style*="background:#fff"],
+.dark-mode [style*="background: #fff"],
+.dark-mode [style*="background: #fafafa"],
+.dark-mode [style*="background: #fbfdff"],
+.dark-mode [style*="background: #f5f5f5"],
+.dark-mode [style*="background: #f7f8fa"],
+.dark-mode [style*="background: #ffffff"],
+.dark-mode [style*="background-color: white"],
+.dark-mode [style*="background-color:#fff"],
+.dark-mode [style*="background-color: #fff"],
+.dark-mode [style*="background-color: #fafafa"],
+.dark-mode [style*="background-color: #fbfdff"],
+.dark-mode [style*="background-color: #f5f5f5"],
+.dark-mode [style*="background-color: #f7f8fa"],
+.dark-mode [style*="background-color: #ffffff"] {
+  background-color: #1e1e1e !important;
+}
+
+.dark-mode [style*="color: #333"],
+.dark-mode [style*="color: #555"],
+.dark-mode [style*="color: #111"],
+.dark-mode [style*="color: #777"],
+.dark-mode [style*="color:#333"],
+.dark-mode [style*="color:#555"],
+.dark-mode [style*="color:#111"],
+.dark-mode [style*="color:#777"] {
+  color: #f5f5f5 !important;
+}
+
+.dark-mode [style*="border: 1px solid #ccc"],
+.dark-mode [style*="border: 1px solid #ddd"],
+.dark-mode [style*="border: 1px solid #eee"],
+.dark-mode [style*="border: 1px solid #e0e0e0"],
+.dark-mode [style*="border: 1px solid #e5e5e5"],
+.dark-mode [style*="border: 1px solid #cbd5e1"],
+.dark-mode [style*="border: 1px solid #e2e8f0"] {
+  border-color: #4b5563 !important;
+}

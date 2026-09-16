@@ -1,0 +1,26 @@
+.subscription-checkout-form input {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  font: inherit;
+}
+
+.subscription-currency-field { display: grid; gap: 7px; padding: 13px 14px 12px; border: 1px solid #d8dee8; border-radius: 13px; background: linear-gradient(145deg, #f8fafc, #eef3f8); }
+.subscription-currency-label { color: #475569; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.subscription-currency-select { width: 100%; padding: 11px 36px 11px 12px; color: #0f172a; background: #fff; border: 1px solid #cbd5e1; border-radius: 9px; font: inherit; font-weight: 800; cursor: pointer; outline: none; }
+.subscription-currency-select:focus { border-color: #ed2224; box-shadow: 0 0 0 3px rgba(237,34,36,.14); }
+.subscription-currency-field small { color: #64748b; font-size: 11px; }
+
+@media (prefers-color-scheme: dark) {
+  .subscription-currency-field { border-color: #334155; background: linear-gradient(145deg, #172033, #111827); }
+  .subscription-currency-label, .subscription-currency-field small { color: #cbd5e1; }
+  .subscription-currency-select { color: #f8fafc; background: #1f2937; border-color: #475569; }
+}
+
+@media (max-width: 720px) {
+  .subscription-checkout-form {
+    grid-template-columns: 1fr !important;
+    padding: 20px !important;
+  }
+}

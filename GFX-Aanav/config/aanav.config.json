@@ -1,0 +1,70 @@
+{
+  "version": "1.0.0",
+  "projectRoot": "..",
+  "frontend": {
+    "path": "frontend",
+    "installCommand": "npm install",
+    "buildScript": "build",
+    "testScript": "test",
+    "url": "http://127.0.0.1:3000"
+  },
+  "backend": {
+    "path": "backend",
+    "installCommand": "npm install",
+    "testScript": "test",
+    "startCommand": "node startup/bootstrap.js",
+    "url": "http://127.0.0.1:5000/",
+    "portEnvironmentVariable": "PORT"
+  },
+  "database": {
+    "enabled": true,
+    "required": true,
+    "hostEnvironmentVariable": "DB_HOST",
+    "portEnvironmentVariable": "DB_PORT",
+    "nameEnvironmentVariable": "DB_NAME",
+    "userEnvironmentVariable": "DB_USER",
+    "passwordEnvironmentVariable": "DB_PASSWORD",
+    "defaultHost": "localhost",
+    "defaultPort": 5432,
+    "defaultName": "stocksite",
+    "defaultUser": "postgres",
+    "pgDumpPath": "/Library/PostgreSQL/18/bin/pg_dump",
+    "requireMatchingMajorVersion": true,
+    "backupFormat": "custom"
+  },
+  "redis": {
+    "enabled": true,
+    "required": false,
+    "hostEnvironmentVariable": "REDIS_HOST",
+    "portEnvironmentVariable": "REDIS_PORT",
+    "defaultHost": "localhost",
+    "defaultPort": 6379,
+    "queues": ["thumbnail-processing", "emails"]
+  },
+  "pm2": {
+    "ecosystemFiles": ["ecosystem.config.js", "ecosystem.config.cjs", "ecosystem.config.json"]
+  },
+  "storage": {
+    "uploads": "backend/uploads",
+    "originals": "backend/uploads",
+    "thumbnails": "backend/uploads",
+    "temporary": "backend/tmp",
+    "generated": "backend/uploads"
+  },
+  "repair": {
+    "enabled": true,
+    "createMissingDirectories": true,
+    "installMissingDependencies": false,
+    "restartBackend": false,
+    "restartOnlyAanavOwnedProcesses": true,
+    "approvedCommands": [],
+    "requiredConfirmationForCommands": true,
+    "maxCommandTimeoutSeconds": 300
+  },
+  "checkpointRetention": 20,
+  "criticalChecks": ["Git", "Frontend", "Backend", "PostgreSQL", "Redis", "Upload storage", "Thumbnail storage"],
+  "internetAssistance": {
+    "enabled": false,
+    "officialSourcesOnly": true
+  }
+}

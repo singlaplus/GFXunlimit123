@@ -1,0 +1,714 @@
+.company-page-shell {
+  min-height: 100vh;
+  background: #f6f8fc;
+  color: #0f1724;
+  padding: 24px 20px 60px;
+}
+
+.company-page-grid {
+  max-width: 1380px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 22px;
+}
+
+.company-page-grid.admin-layout {
+  grid-template-columns: 300px minmax(0, 1fr);
+}
+
+.company-page-sidebar {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border-radius: 24px;
+  padding: 22px;
+  box-shadow: 0 16px 40px rgba(15, 23, 36, 0.08);
+  border: 1px solid #e2e8f0;
+  height: fit-content;
+  position: sticky;
+  top: 20px;
+}
+
+.company-page-main {
+  display: grid;
+  gap: 22px;
+}
+
+.company-page-hero {
+  background: linear-gradient(135deg, #0f1724 0%, #1d4ed8 100%);
+  border-radius: 28px;
+  padding: 40px 36px;
+  color: white;
+  box-shadow: 0 18px 45px rgba(15, 23, 36, 0.16);
+}
+
+.company-page-hero-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.company-page-hero-copy {
+  max-width: 680px;
+}
+
+.company-page-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.company-page-hero-actions a {
+  background: #ffffff;
+  color: #0f1724;
+  text-decoration: none;
+  padding: 12px 18px;
+  border-radius: 999px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.company-page-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.company-page-stat-card,
+.company-page-panel,
+.company-page-highlight-card,
+.company-page-promise-card {
+  background: white;
+  border-radius: 24px;
+  padding: 28px;
+  box-shadow: 0 10px 28px rgba(15, 23, 36, 0.08);
+}
+
+.company-page-stat-card {
+  border-radius: 18px;
+  padding: 20px;
+}
+
+.company-page-plans {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 20px;
+  align-items: stretch;
+}
+
+.company-page-currency-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 14px;
+  color: #475569;
+  font-weight: 800;
+}
+
+.company-page-currency-control select {
+  min-width: 120px;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #0f1724;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.company-page-plan-offer {
+  display: flex;
+  flex-direction: column;
+}
+
+.company-page-plan-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 410px;
+  min-height: 410px;
+  overflow-y: auto;
+  background: linear-gradient(160deg, #ffffff 0%, #f8fbff 100%);
+  border: 1px solid #dbe3ef;
+  border-radius: 22px;
+  padding: 26px;
+  box-shadow: 0 18px 45px rgba(15, 23, 36, 0.1);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 transparent;
+}
+
+.company-page-plan-card::-webkit-scrollbar {
+  width: 7px;
+}
+
+.company-page-plan-card::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.company-page-plan-card::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #94a3b8;
+}
+
+.company-page-plan-card::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+.company-page-plan-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 5px;
+  background: linear-gradient(90deg, #ed2224, #f59e0b, #2563eb);
+}
+
+.company-page-plan-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.company-page-plan-heading h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.company-page-plan-heading span {
+  background: #f59e0b;
+  color: white;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.company-page-plan-card p,
+.company-page-plan-description {
+  color: #475569;
+  line-height: 1.5;
+}
+
+.company-page-plan-description {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  flex: 0 0 auto;
+}
+
+.company-page-plan-prices {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.company-page-plan-prices div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 8px;
+}
+
+.company-page-plan-duration-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-top: 14px;
+  padding: 5px;
+  border: 1px solid #dbe3ef;
+  border-radius: 11px;
+  background: #f1f5f9;
+}
+
+.company-page-plan-duration-toggle button {
+  flex: 1 1 auto;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.company-page-plan-duration-toggle button.is-selected {
+  background: #ed2224;
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(237, 34, 36, 0.24);
+}
+
+.company-page-plan-selected-price {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 12px;
+}
+
+.company-page-plan-selected-price span {
+  color: #64748b;
+  text-transform: capitalize;
+}
+
+.company-page-plan-selected-price strong {
+  font-size: 1.45rem;
+  color: #0f1724;
+}
+
+.company-page-plan-prices span,
+.company-page-plan-meta {
+  color: #64748b;
+  text-transform: capitalize;
+}
+
+.company-page-plan-meta {
+  margin-top: 16px;
+  font-weight: 700;
+}
+
+.company-page-plan-buy {
+  margin: 10px 8px 0;
+  padding: 13px 16px;
+  border-radius: 11px;
+  background: #0f1724;
+  color: white;
+  text-align: center;
+  text-decoration: none;
+  font-weight: 800;
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+.company-page-plan-buy:hover {
+  background: #ed2224;
+  transform: translateY(-2px);
+}
+
+.company-page-cta-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1200px;
+  height: 300px;
+  max-width: 100%;
+  padding: 28px 30px;
+  border-radius: 24px;
+  background: linear-gradient(135deg, #0f1724 0%, #1d4ed8 100%);
+  box-shadow: 0 18px 45px rgba(15, 23, 36, 0.16);
+}
+
+.company-page-cta-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  min-width: 220px;
+  padding: 18px 30px;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #0f1724;
+  font-size: 1.05rem;
+  font-weight: 800;
+  text-decoration: none;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+  box-shadow: 0 12px 25px rgba(15, 23, 36, 0.12);
+}
+
+.company-page-cta-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 30px rgba(15, 23, 36, 0.18);
+}
+
+.company-page-cta-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(2, 6, 23, 0.68);
+  backdrop-filter: blur(6px);
+  animation: companyPageModalFadeIn 180ms ease-out;
+}
+
+.company-page-cta-modal {
+  position: relative;
+  width: min(860px, 100%);
+  max-height: min(85vh, 760px);
+  overflow: auto;
+  padding: 30px 28px 24px;
+  border-radius: 28px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 28px 80px rgba(15, 23, 36, 0.28);
+  color: #0f1724;
+  animation: companyPageModalSlideIn 220ms ease-out;
+}
+
+@keyframes companyPageModalFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes companyPageModalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.company-page-cta-modal h3 {
+  margin: 0 0 12px;
+  font-size: clamp(1.8rem, 2vw, 2.2rem);
+  line-height: 1.2;
+}
+
+.company-page-cta-modal p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.8;
+  font-size: 1.02rem;
+}
+
+.company-page-cta-modal-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: #eef2ff;
+  color: #334155;
+  font-size: 1.7rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.company-page-cta-modal-close:hover {
+  background: #e2e8f0;
+  transform: scale(1.02);
+}
+
+.company-page-cta-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 26px;
+}
+
+.company-page-custom-form {
+  margin-top: 20px;
+}
+
+.company-page-custom-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.company-page-custom-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #334155;
+}
+
+.company-page-custom-form input,
+.company-page-custom-form select {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #0f1724;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.company-page-custom-form input:focus,
+.company-page-custom-form select:focus {
+  outline: 2px solid rgba(37, 99, 235, 0.18);
+  border-color: #2563eb;
+}
+
+.company-page-form-email-field,
+.company-page-form-otp-field {
+  grid-column: span 2;
+}
+
+.company-page-form-otp-field {
+  animation: companyPageOtpSlideDown 220ms ease-out;
+}
+
+@keyframes companyPageOtpSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+    max-height: 0;
+    margin-top: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 120px;
+    margin-top: 0;
+  }
+}
+
+.company-page-email-row {
+  display: flex;
+  gap: 10px;
+}
+
+.company-page-email-row input {
+  flex: 1;
+}
+
+.company-page-otp-button {
+  border: 0;
+  border-radius: 12px;
+  padding: 0 14px;
+  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  color: #1d4ed8;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.12);
+}
+
+.company-page-otp-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.company-page-form-otp-field .company-page-email-row {
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #eff6ff 0%, #f8fbff 100%);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.05);
+}
+
+.company-page-otp-status {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff7ed;
+  color: #9a4d00;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.company-page-otp-status.is-verified {
+  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
+  color: #166534;
+  border: 1px solid rgba(22, 101, 52, 0.16);
+  box-shadow: 0 10px 18px rgba(22, 163, 74, 0.08);
+}
+
+.company-page-form-cancel,
+.company-page-form-submit {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 20px;
+  font-weight: 800;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.company-page-form-cancel {
+  background: #e2e8f0;
+  color: #0f1724;
+}
+
+.company-page-form-submit {
+  background: linear-gradient(135deg, #0f1724 0%, #1d4ed8 100%);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.24);
+}
+
+.company-page-form-submit:hover,
+.company-page-form-cancel:hover,
+.company-page-otp-button:hover {
+  transform: translateY(-1px);
+}
+
+@media (max-width: 760px) {
+  .company-page-cta-modal {
+    width: min(100%, 560px);
+    max-height: 80vh;
+  }
+
+  .company-page-custom-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .company-page-form-email-field,
+  .company-page-form-otp-field {
+    grid-column: 1;
+  }
+}
+
+.company-page-features {
+  display: grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  gap: 18px;
+}
+
+.company-page-promise-card {
+  background: #0f1724;
+  color: white;
+}
+
+.dark-mode .company-page-shell {
+  background: #020617;
+  color: #f8fafc;
+}
+
+.dark-mode .company-page-sidebar,
+.dark-mode .company-page-stat-card,
+.dark-mode .company-page-highlight-card {
+  background: #0f172a;
+  border-color: #334155;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.24);
+}
+
+.dark-mode .company-page-currency-control {
+  color: #cbd5e1 !important;
+}
+
+.dark-mode .company-page-currency-control select {
+  background: #1e293b;
+  border-color: #475569;
+  color: #f8fafc;
+}
+
+.dark-mode .company-page-plan-card {
+  background: linear-gradient(160deg, #0f172a 0%, #111827 100%);
+  border-color: #334155;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+}
+
+.dark-mode .company-page-plan-card p,
+.dark-mode .company-page-plan-description,
+.dark-mode .company-page-plan-prices span,
+.dark-mode .company-page-plan-meta,
+.dark-mode .company-page-plan-selected-price span {
+  color: #cbd5e1 !important;
+}
+
+.dark-mode .company-page-plan-prices div,
+.dark-mode .company-page-plan-selected-price {
+  border-color: #334155;
+}
+
+.dark-mode .company-page-plan-duration-toggle {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+.dark-mode .company-page-plan-duration-toggle button {
+  color: #cbd5e1 !important;
+}
+
+.dark-mode .company-page-plan-selected-price strong {
+  color: #f8fafc !important;
+}
+
+.dark-mode .company-page-plan-buy {
+  background: #f8fafc;
+  color: #0f172a !important;
+}
+
+.dark-mode .company-page-plan-buy:hover {
+  background: #ed2224;
+  color: #ffffff !important;
+}
+
+.dark-mode .company-page-promise-card {
+  background: #111827;
+}
+
+@media (max-width: 900px) {
+  .company-page-shell {
+    padding: 18px 14px 40px;
+  }
+
+  .company-page-grid.admin-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .company-page-sidebar {
+    position: static;
+  }
+
+  .company-page-hero {
+    padding: 24px 20px;
+  }
+
+  .company-page-cta-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .company-page-cta-button {
+    width: 100%;
+  }
+
+  .company-page-features {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-hero-actions {
+    width: 100%;
+  }
+
+  .company-page-hero-actions a {
+    width: 100%;
+  }
+
+  .company-page-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .company-page-stat-card,
+  .company-page-panel,
+  .company-page-highlight-card,
+  .company-page-promise-card {
+    padding: 20px;
+  }
+
+  .company-page-currency-control {
+    justify-content: space-between;
+  }
+
+  .company-page-plan-card {
+    height: 390px;
+    min-height: 390px;
+  }
+}

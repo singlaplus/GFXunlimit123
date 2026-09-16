@@ -1,0 +1,35 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node startup/bootstrap.js",
+    "dev": "node startup/bootstrap.js",
+    "test": "node --test test/*.test.js",
+    "migrate:otp": "node scripts/ensure-otp-columns.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "axios": "^1.18.1",
+    "bcryptjs": "^3.0.3",
+    "bullmq": "^1.77.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "handlebars": "^4.7.7",
+    "ioredis": "^5.3.2",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.1.1",
+    "node-cron": "^3.0.2",
+    "nodemailer": "^6.9.3",
+    "pg": "^8.21.0",
+    "psd.js": "^3.9.2",
+    "sharp": "^0.34.5"
+  }
+}

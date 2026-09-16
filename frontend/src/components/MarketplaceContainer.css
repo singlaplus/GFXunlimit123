@@ -1,0 +1,82 @@
+.marketplace-shell {
+  width: 100%;
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
+
+.marketplace-shell > * {
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.marketplace-searchbar {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  padding: 24px 0;
+  box-sizing: border-box;
+}
+
+.marketplace-searchbox {
+  width: min(100%, 720px);
+  position: relative;
+}
+
+.marketplace-layout {
+  display: flex;
+  justify-content: flex-start;
+  gap: 24px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.marketplace-sidebar {
+  width: 300px;
+  flex-shrink: 0;
+}
+
+.marketplace-results {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+}
+
+@media (max-width: 1200px) {
+  .marketplace-layout {
+    flex-direction: column;
+    align-items: center;
+    padding: 0 16px 32px;
+  }
+
+  .marketplace-sidebar {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .marketplace-results {
+    width: 100%;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 1024px) {
+  .marketplace-shell {
+    padding: 0 16px;
+  }
+}
+
+@media (max-width: 768px) {
+  .marketplace-shell {
+    padding: 0 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .marketplace-shell {
+    padding: 0 8px;
+  }
+}
