@@ -1897,13 +1897,17 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const loadDailyReportSchedules = async () => {
     try {
       setDailyReportSchedulesLoading(true);
+      setDailyReportScheduleMessage('');
       const token = getEffectiveAuthToken();
       const response = await axios.get('/admin/email/daily-report-schedules', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      setDailyReportSchedules(response.data.schedules || []);
+      const schedules = Array.isArray(response.data) ? response.data : response.data?.schedules;
+      setDailyReportSchedules(Array.isArray(schedules) ? schedules : []);
     } catch (err) {
       console.error('Error loading schedules:', err);
+      setDailyReportSchedules([]);
+      setDailyReportScheduleMessage(err.response?.data?.error || 'Failed to load saved schedules');
     } finally {
       setDailyReportSchedulesLoading(false);
     }
