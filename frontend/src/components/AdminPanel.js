@@ -1899,7 +1899,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       setDailyReportSchedulesLoading(true);
       setDailyReportScheduleMessage('');
       const token = getEffectiveAuthToken();
-      const response = await axios.get('/admin/email/daily-report-schedules', {
+      const response = await axios.get(`${API_BASE_URL}/admin/email/daily-report-schedules`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       const schedules = Array.isArray(response.data) ? response.data : response.data?.schedules;
@@ -1942,7 +1942,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
       if (editingScheduleId) {
         const token = getEffectiveAuthToken();
-        await axios.put(`/admin/email/daily-report-schedules/${editingScheduleId}`, {
+        await axios.put(`${API_BASE_URL}/admin/email/daily-report-schedules/${editingScheduleId}`, {
           name: dailyReportScheduleName,
           time: dailyReportScheduleTime,
           frequency: dailyReportScheduleFrequency,
@@ -1959,7 +1959,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         setDailyReportScheduleMessage('Schedule updated successfully');
       } else {
         const token = getEffectiveAuthToken();
-        await axios.post('/admin/email/daily-report-schedules', {
+        await axios.post(`${API_BASE_URL}/admin/email/daily-report-schedules`, {
           name: dailyReportScheduleName,
           time: dailyReportScheduleTime,
           frequency: dailyReportScheduleFrequency,
@@ -1995,7 +1995,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     if (!window.confirm('Delete this schedule?')) return;
     try {
       const token = getEffectiveAuthToken();
-      await axios.delete(`/admin/email/daily-report-schedules/${id}`, {
+      await axios.delete(`${API_BASE_URL}/admin/email/daily-report-schedules/${id}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       await loadDailyReportSchedules();
