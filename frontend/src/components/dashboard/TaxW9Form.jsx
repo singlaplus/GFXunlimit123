@@ -29,8 +29,8 @@ function Field({ label, hint, required = false, children }) {
   );
 }
 
-export default function TaxW9Form({ onBack, onSubmit }) {
-  const [form, setForm] = useState(initialForm);
+export default function TaxW9Form({ onBack, onSubmit, initialValues = {} }) {
+  const [form, setForm] = useState(() => ({ ...initialForm, ...initialValues }));
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const updateCertification = (index, checked) => setForm((current) => ({
     ...current,

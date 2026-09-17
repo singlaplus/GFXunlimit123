@@ -11,8 +11,22 @@ export default function TaxMailSettings({ isDarkMode, getEffectiveAuthToken }) {
     reminder_subject: "Tax Form Submission Reminder",
     enable_approval_notification: true,
     enable_rejection_notification: true,
+    renewal_days_left: [200, 150, 100, 50, 30, 15, 10, 7, 5, 3, 2, 1],
+    expired_reminder_interval_days: 15,
+    monthly_unsubmitted_reminder_day: 9,
+    monthly_unsubmitted_reminder_template: "reminder",
   });
   const [loading, setLoading] = useState(false);
+
+  const parseRenewalDaysLeft = (value) => {
+    if (Array.isArray(value)) return value;
+    if (!value && value !== 0) return [200, 150, 100, 50, 30, 15, 10, 7, 5, 3, 2, 1];
+    return String(value)
+      .split(",")
+      .map((entry) => Number(String(entry).trim()))
+      .filter((entry) => Number.isInteger(entry) && entry > 0)
+      .slice(0, 20);
+  };
 
   useEffect(() => {
     fetchSettings();
@@ -21,11 +35,25 @@ export default function TaxMailSettings({ isDarkMode, getEffectiveAuthToken }) {
   const fetchSettings = async () => {
     try {
       setLoading(true);
-      const token = getEffectiveAuthToken();
-      // For now, we'll use local storage to persist settings
+      const token = getEffectiveAuthToken ? getEffectiveAuthToken() : null;
+      const response = await axios.get(`${API_BASE_URL}/admin/email/tax-mail-config`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       const saved = localStorage.getItem("taxMailSettings");
-      if (saved) {
-        setSettings(JSON.parse(saved));
+      const nextSettings = response.data?.updated_at
+        ? response.data.settings
+        : (saved ? JSON.parse(saved) : response.data?.settings);
+      if (nextSettings) {
+        setSettings((currentSettings) => ({
+          ...currentSettings,
+          ...nextSettings,
+          renewal_days_left: parseRenewalDaysLeft(nextSettings.renewal_days_left || currentSettings.renewal_days_left)
+        }));
+        if (!response.data?.updated_at && saved) {
+          await axios.put(`${API_BASE_URL}/admin/email/tax-mail-config`, { settings: nextSettings }, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {}
+          });
+        }
       }
     } catch (err) {
       console.error(err);
@@ -37,7 +65,10 @@ export default function TaxMailSettings({ isDarkMode, getEffectiveAuthToken }) {
   const saveSettings = async () => {
     try {
       setLoading(true);
-      localStorage.setItem("taxMailSettings", JSON.stringify(settings));
+      const token = getEffectiveAuthToken ? getEffectiveAuthToken() : null;
+      await axios.put(`${API_BASE_URL}/admin/email/tax-mail-config`, { settings }, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       toast.success("Tax mail settings saved.");
     } catch (err) {
       console.error(err);
@@ -118,6 +149,80 @@ export default function TaxMailSettings({ isDarkMode, getEffectiveAuthToken }) {
             />
           </div>
         )}
+
+        {/* Renewal reminder thresholds */}
+        <div style={{ padding: "12px", borderRadius: "8px", background: isDarkMode ? "#1e293b" : "#f1f5f9" }}>
+          <label style={{ display: "block", marginBottom: "8px", fontWeight: 600, color: isDarkMode ? "#f8fafc" : "#0f172a" }}>
+            Renewal email triggers (days left)
+          </label>
+          <input
+            type="text"
+            value={Array.isArray(settings.renewal_days_left) ? settings.renewal_days_left.join(", ") : "200, 150, 100, 50, 30, 15, 10, 7, 5, 3, 2, 1"}
+            onChange={(e) => setSettings({ ...settings, renewal_days_left: parseRenewalDaysLeft(e.target.value) })}
+            placeholder="200, 150, 100, 50, 30, 15, 10, 7, 5, 3, 2, 1"
+            style={{
+              width: "100%",
+              padding: "8px",
+              border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1",
+              borderRadius: "6px",
+              background: isDarkMode ? "#0f172a" : "#fff",
+              color: isDarkMode ? "#f8fafc" : "#0f172a",
+              fontSize: "1rem",
+            }}
+          />
+          <p style={{ margin: "8px 0 0 0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>
+            Renewal emails will be queued when remaining days fall at or below these values.
+          </p>
+        </div>
+
+        <div style={{ padding: "12px", borderRadius: "8px", background: isDarkMode ? "#1e293b" : "#f1f5f9" }}>
+          <label style={{ display: "block", marginBottom: "8px", fontWeight: 600, color: isDarkMode ? "#f8fafc" : "#0f172a" }}>
+            Expired tax form reminder interval (days)
+          </label>
+          <input
+            type="number"
+            min="1"
+            value={settings.expired_reminder_interval_days ?? 15}
+            onChange={(e) => setSettings({ ...settings, expired_reminder_interval_days: parseInt(e.target.value) || 15 })}
+            style={{
+              width: "100%",
+              padding: "8px",
+              border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1",
+              borderRadius: "6px",
+              background: isDarkMode ? "#0f172a" : "#fff",
+              color: isDarkMode ? "#f8fafc" : "#0f172a",
+              fontSize: "1rem",
+            }}
+          />
+          <p style={{ margin: "8px 0 0 0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>
+            Once a tax form is expired, send the expired reminder every 15 days.
+          </p>
+        </div>
+
+        <div style={{ padding: "12px", borderRadius: "8px", background: isDarkMode ? "#1e293b" : "#f1f5f9" }}>
+          <label style={{ display: "block", marginBottom: "8px", fontWeight: 600, color: isDarkMode ? "#f8fafc" : "#0f172a" }}>
+            Monthly unsubmitted reminder day
+          </label>
+          <input
+            type="number"
+            min="1"
+            max="31"
+            value={settings.monthly_unsubmitted_reminder_day ?? 9}
+            onChange={(e) => setSettings({ ...settings, monthly_unsubmitted_reminder_day: Math.min(31, Math.max(1, parseInt(e.target.value) || 9)) })}
+            style={{
+              width: "100%",
+              padding: "8px",
+              border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1",
+              borderRadius: "6px",
+              background: isDarkMode ? "#0f172a" : "#fff",
+              color: isDarkMode ? "#f8fafc" : "#0f172a",
+              fontSize: "1rem",
+            }}
+          />
+          <p style={{ margin: "8px 0 0 0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>
+            If a contributor has not submitted a tax form, send the reminder template on the 9th of every month.
+          </p>
+        </div>
 
         {/* Enable Approval Notification */}
         <div style={{ padding: "12px", borderRadius: "8px", background: isDarkMode ? "#1e293b" : "#f1f5f9" }}>

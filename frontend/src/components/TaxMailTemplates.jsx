@@ -52,6 +52,8 @@ export default function TaxMailTemplates({ isDarkMode, getEffectiveAuthToken }) 
   const [selectedTemplate, setSelectedTemplate] = useState("reminder");
   const [editMode, setEditMode] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
+  const [imageDimensions, setImageDimensions] = useState(null);
 
   useEffect(() => {
     fetchTemplates();
@@ -60,12 +62,20 @@ export default function TaxMailTemplates({ isDarkMode, getEffectiveAuthToken }) 
   const fetchTemplates = async () => {
     try {
       setLoading(true);
-      // Load from local storage
+      const token = getEffectiveAuthToken ? getEffectiveAuthToken() : null;
+      const response = await axios.get(`${API_BASE_URL}/admin/email/tax-mail-config`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       const saved = localStorage.getItem("taxMailTemplates");
-      if (saved) {
-        setTemplates(JSON.parse(saved));
-      } else {
-        setTemplates(DEFAULT_TEMPLATES);
+      const serverTemplates = response.data?.templates;
+      const nextTemplates = response.data?.updated_at
+        ? serverTemplates
+        : (saved ? JSON.parse(saved) : DEFAULT_TEMPLATES);
+      setTemplates({ ...DEFAULT_TEMPLATES, ...nextTemplates });
+      if (!response.data?.updated_at && saved) {
+        await axios.put(`${API_BASE_URL}/admin/email/tax-mail-config`, { templates: nextTemplates }, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
       }
     } catch (err) {
       console.error(err);
@@ -77,7 +87,10 @@ export default function TaxMailTemplates({ isDarkMode, getEffectiveAuthToken }) 
   const saveTemplates = async () => {
     try {
       setLoading(true);
-      localStorage.setItem("taxMailTemplates", JSON.stringify(templates));
+      const token = getEffectiveAuthToken ? getEffectiveAuthToken() : null;
+      await axios.put(`${API_BASE_URL}/admin/email/tax-mail-config`, { templates }, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       toast.success("Tax mail templates saved.");
       setEditMode(false);
     } catch (err) {
@@ -99,6 +112,55 @@ export default function TaxMailTemplates({ isDarkMode, getEffectiveAuthToken }) 
   };
 
   const currentTemplate = templates[selectedTemplate] || {};
+  const accentColor = currentTemplate.accentColor || "#0f766e";
+  const fontFamily = currentTemplate.fontFamily || "Georgia, serif";
+
+  const updateCurrentTemplate = (changes) => {
+    setTemplates({
+      ...templates,
+      [selectedTemplate]: { ...currentTemplate, ...changes },
+    });
+  };
+
+  const insertIntoBody = (value) => {
+    updateCurrentTemplate({ body: `${currentTemplate.body || ""}${currentTemplate.body ? "\n" : ""}${value}` });
+  };
+
+  const replaceBodySelection = (before, after = before) => {
+    const textarea = document.getElementById("tax-mail-template-body");
+    const body = currentTemplate.body || "";
+    const start = textarea?.selectionStart ?? body.length;
+    const end = textarea?.selectionEnd ?? body.length;
+    updateCurrentTemplate({ body: `${body.slice(0, start)}${before}${body.slice(start, end)}${after}${body.slice(end)}` });
+  };
+
+  const uploadTemplateImage = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setLoading(true);
+      const token = getEffectiveAuthToken ? getEffectiveAuthToken() : null;
+      const formData = new FormData();
+      formData.append("image", file);
+      const response = await axios.post(`${API_BASE_URL}/admin/email/upload-image`, formData, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "multipart/form-data" }
+      });
+      updateCurrentTemplate({ imageUrl: response.data.url });
+      toast.success("Template image uploaded. Save the template to keep it.");
+    } catch (error) {
+      toast.error(error.response?.data?.error || "Failed to upload template image.");
+    } finally {
+      setLoading(false);
+      event.target.value = "";
+    }
+  };
+
+  const previewLines = String(currentTemplate.body || "")
+    .replace(/\{\{\s*contributor_name\s*\}\}/gi, "Aarav Contributor")
+    .replace(/\{\{\s*form_type\s*\}\}/gi, "W-8BEN")
+    .replace(/\{\{\s*submission_date\s*\}\}/gi, "September 17, 2026")
+    .split("\n");
+  const previewImage = currentTemplate.imageUrl && (currentTemplate.imageUrl.startsWith("http") ? currentTemplate.imageUrl : `${API_BASE_URL}${currentTemplate.imageUrl}`);
 
   return (
     <div style={{ padding: "20px", maxHeight: "80vh", overflowY: "auto" }}>
@@ -129,11 +191,19 @@ export default function TaxMailTemplates({ isDarkMode, getEffectiveAuthToken }) 
 
         {/* Template Editor */}
         <div style={{ display: "grid", gap: "12px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
             <h4 style={{ margin: 0, color: isDarkMode ? "#f8fafc" : "#0f172a" }}>{currentTemplate.name || "Template"}</h4>
             <div style={{ display: "flex", gap: "8px" }}>
               <button
-                onClick={() => setEditMode(!editMode)}
+                type="button"
+                onClick={() => setPreviewMode((value) => !value)}
+                style={{ padding: "6px 10px", background: previewMode ? "#0f766e" : (isDarkMode ? "#334155" : "#e2e8f0"), color: previewMode || isDarkMode ? "#fff" : "#0f172a", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem" }}
+              >
+                {previewMode ? "Hide preview" : "Preview email"}
+              </button>
+              <button
+                onClick={() => (editMode ? saveTemplates() : setEditMode(true))}
+                disabled={loading}
                 style={{
                   padding: "6px 10px",
                   background: editMode ? "#2e7d32" : "#1976d2",
@@ -144,7 +214,7 @@ export default function TaxMailTemplates({ isDarkMode, getEffectiveAuthToken }) 
                   fontSize: "0.85rem",
                 }}
               >
-                {editMode ? "Done" : "Edit"}
+                {loading ? "Saving..." : editMode ? "Save" : "Edit"}
               </button>
               {editMode && (
                 <button
@@ -202,15 +272,22 @@ export default function TaxMailTemplates({ isDarkMode, getEffectiveAuthToken }) 
             <label style={{ display: "block", marginBottom: "4px", fontWeight: 600, fontSize: "0.9rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>
               Email Body
             </label>
+            {editMode && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8, padding: 8, border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", borderRadius: 8, background: isDarkMode ? "#111827" : "#f8fafc" }}>
+                <button type="button" onClick={() => replaceBodySelection("**", "**")} style={{ padding: "5px 9px", border: 0, borderRadius: 5, cursor: "pointer", fontWeight: 800 }}>B</button>
+                <button type="button" onClick={() => replaceBodySelection("_", "_")} style={{ padding: "5px 9px", border: 0, borderRadius: 5, cursor: "pointer", fontStyle: "italic" }}>I</button>
+                <button type="button" onClick={() => insertIntoBody("• ")} style={{ padding: "5px 9px", border: 0, borderRadius: 5, cursor: "pointer" }}>List</button>
+                <button type="button" onClick={() => insertIntoBody("[Review your tax form](https://example.com)")} style={{ padding: "5px 9px", border: 0, borderRadius: 5, cursor: "pointer" }}>Link</button>
+                {['{{contributor_name}}', '{{form_type}}', '{{submission_date}}'].map((variable) => (
+                  <button key={variable} type="button" onClick={() => insertIntoBody(variable)} style={{ padding: "5px 8px", border: 0, borderRadius: 5, cursor: "pointer", color: isDarkMode ? "#bae6fd" : "#0369a1", background: isDarkMode ? "#164e63" : "#e0f2fe", fontSize: 11 }}>{variable}</button>
+                ))}
+              </div>
+            )}
             {editMode ? (
               <textarea
+                id="tax-mail-template-body"
                 value={currentTemplate.body}
-                onChange={(e) =>
-                  setTemplates({
-                    ...templates,
-                    [selectedTemplate]: { ...currentTemplate, body: e.target.value },
-                  })
-                }
+                onChange={(e) => updateCurrentTemplate({ body: e.target.value })}
                 style={{
                   width: "100%",
                   minHeight: "300px",
@@ -241,7 +318,60 @@ export default function TaxMailTemplates({ isDarkMode, getEffectiveAuthToken }) 
             <p style={{ margin: "6px 0 0 0", fontSize: "0.75rem", color: isDarkMode ? "#94a3b8" : "#94a3b8" }}>
               Available variables: {'{{contributor_name}}, {{form_type}}, {{submission_date}}'}
             </p>
+            {editMode && (
+              <div style={{ display: "grid", gap: 8, marginTop: 12, padding: 12, borderRadius: 8, background: isDarkMode ? "#1e293b" : "#f8fafc" }}>
+                <label style={{ fontSize: 12, fontWeight: 700 }}>Email image</label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                  <label style={{ padding: "8px 11px", borderRadius: 6, background: "#0f766e", color: "#fff", cursor: loading ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 700 }}>
+                    Add image
+                    <input type="file" accept="image/*" onChange={uploadTemplateImage} disabled={loading} style={{ display: "none" }} />
+                  </label>
+                  <input type="url" value={currentTemplate.imageUrl || ""} onChange={(e) => updateCurrentTemplate({ imageUrl: e.target.value })} placeholder="Or paste an image URL" style={{ flex: "1 1 240px", minWidth: 180, padding: "8px 10px", border: "1px solid #cbd5e1", borderRadius: 6 }} />
+                  {currentTemplate.imageUrl && <button type="button" onClick={() => updateCurrentTemplate({ imageUrl: "" })} style={{ padding: "8px 10px", border: 0, borderRadius: 6, background: isDarkMode ? "#451a1a" : "#fee2e2", color: isDarkMode ? "#fca5a5" : "#991b1b", cursor: "pointer", fontWeight: 700 }}>Remove</button>}
+                </div>
+                <div style={{ fontSize: 11, lineHeight: 1.45, color: isDarkMode ? "#94a3b8" : "#64748b" }}>
+                  Recommended image size: 652 × 220 px. JPG or PNG, maximum 8 MB. This matches the visible email preview area.
+                  {imageDimensions && <span style={{ display: "block", marginTop: 3, color: isDarkMode ? "#cbd5e1" : "#475569", fontWeight: 700 }}>Current image: {imageDimensions.width} x {imageDimensions.height} px ({imageDimensions.ratio}:1)</span>}
+                </div>
+                {previewImage && <img src={previewImage} alt="Selected template" onLoad={(event) => { const { naturalWidth, naturalHeight } = event.currentTarget; setImageDimensions({ width: naturalWidth, height: naturalHeight, ratio: (naturalWidth / naturalHeight).toFixed(2) }); }} style={{ width: "100%", maxHeight: 140, objectFit: "cover", borderRadius: 8 }} />}
+              </div>
+            )}
           </div>
+
+          {editMode && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, padding: 12, borderRadius: 8, background: isDarkMode ? "#1e293b" : "#f8fafc" }}>
+              <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 700 }}>
+                Accent color
+                <input type="color" value={accentColor} onChange={(e) => updateCurrentTemplate({ accentColor: e.target.value })} style={{ width: "100%", height: 34, border: 0, padding: 0, background: "transparent" }} />
+              </label>
+              <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 700 }}>
+                Body font
+                <select value={fontFamily} onChange={(e) => updateCurrentTemplate({ fontFamily: e.target.value })} style={{ padding: 8, borderRadius: 6, border: "1px solid #cbd5e1" }}>
+                  <option value="Georgia, serif">Editorial Serif</option>
+                  <option value="Arial, sans-serif">Clean Sans</option>
+                  <option value="Verdana, sans-serif">Modern Sans</option>
+                </select>
+              </label>
+            </div>
+          )}
+
+          {previewMode && (
+            <div className="tax-template-preview" style={{ border: isDarkMode ? "1px solid #334155" : "1px solid #dbe4ea", borderRadius: 14, overflow: "hidden", background: "#fff", color: "#1f2937", boxShadow: "0 16px 40px rgba(15, 23, 42, 0.12)" }}>
+              <div style={{ padding: "26px 28px", background: `linear-gradient(135deg, ${accentColor}, #123c55)`, color: "#fff" }}>
+                <div style={{ fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.78 }}>GFXunlimit Tax Services</div>
+                <h4 style={{ margin: "10px 0 0", fontSize: 22 }}>{currentTemplate.subject || "Tax form update"}</h4>
+              </div>
+              <div className="tax-template-preview-body" style={{ padding: "28px", fontFamily, fontSize: 15, lineHeight: 1.65, color: "#1f2937" }}>
+                {previewLines.map((line, index) => (
+                  <React.Fragment key={`${line}-${index}`}>
+                    {previewImage && /best regards\s*,?/i.test(line) && <img src={previewImage} alt="Template body" style={{ display: "block", width: "100%", maxHeight: 220, objectFit: "cover", margin: "20px 0 24px", borderRadius: 10 }} />}
+                    {line.trim() ? <p style={{ margin: "0 0 14px" }}>{line}</p> : <div style={{ height: 4 }} />}
+                  </React.Fragment>
+                ))}
+              </div>
+              <div style={{ margin: "0 28px 26px", paddingTop: 18, borderTop: "1px solid #e5e7eb", color: "#64748b", fontFamily: "Arial, sans-serif", fontSize: 12 }}>Preview values are used for the template variables.</div>
+            </div>
+          )}
 
           {/* Save Button */}
           {editMode && (

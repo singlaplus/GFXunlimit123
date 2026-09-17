@@ -1,6 +1,6 @@
 .tax-center-section {
-  max-width: 1080px;
-  margin: 4px auto 0;
+  max-width: 1160px;
+  margin: 0 auto;
   padding: 8px 0 56px;
 }
 
@@ -182,32 +182,37 @@ body:has(.tax-wizard-backdrop) .app-header { display: none; }
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 30px;
-  padding-bottom: 20px;
+  margin-bottom: 20px;
+  padding-bottom: 18px;
   border-bottom: 1px solid var(--creator-line);
 }
 
 .tax-center-heading h2 {
   margin: 0;
   color: var(--creator-ink);
-  font-size: 31px;
-  letter-spacing: -.05em;
+  font-size: clamp(30px, 4vw, 52px);
+  letter-spacing: -.06em;
 }
 
 .tax-center-block {
-  margin-bottom: 22px;
-  padding: 21px 22px 22px;
-  background: color-mix(in srgb, var(--creator-surface) 94%, var(--creator-paper));
-  border: 1px solid color-mix(in srgb, var(--creator-line) 80%, transparent);
-  border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(30, 36, 42, .045);
+  margin-bottom: 18px;
+  padding: 18px 0 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .tax-block-heading {
-  margin-bottom: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
 }
 
 .tax-block-heading h3 {
+  margin: 0;
   color: var(--creator-ink);
   font-size: 13px;
   letter-spacing: -.01em;
@@ -219,13 +224,17 @@ body:has(.tax-wizard-backdrop) .app-header { display: none; }
   overflow: hidden;
   background: var(--creator-surface);
   border: 1px solid var(--creator-line);
-  border-radius: 10px;
+  border-radius: 12px;
 }
 
 .tax-document-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
   min-height: 56px;
   padding: 0 17px;
-  box-shadow: inset 3px 0 0 var(--creator-green);
+  box-shadow: inset 4px 0 0 var(--creator-accent);
 }
 
 .tax-document-row > span {
@@ -242,6 +251,9 @@ body:has(.tax-wizard-backdrop) .app-header { display: none; }
   color: var(--creator-accent);
   font-weight: 700;
   transition: color .18s ease, transform .18s ease;
+  background: transparent;
+  border: 0;
+  padding: 0;
 }
 
 .tax-link-button:hover {

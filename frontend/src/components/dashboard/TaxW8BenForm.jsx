@@ -37,8 +37,8 @@ function Field({ label, required = false, hint, children, className = "" }) {
   );
 }
 
-export default function TaxW8BenForm({ onBack, onSubmit }) {
-  const [form, setForm] = useState(initialForm);
+export default function TaxW8BenForm({ onBack, onSubmit, initialValues = {} }) {
+  const [form, setForm] = useState(() => ({ ...initialForm, ...initialValues }));
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const requiredComplete = Boolean(
     form.name.trim() && form.citizenship && form.residenceAddress.trim() &&

@@ -1866,7 +1866,7 @@ const streamImageFile = async (req, res, absolutePath, { bypassProcessing = fals
 
 app.use("/api/files", async (req, res, next) => {
   try {
-    const requestPath = String(req.path || "").replace(/^\/+/, "");
+    const requestPath = decodeURIComponent(String(req.path || "").replace(/^\/+/, ""));
     const { absolutePath } = resolveUploadFilePath(requestPath);
     return streamImageFile(req, res, absolutePath, { bypassProcessing: true });
   } catch (err) {
@@ -10142,10 +10142,21 @@ app.post("/profile/tax-form", authenticateToken, async (req, res) => {
   }
 });
 
+app.delete("/profile/tax-form", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query("DELETE FROM contributor_tax_forms WHERE contributor_id = $1 RETURNING contributor_id", [req.user.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Tax form not found" });
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error("Failed to delete tax form", err);
+    res.status(500).json({ error: "Failed to delete tax form" });
+  }
+});
+
 app.put("/admin/tax-forms/:contributorId/status", verifyAdmin, async (req, res) => {
   try {
     const status = String(req.body?.status || "").toLowerCase();
-    if (!["approved", "rejected"].includes(status)) {
+    if (!["approved", "rejected", "expired"].includes(status)) {
       return res.status(400).json({ error: "Invalid tax form status" });
     }
     const result = await pool.query(
@@ -13297,6 +13308,16 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(contributorTaxFormsMigration);
+      const taxMailSettingsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "023_tax_mail_settings.sql"),
+        "utf8"
+      );
+      await pool.query(taxMailSettingsMigration);
+      const taxMailSmtpMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "024_tax_mail_smtp_settings.sql"),
+        "utf8"
+      );
+      await pool.query(taxMailSmtpMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);

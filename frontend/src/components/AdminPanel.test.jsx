@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import AdminPanel from "./AdminPanel";
+import { renderTaxFormTemplate } from "./AdminPanel";
 import { useLocation } from "react-router-dom";
 import axios from "axios";
 
@@ -117,6 +118,206 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByText(/Sep 14, 2026|14 Sep 2026/)).toBeInTheDocument();
     expect(screen.getByText("Individual")).toBeInTheDocument();
     expect(screen.getByText("Patiala, India")).toBeInTheDocument();
+  });
+
+  it("shows the expires in countdown in the tax forms table", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_taxforms" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [{
+          id: 1,
+          full_name: "Submitted Contributor",
+          username: "submitted_creator",
+          email: "submitted@example.com",
+          role: "contributor",
+          status: "active",
+          tax_form_status: "submitted",
+          tax_form_submitted_at: "2026-09-14T10:00:00.000Z",
+          tax_form_data: { entityType: "Individual", city: "Patiala", country: "India" }
+        }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText(/expires in/i)).toBeInTheDocument();
+    expect(screen.getByText(/\d+\s+day(s)?\s+left/i)).toBeInTheDocument();
+  });
+
+  it("expires the current tax form immediately", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_taxforms" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [{
+          id: 9,
+          full_name: "Expiring Contributor",
+          username: "expiring_user",
+          email: "expiring@example.com",
+          role: "contributor",
+          tax_form_status: "submitted",
+          tax_form_submitted_at: "2026-09-14T10:00:00.000Z",
+          tax_form_data: { entityType: "Individual" }
+        }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { status: "expired" } });
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^expire$/i }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/tax-forms/9/status"),
+        { status: "expired" },
+        expect.anything()
+      );
+    });
+  });
+
+  it("renders the expired tax form email subject and body with the contributor's expiry date", () => {
+    const template = {
+      subject: "Your Tax Form Expired on {{expiry_date}}",
+      body: "Hello {{contributor_name}}, your tax form expired on {{expiry_date}}."
+    };
+
+    const result = renderTaxFormTemplate(template, {
+      full_name: "Expired Contributor",
+      username: "expired_user",
+      email: "expired@example.com",
+      tax_form_submitted_at: "2026-09-14T10:00:00.000Z",
+      tax_form_data: { formType: "W-8BEN" }
+    }, new Date("2026-09-20T00:00:00.000Z"));
+
+    expect(result.subject).toContain("Sep 12, 2027");
+    expect(result.subject).toContain("Your Tax Form Expired on");
+    expect(result.body).toContain("Expired Contributor");
+    expect(result.body).toContain("Sep 12, 2027");
+  });
+
+  it("sends the saved approved template email when a tax form is approved", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_taxforms" });
+    localStorage.setItem("taxMailTemplates", JSON.stringify({
+      approved: {
+        name: "Tax Form Approved",
+        subject: "Approved template subject",
+        body: "Hello {{contributor_name}} — your tax form for {{form_type}} was approved on {{submission_date}}."
+      },
+      rejected: {
+        name: "Tax Form Requires Revision",
+        subject: "Rejected template subject",
+        body: "Hello {{contributor_name}} — please revise your form."
+      }
+    }));
+    localStorage.setItem("taxMailSMTPSettings", JSON.stringify({
+      smtp_from_name: "Tax Mail",
+      smtp_from_email: "tax@gfxunlimit.com",
+      smtp_host: "smtp.hostinger.com",
+      smtp_port: 465,
+      smtp_username: "tax@gfxunlimit.com",
+      smtp_password: "secret"
+    }));
+
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [{
+          id: 7,
+          full_name: "Approved Contributor",
+          username: "approved_user",
+          email: "approved@example.com",
+          role: "contributor",
+          status: "active",
+          tax_form_status: "submitted",
+          tax_form_submitted_at: "2026-09-14T10:00:00.000Z",
+          tax_form_data: { formType: "W-8BEN" }
+        }] });
+      }
+      if (url.includes("/admin/email/tax-mail-config")) {
+        return Promise.resolve({ data: {
+          templates: JSON.parse(localStorage.getItem("taxMailTemplates")),
+          smtp_settings: { sender_email: "tax@gfxunlimit.com", smtp_host: "smtp.hostinger.com", smtp_port: 465, smtp_user: "tax@gfxunlimit.com", smtp_pass: "secret", smtp_secure: true }
+        } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { ok: true } });
+    axios.post.mockResolvedValue({ data: { ok: true } });
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /approve/i }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/email/tax-mail/send-test"),
+        expect.objectContaining({
+          to: "approved@example.com",
+          subject: "Approved template subject",
+          body: expect.stringContaining("Approved Contributor")
+        }),
+        expect.anything()
+      );
+    });
+  });
+
+  it("sends the saved reminder template email when the reminder button is clicked", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_taxforms" });
+    localStorage.setItem("taxMailTemplates", JSON.stringify({
+      reminder: {
+        name: "Tax Form Reminder",
+        subject: "Reminder template subject",
+        body: "Hello {{contributor_name}} — please submit your {{form_type}} form."
+      }
+    }));
+    localStorage.setItem("taxMailSMTPSettings", JSON.stringify({
+      smtp_from_name: "Tax Mail",
+      smtp_from_email: "tax@gfxunlimit.com",
+      smtp_host: "smtp.hostinger.com",
+      smtp_port: 465,
+      smtp_username: "tax@gfxunlimit.com",
+      smtp_password: "secret"
+    }));
+
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [{
+          id: 8,
+          full_name: "Reminder Contributor",
+          username: "reminder_user",
+          email: "reminder@example.com",
+          role: "contributor",
+          status: "active",
+          tax_form_status: "submitted",
+          tax_form_data: { formType: "W-9" }
+        }] });
+      }
+      if (url.includes("/admin/email/tax-mail-config")) {
+        return Promise.resolve({ data: {
+          templates: JSON.parse(localStorage.getItem("taxMailTemplates")),
+          smtp_settings: { sender_email: "tax@gfxunlimit.com", smtp_host: "smtp.hostinger.com", smtp_port: 465, smtp_user: "tax@gfxunlimit.com", smtp_pass: "secret", smtp_secure: true }
+        } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.post.mockResolvedValue({ data: { ok: true } });
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /reminder/i }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/email/tax-mail/send-test"),
+        expect.objectContaining({
+          to: "reminder@example.com",
+          subject: "Reminder template subject",
+          body: expect.stringContaining("Reminder Contributor")
+        }),
+        expect.anything()
+      );
+    });
   });
 
   it("searches contributor details by username or email", async () => {

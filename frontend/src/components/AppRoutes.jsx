@@ -102,20 +102,24 @@ function StartTaxFormOptions() {
 }
 
 function FillTaxFormPage() {
+  const location = useLocation();
   const navigate = useNavigate();
   return (
     <TaxW8BenForm
       onBack={() => navigate("/dashboard?tab=starttaxform")}
+      initialValues={location.state?.formData}
       onSubmit={(formData) => navigate("/dashboard?tab=filltaxform_review", { state: { formType: "W-8BEN", formData } })}
     />
   );
 }
 
 function FillTaxFormW9Page() {
+  const location = useLocation();
   const navigate = useNavigate();
   return (
     <TaxW9Form
       onBack={() => navigate("/dashboard?tab=starttaxform")}
+      initialValues={location.state?.formData}
       onSubmit={(formData) => navigate("/dashboard?tab=filltaxform_review", { state: { formType: "W-9", formData } })}
     />
   );
@@ -128,6 +132,7 @@ function TaxFormReviewPage() {
   const [submitError, setSubmitError] = useState("");
   const formData = location.state?.formData || {};
   const formType = location.state?.formType || "Tax form";
+  const readOnly = Boolean(location.state?.readOnly);
   const detailEntries = Object.entries(formData).filter(([key, value]) => {
     if (key === "certification" || key === "certifications") return false;
     if (value === null || value === undefined || value === "") return false;
@@ -162,7 +167,7 @@ function TaxFormReviewPage() {
           </div>
           <div className="tax-form-review-actions">
             <button type="button" className="tax-form-review-back" onClick={() => navigate("/dashboard?tab=starttaxform")}>Back</button>
-            <button type="button" className="tax-form-review-submit" onClick={submitTaxForm} disabled={isSubmitting}>{isSubmitting ? "Submitting..." : "Submit"}</button>
+            {!readOnly && <button type="button" className="tax-form-review-submit" onClick={submitTaxForm} disabled={isSubmitting}>{isSubmitting ? "Submitting..." : "Submit"}</button>}
           </div>
         </div>
 

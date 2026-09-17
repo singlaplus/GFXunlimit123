@@ -31,6 +31,66 @@ const DEFAULT_TEMPLATE_LIBRARY = {
   }
 };
 
+const DEFAULT_TAX_MAIL_CONFIG = {
+  smtp_settings: {},
+  settings: {
+    enable_reminders: true,
+    reminder_interval_days: 7,
+    reminder_subject: 'Tax Form Submission Reminder',
+    enable_approval_notification: true,
+    enable_rejection_notification: true,
+    renewal_days_left: [200, 150, 100, 50, 30, 15, 10, 7, 5, 3, 2, 1],
+    expired_reminder_interval_days: 15,
+    monthly_unsubmitted_reminder_day: 9,
+    monthly_unsubmitted_reminder_template: 'reminder'
+  },
+  templates: {
+    reminder: {
+      name: 'Tax Form Reminder',
+      subject: 'Please Submit Your Tax Form',
+      body: "Dear {{contributor_name}},\n\nThis is a friendly reminder that we haven't yet received your tax form.\n\nTo ensure timely payment processing, please submit your tax information as soon as possible by logging into your contributor account.\n\nIf you have already submitted your form, please disregard this message.\n\nBest regards,\nThe Team"
+    },
+    approved: {
+      name: 'Tax Form Approved',
+      subject: 'Your Tax Form Has Been Approved',
+      body: 'Dear {{contributor_name}},\n\nGood news! Your tax form has been reviewed and approved.\n\nYou are now cleared for payment processing. Earnings will be processed according to our regular payment schedule.\n\nThank you for your contribution!\n\nBest regards,\nThe Team'
+    },
+    rejected: {
+      name: 'Tax Form Requires Revision',
+      subject: 'Action Required: Tax Form Revision',
+      body: "Dear {{contributor_name}},\n\nWe've reviewed your tax form and need some additional information or corrections.\n\nPlease log into your account and resubmit your form with the necessary updates. Our support team is available if you have any questions.\n\nBest regards,\nThe Team"
+    },
+    expired: {
+      name: 'Tax Form Expired',
+      subject: 'Your Tax Form Expired on {{expiry_date}}',
+      body: "Dear {{contributor_name}},\n\nYour tax form expired on {{expiry_date}} and payment processing has been paused until a new form is submitted.\n\nPlease log in to your contributor account and resubmit your tax information as soon as possible to avoid delays in future payouts.\n\nBest regards,\nThe Team"
+    }
+  }
+};
+
+const escapeTaxMailHtml = (value) => String(value || '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const renderTaxMailHtml = (subject, body, accentColor = '#0f766e', fontFamily = 'Georgia, serif', imageUrl = '') => {
+  const safeAccent = /^#[0-9a-f]{6}$/i.test(String(accentColor)) ? accentColor : '#0f766e';
+  const safeFont = ['Georgia, serif', 'Arial, sans-serif', 'Verdana, sans-serif'].includes(fontFamily) ? fontFamily : 'Georgia, serif';
+  const safeImageUrl = /^(https?:\/\/|\/api\/files\/)/i.test(String(imageUrl)) ? escapeTaxMailHtml(imageUrl) : '';
+  const bodyLines = String(body || '').split(/\r?\n/);
+  const bodyHtml = bodyLines.map((line, index) => {
+    const imageBeforeClosing = safeImageUrl && /best regards\s*,?/i.test(line) ? `<img src="${safeImageUrl}" alt="GFXunlimit Tax Services" style="display:block;width:100%;max-height:240px;object-fit:cover;margin:20px 0 24px;border-radius:10px" />` : '';
+    const content = escapeTaxMailHtml(line)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/_(.+?)_/g, '<em>$1</em>')
+      .replace(/\[(.+?)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" style="color:' + safeAccent + ';font-weight:700">$1</a>');
+    return `${imageBeforeClosing}${content.trim() ? `<p style="margin:0 0 14px">${content}</p>` : '<div style="height:6px"></div>'}`;
+  }).join('');
+  return `<!doctype html><html><body style="margin:0;background:#f4f7f8;padding:32px 12px;font-family:${safeFont};color:#1f2937"><div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 12px 35px rgba(15,23,42,.12)"><div style="padding:28px 32px;background:linear-gradient(135deg,${safeAccent},#123c55);color:#ffffff"><div style="font:700 11px Arial,sans-serif;letter-spacing:1.5px;text-transform:uppercase;opacity:.8">GFXunlimit Tax Services</div><h1 style="margin:10px 0 0;font:700 24px Arial,sans-serif">${escapeTaxMailHtml(subject)}</h1></div><div style="padding:32px;font-size:16px;line-height:1.65">${bodyHtml}</div><div style="margin:0 32px;padding:18px 0 26px;border-top:1px solid #e5e7eb;color:#64748b;font:12px Arial,sans-serif">This is an automated tax form notification from GFXunlimit.</div></div></body></html>`;
+};
+
 const NORMALIZED_TEMPLATE_VARIABLES = [
   '{{user_name}}',
   '{{user_email}}',
@@ -1259,6 +1319,89 @@ router.post('/settings', verifyAdminLocal, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to save settings' });
+  }
+});
+
+router.get('/tax-mail-config', verifyAdminLocal, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT smtp_settings, settings, templates, updated_at FROM tax_mail_settings WHERE id = 1');
+    const row = result.rows[0] || {};
+    const smtpSettings = { ...DEFAULT_TAX_MAIL_CONFIG.smtp_settings, ...(row.smtp_settings || {}) };
+    if (smtpSettings.smtp_pass) smtpSettings.smtp_pass = '*****';
+    res.json({
+      smtp_settings: smtpSettings,
+      settings: { ...DEFAULT_TAX_MAIL_CONFIG.settings, ...(row.settings || {}) },
+      templates: { ...DEFAULT_TAX_MAIL_CONFIG.templates, ...(row.templates || {}) },
+      updated_at: row.updated_at || null
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load tax mail configuration' });
+  }
+});
+
+router.put('/tax-mail-config', verifyAdminLocal, async (req, res) => {
+  try {
+    const existingResult = await pool.query('SELECT smtp_settings, settings, templates FROM tax_mail_settings WHERE id = 1');
+    const existing = existingResult.rows[0] || {};
+    const incomingSmtp = req.body?.smtp_settings || {};
+    const currentSmtp = existing.smtp_settings || {};
+    const smtpSettings = {
+      ...currentSmtp,
+      ...incomingSmtp,
+      smtp_pass: incomingSmtp.smtp_pass && incomingSmtp.smtp_pass !== '*****'
+        ? encrypt(incomingSmtp.smtp_pass)
+        : (currentSmtp.smtp_pass || '')
+    };
+    const settings = { ...DEFAULT_TAX_MAIL_CONFIG.settings, ...(existing.settings || {}), ...(req.body?.settings || {}) };
+    const templates = { ...DEFAULT_TAX_MAIL_CONFIG.templates, ...(existing.templates || {}), ...(req.body?.templates || {}) };
+    const result = await pool.query(
+      `INSERT INTO tax_mail_settings(id, smtp_settings, settings, templates, updated_at)
+       VALUES(1, $1::jsonb, $2::jsonb, $3::jsonb, now())
+       ON CONFLICT (id) DO UPDATE SET smtp_settings = EXCLUDED.smtp_settings, settings = EXCLUDED.settings, templates = EXCLUDED.templates, updated_at = now()
+       RETURNING settings, templates, updated_at`,
+      [JSON.stringify(smtpSettings), JSON.stringify(settings), JSON.stringify(templates)]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to save tax mail configuration' });
+  }
+});
+
+router.post('/tax-mail/verify', verifyAdminLocal, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const transport = await createTransportFromSettings(body);
+    await transport.verify();
+    res.json({ status: 'connected' });
+  } catch (err) {
+    res.status(400).json({ status: 'failed', error: err.message });
+  }
+});
+
+router.post('/tax-mail/send-test', verifyAdminLocal, async (req, res) => {
+  try {
+    const { to, subject, body, accentColor, fontFamily, imageUrl } = req.body || {};
+    if (!to) return res.status(400).json({ error: 'Missing recipient' });
+    const configResult = await pool.query('SELECT smtp_settings FROM tax_mail_settings WHERE id = 1');
+    const smtpSettings = configResult.rows[0]?.smtp_settings || {};
+    if (!smtpSettings.smtp_host || !smtpSettings.smtp_user || !smtpSettings.smtp_pass) {
+      return res.status(400).json({ error: 'Tax mail SMTP settings are not configured' });
+    }
+    const finalSubject = subject || 'Tax form test email';
+    const finalBody = body || '<p>Tax form test email</p>';
+    const html = renderTaxMailHtml(finalSubject, finalBody, accentColor, fontFamily, imageUrl);
+    const result = await sendMail(smtpSettings, {
+      to,
+      subject: finalSubject,
+      text: finalBody.replace(/<[^>]*>/g, ''),
+      html
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to send tax mail', detail: err.message });
   }
 });
 

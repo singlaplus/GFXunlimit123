@@ -68,6 +68,68 @@ const formatTaxFormSubmittedAt = (submittedAt) => {
   const parsedDate = new Date(submittedAt);
   return Number.isNaN(parsedDate.getTime()) ? "—" : parsedDate.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
 };
+const formatTaxFormExpiresIn = (submittedAt, status, now = new Date()) => {
+  if (String(status || "").toLowerCase() === "expired") return "Expired";
+  if (!submittedAt) return "—";
+  const submittedDate = new Date(submittedAt);
+  if (Number.isNaN(submittedDate.getTime())) return "—";
+
+  const expiryDate = new Date(submittedDate.getTime() + (363 * 24 * 60 * 60 * 1000));
+  const remainingMs = expiryDate.getTime() - now.getTime();
+  const remainingDays = Math.max(0, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
+
+  if (remainingDays <= 0) return "Expired";
+  return `${remainingDays} day${remainingDays === 1 ? "" : "s"} left`;
+};
+
+export const getTaxFormExpiryDate = (submittedAt) => {
+  if (!submittedAt) return null;
+  const submittedDate = new Date(submittedAt);
+  if (Number.isNaN(submittedDate.getTime())) return null;
+
+  return new Date(submittedDate.getTime() + (363 * 24 * 60 * 60 * 1000));
+};
+
+export const getTaxFormTemplateData = (user = {}, now = new Date()) => {
+  const contributorName = user.full_name || user.username || user.email || "Contributor";
+  const formType = user.tax_form_data?.formType || user.tax_form_type || "W-8BEN";
+  const submissionDate = user.tax_form_submitted_at ? new Date(user.tax_form_submitted_at).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "recent submission";
+  const expiryDate = getTaxFormExpiryDate(user.tax_form_submitted_at);
+  const expiryDateText = expiryDate ? expiryDate.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "date unavailable";
+  const daysLeftText = (() => {
+    if (!expiryDate) return "0";
+    const remainingMs = expiryDate.getTime() - now.getTime();
+    const remainingDays = Math.max(0, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
+    return String(remainingDays);
+  })();
+
+  return {
+    contributor_name: contributorName,
+    form_type: formType,
+    submission_date: submissionDate,
+    expiry_date: expiryDateText,
+    days_left: daysLeftText,
+  };
+};
+
+export const renderTaxFormTemplate = (template = {}, user = {}, now = new Date()) => {
+  const data = getTaxFormTemplateData(user, now);
+  const subject = String(template.subject || "")
+    .replace(/\{\{\s*contributor_name\s*\}\}/gi, data.contributor_name)
+    .replace(/\{\{\s*form_type\s*\}\}/gi, data.form_type)
+    .replace(/\{\{\s*submission_date\s*\}\}/gi, data.submission_date)
+    .replace(/\{\{\s*expiry_date\s*\}\}/gi, data.expiry_date)
+    .replace(/\{\{\s*days_left\s*\}\}/gi, data.days_left);
+
+  const body = String(template.body || "")
+    .replace(/\{\{\s*contributor_name\s*\}\}/gi, data.contributor_name)
+    .replace(/\{\{\s*form_type\s*\}\}/gi, data.form_type)
+    .replace(/\{\{\s*submission_date\s*\}\}/gi, data.submission_date)
+    .replace(/\{\{\s*expiry_date\s*\}\}/gi, data.expiry_date)
+    .replace(/\{\{\s*days_left\s*\}\}/gi, data.days_left);
+
+  return { subject, body };
+};
 const formatTaxFormLocation = (formData) => {
   const safeFormData = formData && typeof formData === "object" ? formData : {};
   const location = [safeFormData.city, safeFormData.country].filter(Boolean).join(", ");
@@ -3463,6 +3525,43 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
       await axios.put(`${API_BASE_URL}/admin/tax-forms/${user.id}/status`, { status }, { headers: { Authorization: `Bearer ${token}` } });
+
+      if (status === "approved" || status === "rejected") {
+        const configResponse = await axios.get(`${API_BASE_URL}/admin/email/tax-mail-config`, { headers: { Authorization: `Bearer ${token}` } });
+        const template = configResponse.data?.templates?.[status];
+        if (!template) throw new Error(`Missing tax mail ${status} template`);
+        const rendered = renderTaxFormTemplate(template, user);
+        const emailBody = rendered.body;
+
+        const savedSmtp = configResponse.data?.smtp_settings || {};
+        const smtpSettings = {
+          sender_name: savedSmtp.sender_name || "GFXunlimit Tax Forms",
+          sender_email: savedSmtp.sender_email || "",
+          smtp_host: savedSmtp.smtp_host || "",
+          smtp_port: Number(savedSmtp.smtp_port || 587),
+          smtp_user: savedSmtp.smtp_user || "",
+          smtp_pass: savedSmtp.smtp_pass || "",
+          smtp_secure: Number(savedSmtp.smtp_port || 587) === 465,
+        };
+
+        if (!smtpSettings.sender_email || !smtpSettings.smtp_host || !smtpSettings.smtp_user || !smtpSettings.smtp_pass) {
+          toast.warning("Tax SMTP settings are not configured. Status updated but email was not sent.");
+        } else {
+          await axios.post(`${API_BASE_URL}/admin/email/tax-mail/send-test`, {
+            to: user.email,
+            subject: rendered.subject || template.subject || "Tax form status update",
+            body: emailBody,
+            accentColor: template.accentColor,
+            fontFamily: template.fontFamily,
+            imageUrl: template.imageUrl,
+          }, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+
+          toast.success(`${status === "approved" ? "Approved" : "Rejected"} tax form email sent.`);
+        }
+      }
+
       await fetchUsers();
     } catch (err) {
       console.error(err);
@@ -3474,7 +3573,39 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
       await axios.post(`${API_BASE_URL}/admin/tax-forms/${user.id}/reminder`, {}, { headers: { Authorization: `Bearer ${token}` } });
-      toast.success("Tax form reminder sent.");
+
+      const configResponse = await axios.get(`${API_BASE_URL}/admin/email/tax-mail-config`, { headers: { Authorization: `Bearer ${token}` } });
+      const template = configResponse.data?.templates?.reminder;
+      if (!template) throw new Error("Missing tax mail reminder template");
+      const rendered = renderTaxFormTemplate(template, user);
+      const emailBody = rendered.body;
+
+      const savedSmtp = configResponse.data?.smtp_settings || {};
+      const smtpSettings = {
+        sender_name: savedSmtp.sender_name || "GFXunlimit Tax Forms",
+        sender_email: savedSmtp.sender_email || "",
+        smtp_host: savedSmtp.smtp_host || "",
+        smtp_port: Number(savedSmtp.smtp_port || 587),
+        smtp_user: savedSmtp.smtp_user || "",
+        smtp_pass: savedSmtp.smtp_pass || "",
+        smtp_secure: Number(savedSmtp.smtp_port || 587) === 465,
+      };
+
+      if (!smtpSettings.sender_email || !smtpSettings.smtp_host || !smtpSettings.smtp_user || !smtpSettings.smtp_pass) {
+        toast.warning("Tax SMTP settings are not configured. Reminder notification was created but email was not sent.");
+      } else {
+        await axios.post(`${API_BASE_URL}/admin/email/tax-mail/send-test`, {
+          to: user.email,
+          subject: rendered.subject || template.subject || "Please Submit Your Tax Form",
+          body: emailBody,
+          accentColor: template.accentColor,
+          fontFamily: template.fontFamily,
+          imageUrl: template.imageUrl,
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        toast.success("Tax form reminder email sent.");
+      }
     } catch (err) {
       console.error(err);
       toast.error("Failed to send tax form reminder.");
@@ -4436,12 +4567,13 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       email: user.email || "",
       status: user.tax_form_status || "Not submitted",
       submitted: formatTaxFormSubmittedAt(user.tax_form_submitted_at),
+      expires_in: formatTaxFormExpiresIn(user.tax_form_submitted_at),
       entity_type: formatTaxFormEntityType(user),
       location: formatTaxFormLocation(user.tax_form_data),
       form_type: user.tax_form_type || "",
       form_data: user.tax_form_data ? JSON.stringify(user.tax_form_data) : ""
     }));
-    const headers = ["contributor", "username", "email", "status", "submitted", "entity_type", "location", "form_type", "form_data"];
+    const headers = ["contributor", "username", "email", "status", "submitted", "expires_in", "entity_type", "location", "form_type", "form_data"];
     downloadCsvFile(buildCsvContent(rows, headers), `tax-forms-${new Date().toISOString().slice(0, 10)}.csv`);
   };
 
@@ -6322,7 +6454,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               </label>
               {filteredTaxFormUsers.length > 0 ? (
                 <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "fit-content", minWidth: "760px", maxWidth: "100%", borderCollapse: "collapse", tableLayout: "auto", fontSize: "0.7rem" }}>
+                  <table style={{ width: "100%", minWidth: "980px", borderCollapse: "collapse", tableLayout: "auto", fontSize: "0.7rem" }}>
                     <thead>
                       <tr>
                         {[
@@ -6330,9 +6462,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                           ["Email", "220px"],
                           ["Status", "110px"],
                           ["Submitted", "120px"],
+                          ["Expires in", "120px"],
                           ["Entity type", "120px"],
                           ["Location", "140px"],
-                          ["Actions", "230px"]
+                          ["Actions", "300px"]
                         ].map(([label, width]) => <th key={label} scope="col" style={{ width, padding: "6px 3px", color: isDarkMode ? "#cbd5e1" : "#64748b", borderBottom: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", textAlign: "left", fontWeight: 700 }}>{label}</th>)}
                       </tr>
                     </thead>
@@ -6343,14 +6476,16 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                           <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#64748b", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email || "-"}</td>
                           <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#475569", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", overflowWrap: "anywhere" }}>{user.tax_form_status || "Not submitted"}</td>
                           <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#475569", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", whiteSpace: "nowrap" }}>{formatTaxFormSubmittedAt(user.tax_form_submitted_at)}</td>
+                          <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#475569", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", whiteSpace: "nowrap" }}>{formatTaxFormExpiresIn(user.tax_form_submitted_at, user.tax_form_status)}</td>
                           <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#475569", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", whiteSpace: "nowrap" }}>{formatTaxFormEntityType(user)}</td>
                           <td style={{ padding: "7px 3px", color: isDarkMode ? "#cbd5e1" : "#475569", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", whiteSpace: "nowrap" }}>{formatTaxFormLocation(user.tax_form_data)}</td>
-                          <td style={{ padding: "6px 3px", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0" }}>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                          <td style={{ padding: "6px 3px", borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #e2e8f0", whiteSpace: "nowrap" }}>
+                            <div style={{ display: "flex", flexWrap: "nowrap", gap: "4px", alignItems: "center" }}>
                               <button type="button" onClick={() => setSelectedTaxForm(user)} disabled={!user.tax_form_data} style={{ padding: "4px 6px", border: 0, borderRadius: "5px", background: "#1976d2", color: "#fff", fontSize: "0.68rem", cursor: user.tax_form_data ? "pointer" : "not-allowed", opacity: user.tax_form_data ? 1 : 0.45 }}>View</button>
                               <button type="button" onClick={() => updateTaxFormStatus(user, "approved")} disabled={!user.tax_form_data || user.tax_form_status === "approved"} style={{ padding: "4px 6px", border: 0, borderRadius: "5px", background: "#2e7d32", color: "#fff", fontSize: "0.68rem", cursor: user.tax_form_data ? "pointer" : "not-allowed", opacity: user.tax_form_data && user.tax_form_status !== "approved" ? 1 : 0.45 }}>Approve</button>
                               <button type="button" onClick={() => updateTaxFormStatus(user, "rejected")} disabled={!user.tax_form_data || user.tax_form_status === "rejected"} style={{ padding: "4px 6px", border: 0, borderRadius: "5px", background: "#c62828", color: "#fff", fontSize: "0.68rem", cursor: user.tax_form_data ? "pointer" : "not-allowed", opacity: user.tax_form_data && user.tax_form_status !== "rejected" ? 1 : 0.45 }}>Reject</button>
                               <button type="button" onClick={() => sendTaxFormReminder(user)} style={{ padding: "4px 6px", border: 0, borderRadius: "5px", background: "#757575", color: "#fff", fontSize: "0.68rem", cursor: "pointer" }}>Reminder</button>
+                              <button type="button" onClick={() => updateTaxFormStatus(user, "expired")} disabled={!user.tax_form_data || user.tax_form_status === "expired"} style={{ padding: "4px 6px", border: 0, borderRadius: "5px", background: "#ad1457", color: "#fff", fontSize: "0.68rem", cursor: user.tax_form_data && user.tax_form_status !== "expired" ? "pointer" : "not-allowed", opacity: user.tax_form_data && user.tax_form_status !== "expired" ? 1 : 0.45 }}>Expire</button>
                             </div>
                           </td>
                         </tr>
@@ -6365,7 +6500,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 <section role="dialog" aria-labelledby="tax-form-details-title" style={{ width: "min(720px, 100%)", maxHeight: "80vh", overflow: "auto", padding: "24px", borderRadius: "12px", background: isDarkMode ? "#111827" : "#fff", color: isDarkMode ? "#f8fafc" : "#111827", boxShadow: "0 20px 60px rgba(15, 23, 42, 0.25)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                     <h2 id="tax-form-details-title" style={{ margin: 0 }}>Tax form: {selectedTaxForm.username || selectedTaxForm.email}</h2>
-                    <button type="button" onClick={() => setSelectedTaxForm(null)} style={{ padding: "6px 10px", border: 0, borderRadius: "6px", cursor: "pointer" }}>Close</button>
+                    <button type="button" onClick={() => setSelectedTaxForm(null)} style={{ padding: "6px 10px", border: 0, borderRadius: "6px", background: isDarkMode ? "#334155" : "#f1f5f9", color: isDarkMode ? "#f8fafc" : "#0f172a", cursor: "pointer" }}>Close</button>
                   </div>
                   <dl style={{ display: "grid", gridTemplateColumns: "minmax(140px, 0.35fr) minmax(0, 1fr)", gap: "8px 16px", margin: "20px 0 0" }}>
                     {Object.entries(selectedTaxForm.tax_form_data || {}).filter(([, value]) => value !== "" && value !== null && value !== undefined && value !== false).map(([key, value]) => <React.Fragment key={key}><dt style={{ fontWeight: 700 }}>{key.replace(/([A-Z])/g, " $1").replace(/^./, (char) => char.toUpperCase())}</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{String(value)}</dd></React.Fragment>)}
@@ -6385,7 +6520,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 22px", borderBottom: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0" }}>
                     <h3 style={{ margin: 0 }}>{taxMailModal === "settings" ? "Tax Form SMTP Settings" : "Tax Mail Templates"}</h3>
-                    <button type="button" onClick={() => setTaxMailModal(null)} style={{ border: 0, borderRadius: "50%", width: 34, height: 34, cursor: "pointer" }}>x</button>
+                    <button type="button" onClick={() => setTaxMailModal(null)} style={{ border: 0, borderRadius: "50%", width: 34, height: 34, background: isDarkMode ? "#334155" : "#f1f5f9", color: isDarkMode ? "#f8fafc" : "#0f172a", cursor: "pointer" }}>x</button>
                   </div>
                   {taxMailModal === "settings" && <TaxMailSMTPSettings isDarkMode={isDarkMode} getEffectiveAuthToken={getEffectiveAuthToken} />}
                   {taxMailModal === "templates" && <TaxMailTemplates isDarkMode={isDarkMode} getEffectiveAuthToken={getEffectiveAuthToken} />}

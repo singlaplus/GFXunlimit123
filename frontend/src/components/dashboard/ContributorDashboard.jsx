@@ -76,6 +76,13 @@ const statusLabel = (value) =>
   String(value || "pending")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+const taxFormExpiresIn = (submittedAt) => {
+  if (!submittedAt) return "-";
+  const expiry = new Date(submittedAt);
+  expiry.setDate(expiry.getDate() + 363);
+  const remainingDays = Math.max(0, Math.ceil((expiry.getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+  return remainingDays > 0 ? `${remainingDays} day${remainingDays === 1 ? "" : "s"}` : "expired";
+};
 const PORTFOLIO_PAGE_SIZE = 6;
 const SOLD_ASSETS_PAGE_SIZE = 6;
 
@@ -164,6 +171,11 @@ export default function ContributorDashboard({
     }));
     setTaxW8BenOpen(false);
     setTaxFormEditing(false);
+  };
+
+  const deleteTaxForm = async () => {
+    await axios.delete(`${API_BASE_URL}/profile/tax-form`, { headers: buildAuthHeaders() });
+    setProfile((current) => ({ ...(current || {}), tax_form_status: null, tax_form_type: null, tax_form_data: null, tax_form_submitted_at: null }));
   };
 
   useEffect(() => {
@@ -592,31 +604,52 @@ export default function ContributorDashboard({
           </div>
         )}
         <section
-          className="contributor-hero contributor-rank-banner"
+          className={`contributor-hero contributor-rank-banner ${
+            branding.contributorBanner ? "" : "contributor-brand-banner"
+          }`}
+          data-has-custom-banner={Boolean(branding.contributorBanner)}
           aria-label="Contributor banner"
           style={
             branding.contributorBanner
               ? {
                   backgroundImage: `url(${API_BASE_URL}${branding.contributorBanner})`,
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
+                  backgroundRepeat: "no-repeat",
                 }
               : undefined
           }
-        />
+        >
+          {!branding.contributorBanner && (
+            <div className="contributor-brand-banner-content" aria-label="GFXunlimit brand banner">
+              <div className="brand-banner-mark">G</div>
+              <div className="brand-banner-wordmark">
+                <span className="brand-banner-white">GFX</span>
+                <span className="brand-banner-accent">UNLIMIT</span>
+              </div>
+              <div className="brand-banner-subline">
+                <span>CREATE</span>
+                <span>INSPIRE</span>
+                <span>UNLIMIT</span>
+              </div>
+            </div>
+          )}
+        </section>
         {section === "tax" && (
           <section className="tax-center-section">
             <div className="tax-center-heading">
               <h2>Tax center</h2>
             </div>
-            <div className="tax-center-block">
+            {profile?.tax_form_status && <div className="tax-center-block">
               <div className="tax-block-heading">
                 <h3>Your most recent document</h3>
               </div>
-              {profile?.tax_form_status === "submitted" ? (
+              {profile.tax_form_status === "submitted" || profile.tax_form_status === "rejected" ? (
                 <div className="tax-document-row">
                   <span>
                     Form {profile.tax_form_type || "W-8BEN"}{" "}
                     <strong>
-                      submitted
+                      {profile.tax_form_status === "submitted" ? "submitted" : statusLabel(profile.tax_form_status)}
                       {profile.tax_form_submitted_at
                         ? ` on ${dateLabel(profile.tax_form_submitted_at)}`
                         : ""}
@@ -630,26 +663,37 @@ export default function ContributorDashboard({
                         state: {
                           formType: profile.tax_form_type || "W-8BEN",
                           formData: profile.tax_form_data || {},
+                          readOnly: true,
                         },
                       })
                     }
                   >
                     View
                   </button>
+                  <button type="button" className="tax-link-button" onClick={() => navigate(profile.tax_form_type === "W-9" ? "/dashboard?tab=filltaxform1" : "/dashboard?tab=filltaxform", { state: { formType: profile.tax_form_type || "W-8BEN", formData: profile.tax_form_data || {} } })}>
+                    Edit
+                  </button>
+                  <button type="button" className="tax-link-button" onClick={deleteTaxForm}>
+                    Delete
+                  </button>
+                </div>
+              ) : profile.tax_form_status === "approved" ? (
+                <div className="tax-document-row">
+                  <span>
+                    Form {profile.tax_form_type || "W-8BEN"} <strong>Approved</strong>
+                    {profile.tax_form_submitted_at ? ` on ${dateLabel(profile.tax_form_submitted_at)}` : ""}
+                    <small>Expires in {taxFormExpiresIn(profile.tax_form_submitted_at)}</small>
+                  </span>
+                  <button type="button" className="tax-link-button" onClick={() => navigate("/dashboard?tab=filltaxform_review", { state: { formType: profile.tax_form_type || "W-8BEN", formData: profile.tax_form_data || {}, readOnly: true } })}>
+                    View
+                  </button>
                 </div>
               ) : (
                 <div className="tax-document-row">
-                  <span>No tax form submitted yet.</span>
-                  <button
-                    type="button"
-                    className="tax-link-button"
-                    onClick={() => setTaxFormEditing(true)}
-                  >
-                    Submit a tax form
-                  </button>
+                  <span>Form {profile.tax_form_type || "W-8BEN"} <strong>{statusLabel(profile.tax_form_status)}</strong></span>
                 </div>
               )}
-            </div>
+            </div>}
             <div className="tax-center-block">
               <div className="tax-block-heading">
                 <h3>Your tax profile</h3>

@@ -92,3 +92,19 @@
 .dark-mode [style*="border: 1px solid #e2e8f0"] {
   border-color: #4b5563 !important;
 }
+
+.dark-mode .tax-template-preview,
+.dark-mode .tax-template-preview div,
+.dark-mode .tax-template-preview p {
+  color: #1f2937 !important;
+}
+
+.dark-mode .tax-template-preview > div:first-child,
+.dark-mode .tax-template-preview > div:first-child div,
+.dark-mode .tax-template-preview > div:first-child h4 {
+  color: #fff !important;
+}
+
+.dark-mode .tax-template-preview > div:last-child {
+  color: #64748b !important;
+}
