@@ -1,6 +1,24 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { processDueScheduledEmails } = require('./scheduler');
+const { processDueScheduledBlogs, processDueScheduledEmails } = require('./scheduler');
+
+test('publishes scheduled blogs whose publish time has passed', async () => {
+  const calls = [];
+  const fakePool = {
+    async query(text, params) {
+      calls.push({ text, params });
+      return { rows: [{ id: 12 }] };
+    }
+  };
+
+  const now = new Date('2026-09-19T20:00:00Z');
+  const result = await processDueScheduledBlogs({ poolRef: fakePool, now });
+
+  assert.deepEqual(result.rows, [{ id: 12 }]);
+  assert.match(calls[0].text, /status = 'scheduled'/);
+  assert.match(calls[0].text, /publish_at <= \$1/);
+  assert.equal(calls[0].params[0], now);
+});
 
 test('processes due scheduled emails by sending them directly when no queue worker is available', async () => {
   const calls = [];

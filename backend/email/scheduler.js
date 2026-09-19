@@ -2,6 +2,19 @@ const { sendMail, renderTemplate } = require('./mailer');
 const { buildDailyWebsiteSummary, renderDailyWebsiteSummaryHtml } = require('./routes');
 const { getDailyReportSubject } = require('./daily-report-subject');
 
+async function processDueScheduledBlogs({
+  poolRef = require('../db'),
+  now = new Date(),
+} = {}) {
+  return poolRef.query(
+    `UPDATE blog_drafts
+     SET status = 'published', updated_at = NOW()
+     WHERE status = 'scheduled' AND publish_at IS NOT NULL AND publish_at <= $1
+     RETURNING id`,
+    [now]
+  );
+}
+
 async function processDueDailyReportSchedules({
   poolRef = require('../db'),
   sendMailImpl = sendMail,
@@ -144,4 +157,4 @@ async function processDueScheduledEmails({
   }
 }
 
-module.exports = { processDueScheduledEmails, processDueDailyReportSchedules };
+module.exports = { processDueScheduledBlogs, processDueScheduledEmails, processDueDailyReportSchedules };

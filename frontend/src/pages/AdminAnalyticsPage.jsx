@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import BlogAnalyticsPanel from "./BlogAnalyticsPanel";
 
 const sections = [
   { key: "executive", label: "Executive Dashboard" },
@@ -10,7 +11,8 @@ const sections = [
   { key: "contributors", label: "Contributor Analytics" },
   { key: "assets", label: "Asset Analytics" },
   { key: "downloads", label: "Download Analytics" },
-  { key: "support", label: "Support Analytics" }
+  { key: "support", label: "Support Analytics" },
+  { key: "blog", label: "Blog Analytics" }
 ];
 
 const getIsDarkMode = () => typeof document !== "undefined" && document.body.classList.contains("dark-mode");
@@ -860,6 +862,7 @@ export default function AdminAnalyticsPage() {
     assets: "Asset inventory, quality, visibility, and engagement metrics.",
     downloads: "Download growth and distribution across assets, categories, contributors, customers, geography, and licenses.",
     support: "Support workload, responsiveness, satisfaction, and operational health.",
+    blog: "Views, visitors, reading behavior, links, traffic sources, audience, and conversions from published blog content.",
     geographic: "Regional revenue, order, download, customer, and contributor distribution by geography.",
     device: "Device and environment analytics for usage and accessibility.",
     performance: "Operational health, performance, reliability, storage, caching, and delivery metrics.",
@@ -1090,7 +1093,9 @@ export default function AdminAnalyticsPage() {
             <div style={{ padding: "24px", borderRadius: "24px", background: theme.surface, border: `1px solid ${theme.border}`, color: theme.error, boxShadow: theme.shadow }}>{error}</div>
           ) : (
             <>
-              {activeSection === "executive" ? (
+              {activeSection === "blog" ? (
+                <BlogAnalyticsPanel filters={filters} theme={theme} />
+              ) : activeSection === "executive" ? (
                 <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
                   {sectionMetrics.executive.map((metric) => renderKpiCard(metric.title, metric.value, metric.subtitle))}
                 </div>

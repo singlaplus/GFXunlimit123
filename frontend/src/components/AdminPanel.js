@@ -5740,8 +5740,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     const uploadLimit = hasConfiguredLimit ? getUploadLimitDisplay(permissions) : "20 GB";
                     return `Bulk upload: ${permissions.bulk_upload ? "Yes" : "No"}\nUpload limit: ${uploadLimit}`;
                   })() },
-                  { label: "Created", value: selectedContributor.created_at ? new Date(selectedContributor.created_at).toLocaleDateString() : "-" },
-                  { label: "Deletion requested", value: selectedContributor.deletion_requested_at ? new Date(selectedContributor.deletion_requested_at).toLocaleString() : "-" },
+                  { label: "Joining date", value: selectedContributor.created_at ? new Date(selectedContributor.created_at).toLocaleDateString() : "-" },
                   { label: "Reputation score", value: selectedContributor.reputation_score ?? selectedContributor.reputation ?? selectedContributor.score ?? "-" },
                   { label: "Total earnings", value: selectedContributor.total_earnings ?? selectedContributor.earnings ?? "-" },
                   { label: "Total downloads", value: selectedContributor.total_downloads ?? selectedContributor.downloads ?? "-" },
@@ -5750,7 +5749,6 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   { label: "Total views", value: selectedContributor.total_views ?? selectedContributor.views ?? "-" },
                   { label: "Loyalty points", value: selectedContributor.loyalty_points ?? selectedContributor.loyalty ?? "-" },
                   { label: "Unpaid earnings", value: selectedContributor.unpaid_earnings ?? selectedContributor.unpaid ?? "-" },
-                  { label: "Tax Form Submitted", value: selectedContributor.tax_form_submitted ? "Yes" : "No" },
                   { label: "Orders", value: Number(selectedContributor.orders ?? 0) },
                   { label: "Approved", value: Number(selectedContributor.approved ?? 0) },
                   { label: "Pending", value: Number(selectedContributor.pending ?? 0) },
@@ -6565,6 +6563,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             <h3>Contributor Details</h3>
             <p style={{ color: isDarkMode ? "#cbd5e1" : "#555", margin: "8px 0 16px" }}>Manage contributor accounts and submitted tax information.</p>
             <div style={{ display: "grid", gap: "10px" }}>
+              <button type="button" onClick={() => { window.location.href = "http://localhost:3000/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=viewcontributor"; }} style={{ background: "#1565c0", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer" }}>View Contributors</button>
               <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=contributordetails`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer" }}>Contributor Details</button>
               <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=controls_taxforms`; }} style={{ background: "#43a047", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer" }}>Tax Forms</button>
             </div>
@@ -7131,13 +7130,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 { label: "Cookie Policy", href: "/cookie-policy" },
                 { label: "Help Center", href: "/help-center" },
                 { label: "Developers", href: "/developers" },
-                { label: "Partners", href: "/partners" }
+                { label: "Partners", href: "/partners" },
+                { label: "Blog", href: "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=controls_blog" }
               ].map((link) => (
                 <a
                   key={link.href}
                   href={link.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  target={link.label === "Blog" ? undefined : "_blank"}
+                  rel={link.label === "Blog" ? undefined : "noopener noreferrer"}
                   style={{
                     background: "#1976d2",
                     color: "white",

@@ -76,6 +76,7 @@ describe("AdminPanel collection controls", () => {
 
     expect(await screen.findByRole("heading", { name: /contributor details/i })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /customer details/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^view contributors$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^contributor details$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^tax forms$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^customer details$/i })).toBeInTheDocument();
@@ -748,6 +749,16 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByRole("button", { name: /daily report settings/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /preview daily report/i })).toBeInTheDocument();
     expect(screen.getByText(/automated daily website summary email for admins and selected recipients/i)).toBeInTheDocument();
+  });
+
+  it("provides a blog link that opens in the same page from legal resources", async () => {
+    render(<AdminPanel />);
+
+    const blogLink = screen.getByRole("link", { name: "Blog" });
+
+    expect(blogLink).toHaveAttribute("href", "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=controls_blog");
+    expect(blogLink).not.toHaveAttribute("target");
+    expect(blogLink).not.toHaveAttribute("rel");
   });
 
   it("renders currency breakdowns without duplicate React keys", async () => {

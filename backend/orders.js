@@ -393,6 +393,64 @@ async function registerOrderRoutes(app, pool, verifyAdmin, authenticateToken) {
       const limit = Math.min(100, Math.max(5, Number(req.query.limit) || 20));
       const offset = (page - 1) * limit;
       const customerId = Number(req.user.id);
+      const userResult = await pool.query("SELECT role FROM users WHERE id = $1", [customerId]);
+      const isContributor = String(userResult.rows[0]?.role || "").toLowerCase() === "contributor";
+
+      if (isContributor) {
+        const totalResult = await pool.query(
+          `SELECT COUNT(DISTINCT o.id)::int AS total
+           FROM orders o
+           INNER JOIN order_items oi ON oi.order_id = o.id
+           WHERE oi.contributor_id = $1`,
+          [customerId]
+        );
+        const ordersResult = await pool.query(`
+          SELECT
+            o.id,
+            o.order_number,
+            o.invoice_number,
+            o.created_at,
+            (SELECT STRING_AGG(DISTINCT COALESCE(oi.title, i.title, 'Untitled asset'), ', ')
+             FROM order_items oi
+             LEFT JOIN images i ON i.id = oi.asset_id
+             WHERE oi.order_id = o.id) AS asset_names,
+            (SELECT STRING_AGG(DISTINCT TO_CHAR(COALESCE(i.created_at, oi.created_at), 'Mon DD, YYYY'), ', ')
+             FROM order_items oi
+             LEFT JOIN images i ON i.id = oi.asset_id
+             WHERE oi.order_id = o.id) AS asset_upload_dates,
+            o.order_status,
+            o.payment_status,
+            o.refund_status,
+            o.total_amount,
+            COALESCE((
+              SELECT SUM(e.amount)
+              FROM earnings e
+              WHERE e.order_id = o.id
+                AND e.contributor_id = $1
+                AND e.status <> 'rejected'
+                AND e.amount > 0
+            ), 0)::numeric AS contributor_earnings,
+            o.currency,
+            o.order_type,
+            o.assets_count,
+            o.downloads_count
+          FROM orders o
+          INNER JOIN order_items oi ON oi.order_id = o.id
+          WHERE oi.contributor_id = $1
+          GROUP BY o.id
+          ORDER BY o.created_at DESC
+          LIMIT $2
+          OFFSET $3
+        `, [customerId, limit, offset]);
+
+        return res.json({
+          orders: ordersResult.rows,
+          total: totalResult.rows[0]?.total || 0,
+          page,
+          limit,
+          is_contributor: true,
+        });
+      }
 
       const totalResult = await pool.query(`SELECT COUNT(*)::int AS total FROM orders WHERE customer_id = $1`, [customerId]);
       const ordersResult = await pool.query(`
@@ -401,6 +459,14 @@ async function registerOrderRoutes(app, pool, verifyAdmin, authenticateToken) {
           order_number,
           invoice_number,
           created_at,
+          (SELECT STRING_AGG(DISTINCT COALESCE(oi.title, i.title, 'Untitled asset'), ', ')
+           FROM order_items oi
+           LEFT JOIN images i ON i.id = oi.asset_id
+           WHERE oi.order_id = orders.id) AS asset_names,
+          (SELECT STRING_AGG(DISTINCT TO_CHAR(COALESCE(i.created_at, oi.created_at), 'Mon DD, YYYY'), ', ')
+           FROM order_items oi
+           LEFT JOIN images i ON i.id = oi.asset_id
+           WHERE oi.order_id = orders.id) AS asset_upload_dates,
           order_status,
           payment_status,
           refund_status,
@@ -416,7 +482,7 @@ async function registerOrderRoutes(app, pool, verifyAdmin, authenticateToken) {
         OFFSET $3
       `, [customerId, limit, offset]);
 
-      res.json({ orders: ordersResult.rows, total: totalResult.rows[0]?.total || 0, page, limit });
+      res.json({ orders: ordersResult.rows, total: totalResult.rows[0]?.total || 0, page, limit, is_contributor: false });
     } catch (err) {
       console.error("Failed to load customer orders", err);
       res.status(500).json({ error: "Failed to load customer orders" });
@@ -435,7 +501,28 @@ async function registerOrderRoutes(app, pool, verifyAdmin, authenticateToken) {
         return res.status(404).json({ error: "Order not found" });
       }
 
-      if (Number(orderDetail.order.customer_id) !== Number(req.user.id)) {
+      const userResult = await pool.query("SELECT role FROM users WHERE id = $1", [req.user.id]);
+      const isContributor = String(userResult.rows[0]?.role || "").toLowerCase() === "contributor";
+      let hasAccess = Number(orderDetail.order.customer_id) === Number(req.user.id);
+
+      if (isContributor) {
+        const ownershipResult = await pool.query(
+          `SELECT 1
+           FROM order_items
+           WHERE order_id = $1 AND contributor_id = $2
+           LIMIT 1`,
+          [orderId, req.user.id]
+        );
+        hasAccess = ownershipResult.rows.length > 0;
+
+        if (hasAccess) {
+          orderDetail.items = orderDetail.items.filter(
+            (item) => Number(item.contributor_id) === Number(req.user.id)
+          );
+        }
+      }
+
+      if (!hasAccess) {
         return res.status(403).json({ error: "Access denied" });
       }
 

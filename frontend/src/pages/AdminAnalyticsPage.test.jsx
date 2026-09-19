@@ -7,6 +7,7 @@ jest.mock("axios");
 describe("AdminAnalyticsPage", () => {
   beforeEach(() => {
     localStorage.setItem("token", "demo-admin-token");
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ overview: {}, timeline: [], topBlogs: [] }) });
     axios.get.mockResolvedValue({
       data: {
         summary: {
@@ -55,6 +56,15 @@ describe("AdminAnalyticsPage", () => {
     expect(await screen.findByText("Total Revenue")).toBeInTheDocument();
     expect(await screen.findByText("Active Customers")).toBeInTheDocument();
     expect(screen.getAllByText("Executive Dashboard").length).toBeGreaterThan(0);
+  });
+
+  it("opens the integrated Blog Analytics section", async () => {
+    render(<AdminAnalyticsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Blog Analytics" }));
+
+    expect(await screen.findByText("Real visitor, engagement, link, and conversion activity for the selected range.")).toBeInTheDocument();
+    expect(screen.getByText("Total Blog Views")).toBeInTheDocument();
   });
 
   it("renders executive KPI cards and revenue analytics metric groups when the sidebar is clicked", async () => {

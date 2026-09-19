@@ -9,9 +9,33 @@ function formatCurrency(value, currency = "USD") {
   return `${currency} ${Number(value).toFixed(2)}`;
 }
 
+function formatDetailedDate(dateString) {
+  if (!dateString) return "—";
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatDetailedTime(dateString) {
+  if (!dateString) return "—";
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export default function OrderHistoryPage({ darkMode = false }) {
   const isDarkMode = Boolean(darkMode);
   const [orders, setOrders] = useState([]);
+  const [isContributor, setIsContributor] = useState(false);
   const [orderDetail, setOrderDetail] = useState(null);
   const [page, setPage] = useState(1);
   const [limit] = useState(20);
@@ -59,6 +83,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
         .then((res) => {
           setOrders(res.data?.orders || []);
           setTotal(res.data?.total || 0);
+          setIsContributor(Boolean(res.data?.is_contributor));
           setError(null);
         })
         .catch((err) => {
@@ -66,6 +91,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
           setError(err.response?.data?.error || "Failed to load orders.");
           setOrders([]);
           setTotal(0);
+          setIsContributor(false);
         })
         .finally(() => setLoading(false));
     }
@@ -344,51 +370,96 @@ export default function OrderHistoryPage({ darkMode = false }) {
             <p>Loading your orders...</p>
           ) : (
             <>
-              {rowsToShow.length === 0 ? (
-                <p>You have no orders yet.</p>
-              ) : (
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        <th style={{ textAlign: "left", padding: "12px", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.25)" : "1px solid #ddd" }}>Date</th>
-                        <th style={{ textAlign: "left", padding: "12px", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.25)" : "1px solid #ddd" }}>Order</th>
-                        <th style={{ textAlign: "left", padding: "12px", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.25)" : "1px solid #ddd" }}>Invoice</th>
-                        <th style={{ textAlign: "left", padding: "12px", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.25)" : "1px solid #ddd" }}>Status</th>
-                        <th style={{ textAlign: "right", padding: "12px", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.25)" : "1px solid #ddd" }}>Total</th>
-                        <th style={{ textAlign: "center", padding: "12px", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.25)" : "1px solid #ddd" }}>Action</th>
+              <div
+                style={{
+                  overflowX: "auto",
+                  border: isDarkMode ? "1px solid rgba(148,163,184,0.18)" : "1px solid #e2e8f0",
+                  borderRadius: "18px",
+                  background: isDarkMode ? "#111827" : "#ffffff",
+                  boxShadow: "0 12px 28px rgba(15, 23, 42, 0.04)",
+                }}
+              >
+                <table style={{ width: "100%", borderCollapse: "collapse", borderSpacing: 0, minWidth: "920px" }}>
+                  <thead>
+                    <tr style={{ background: isDarkMode ? "rgba(15,23,42,0.92)" : "#0f172a" }}>
+                      <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Order date</th>
+                      <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Asset</th>
+                      <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Upload date</th>
+                      <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Order</th>
+                      <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Invoice</th>
+                      <th style={{ textAlign: "right", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>{isContributor ? "Contributor earning" : "Total"}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rowsToShow.length === 0 ? (
+                      <tr style={{ background: isDarkMode ? "rgba(148, 163, 184, 0.04)" : "#f8fafc" }}>
+                        <td
+                          colSpan={6}
+                          style={{
+                            padding: "16px 12px",
+                            textAlign: "center",
+                            color: isDarkMode ? "#cbd5e1" : "#475569",
+                            fontSize: "0.82rem",
+                            letterSpacing: "0.02em",
+                            borderTop: isDarkMode ? "1px solid rgba(148,163,184,0.2)" : "1px solid #e2e8f0",
+                            borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.2)" : "1px solid #e2e8f0",
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: "inline-block",
+                              padding: "5px 10px",
+                              borderRadius: "999px",
+                              border: isDarkMode ? "1px solid rgba(148,163,184,0.35)" : "1px solid #dbe3ed",
+                              background: isDarkMode ? "rgba(15, 23, 42, 0.75)" : "#eef3f8",
+                              fontWeight: 600,
+                              color: isDarkMode ? "#e2e8f0" : "#475569",
+                              lineHeight: 1.2,
+                            }}
+                          >
+                            No data available
+                          </span>
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {rowsToShow.map((order) => (
-                        <tr key={order.id} style={{ borderTop: isDarkMode ? "1px solid rgba(148,163,184,0.15)" : "1px solid #f2f2f2", backgroundColor: isDarkMode ? "transparent" : "undefined" }}>
-                          <td style={{ padding: "12px" }}>{new Date(order.created_at).toLocaleDateString()}</td>
-                          <td style={{ padding: "12px" }}>{order.order_number}</td>
-                          <td style={{ padding: "12px" }}>{order.invoice_number || "—"}</td>
-                          <td style={{ padding: "12px" }}>{order.order_status}</td>
-                          <td style={{ padding: "12px", textAlign: "right" }}>{formatCurrency(order.total_amount, order.currency)}</td>
-                          <td style={{ padding: "12px", textAlign: "center" }}>
-                            <button
-                              type="button"
-                              onClick={() => goToOrder(order.id)}
-                              style={{
-                                padding: "8px 12px",
-                                borderRadius: "999px",
-                                border: isDarkMode ? "1px solid rgba(31,111,235,0.5)" : "1px solid #1f6feb",
-                                background: "#1f6feb",
-                                color: "white",
-                                cursor: "pointer",
-                              }}
-                            >
-                              View
-                            </button>
+                    ) : (
+                      rowsToShow.map((order, index) => (
+                        <tr
+                          key={order.id}
+                          style={{
+                            background: index % 2 === 0
+                              ? isDarkMode ? "rgba(148,163,184,0.02)" : "#ffffff"
+                              : isDarkMode ? "rgba(148,163,184,0.05)" : "#f8fafc",
+                            borderTop: isDarkMode ? "1px solid rgba(148,163,184,0.08)" : "1px solid #f1f5f9",
+                          }}
+                        >
+                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem" }}>
+                            <div style={{ fontWeight: 700 }}>{formatDetailedDate(order.created_at)}</div>
+                            <div style={{ marginTop: "4px", fontSize: "0.75rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{formatDetailedTime(order.created_at)}</div>
+                          </td>
+                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem" }}>
+                            <div style={{ fontWeight: 700, maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{order.asset_names || "—"}</div>
+                          </td>
+                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem" }}>
+                            <div style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.82rem" }}>{order.asset_upload_dates || "—"}</div>
+                          </td>
+                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem", fontWeight: 650 }}>
+                            <div style={{ fontWeight: 700 }}>{order.order_number || "—"}</div>
+                            <div style={{ marginTop: "4px", fontSize: "0.72rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{order.order_type || "Purchase"}</div>
+                          </td>
+                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.82rem" }}>
+                            <div style={{ fontWeight: 600, color: isDarkMode ? "#e2e8f0" : "#0f172a" }}>{order.invoice_number || "—"}</div>
+                            <div style={{ marginTop: "4px", fontSize: "0.72rem" }}>{order.assets_count ?? 0} item{(order.assets_count ?? 0) === 1 ? "" : "s"}</div>
+                          </td>
+                          <td style={{ padding: "10px 14px", textAlign: "right", color: isDarkMode ? "#f8fafc" : "#0f172a", fontSize: "0.92rem", fontWeight: 700 }}>
+                            <div>{formatCurrency(isContributor ? order.contributor_earnings : order.total_amount, order.currency)}</div>
+                            <div style={{ marginTop: "4px", fontSize: "0.72rem", color: isDarkMode ? "#cbd5e1" : "#64748b", fontWeight: 600 }}>{order.currency || "USD"}</div>
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
               {total > limit && (
                 <Pagination
                   currentPage={page}

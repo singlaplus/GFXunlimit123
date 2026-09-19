@@ -446,6 +446,35 @@ describe('AppHeader customer navigation', () => {
     expect(screen.getByText(/unpaid: ₹125.50/i)).toBeInTheDocument();
   });
 
+  it('disables unpaid payout button while unpaid earnings are below 100', () => {
+    localStorage.setItem('token', 'demo-token');
+    localStorage.setItem('userRole', 'contributor');
+
+    render(
+      <AppHeader
+        showNotifications={false}
+        setShowNotifications={jest.fn()}
+        notificationCount={0}
+        setNotificationCount={jest.fn()}
+        setShowLoginModal={jest.fn()}
+        setShowJoinModal={jest.fn()}
+        showLoginModal={false}
+        showJoinModal={false}
+        joinModalAccountType=""
+        setJoinModalAccountType={jest.fn()}
+        darkMode={false}
+        notifications={[]}
+        setActivePage={jest.fn()}
+        setDarkMode={jest.fn()}
+        userRole="contributor"
+        earningsStats={{ total_earnings: 99.99 }}
+      />
+    );
+
+    const button = screen.getByRole('button', { name: /unpaid: ₹99.99/i });
+    expect(button).toBeDisabled();
+  });
+
   it('clears unpaid earnings after a successful payout submission', async () => {
     localStorage.setItem('token', 'demo-token');
     localStorage.setItem('userRole', 'contributor');

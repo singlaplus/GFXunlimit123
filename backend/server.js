@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const AdmZip = require("adm-zip");
 const axios = require("axios");
 const sharp = require("sharp");
+const sanitizeHtml = require("sanitize-html");
 const { sendMail } = require("./email/mailer");
 const { normalizeRecipients, resolveNotificationEventKey, buildNotificationEmailContent } = require("./email/notificationRules");
 const { createMessagingRouter, createAssetNotifications, createCouponNotifications, createDirectMessage, recordEvent, recordBusinessEvent, publishEvent } = require("./messaging");
@@ -38,7 +39,22 @@ const BACKUP_ROOT = path.join(__dirname, "backup");
 const JWT_SECRET = process.env.JWT_SECRET || "secretkey";
 const LEGACY_JWT_SECRET = "secretkey";
 
-async function invalidateSessionsOnStartup() {
+const BLOG_HTML_OPTIONS = {
+  allowedTags: ["p", "br", "strong", "b", "em", "i", "u", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "a", "img", "span", "div"],
+  allowedAttributes: {
+    a: ["href", "target", "rel", "title"],
+    img: ["src", "alt", "title", "width", "height"],
+    "*": ["style"]
+  },
+  allowedSchemes: ["http", "https", "mailto", "tel"],
+  allowProtocolRelative: false,
+  disallowedTagsMode: "discard"
+};
+
+const sanitizeBlogContent = (content) => sanitizeHtml(String(content || ""), BLOG_HTML_OPTIONS);
+const sanitizeBlogRow = (row) => row ? { ...row, content: sanitizeBlogContent(row.content) } : row;
+
+async function ensureAuthSessionsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS auth_sessions (
       session_id TEXT PRIMARY KEY,
@@ -47,8 +63,7 @@ async function invalidateSessionsOnStartup() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `);
-  await pool.query("DELETE FROM auth_sessions");
-  console.log("All existing authentication sessions invalidated on startup.");
+  console.log("Authentication sessions preserved across backend startup.");
 }
 
 function verifyJwtToken(token) {
@@ -2133,10 +2148,11 @@ app.get("/uploads/processed", async (req, res) => {
 // Scheduled emails runner (checks DB every minute)
 try {
   const cron = require('node-cron');
-  const { processDueScheduledEmails, processDueDailyReportSchedules } = require('./email/scheduler');
+  const { processDueScheduledBlogs, processDueScheduledEmails, processDueDailyReportSchedules } = require('./email/scheduler');
 
   const runScheduledCheck = async () => {
     try {
+      await processDueScheduledBlogs({ poolRef: pool, now: new Date() });
       await processDueScheduledEmails({ poolRef: pool, now: new Date() });
       await processDueDailyReportSchedules({ poolRef: pool, now: new Date() });
       await sendDailyWebsiteSummary({ poolRef: pool, now: new Date() });
@@ -2156,6 +2172,7 @@ try {
           return;
         }
         lastRunAt = now;
+        await processDueScheduledBlogs({ poolRef: pool, now });
         await processDueScheduledEmails({ poolRef: pool, now });
         await processDueDailyReportSchedules({ poolRef: pool, now });
         await sendDailyWebsiteSummary({ poolRef: pool, now });
@@ -3582,6 +3599,158 @@ app.post("/admin/card-layout-preferences", verifyAdmin, async (req, res) => {
   } catch (err) {
     console.error("Failed to save card layout preferences", err.message || err);
     res.status(500).json({ error: err.message || "Failed to save preferences" });
+  }
+});
+
+app.get("/admin/blog/drafts", verifyAdmin, async (req, res) => {
+  try {
+    const requestedStatus = ["published", "scheduled"].includes(req.query.status) ? req.query.status : "draft";
+    const result = await pool.query(`
+                  SELECT blog_drafts.id, blog_drafts.title, blog_drafts.slug, blog_drafts.excerpt,
+                    blog_drafts.content, blog_drafts.category, blog_drafts.tags, blog_drafts.author,
+                    blog_drafts.status, blog_drafts.publish_at AS "publishAt",
+                    blog_drafts.seo_title AS "seoTitle", blog_drafts.seo_description AS "seoDescription",
+                    blog_drafts.canonical_url AS "canonicalUrl", blog_drafts.allow_comments AS "allowComments",
+                    blog_drafts.featured, blog_drafts.created_at AS "createdAt",
+                    blog_drafts.updated_at AS "updatedAt",
+               users.username AS "addedBy"
+            FROM blog_drafts
+            LEFT JOIN users ON users.id = blog_drafts.created_by
+      WHERE blog_drafts.status = $1
+      ORDER BY blog_drafts.updated_at DESC, blog_drafts.id DESC
+    `, [requestedStatus]);
+    res.json({ drafts: result.rows.map(sanitizeBlogRow) });
+  } catch (error) {
+    console.error("Failed to load blog drafts", error.message || error);
+    res.status(500).json({ error: "Failed to load blog drafts" });
+  }
+});
+
+app.get("/blog/posts", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT blog_drafts.id, blog_drafts.title, blog_drafts.slug, blog_drafts.excerpt,
+             blog_drafts.content, blog_drafts.category, blog_drafts.tags, blog_drafts.author,
+             blog_drafts.publish_at AS "publishAt", blog_drafts.updated_at AS "updatedAt",
+             users.username AS "addedBy"
+      FROM blog_drafts
+      LEFT JOIN users ON users.id = blog_drafts.created_by
+      WHERE blog_drafts.status = 'published'
+      ORDER BY COALESCE(blog_drafts.publish_at, blog_drafts.updated_at) DESC, blog_drafts.id DESC
+    `);
+    res.json({ posts: result.rows.map(sanitizeBlogRow) });
+  } catch (error) {
+    console.error("Failed to load public blog posts", error.message || error);
+    res.status(500).json({ error: "Failed to load public blog posts" });
+  }
+});
+
+app.get("/blog/posts/:id", async (req, res) => {
+  try {
+    const blogId = Number(req.params.id);
+    if (!Number.isInteger(blogId)) {
+      return res.status(400).json({ error: "Invalid blog id" });
+    }
+
+    const result = await pool.query(`
+      SELECT blog_drafts.id, blog_drafts.title, blog_drafts.slug, blog_drafts.excerpt,
+             blog_drafts.content, blog_drafts.category, blog_drafts.tags, blog_drafts.author,
+             blog_drafts.publish_at AS "publishAt", blog_drafts.updated_at AS "updatedAt",
+             users.username AS "addedBy"
+      FROM blog_drafts
+      LEFT JOIN users ON users.id = blog_drafts.created_by
+      WHERE blog_drafts.id = $1 AND blog_drafts.status = 'published'
+    `, [blogId]);
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Blog post not found" });
+    }
+
+    res.json({ post: sanitizeBlogRow(result.rows[0]) });
+  } catch (error) {
+    console.error("Failed to load public blog post", error.message || error);
+    res.status(500).json({ error: "Failed to load public blog post" });
+  }
+});
+
+app.get("/admin/blog/drafts/:id", verifyAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT blog_drafts.id, blog_drafts.title, blog_drafts.slug, blog_drafts.excerpt,
+             blog_drafts.content, blog_drafts.category, blog_drafts.tags, blog_drafts.author,
+             blog_drafts.status, blog_drafts.publish_at AS "publishAt",
+             blog_drafts.seo_title AS "seoTitle", blog_drafts.seo_description AS "seoDescription",
+             blog_drafts.canonical_url AS "canonicalUrl", blog_drafts.allow_comments AS "allowComments",
+             blog_drafts.featured, blog_drafts.created_at AS "createdAt",
+             blog_drafts.updated_at AS "updatedAt", users.username AS "addedBy"
+      FROM blog_drafts
+      LEFT JOIN users ON users.id = blog_drafts.created_by
+      WHERE blog_drafts.id = $1
+    `, [req.params.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: "Blog post not found" });
+    res.json({ draft: sanitizeBlogRow(result.rows[0]) });
+  } catch (error) {
+    console.error("Failed to load blog post", error.message || error);
+    res.status(500).json({ error: "Failed to load blog post" });
+  }
+});
+
+app.post("/admin/blog/drafts", verifyAdmin, async (req, res) => {
+  try {
+    const {
+      id, title = "", slug = "", excerpt = "", content = "", category = "", tags = "",
+      author = "", status = "draft", publishAt = null, seoTitle = "", seoDescription = "", canonicalUrl = "",
+      allowComments = true, featured = false
+    } = req.body || {};
+    const sanitizedContent = sanitizeBlogContent(content);
+    const normalizedStatus = ["draft", "published", "scheduled"].includes(status) ? status : "draft";
+    const values = [title, slug, excerpt, sanitizedContent, category, tags, author, normalizedStatus, publishAt || null, seoTitle, seoDescription, canonicalUrl, Boolean(allowComments), Boolean(featured), req.user?.id || null];
+    const result = id
+      ? await pool.query(`
+          UPDATE blog_drafts
+          SET title = $1, slug = $2, excerpt = $3, content = $4, category = $5, tags = $6,
+              author = $7, status = $8, publish_at = $9, seo_title = $10, seo_description = $11,
+              canonical_url = $12, allow_comments = $13, featured = $14, updated_at = NOW()
+          WHERE id = $15
+          RETURNING *
+        `, [...values.slice(0, 14), id])
+      : await pool.query(`
+          INSERT INTO blog_drafts(
+            title, slug, excerpt, content, category, tags, author, status, publish_at,
+            seo_title, seo_description, canonical_url, allow_comments, featured, created_by
+          ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          RETURNING *
+        `, values);
+    if (!result.rows[0]) return res.status(404).json({ error: "Draft not found" });
+    res.status(id ? 200 : 201).json({ draft: result.rows[0] });
+  } catch (error) {
+    console.error("Failed to save blog draft", error.message || error);
+    res.status(500).json({ error: "Failed to save blog draft" });
+  }
+});
+
+app.post("/admin/blog/drafts/:id/publish", verifyAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "UPDATE blog_drafts SET status = 'published', publish_at = COALESCE(publish_at, NOW()), updated_at = NOW() WHERE id = $1 AND status IN ('draft', 'scheduled', 'published') RETURNING id, status",
+      [req.params.id]
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: "Draft not found" });
+    res.json({ draft: result.rows[0] });
+  } catch (error) {
+    console.error("Failed to publish blog draft", error.message || error);
+    res.status(500).json({ error: "Failed to publish blog draft" });
+  }
+});
+
+app.delete("/admin/blog/drafts/:id", verifyAdmin, async (req, res) => {
+  try {
+    const result = await pool.query("DELETE FROM blog_drafts WHERE id = $1 RETURNING id", [req.params.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: "Draft not found" });
+    res.json({ deleted: true, id: result.rows[0].id });
+  } catch (error) {
+    console.error("Failed to delete blog draft", error.message || error);
+    res.status(500).json({ error: "Failed to delete blog draft" });
   }
 });
 
@@ -6938,6 +7107,136 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
   }
 });
 
+const BLOG_ANALYTICS_EVENTS = new Set([
+  "BLOG_VIEW", "BLOG_SCROLL", "BLOG_READING_TIME", "INTERNAL_LINK_CLICK", "EXTERNAL_LINK_CLICK",
+  "BLOG_CTA_CLICK", "BLOG_SHARE", "BLOG_COMMENT", "BLOG_SIGNUP", "BLOG_DOWNLOAD", "BLOG_PURCHASE", "BLOG_SUBSCRIPTION"
+]);
+
+const blogAnalyticsSource = (referrer) => {
+  const value = String(referrer || "").toLowerCase();
+  if (!value) return "Direct";
+  if (/google|bing|yahoo|duckduckgo/.test(value)) return "Organic Search";
+  if (/facebook|instagram|twitter|x\.com|linkedin|pinterest|reddit|whatsapp/.test(value)) return "Social";
+  if (/mail|newsletter/.test(value)) return "Email";
+  return "Referral";
+};
+
+app.post("/analytics/events", async (req, res) => {
+  try {
+    const eventType = String(req.body?.eventType || "").trim().toUpperCase();
+    if (!BLOG_ANALYTICS_EVENTS.has(eventType)) return res.status(400).json({ error: "Unsupported blog analytics event" });
+    const blogId = Number(req.body?.blogId);
+    if (!Number.isInteger(blogId) || blogId < 1) return res.status(400).json({ error: "Invalid blog id" });
+    const metadata = {
+      blog_id: String(blogId),
+      visitor_id: String(req.body?.visitorId || "").slice(0, 120),
+      session_id: String(req.body?.sessionId || "").slice(0, 120),
+      page_url: String(req.body?.pageUrl || "").slice(0, 500),
+      referrer: String(req.body?.referrer || "").slice(0, 500),
+      source: blogAnalyticsSource(req.body?.referrer),
+      device_type: String(req.body?.deviceType || "unknown").slice(0, 30),
+      country: String(req.body?.country || "Unknown").slice(0, 80),
+      ...Object.fromEntries(Object.entries(req.body?.metadata || {}).slice(0, 12).map(([key, value]) => [key, String(value).slice(0, 500)]))
+    };
+    await pool.query(
+      `INSERT INTO activity_events(event_type, description, metadata, success)
+       VALUES($1, $2, $3, TRUE)`,
+      [eventType, `Blog analytics: ${eventType}`, metadata]
+    );
+    res.status(202).json({ accepted: true });
+  } catch (error) {
+    console.error("Failed to record blog analytics event", error.message || error);
+    res.status(202).json({ accepted: false });
+  }
+});
+
+app.get("/admin/analytics/blogs", verifyAdmin, async (req, res) => {
+  try {
+    const range = String(req.query.range || "30d").trim();
+    const fromDate = String(req.query.from || "").trim();
+    const toDate = String(req.query.to || "").trim();
+    const values = [];
+    let dateClause = "e.created_at >= CURRENT_DATE - INTERVAL '30 days'";
+    if (range === "24h") dateClause = "e.created_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'";
+    if (range === "7d") dateClause = "e.created_at >= CURRENT_DATE - INTERVAL '7 days'";
+    if (range === "90d") dateClause = "e.created_at >= CURRENT_DATE - INTERVAL '90 days'";
+    if (range === "custom") {
+      const clauses = [];
+      if (fromDate) { values.push(fromDate); clauses.push(`e.created_at >= $${values.length}::date`); }
+      if (toDate) { values.push(toDate); clauses.push(`e.created_at < ($${values.length}::date + INTERVAL '1 day')`); }
+      dateClause = clauses.join(" AND ") || dateClause;
+    }
+    const eventClause = `e.event_type = ANY($${values.length + 1}::text[]) AND ${dateClause}`;
+    const eventValues = [...values, [...BLOG_ANALYTICS_EVENTS]];
+    const blogJoin = "CASE WHEN e.metadata->>'blog_id' ~ '^[0-9]+$' THEN (e.metadata->>'blog_id')::bigint END";
+    const [overview, timeline, top, categories, authors, links, sources, devices, countries, statuses] = await Promise.all([
+      pool.query(`SELECT
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS "totalViews",
+        COUNT(DISTINCT e.metadata->>'visitor_id') FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS "uniqueVisitors",
+        ROUND(AVG(NULLIF(e.metadata->>'duration_seconds', '')::numeric) FILTER (WHERE e.event_type = 'BLOG_READING_TIME'), 1)::numeric AS "averageReadingTime",
+        COUNT(*) FILTER (WHERE e.event_type IN ('BLOG_SCROLL', 'BLOG_READING_TIME'))::int AS "engagedSessions",
+        COUNT(*) FILTER (WHERE e.event_type IN ('INTERNAL_LINK_CLICK', 'EXTERNAL_LINK_CLICK'))::int AS "linkClicks",
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_CTA_CLICK')::int AS "ctaClicks",
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_SIGNUP')::int AS "signups",
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_DOWNLOAD')::int AS "downloads",
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_PURCHASE')::int AS "purchases",
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_SUBSCRIPTION')::int AS "subscriptions",
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_SHARE')::int AS "shares",
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_COMMENT')::int AS "comments"
+        FROM activity_events e WHERE ${eventClause}`, eventValues),
+      pool.query(`SELECT DATE(e.created_at) AS label,
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS views,
+        COUNT(DISTINCT e.metadata->>'visitor_id') FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS "uniqueVisitors"
+        FROM activity_events e WHERE ${eventClause} GROUP BY DATE(e.created_at) ORDER BY DATE(e.created_at)`, eventValues),
+      pool.query(`SELECT b.id, b.title, COUNT(*) FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS views,
+        COUNT(DISTINCT e.metadata->>'visitor_id') FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS "uniqueVisitors",
+        ROUND(AVG(NULLIF(e.metadata->>'duration_seconds', '')::numeric) FILTER (WHERE e.event_type = 'BLOG_READING_TIME'), 1)::numeric AS "averageReadingTime",
+        COUNT(*) FILTER (WHERE e.event_type IN ('INTERNAL_LINK_CLICK', 'EXTERNAL_LINK_CLICK'))::int AS "linkClicks",
+        COUNT(*) FILTER (WHERE e.event_type IN ('BLOG_PURCHASE', 'BLOG_SIGNUP', 'BLOG_DOWNLOAD'))::int AS conversions
+        FROM blog_drafts b LEFT JOIN activity_events e ON ${blogJoin} = b.id AND ${dateClause}
+        WHERE b.status = 'published' GROUP BY b.id, b.title ORDER BY views DESC, b.id DESC LIMIT 25` , values),
+      pool.query(`SELECT COALESCE(NULLIF(b.category, ''), 'Uncategorized') AS category, COUNT(DISTINCT b.id)::int AS articles,
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS views,
+        COUNT(DISTINCT e.metadata->>'visitor_id') FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS "uniqueVisitors",
+        COUNT(*) FILTER (WHERE e.event_type IN ('INTERNAL_LINK_CLICK', 'EXTERNAL_LINK_CLICK'))::int AS "linkClicks",
+        COUNT(*) FILTER (WHERE e.event_type IN ('BLOG_PURCHASE', 'BLOG_SIGNUP'))::int AS conversions
+        FROM blog_drafts b LEFT JOIN activity_events e ON ${blogJoin} = b.id AND ${dateClause}
+        GROUP BY COALESCE(NULLIF(b.category, ''), 'Uncategorized') ORDER BY views DESC`, values),
+      pool.query(`SELECT COALESCE(NULLIF(b.author, ''), 'Unknown') AS author, COUNT(DISTINCT b.id)::int AS articles,
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS views,
+        COUNT(DISTINCT e.metadata->>'visitor_id') FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS "uniqueVisitors",
+        COUNT(*) FILTER (WHERE e.event_type IN ('INTERNAL_LINK_CLICK', 'EXTERNAL_LINK_CLICK'))::int AS "linkClicks",
+        COUNT(*) FILTER (WHERE e.event_type IN ('BLOG_PURCHASE', 'BLOG_SIGNUP'))::int AS conversions
+        FROM blog_drafts b LEFT JOIN activity_events e ON ${blogJoin} = b.id AND ${dateClause}
+        GROUP BY COALESCE(NULLIF(b.author, ''), 'Unknown') ORDER BY views DESC`, values),
+      pool.query(`SELECT b.title AS blog, e.metadata->>'link_text' AS "linkText", e.metadata->>'destination' AS destination,
+        CASE WHEN e.event_type = 'INTERNAL_LINK_CLICK' THEN 'Internal' ELSE 'External' END AS "linkType",
+        COUNT(*)::int AS clicks, COUNT(DISTINCT e.metadata->>'visitor_id')::int AS "uniqueClickers"
+        FROM activity_events e JOIN blog_drafts b ON ${blogJoin} = b.id
+        WHERE ${eventClause} AND e.event_type IN ('INTERNAL_LINK_CLICK', 'EXTERNAL_LINK_CLICK')
+        GROUP BY b.title, e.metadata->>'link_text', e.metadata->>'destination', e.event_type ORDER BY clicks DESC LIMIT 100`, eventValues),
+      pool.query(`SELECT COALESCE(e.metadata->>'source', 'Other') AS source, COUNT(DISTINCT e.metadata->>'visitor_id')::int AS visitors,
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS views FROM activity_events e WHERE ${eventClause}
+        GROUP BY COALESCE(e.metadata->>'source', 'Other') ORDER BY visitors DESC`, eventValues),
+      pool.query(`SELECT COALESCE(e.metadata->>'device_type', 'Unknown') AS device, COUNT(DISTINCT e.metadata->>'visitor_id')::int AS visitors,
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS views FROM activity_events e WHERE ${eventClause}
+        GROUP BY COALESCE(e.metadata->>'device_type', 'Unknown') ORDER BY visitors DESC`, eventValues),
+      pool.query(`SELECT COALESCE(e.metadata->>'country', 'Unknown') AS country, COUNT(DISTINCT e.metadata->>'visitor_id')::int AS visitors,
+        COUNT(*) FILTER (WHERE e.event_type = 'BLOG_VIEW')::int AS views FROM activity_events e WHERE ${eventClause}
+        GROUP BY COALESCE(e.metadata->>'country', 'Unknown') ORDER BY visitors DESC LIMIT 100`, eventValues),
+      pool.query(`SELECT status, COUNT(*)::int AS count FROM blog_drafts GROUP BY status`)
+    ]);
+    const summary = overview.rows[0] || {};
+    const published = Number(statuses.rows.find((row) => row.status === "published")?.count || 0);
+    const drafts = Number(statuses.rows.find((row) => row.status === "draft")?.count || 0);
+    const scheduled = Number(statuses.rows.find((row) => row.status === "scheduled")?.count || 0);
+    res.json({ overview: { ...summary, publishedBlogs: published, draftBlogs: drafts, scheduledBlogs: scheduled, engagementRate: summary.totalViews ? Number((Number(summary.engagedSessions || 0) / Number(summary.totalViews) * 100).toFixed(2)) : 0 }, timeline: timeline.rows, topBlogs: top.rows, categories: categories.rows, authors: authors.rows, links: links.rows, sources: sources.rows, devices: devices.rows, countries: countries.rows, statuses: statuses.rows });
+  } catch (error) {
+    console.error("Failed to load blog analytics", error.message || error);
+    res.status(500).json({ error: "Failed to load blog analytics" });
+  }
+});
+
 app.get("/admin/analytics/dashboard", verifyAdmin, async (req, res) => {
   try {
     const range = String(req.query.range || "30d").trim();
@@ -7998,6 +8297,72 @@ app.get("/api/monthly-downloads/:userId", async (req, res) => {
   }
 
 });
+
+/* ---------------- GET RELATED IMAGES ---------------- */
+
+app.get("/images/related/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const sourceResult = await pool.query(
+      `SELECT category, collection, keywords FROM images WHERE id = $1`,
+      [id]
+    );
+
+    if (sourceResult.rows.length === 0) {
+      return res.json([]);
+    }
+
+    const source = sourceResult.rows[0];
+    const keywords = String(source.keywords || "")
+      .split(/[\s,]+/)
+      .map((keyword) => keyword.trim().toLowerCase())
+      .filter((keyword) => keyword.length > 1);
+
+    const category = String(source.category || "").trim().toLowerCase();
+    const collection = String(source.collection || "").trim().toLowerCase();
+
+    if (!category && !collection && keywords.length === 0) {
+      return res.json([]);
+    }
+
+    const related = await pool.query(
+      `
+      SELECT images.*, users.username,
+        (
+          CASE WHEN LOWER(COALESCE(images.collection, '')) = $2 AND $2 <> '' THEN 5 ELSE 0 END +
+          CASE WHEN LOWER(COALESCE(images.category, '')) = $3 AND $3 <> '' THEN 4 ELSE 0 END +
+          COALESCE((
+            SELECT COUNT(*)
+            FROM unnest($4::text[]) AS keyword
+            WHERE LOWER(COALESCE(images.keywords, '')) LIKE '%' || keyword || '%'
+          ), 0)
+        ) AS relevance
+      FROM images
+      LEFT JOIN users ON images.uploaded_by = users.id
+      WHERE images.status = 'approved'
+        AND images.id <> $1
+        AND (
+          (LOWER(COALESCE(images.collection, '')) = $2 AND $2 <> '') OR
+          (LOWER(COALESCE(images.category, '')) = $3 AND $3 <> '') OR
+          EXISTS (
+            SELECT 1
+            FROM unnest($4::text[]) AS keyword
+            WHERE LOWER(COALESCE(images.keywords, '')) LIKE '%' || keyword || '%'
+          )
+        )
+      ORDER BY relevance DESC, images.updated_at DESC, images.created_at DESC, images.id DESC
+      LIMIT 12
+      `,
+      [id, collection, category, keywords]
+    );
+
+    return res.json(related.rows);
+  } catch (err) {
+    console.error("Related images error", err);
+    return res.status(500).json({ error: "Failed to fetch related images" });
+  }
+});
+
 /* ---------------- GET SINGLE IMAGE ---------------- */
 
 app.get(
@@ -13318,6 +13683,16 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(taxMailSmtpMigration);
+      const blogDraftsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "025_blog_drafts.sql"),
+        "utf8"
+      );
+      await pool.query(blogDraftsMigration);
+      const blogAnalyticsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "026_blog_analytics.sql"),
+        "utf8"
+      );
+      await pool.query(blogAnalyticsMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);
@@ -13382,7 +13757,7 @@ const PORT = process.env.PORT || 5000;
 if (require.main === module) {
   (async () => {
     try {
-      await invalidateSessionsOnStartup();
+      await ensureAuthSessionsTable();
     } catch (error) {
       console.error("Failed to invalidate authentication sessions on startup:", error.message || error);
       process.exitCode = 1;

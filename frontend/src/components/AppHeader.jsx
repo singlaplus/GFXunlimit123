@@ -214,6 +214,7 @@ export default function AppHeader({
   const unpaidEarningsValue = unpaidEarningsCleared
     ? 0
     : Number(earningsStats?.unpaid_earnings ?? earningsStats?.total_earnings ?? 0) + requestedUnpaidEarnings;
+  const canRequestUnpaidPayout = unpaidEarningsValue >= 100;
   const creditsDropdownRef = useRef(null);
   const accountMenuRef = useRef(null);
   const displayName = (typeof window !== "undefined" && (localStorage.getItem("fullName") || localStorage.getItem("username"))) || "Account";
@@ -723,7 +724,8 @@ export default function AppHeader({
             {isContributorUser && (
               <button
                 type="button"
-                onClick={() => openPayoutModal("unpaid")}
+                onClick={() => canRequestUnpaidPayout && openPayoutModal("unpaid")}
+                disabled={!canRequestUnpaidPayout}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -736,7 +738,8 @@ export default function AppHeader({
                   marginRight: "8px",
                   whiteSpace: "nowrap",
                   border: "none",
-                  cursor: "pointer",
+                  cursor: canRequestUnpaidPayout ? "pointer" : "not-allowed",
+                  opacity: canRequestUnpaidPayout ? 1 : 0.75,
                 }}
               >
                 Unpaid: ₹{unpaidEarningsValue.toFixed(2)}

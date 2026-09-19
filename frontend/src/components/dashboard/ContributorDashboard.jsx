@@ -85,6 +85,14 @@ const taxFormExpiresIn = (submittedAt) => {
 };
 const PORTFOLIO_PAGE_SIZE = 6;
 const SOLD_ASSETS_PAGE_SIZE = 6;
+const PLACEHOLDER_SECTIONS = new Set(["trending-content"]);
+const LATEST_BLOG_POSTS = [
+  { title: "How to Build a Stronger Visual Portfolio", date: "Sep 18, 2026" },
+  { title: "Creative Trends Shaping Modern Design", date: "Sep 15, 2026" },
+  { title: "From Upload to Approval: A Contributor Guide", date: "Sep 12, 2026" },
+  { title: "Five Ways to Make Stock Assets More Useful", date: "Sep 9, 2026" },
+  { title: "Creating Consistent Work That Gets Noticed", date: "Sep 5, 2026" },
+];
 
 export default function ContributorDashboard({
   darkMode,
@@ -99,7 +107,7 @@ export default function ContributorDashboard({
 
   const [section, setSection] = useState(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
-    return tab === "account" || tab === "analytics"
+    return PLACEHOLDER_SECTIONS.has(tab) || tab === "top-performer" || tab === "blog" || tab === "account" || tab === "analytics"
       ? tab
       : tab === "earningssummary"
         ? "earnings"
@@ -181,7 +189,7 @@ export default function ContributorDashboard({
   useEffect(() => {
     const tab = new URLSearchParams(location.search).get("tab");
     setSection(
-      tab === "account" || tab === "analytics"
+      PLACEHOLDER_SECTIONS.has(tab) || tab === "top-performer" || tab === "blog" || tab === "account" || tab === "analytics"
         ? tab
         : tab === "earningssummary"
           ? "earnings"
@@ -402,6 +410,23 @@ export default function ContributorDashboard({
   );
   const unread = notifications.filter((item) => !item.is_read).length;
   const recentAssets = useMemo(() => assets.slice(0, 6), [assets]);
+  const topPerformerAssets = useMemo(
+    () =>
+      [...assets]
+        .sort((left, right) => {
+          const downloadDifference =
+            Number(right.downloads || right.download_count || 0) -
+            Number(left.downloads || left.download_count || 0);
+          if (downloadDifference !== 0) return downloadDifference;
+          const earningDifference =
+            Number(right.earnings || right.earning_amount || 0) -
+            Number(left.earnings || left.earning_amount || 0);
+          if (earningDifference !== 0) return earningDifference;
+          return Number(right.views || right.view_count || 0) - Number(left.views || left.view_count || 0);
+        })
+        .slice(0, 5),
+    [assets],
+  );
   const approvedAssets = useMemo(
     () =>
       assets.filter(
@@ -453,7 +478,11 @@ export default function ContributorDashboard({
     }
     if (key === "portfolio") {
       setPortfolioPage(1);
-      setSection("portfolio");
+      navigate("/dashboard?tab=portfolio");
+      return;
+    }
+    if (key === "top-performer" || key === "blog" || key === "trending-content") {
+      navigate(`/dashboard?tab=${key}`);
       return;
     }
     if (key === "account-settings") {
@@ -514,13 +543,16 @@ export default function ContributorDashboard({
                           ? "is-active"
                           : ""
                       }
-                      onClick={() =>
-                        group.label === "Earnings"
-                          ? setEarningsOpen((isOpen) => !isOpen)
-                          : group.label === "Insights"
-                            ? setInsightsOpen((isOpen) => !isOpen)
-                            : setAccountOpen((isOpen) => !isOpen)
-                      }
+                      onClick={() => {
+                        if (group.label === "Earnings") {
+                          setEarningsOpen((isOpen) => !isOpen);
+                        } else if (group.label === "Insights") {
+                          setInsightsOpen((isOpen) => !isOpen);
+                        } else {
+                          setAccountOpen((isOpen) => !isOpen);
+                          navigate("/dashboard?tab=account");
+                        }
+                      }}
                       aria-expanded={
                         group.label === "Earnings"
                           ? earningsOpen
@@ -635,6 +667,8 @@ export default function ContributorDashboard({
             </div>
           )}
         </section>
+        {!PLACEHOLDER_SECTIONS.has(section) && (
+          <>
         {section === "tax" && (
           <section className="tax-center-section">
             <div className="tax-center-heading">
@@ -811,9 +845,9 @@ export default function ContributorDashboard({
             <div className="contributor-section-heading">
               <div>
                 <span className="contributor-kicker">Earnings summary</span>
-                <h2>Sold asset transactions</h2>
+                <h2>Contributor earnings</h2>
               </div>
-              <span className="section-count">{soldAssets.length} sales</span>
+              <span className="section-count">{soldAssets.length} earnings</span>
             </div>
             {soldAssets.length ? (
               <>
@@ -828,7 +862,7 @@ export default function ContributorDashboard({
                       >
                         <div className="sold-asset-card-heading">
                           <span className="contributor-kicker">
-                            Sale{" "}
+                            Earning{" "}
                             {asset.sale_id ? `#${asset.sale_id}` : "record"}
                           </span>
                           <strong className="sold-asset-earnings">
@@ -849,7 +883,7 @@ export default function ContributorDashboard({
                           <div className="sold-asset-info">
                             <h3>{assetTitle}</h3>
                             <p className="sold-asset-sale-line">
-                              <strong>{assetTitle}</strong> sold for{" "}
+                              <strong>{assetTitle}</strong> contributor earning{" "}
                               <strong>{money(asset.earnings)}</strong>
                             </p>
                             <div className="sold-asset-metrics">
@@ -943,6 +977,88 @@ export default function ContributorDashboard({
                 <p>Approved contributor assets will appear here.</p>
               </div>
             )}
+          </section>
+        )}
+        {section === "top-performer" && (
+          <section className="contributor-section contributor-portfolio-section">
+            <div className="contributor-section-heading">
+              <div>
+                <span className="contributor-kicker">Insights</span>
+                <h2>Top performer</h2>
+              </div>
+              <span className="section-count">Top 5 assets</span>
+            </div>
+            {topPerformerAssets.length ? (
+              <div className="contributor-assets">
+                {topPerformerAssets.map((asset, index) => (
+                  <article
+                    className="contributor-asset"
+                    key={asset.id || asset.image_id || asset.filename}
+                  >
+                    <img
+                      src={getAssetPreviewUrl(asset, {
+                        quality: 65,
+                        watermark: false,
+                      })}
+                      alt={asset.title || "Asset preview"}
+                      loading="lazy"
+                    />
+                    <span>
+                      <strong>
+                        {index + 1}. {asset.title || asset.filename || "Untitled asset"}
+                      </strong>
+                      <small>
+                        {number(asset.downloads || asset.download_count)} downloads
+                        {asset.earnings || asset.earning_amount
+                          ? ` · ${money(asset.earnings || asset.earning_amount)} earnings`
+                          : ""}
+                      </small>
+                    </span>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="contributor-empty">
+                <h3>No assets yet</h3>
+                <p>Your top-performing assets will appear here.</p>
+              </div>
+            )}
+          </section>
+        )}
+        {section === "blog" && (
+          <section className="contributor-section contributor-portfolio-section">
+            <div className="contributor-section-heading">
+              <div>
+                <span className="contributor-kicker">Insights</span>
+                <h2>Latest from the blog</h2>
+              </div>
+              <span className="section-count">5 articles</span>
+            </div>
+            <div style={{ display: "grid", gap: "10px" }}>
+              {LATEST_BLOG_POSTS.map((post) => (
+                <a
+                  key={post.title}
+                  href="/blog"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "18px",
+                    padding: "16px 18px",
+                    color: "var(--creator-ink)",
+                    background: "var(--creator-surface)",
+                    border: "1px solid var(--creator-line)",
+                    borderRadius: "10px",
+                    textDecoration: "none",
+                  }}
+                >
+                  <strong>{post.title}</strong>
+                  <span style={{ color: "var(--creator-muted)", fontSize: "12px", whiteSpace: "nowrap" }}>
+                    {post.date}
+                  </span>
+                </a>
+              ))}
+            </div>
           </section>
         )}
         {section === "account" && (
@@ -1437,6 +1553,8 @@ export default function ContributorDashboard({
             onBack={() => setTaxW8BenOpen(false)}
             onSubmit={submitTaxForm}
           />
+        )}
+          </>
         )}
       </main>
     </div>
