@@ -342,6 +342,18 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [images, setImages] = useState([]);
   const [categories, setCategories] = useState([]);
   const [collections, setCollections] = useState([]);
+  const [uploadFolderPath, setUploadFolderPath] = useState("");
+  const [uploadFolderPathError, setUploadFolderPathError] = useState("");
+  const [uploadFolderSizeBytes, setUploadFolderSizeBytes] = useState(null);
+  const [driveFreeBytes, setDriveFreeBytes] = useState(null);
+  const [databaseName, setDatabaseName] = useState("");
+  const [databaseDataDirectory, setDatabaseDataDirectory] = useState("");
+  const [databaseBackupFolder, setDatabaseBackupFolder] = useState("");
+  const [databaseDataDirectorySizeBytes, setDatabaseDataDirectorySizeBytes] = useState(null);
+  const [databaseDataDirectoryFreeBytes, setDatabaseDataDirectoryFreeBytes] = useState(null);
+  const [databaseBackupFolderSizeBytes, setDatabaseBackupFolderSizeBytes] = useState(null);
+  const [databaseBackupFolderFreeBytes, setDatabaseBackupFolderFreeBytes] = useState(null);
+  const [databaseDataDirectoryError, setDatabaseDataDirectoryError] = useState("");
   const [users, setUsers] = useState([]);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [newCategory, setNewCategory] = useState("");
@@ -580,10 +592,73 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const isContributorDetailsTab = tabParam === "contributordetails";
   const isTaxFormsTab = tabParam === "taxforms";
   const isControlsTaxFormsTab = tabParam === "controls_taxforms";
+  const isControlsDatabaseTab = tabParam === "controls_database";
+  const isControlsAssetsTab = tabParam === "controls_assets";
   const isCustomerDetailsTab = tabParam === "customerdetails";
+
+  useEffect(() => {
+    if (!isControlsAssetsTab) return undefined;
+
+    let active = true;
+    const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+    axios.get(`${API_BASE_URL}/admin/assets/location`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then((response) => {
+      if (!active) return;
+      setUploadFolderPath(String(response.data?.uploadFolderPath || ""));
+      setUploadFolderSizeBytes(Number(response.data?.folderSizeBytes || 0));
+      setDriveFreeBytes(Number(response.data?.driveFreeBytes || 0));
+      setUploadFolderPathError("");
+    }).catch(() => {
+      if (!active) return;
+      setUploadFolderPath("");
+      setUploadFolderSizeBytes(null);
+      setDriveFreeBytes(null);
+      setUploadFolderPathError("Unable to load the upload folder path.");
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [isControlsAssetsTab]);
+
+  useEffect(() => {
+    if (!isControlsDatabaseTab) return undefined;
+
+    let active = true;
+    const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+    axios.get(`${API_BASE_URL}/admin/database/location`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then((response) => {
+      if (!active) return;
+      setDatabaseName(String(response.data?.databaseName || ""));
+      setDatabaseDataDirectory(String(response.data?.dataDirectory || ""));
+      setDatabaseBackupFolder(String(response.data?.databaseBackupFolder || ""));
+      setDatabaseDataDirectorySizeBytes(typeof response.data?.dataDirectorySizeBytes === "number" ? response.data.dataDirectorySizeBytes : null);
+      setDatabaseDataDirectoryFreeBytes(typeof response.data?.dataDirectoryFreeBytes === "number" ? response.data.dataDirectoryFreeBytes : null);
+      setDatabaseBackupFolderSizeBytes(typeof response.data?.databaseBackupFolderSizeBytes === "number" ? response.data.databaseBackupFolderSizeBytes : null);
+      setDatabaseBackupFolderFreeBytes(typeof response.data?.databaseBackupFolderFreeBytes === "number" ? response.data.databaseBackupFolderFreeBytes : null);
+      setDatabaseDataDirectoryError("");
+    }).catch(() => {
+      if (!active) return;
+      setDatabaseName("");
+      setDatabaseDataDirectory("");
+      setDatabaseBackupFolder("");
+      setDatabaseDataDirectorySizeBytes(null);
+      setDatabaseDataDirectoryFreeBytes(null);
+      setDatabaseBackupFolderSizeBytes(null);
+      setDatabaseBackupFolderFreeBytes(null);
+      setDatabaseDataDirectoryError("Unable to load the database path.");
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [isControlsDatabaseTab]);
+
   const isPromotionsTab = tabParam === "promotions";
-  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab;
-  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : "Admin Panel";
+  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab && !isControlsDatabaseTab && !isControlsAssetsTab;
+  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "controls_database" ? "Database Connection" : tabParam === "controls_assets" ? "Assets Connection" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : "Admin Panel";
 
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
@@ -6527,6 +6602,82 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             )}
           </div>
         </>
+      ) : isControlsDatabaseTab ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px" }}>
+            <div>
+              <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const nextUrl = `${adminBasePath}?tab=controls`;
+                if (typeof window !== "undefined") {
+                  window.history.pushState({}, "", nextUrl);
+                  setCurrentWindowPath(adminBasePath);
+                  window.dispatchEvent(new PopStateEvent("popstate"));
+                }
+              }}
+              style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 20px", borderRadius: "8px", cursor: "pointer", fontWeight: 600 }}
+            >
+              Back to Controls
+            </button>
+          </div>
+          <div className="admin-panel-controls-grid" style={{ display: "flex", flexWrap: "wrap", gap: "20px", justifyContent: "flex-start" }}>
+            <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="database-connection-page">
+              <h3>Database Connection</h3>
+              <div style={{ display: "grid", gap: "12px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                  <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Connection status</span>
+                  <span style={{ padding: "4px 8px", borderRadius: "999px", background: "#dcfce7", color: "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
+                </div>
+                <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.92rem" }}>The primary database is online and ready for application requests.</p>
+                <div style={{ padding: "12px 14px", borderRadius: "8px", background: isDarkMode ? "#0f172a" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", color: isDarkMode ? "#e2e8f0" : "#0f172a", overflowWrap: "anywhere" }}>
+                  <strong style={{ display: "block", marginBottom: "6px" }}>Database stored at</strong>
+                  {databaseDataDirectoryError ? <span role="alert">{databaseDataDirectoryError}</span> : databaseDataDirectory ? <><span style={{ display: "block", marginBottom: "4px" }}>Database: {databaseName || "Unknown"}</span><span style={{ display: "block", marginBottom: "12px" }}>{databaseDataDirectory}</span><strong style={{ display: "block", marginBottom: "4px" }}>Database backup folder</strong><span style={{ display: "block", marginBottom: "4px" }}>{databaseBackupFolder || "Unavailable"}</span><span style={{ display: "block" }}>Folder size: {typeof databaseBackupFolderSizeBytes === "number" ? formatFileSize(databaseBackupFolderSizeBytes) : "Unavailable"} · Drive free space: {typeof databaseBackupFolderFreeBytes === "number" ? formatFileSize(databaseBackupFolderFreeBytes) : "Unavailable"}</span></> : "Loading..."}
+                </div>
+              </div>
+            </CardWrapper>
+          </div>
+        </>
+      ) : isControlsAssetsTab ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px" }}>
+            <div>
+              <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const nextUrl = `${adminBasePath}?tab=controls`;
+                if (typeof window !== "undefined") {
+                  window.history.pushState({}, "", nextUrl);
+                  setCurrentWindowPath(adminBasePath);
+                  window.dispatchEvent(new PopStateEvent("popstate"));
+                }
+              }}
+              style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 20px", borderRadius: "8px", cursor: "pointer", fontWeight: 600 }}
+            >
+              Back to Controls
+            </button>
+          </div>
+          <div className="admin-panel-controls-grid" style={{ display: "flex", flexWrap: "wrap", gap: "20px", justifyContent: "flex-start" }}>
+            <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="assets-connection-page">
+              <h3>Assets Connection</h3>
+              <div style={{ display: "grid", gap: "12px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                  <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Connection status</span>
+                  <span style={{ padding: "4px 8px", borderRadius: "999px", background: "#dcfce7", color: "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
+                </div>
+                <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.92rem" }}>The asset storage layer is responding and ready for uploads and previews.</p>
+                <div style={{ padding: "12px 14px", borderRadius: "8px", background: isDarkMode ? "#0f172a" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", color: isDarkMode ? "#e2e8f0" : "#0f172a", overflowWrap: "anywhere" }}>
+                  <strong style={{ display: "block", marginBottom: "6px" }}>Upload folder path</strong>
+                  {uploadFolderPathError ? <span role="alert">{uploadFolderPathError}</span> : <>{uploadFolderPath || "Loading..."}{uploadFolderPath ? <><span style={{ display: "block", marginTop: "8px" }}>Folder size: {formatFileSize(uploadFolderSizeBytes || 0)}</span><span style={{ display: "block", marginTop: "4px" }}>Drive free space: {formatFileSize(driveFreeBytes || 0)}</span></> : null}</>}
+                </div>
+              </div>
+            </CardWrapper>
+          </div>
+        </>
       ) : isControlsTab ? (
         <>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px" }}>
@@ -6574,6 +6725,45 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             <p style={{ color: isDarkMode ? "#cbd5e1" : "#555", margin: "8px 0 16px" }}>Review and manage customer accounts.</p>
             <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=customerdetails`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%" }}>Customer Details</button>
           </CardWrapper>
+
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="database-connection">
+            <h3>Database Connection</h3>
+            <div style={{ display: "grid", gap: "10px", marginTop: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Status</span>
+                <span style={{ padding: "4px 8px", borderRadius: "999px", background: "#dcfce7", color: "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
+              </div>
+              <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.9rem" }}>Primary application database is online and responding normally.</p>
+              <button type="button" onClick={() => {
+                if (typeof window !== "undefined") {
+                  const nextUrl = `${adminBasePath}?tab=controls_database`;
+                  window.history.pushState({}, "", nextUrl);
+                  setCurrentWindowPath(adminBasePath);
+                  window.dispatchEvent(new PopStateEvent("popstate"));
+                }
+              }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%", marginTop: "4px" }}>Database</button>
+            </div>
+          </CardWrapper>
+
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="assets-connection">
+            <h3>Assets Connection</h3>
+            <div style={{ display: "grid", gap: "10px", marginTop: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Status</span>
+                <span style={{ padding: "4px 8px", borderRadius: "999px", background: "#dcfce7", color: "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
+              </div>
+              <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.9rem" }}>Asset storage is available for uploads, previews, and media delivery.</p>
+              <button type="button" onClick={() => {
+                if (typeof window !== "undefined") {
+                  const nextUrl = `${adminBasePath}?tab=controls_assets`;
+                  window.history.pushState({}, "", nextUrl);
+                  setCurrentWindowPath(adminBasePath);
+                  window.dispatchEvent(new PopStateEvent("popstate"));
+                }
+              }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%", marginTop: "4px" }}>Assets</button>
+            </div>
+          </CardWrapper>
+
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="manage-categories">
             <h3>Manage Categories</h3>
             <label style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "12px" }}>

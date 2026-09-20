@@ -3396,6 +3396,94 @@ app.get("/admin/backup/list", verifyAdmin, async (req, res) => {
   }
 });
 
+app.get("/admin/assets/location", verifyAdmin, async (req, res) => {
+  try {
+    const uploadFolderPath = path.resolve(__dirname, "uploads");
+    let folderSizeBytes = 0;
+    const pendingDirectories = [uploadFolderPath];
+    while (pendingDirectories.length > 0) {
+      const currentDirectory = pendingDirectories.pop();
+      for (const entry of fs.readdirSync(currentDirectory, { withFileTypes: true })) {
+        const entryPath = path.join(currentDirectory, entry.name);
+        if (entry.isDirectory()) {
+          pendingDirectories.push(entryPath);
+        } else if (entry.isFile()) {
+          folderSizeBytes += fs.statSync(entryPath).size;
+        }
+      }
+    }
+    const driveStats = fs.statfsSync(uploadFolderPath);
+    const blockSize = Number(driveStats.bsize || 0);
+    const driveFreeBytes = blockSize * Number(driveStats.bavail || 0);
+    res.json({ uploadFolderPath, exists: fs.existsSync(uploadFolderPath), folderSizeBytes, driveFreeBytes });
+  } catch (error) {
+    console.error("Failed to resolve upload folder path", error);
+    res.status(500).json({ error: "Unable to resolve upload folder path" });
+  }
+});
+
+app.get("/admin/database/location", verifyAdmin, async (req, res) => {
+  try {
+    const result = await pool.query("SELECT current_database() AS database_name, current_setting('data_directory') AS data_directory");
+    const databaseBackupFolder = path.resolve(__dirname, "..", "Database");
+    const getStorageStats = (directoryPath) => {
+      let folderSizeBytes = null;
+      try {
+        folderSizeBytes = 0;
+        if (fs.existsSync(directoryPath) && fs.statSync(directoryPath).isDirectory()) {
+          const pendingDirectories = [directoryPath];
+          while (pendingDirectories.length > 0) {
+            const currentDirectory = pendingDirectories.pop();
+            let entries = [];
+            try {
+              entries = fs.readdirSync(currentDirectory, { withFileTypes: true });
+            } catch (error) {
+              folderSizeBytes = null;
+              continue;
+            }
+            for (const entry of entries) {
+              try {
+                const entryPath = path.join(currentDirectory, entry.name);
+                if (entry.isDirectory()) pendingDirectories.push(entryPath);
+                else if (entry.isFile()) folderSizeBytes += fs.statSync(entryPath).size;
+              } catch (error) {
+                folderSizeBytes = null;
+              }
+            }
+          }
+        }
+      } catch (error) {
+        folderSizeBytes = null;
+      }
+      let driveFreeBytes = null;
+      try {
+        const driveStats = fs.statfsSync(directoryPath);
+        const blockSize = Number(driveStats.bsize || 0);
+        driveFreeBytes = blockSize * Number(driveStats.bavail || 0);
+      } catch (error) {
+        driveFreeBytes = null;
+      }
+      return { folderSizeBytes, driveFreeBytes };
+    };
+    const dataDirectory = result.rows[0]?.data_directory || "";
+    const dataDirectoryStats = getStorageStats(dataDirectory);
+    const databaseBackupFolderStats = getStorageStats(databaseBackupFolder);
+    res.json({
+      databaseName: result.rows[0]?.database_name || "",
+      dataDirectory,
+      dataDirectorySizeBytes: dataDirectoryStats.folderSizeBytes,
+      dataDirectoryFreeBytes: dataDirectoryStats.driveFreeBytes,
+      databaseBackupFolder,
+      databaseBackupFolderExists: fs.existsSync(databaseBackupFolder),
+      databaseBackupFolderSizeBytes: databaseBackupFolderStats.folderSizeBytes,
+      databaseBackupFolderFreeBytes: databaseBackupFolderStats.driveFreeBytes,
+    });
+  } catch (error) {
+    console.error("Failed to resolve database data directory", error);
+    res.status(500).json({ error: "Unable to resolve database data directory" });
+  }
+});
+
 app.get("/admin/backup/download", verifyAdmin, async (req, res) => {
   try {
     const resolved = resolveBackupArchivePath(req.query.file);

@@ -82,6 +82,53 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByRole("button", { name: /^customer details$/i })).toBeInTheDocument();
   });
 
+  it("shows database and assets connection cards in the controls tab", async () => {
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: /database connection/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /assets connection/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^database$/i }));
+    expect(window.location.href).toContain("tab=controls_database");
+
+    fireEvent.click(screen.getByRole("button", { name: /^assets$/i }));
+    expect(window.location.href).toContain("tab=controls_assets");
+  });
+
+  it("shows the actual upload folder path on the assets controls page", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/assets/location")) {
+        return Promise.resolve({ data: { uploadFolderPath: "/Users/gfxunlimit/Documents/stocksite/backend/uploads", folderSizeBytes: 783 * 1024 * 1024, driveFreeBytes: 217 * 1024 * 1024 * 1024 } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText("/Users/gfxunlimit/Documents/stocksite/backend/uploads")).toBeInTheDocument();
+    expect(screen.getByText("Folder size: 783.00 MB")).toBeInTheDocument();
+    expect(screen.getByText("Drive free space: 217.00 GB")).toBeInTheDocument();
+  });
+
+  it("shows the actual database data path on the database controls page", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_database" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/database/location")) {
+        return Promise.resolve({ data: { databaseName: "stocksite", dataDirectory: "/opt/homebrew/var/postgresql@17", dataDirectorySizeBytes: 1024 * 1024 * 1024, dataDirectoryFreeBytes: 20 * 1024 * 1024 * 1024, databaseBackupFolder: "/Users/gfxunlimit/Documents/stocksite/Database", databaseBackupFolderSizeBytes: 5 * 1024 * 1024, databaseBackupFolderFreeBytes: 20 * 1024 * 1024 * 1024 } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText("/opt/homebrew/var/postgresql@17")).toBeInTheDocument();
+    expect(screen.getByText("Database: stocksite")).toBeInTheDocument();
+    expect(screen.getByText("/Users/gfxunlimit/Documents/stocksite/Database")).toBeInTheDocument();
+    expect(screen.getByText("Folder size: 5.00 MB · Drive free space: 20.00 GB")).toBeInTheDocument();
+    expect(screen.queryByText("Folder size: 1.00 GB · Drive free space: 20.00 GB")).not.toBeInTheDocument();
+  });
+
   it("opens the controls tax forms tab with the controls_taxforms route", async () => {
     render(<AdminPanel />);
 
