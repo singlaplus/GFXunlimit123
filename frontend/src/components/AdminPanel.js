@@ -347,6 +347,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [uploadFolderSizeBytes, setUploadFolderSizeBytes] = useState(null);
   const [driveFreeBytes, setDriveFreeBytes] = useState(null);
   const [databaseName, setDatabaseName] = useState("");
+  const [databaseHost, setDatabaseHost] = useState("");
+  const [databasePort, setDatabasePort] = useState(null);
   const [databaseDataDirectory, setDatabaseDataDirectory] = useState("");
   const [databaseBackupFolder, setDatabaseBackupFolder] = useState("");
   const [databaseDataDirectorySizeBytes, setDatabaseDataDirectorySizeBytes] = useState(null);
@@ -354,6 +356,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [databaseBackupFolderSizeBytes, setDatabaseBackupFolderSizeBytes] = useState(null);
   const [databaseBackupFolderFreeBytes, setDatabaseBackupFolderFreeBytes] = useState(null);
   const [databaseDataDirectoryError, setDatabaseDataDirectoryError] = useState("");
+  const [databaseConnectionStatus, setDatabaseConnectionStatus] = useState("Connected");
+  const [authStateVersion, setAuthStateVersion] = useState(0);
+  const currentAuthToken = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
   const [users, setUsers] = useState([]);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [newCategory, setNewCategory] = useState("");
@@ -561,15 +566,18 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onAssetCollectionRefresh = () => fetchCollections();
+    const onAuthChanged = () => setAuthStateVersion((value) => value + 1);
     window.addEventListener("asset-refresh", onAssetCollectionRefresh);
     window.addEventListener("asset-updated", onAssetCollectionRefresh);
     window.addEventListener("asset-collections-updated", onAssetCollectionRefresh);
     window.addEventListener("home-assets-refresh", onAssetCollectionRefresh);
+    window.addEventListener("auth-changed", onAuthChanged);
     return () => {
       window.removeEventListener("asset-refresh", onAssetCollectionRefresh);
       window.removeEventListener("asset-updated", onAssetCollectionRefresh);
       window.removeEventListener("asset-collections-updated", onAssetCollectionRefresh);
       window.removeEventListener("home-assets-refresh", onAssetCollectionRefresh);
+      window.removeEventListener("auth-changed", onAuthChanged);
     };
   }, []);
 
@@ -626,35 +634,55 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     if (!isControlsDatabaseTab) return undefined;
 
     let active = true;
-    const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+    const token = currentAuthToken;
     axios.get(`${API_BASE_URL}/admin/database/location`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      withCredentials: true,
     }).then((response) => {
       if (!active) return;
-      setDatabaseName(String(response.data?.databaseName || ""));
-      setDatabaseDataDirectory(String(response.data?.dataDirectory || ""));
+      const connected = response.data?.connected !== false;
+      const resolvedDatabasePath = String(response.data?.databasePath || response.data?.dataDirectory || "").trim();
+      const resolvedDatabaseName = String(response.data?.databaseName || "");
+      const resolvedHost = String(response.data?.host || "localhost");
+      const resolvedPort = Number.isFinite(Number(response.data?.port)) ? Number(response.data?.port) : null;
+
+      setDatabaseConnectionStatus(connected ? "Connected" : "Disconnected");
+      setDatabaseName(resolvedDatabaseName);
+      setDatabaseHost(resolvedHost);
+      setDatabasePort(resolvedPort);
+      setDatabaseDataDirectory(resolvedDatabasePath);
       setDatabaseBackupFolder(String(response.data?.databaseBackupFolder || ""));
       setDatabaseDataDirectorySizeBytes(typeof response.data?.dataDirectorySizeBytes === "number" ? response.data.dataDirectorySizeBytes : null);
       setDatabaseDataDirectoryFreeBytes(typeof response.data?.dataDirectoryFreeBytes === "number" ? response.data.dataDirectoryFreeBytes : null);
       setDatabaseBackupFolderSizeBytes(typeof response.data?.databaseBackupFolderSizeBytes === "number" ? response.data.databaseBackupFolderSizeBytes : null);
       setDatabaseBackupFolderFreeBytes(typeof response.data?.databaseBackupFolderFreeBytes === "number" ? response.data.databaseBackupFolderFreeBytes : null);
-      setDatabaseDataDirectoryError("");
+
+      if (connected && resolvedDatabasePath) {
+        setDatabaseDataDirectoryError("");
+      } else if (connected) {
+        setDatabaseDataDirectoryError("Unable to determine database path");
+      } else {
+        setDatabaseDataDirectoryError("Unable to determine database path");
+      }
     }).catch(() => {
       if (!active) return;
+      setDatabaseConnectionStatus("Disconnected");
       setDatabaseName("");
+      setDatabaseHost("");
+      setDatabasePort(null);
       setDatabaseDataDirectory("");
       setDatabaseBackupFolder("");
       setDatabaseDataDirectorySizeBytes(null);
       setDatabaseDataDirectoryFreeBytes(null);
       setDatabaseBackupFolderSizeBytes(null);
       setDatabaseBackupFolderFreeBytes(null);
-      setDatabaseDataDirectoryError("Unable to load the database path.");
+      setDatabaseDataDirectoryError("Unable to determine database path");
     });
 
     return () => {
       active = false;
     };
-  }, [isControlsDatabaseTab]);
+  }, [isControlsDatabaseTab, currentAuthToken, authStateVersion]);
 
   const isPromotionsTab = tabParam === "promotions";
   const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab && !isControlsDatabaseTab && !isControlsAssetsTab;
@@ -6629,12 +6657,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               <div style={{ display: "grid", gap: "12px" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
                   <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Connection status</span>
-                  <span style={{ padding: "4px 8px", borderRadius: "999px", background: "#dcfce7", color: "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
+                  <span style={{ padding: "4px 8px", borderRadius: "999px", background: databaseConnectionStatus === "Connected" ? "#dcfce7" : "#fee2e2", color: databaseConnectionStatus === "Connected" ? "#166534" : "#991b1b", fontSize: "0.72rem", fontWeight: 800 }}>{databaseConnectionStatus}</span>
                 </div>
                 <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.92rem" }}>The primary database is online and ready for application requests.</p>
                 <div style={{ padding: "12px 14px", borderRadius: "8px", background: isDarkMode ? "#0f172a" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", color: isDarkMode ? "#e2e8f0" : "#0f172a", overflowWrap: "anywhere" }}>
                   <strong style={{ display: "block", marginBottom: "6px" }}>Database stored at</strong>
-                  {databaseDataDirectoryError ? <span role="alert">{databaseDataDirectoryError}</span> : databaseDataDirectory ? <><span style={{ display: "block", marginBottom: "4px" }}>Database: {databaseName || "Unknown"}</span><span style={{ display: "block", marginBottom: "12px" }}>{databaseDataDirectory}</span><strong style={{ display: "block", marginBottom: "4px" }}>Database backup folder</strong><span style={{ display: "block", marginBottom: "4px" }}>{databaseBackupFolder || "Unavailable"}</span><span style={{ display: "block" }}>Folder size: {typeof databaseBackupFolderSizeBytes === "number" ? formatFileSize(databaseBackupFolderSizeBytes) : "Unavailable"} · Drive free space: {typeof databaseBackupFolderFreeBytes === "number" ? formatFileSize(databaseBackupFolderFreeBytes) : "Unavailable"}</span></> : "Loading..."}
+                  {databaseDataDirectoryError ? <span role="alert">{databaseDataDirectoryError}</span> : databaseDataDirectory ? <><span style={{ display: "block", marginBottom: "4px" }}>Database: {databaseName || "Unknown"}</span>{databaseHost ? <span style={{ display: "block", marginBottom: "4px" }}>Host: {databaseHost}</span> : null}{typeof databasePort === "number" ? <span style={{ display: "block", marginBottom: "4px" }}>Port: {databasePort}</span> : null}<span style={{ display: "block", marginBottom: "12px" }}>{databaseDataDirectory}</span><strong style={{ display: "block", marginBottom: "4px" }}>Database backup folder</strong><span style={{ display: "block", marginBottom: "4px" }}>{databaseBackupFolder || "Unavailable"}</span><span style={{ display: "block" }}>Folder size: {typeof databaseBackupFolderSizeBytes === "number" ? formatFileSize(databaseBackupFolderSizeBytes) : "Unavailable"} · Drive free space: {typeof databaseBackupFolderFreeBytes === "number" ? formatFileSize(databaseBackupFolderFreeBytes) : "Unavailable"}</span></> : "Loading..."}
                 </div>
               </div>
             </CardWrapper>

@@ -3423,54 +3423,72 @@ app.get("/admin/assets/location", verifyAdmin, async (req, res) => {
 });
 
 app.get("/admin/database/location", verifyAdmin, async (req, res) => {
-  try {
-    const result = await pool.query("SELECT current_database() AS database_name, current_setting('data_directory') AS data_directory");
-    const databaseBackupFolder = path.resolve(__dirname, "..", "Database");
-    const getStorageStats = (directoryPath) => {
-      let folderSizeBytes = null;
-      try {
-        folderSizeBytes = 0;
-        if (fs.existsSync(directoryPath) && fs.statSync(directoryPath).isDirectory()) {
-          const pendingDirectories = [directoryPath];
-          while (pendingDirectories.length > 0) {
-            const currentDirectory = pendingDirectories.pop();
-            let entries = [];
+  const databaseHost = process.env.DB_HOST || "localhost";
+  const databasePort = Number(process.env.DB_PORT || 5432);
+  const databaseBackupFolder = path.resolve(__dirname, "..", "Database");
+
+  const getStorageStats = (directoryPath) => {
+    let folderSizeBytes = null;
+    try {
+      folderSizeBytes = 0;
+      if (fs.existsSync(directoryPath) && fs.statSync(directoryPath).isDirectory()) {
+        const pendingDirectories = [directoryPath];
+        while (pendingDirectories.length > 0) {
+          const currentDirectory = pendingDirectories.pop();
+          let entries = [];
+          try {
+            entries = fs.readdirSync(currentDirectory, { withFileTypes: true });
+          } catch (error) {
+            folderSizeBytes = null;
+            continue;
+          }
+          for (const entry of entries) {
             try {
-              entries = fs.readdirSync(currentDirectory, { withFileTypes: true });
+              const entryPath = path.join(currentDirectory, entry.name);
+              if (entry.isDirectory()) pendingDirectories.push(entryPath);
+              else if (entry.isFile()) folderSizeBytes += fs.statSync(entryPath).size;
             } catch (error) {
               folderSizeBytes = null;
-              continue;
-            }
-            for (const entry of entries) {
-              try {
-                const entryPath = path.join(currentDirectory, entry.name);
-                if (entry.isDirectory()) pendingDirectories.push(entryPath);
-                else if (entry.isFile()) folderSizeBytes += fs.statSync(entryPath).size;
-              } catch (error) {
-                folderSizeBytes = null;
-              }
             }
           }
         }
-      } catch (error) {
-        folderSizeBytes = null;
       }
-      let driveFreeBytes = null;
-      try {
-        const driveStats = fs.statfsSync(directoryPath);
-        const blockSize = Number(driveStats.bsize || 0);
-        driveFreeBytes = blockSize * Number(driveStats.bavail || 0);
-      } catch (error) {
-        driveFreeBytes = null;
-      }
-      return { folderSizeBytes, driveFreeBytes };
-    };
-    const dataDirectory = result.rows[0]?.data_directory || "";
-    const dataDirectoryStats = getStorageStats(dataDirectory);
+    } catch (error) {
+      folderSizeBytes = null;
+    }
+    let driveFreeBytes = null;
+    try {
+      const driveStats = fs.statfsSync(directoryPath);
+      const blockSize = Number(driveStats.bsize || 0);
+      driveFreeBytes = blockSize * Number(driveStats.bavail || 0);
+    } catch (error) {
+      driveFreeBytes = null;
+    }
+    return { folderSizeBytes, driveFreeBytes };
+  };
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        current_database() AS database_name,
+        current_setting('data_directory', true) AS data_directory,
+        current_setting('port', true) AS port
+    `);
+
+    const databaseName = String(result.rows[0]?.database_name || process.env.DB_NAME || "stocksite");
+    const dataDirectory = String(result.rows[0]?.data_directory || "").trim();
+    const configuredPort = Number(result.rows[0]?.port || databasePort || 5432);
+    const resolvedDatabasePath = dataDirectory || "";
+    const dataDirectoryStats = getStorageStats(resolvedDatabasePath);
     const databaseBackupFolderStats = getStorageStats(databaseBackupFolder);
-    res.json({
-      databaseName: result.rows[0]?.database_name || "",
-      dataDirectory,
+
+    return res.json({
+      connected: true,
+      databaseName,
+      host: databaseHost,
+      port: configuredPort,
+      databasePath: resolvedDatabasePath,
+      dataDirectory: resolvedDatabasePath,
       dataDirectorySizeBytes: dataDirectoryStats.folderSizeBytes,
       dataDirectoryFreeBytes: dataDirectoryStats.driveFreeBytes,
       databaseBackupFolder,
@@ -3480,7 +3498,19 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error("Failed to resolve database data directory", error);
-    res.status(500).json({ error: "Unable to resolve database data directory" });
+    return res.status(200).json({
+      connected: false,
+      databaseName: process.env.DB_NAME || "stocksite",
+      host: databaseHost,
+      port: databasePort,
+      databasePath: "",
+      dataDirectory: "",
+      databaseBackupFolder,
+      databaseBackupFolderExists: fs.existsSync(databaseBackupFolder),
+      databaseBackupFolderSizeBytes: null,
+      databaseBackupFolderFreeBytes: null,
+      error: "Unable to determine database path"
+    });
   }
 });
 

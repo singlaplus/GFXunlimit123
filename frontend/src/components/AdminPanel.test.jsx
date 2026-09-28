@@ -115,18 +115,45 @@ describe("AdminPanel collection controls", () => {
     useLocation.mockReturnValue({ search: "?tab=controls_database" });
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/database/location")) {
-        return Promise.resolve({ data: { databaseName: "stocksite", dataDirectory: "/opt/homebrew/var/postgresql@17", dataDirectorySizeBytes: 1024 * 1024 * 1024, dataDirectoryFreeBytes: 20 * 1024 * 1024 * 1024, databaseBackupFolder: "/Users/gfxunlimit/Documents/stocksite/Database", databaseBackupFolderSizeBytes: 5 * 1024 * 1024, databaseBackupFolderFreeBytes: 20 * 1024 * 1024 * 1024 } });
+        return Promise.resolve({ data: { connected: true, databaseName: "stocksite", host: "localhost", port: 5432, databasePath: "F:\\GFXunlimitDatabase", dataDirectory: "F:\\GFXunlimitDatabase", dataDirectorySizeBytes: 1024 * 1024 * 1024, dataDirectoryFreeBytes: 20 * 1024 * 1024 * 1024, databaseBackupFolder: "/Users/gfxunlimit/Documents/stocksite/Database", databaseBackupFolderSizeBytes: 5 * 1024 * 1024, databaseBackupFolderFreeBytes: 20 * 1024 * 1024 * 1024 } });
       }
       return Promise.resolve({ data: [] });
     });
 
     render(<AdminPanel />);
 
-    expect(await screen.findByText("/opt/homebrew/var/postgresql@17")).toBeInTheDocument();
+    expect(await screen.findByText("F:\\GFXunlimitDatabase")).toBeInTheDocument();
     expect(screen.getByText("Database: stocksite")).toBeInTheDocument();
+    expect(screen.getByText("Host: localhost")).toBeInTheDocument();
+    expect(screen.getByText("Port: 5432")).toBeInTheDocument();
     expect(screen.getByText("/Users/gfxunlimit/Documents/stocksite/Database")).toBeInTheDocument();
     expect(screen.getByText("Folder size: 5.00 MB · Drive free space: 20.00 GB")).toBeInTheDocument();
     expect(screen.queryByText("Folder size: 1.00 GB · Drive free space: 20.00 GB")).not.toBeInTheDocument();
+  });
+
+  it("refetches the database location after the admin token becomes available", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_database" });
+    localStorage.removeItem("token");
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/database/location")) {
+        if (!localStorage.getItem("token")) {
+          return Promise.reject({ response: { status: 401, data: "Access denied" } });
+        }
+        return Promise.resolve({ data: { connected: true, databaseName: "stocksite", host: "localhost", port: 5432, databasePath: "F:\\GFXunlimitDatabase", dataDirectory: "F:\\GFXunlimitDatabase" } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    const { rerender } = render(<AdminPanel />);
+
+    expect(await screen.findByText("Unable to determine database path")).toBeInTheDocument();
+
+    localStorage.setItem("token", "admin-token");
+    window.dispatchEvent(new Event("auth-changed"));
+    rerender(<AdminPanel />);
+
+    expect(await screen.findByText("F:\\GFXunlimitDatabase")).toBeInTheDocument();
+    expect(screen.getByText("Database: stocksite")).toBeInTheDocument();
   });
 
   it("opens the controls tax forms tab with the controls_taxforms route", async () => {
