@@ -1567,6 +1567,90 @@ const resolveUploadFilePath = (value) => {
   return { absolutePath, uploadsRoot };
 };
 
+const encodeSafeAssetPath = (value) => {
+  const assetPath = String(value || "").trim();
+  const segments = assetPath.split("/");
+  if (
+    !assetPath ||
+    assetPath.startsWith("/") ||
+    assetPath.includes("\\") ||
+    /[\0-\x1f\x7f]/.test(assetPath) ||
+    segments.some((segment) => !segment || segment === "." || segment === ".." || segment.includes("%"))
+  ) {
+    throw new Error("Invalid asset path");
+  }
+  return segments.map(encodeURIComponent).join("/");
+};
+
+const proxyPc2AssetRequest = async (req, res, upstreamPath) => {
+  if (!/^(GET|HEAD)$/i.test(req.method)) {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  try {
+    const pc2Url = new URL(process.env.PC2_ASSET_SERVER_URL || "");
+    if (
+      pc2Url.protocol !== "http:" ||
+      pc2Url.hostname !== "100.102.63.63" ||
+      pc2Url.port !== "5000" ||
+      pc2Url.pathname !== "/" ||
+      pc2Url.search ||
+      pc2Url.hash ||
+      pc2Url.username ||
+      pc2Url.password
+    ) {
+      throw new Error("PC2_ASSET_SERVER_URL must target http://100.102.63.63:5000");
+    }
+
+    const queryIndex = req.originalUrl.indexOf("?");
+    const query = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : "";
+    const response = await axios.request({
+      method: req.method.toLowerCase(),
+      url: `${pc2Url.origin}${upstreamPath}${query}`,
+      responseType: "stream",
+      decompress: false,
+      headers: {
+        authorization: req.headers.authorization,
+        accept: req.headers.accept,
+        range: req.headers.range,
+      },
+      timeout: 30000,
+      maxRedirects: 0,
+      validateStatus: () => true,
+    });
+
+    res.status(response.status);
+    for (const header of [
+      "content-type",
+      "content-length",
+      "content-disposition",
+      "cache-control",
+      "etag",
+      "last-modified",
+      "expires",
+      "accept-ranges",
+      "content-range",
+    ]) {
+      if (response.headers[header] !== undefined) {
+        res.setHeader(header, response.headers[header]);
+      }
+    }
+
+    response.data.on("error", (error) => {
+      console.error("PC2 asset stream failed", error.message);
+      if (!res.headersSent) {
+        res.status(502).end("PC2 asset stream failed");
+      } else {
+        res.destroy(error);
+      }
+    });
+    return response.data.pipe(res);
+  } catch (error) {
+    console.error("PC2 asset proxy failed", error.message);
+    return res.status(502).json({ error: "PC2 asset server unavailable" });
+  }
+};
+
 const persistEpsThumbnailIfMissing = async (imageRow) => {
   if (!imageRow || !imageRow.filename) {
     return false;
@@ -1882,100 +1966,20 @@ const streamImageFile = async (req, res, absolutePath, { bypassProcessing = fals
 app.use("/api/files", async (req, res, next) => {
   try {
     const requestPath = decodeURIComponent(String(req.path || "").replace(/^\/+/, ""));
-    const { absolutePath } = resolveUploadFilePath(requestPath);
-    return streamImageFile(req, res, absolutePath, { bypassProcessing: true });
+    const safePath = encodeSafeAssetPath(requestPath);
+    return proxyPc2AssetRequest(req, res, `/api/files/${safePath}`);
   } catch (err) {
     console.error("Secure file request failed", err);
     return res.status(400).json({ error: err.message || "Invalid file request" });
   }
 });
 
-app.get("/api/images/:imageId", async (req, res) => {
-  try {
-    const { imageId } = req.params;
-    const imageResult = await pool.query(
-      `SELECT filename, thumbnail_url FROM images WHERE id = $1`,
-      [imageId]
-    );
-
-    if (imageResult.rows.length === 0) {
-      return res.status(404).json({ error: "Image not found" });
-    }
-
-    if (req.query.download === "true") {
-      const { absolutePath } = resolveUploadFilePath(imageResult.rows[0].filename);
-      return streamImageFile(req, res, absolutePath);
-    }
-
-    const image = imageResult.rows[0];
-    const ext = path.extname(String(image.filename)).toLowerCase();
-    const isOriginalSupported = SUPPORTED_IMAGE_EXTENSIONS.includes(ext);
-    
-    // Try to serve original if it's a supported format
-    if (isOriginalSupported) {
-      const { absolutePath } = resolveUploadFilePath(image.filename);
-      if (fs.existsSync(absolutePath)) {
-        return streamImageFile(req, res, absolutePath);
-      }
-    }
-    
-    // Fall back to thumbnail if available
-    if (image.thumbnail_url) {
-      try {
-        const match = String(image.thumbnail_url).match(/[?&]file=([^&]+)/i);
-        const rawFile = match ? decodeURIComponent(match[1]) : String(image.thumbnail_url).replace(/^\/+/, '').replace(/^api\/files\//, '').replace(/^uploads\//, '');
-        const { absolutePath } = resolveUploadFilePath(rawFile);
-        if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
-          // For thumbnails, bypass processing if watermark not requested to avoid double processing
-          if (req.query.watermark === "true") {
-            return streamImageFile(req, res, absolutePath);
-          } else {
-            return streamImageFile(req, res, absolutePath, { bypassProcessing: true });
-          }
-        }
-      } catch (err) {
-        console.warn("Failed to resolve custom thumbnail preview:", err.message || err);
-      }
-    }
-    
-    // For unsupported formats (like EPS), try to generate a thumbnail on-the-fly
-    if (!isOriginalSupported) {
-      try {
-        const { absolutePath } = resolveUploadFilePath(image.filename);
-        if (fs.existsSync(absolutePath)) {
-          const generatedPath = buildGeneratedThumbnailPath(absolutePath, ".jpg");
-          if (fs.existsSync(generatedPath)) {
-            return streamImageFile(req, res, generatedPath, { bypassProcessing: true });
-          }
-
-          const processor = processorFactory.getProcessor(absolutePath);
-          if (processor) {
-            const generated = await processor.process(absolutePath, imageId, null, {
-              quality: 30,
-              maxWidth: 1200,
-              maxHeight: 1200,
-            });
-            if (generated && generated.success && fs.existsSync(generated.thumbnailPath)) {
-              const relativeFromUploads = path.relative(path.resolve(__dirname, "uploads"), generated.thumbnailPath).replace(/\\/g, "/");
-              const thumbnailUrl = `/api/thumbnail?file=${encodeURIComponent(relativeFromUploads)}`;
-              await pool.query(
-                `UPDATE images SET thumbnail_status = 'COMPLETED', thumbnail_url = $1, thumbnail_generated_at = NOW(), thumbnail_error = NULL WHERE id = $2`,
-                [thumbnailUrl, imageId]
-              );
-              return streamImageFile(req, res, generated.thumbnailPath, { bypassProcessing: true });
-            }
-          }
-        }
-      } catch (err) {
-        console.warn(`Failed to generate thumbnail for unsupported asset ${imageId}:`, err.message || err);
-      }
-    }
-
-    return res.status(404).json({ error: "Preview not available" });
-  } catch (err) {
-    console.error("Secure image request failed", err);
-    return res.status(400).json({ error: err.message || "Invalid image request" });
+app.get("/api/images/:imageId", (req, res) => {
+  const { imageId } = req.params;
+  if (!/^[A-Za-z0-9_-]+$/.test(imageId)) {
+    return res.status(400).json({ error: "Invalid image ID" });
   }
+  return proxyPc2AssetRequest(req, res, `/api/images/${encodeURIComponent(imageId)}`);
 });
 
 app.get("/uploads/processed", async (req, res) => {
@@ -7629,97 +7633,16 @@ app.get("/dashboard", (req, res) => {
 /* ----------- THUMBNAIL SERVING ENDPOINT ----------- */
 
 app.get("/api/thumbnail", async (req, res) => {
-  try {
-    // Set CORS headers to allow cross-origin requests
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    
-    const { file, assetId, download } = req.query;
-    if (!file) {
-      return res.status(400).json({ error: "Missing file parameter" });
-    }
-
-    const { absolutePath } = resolveUploadFilePath(file);
-    
-    if (!fs.existsSync(absolutePath)) {
-      const thumbnailDir = path.resolve(__dirname, "uploads");
-      const relativeFile = String(file).replace(/^\/+/, "");
-      const thumbnailCandidate = path.resolve(thumbnailDir, relativeFile);
-      const thumbnailExt = path.extname(thumbnailCandidate).toLowerCase();
-      if (thumbnailExt === ".jpg" || thumbnailExt === ".jpeg" || thumbnailExt === ".png") {
-        const originalCandidate = resolveOriginalEpsFromThumbnailPath(relativeFile);
-        if (originalCandidate && fs.existsSync(originalCandidate)) {
-          const processor = processorFactory.getProcessor(originalCandidate);
-          if (processor && processor.name === "EpsProcessor") {
-            const generated = await processor.process(originalCandidate, assetId || null, null, {
-              quality: 30,
-              maxWidth: 1200,
-              maxHeight: 1200,
-            });
-            if (generated && generated.success && fs.existsSync(generated.thumbnailPath)) {
-              if (download === 'true') {
-                const cleanFilename = path.basename(generated.thumbnailPath);
-                res.setHeader("Content-Disposition", `attachment; filename="${cleanFilename}"`);
-              }
-              return streamImageFile(req, res, generated.thumbnailPath, { bypassProcessing: true });
-            }
-          }
-        }
-      }
-      return res.status(404).json({ error: "Thumbnail not found" });
-    }
-
-    // If assetId provided, verify permissions
-    if (assetId) {
-      try {
-        const authHeader = req.headers["authorization"];
-        const imageResult = await pool.query(
-          `SELECT uploaded_by, status FROM images WHERE id = $1`,
-          [assetId]
-        );
-
-        if (imageResult.rows.length === 0) {
-          return res.status(404).json({ error: "Asset not found" });
-        }
-
-        const image = imageResult.rows[0];
-        const isApproved = image.status === 'approved' || image.status === 'published' || image.status === 'live';
-
-        if (!isApproved && authHeader) {
-          try {
-            const token = authHeader.split(" ")[1];
-            const decoded = verifyJwtToken(token);
-            const userId = decoded.user;
-            const isOwner = image.uploaded_by === userId;
-            const userRole = (await pool.query(`SELECT role FROM users WHERE id = $1`, [userId])).rows[0]?.role;
-            const isAdmin = userRole === 'admin';
-
-            if (!isOwner && !isAdmin) {
-              return res.status(403).json({ error: "Access denied" });
-            }
-          } catch (err) {
-            return res.status(403).json({ error: "Unauthorized" });
-          }
-        } else if (!isApproved) {
-          return res.status(403).json({ error: "Access denied" });
-        }
-      } catch (err) {
-        console.warn("Permission check failed, allowing access:", err.message);
-      }
-    }
-
-    // Set download disposition if requested
-    if (download === 'true') {
-      const cleanFilename = path.basename(absolutePath);
-      res.setHeader("Content-Disposition", `attachment; filename="${cleanFilename}"`);
-    }
-
-    return streamImageFile(req, res, absolutePath);
-  } catch (err) {
-    console.error("Thumbnail request failed", err);
-    return res.status(400).json({ error: err.message });
+  const { file } = req.query;
+  if (typeof file !== "string" || !file) {
+    return res.status(400).json({ error: "Missing file parameter" });
   }
+  try {
+    encodeSafeAssetPath(file);
+  } catch (error) {
+    return res.status(400).json({ error: "Invalid asset path" });
+  }
+  return proxyPc2AssetRequest(req, res, "/api/thumbnail");
 });
 
 /* ---------------- UPLOAD IMAGE ---------------- */
