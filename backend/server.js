@@ -20,6 +20,7 @@ const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { applyCatalogFilters } = require("./imageQuery");
 const { registerOrderRoutes } = require("./orders");
 const { summarizeContributorDownloadWindowCounts, summarizeContributorUploadWindowCounts } = require("./dashboardStats");
+const { createAssetServingHandler, encodeAssetPath, getProductionAssetRoot } = require("./utils/assetServing");
 const thumbnailQueue = require("./thumbnail-queue-worker");
 const ProcessorDetector = require("./thumbnail-engine/processor-detector");
 const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
@@ -1580,21 +1581,6 @@ const resolveUploadFilePath = (value) => {
   return { absolutePath, uploadsRoot };
 };
 
-const encodeSafeAssetPath = (value) => {
-  const assetPath = String(value || "").trim();
-  const segments = assetPath.split("/");
-  if (
-    !assetPath ||
-    assetPath.startsWith("/") ||
-    assetPath.includes("\\") ||
-    /[\0-\x1f\x7f]/.test(assetPath) ||
-    segments.some((segment) => !segment || segment === "." || segment === ".." || segment.includes("%"))
-  ) {
-    throw new Error("Invalid asset path");
-  }
-  return segments.map(encodeURIComponent).join("/");
-};
-
 const proxyPc2AssetRequest = async (req, res, upstreamPath) => {
   if (!/^(GET|HEAD)$/i.test(req.method)) {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1663,6 +1649,24 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath) => {
     return res.status(502).json({ error: "PC2 asset server unavailable" });
   }
 };
+
+const getLocalAssetRoot = () => {
+  return getProductionAssetRoot(process.env.NODE_ENV, process.env.ASSETS_ROOT);
+};
+
+const filesAssetHandler = createAssetServingHandler({
+  getAssetRoot: getLocalAssetRoot,
+  getAssetPath: (req) => decodeURIComponent(String(req.path || "").replace(/^\/+/, "")),
+  getRemotePath: (assetPath) => `/api/files/${encodeAssetPath(assetPath)}`,
+  proxyHandler: proxyPc2AssetRequest,
+});
+
+const thumbnailAssetHandler = createAssetServingHandler({
+  getAssetRoot: getLocalAssetRoot,
+  getAssetPath: (req) => req.query.file,
+  getRemotePath: () => "/api/thumbnail",
+  proxyHandler: proxyPc2AssetRequest,
+});
 
 const persistEpsThumbnailIfMissing = async (imageRow) => {
   if (!imageRow || !imageRow.filename) {
@@ -1976,16 +1980,7 @@ const streamImageFile = async (req, res, absolutePath, { bypassProcessing = fals
   return readStream.pipe(res);
 };
 
-app.use("/api/files", async (req, res, next) => {
-  try {
-    const requestPath = decodeURIComponent(String(req.path || "").replace(/^\/+/, ""));
-    const safePath = encodeSafeAssetPath(requestPath);
-    return proxyPc2AssetRequest(req, res, `/api/files/${safePath}`);
-  } catch (err) {
-    console.error("Secure file request failed", err);
-    return res.status(400).json({ error: err.message || "Invalid file request" });
-  }
-});
+app.use("/api/files", filesAssetHandler);
 
 app.get("/api/images/:imageId", (req, res) => {
   const { imageId } = req.params;
@@ -7644,16 +7639,7 @@ app.get("/dashboard", (req, res) => {
 /* ----------- THUMBNAIL SERVING ENDPOINT ----------- */
 
 app.get("/api/thumbnail", async (req, res) => {
-  const { file } = req.query;
-  if (typeof file !== "string" || !file) {
-    return res.status(400).json({ error: "Missing file parameter" });
-  }
-  try {
-    encodeSafeAssetPath(file);
-  } catch (error) {
-    return res.status(400).json({ error: "Invalid asset path" });
-  }
-  return proxyPc2AssetRequest(req, res, "/api/thumbnail");
+  return thumbnailAssetHandler(req, res);
 });
 
 /* ---------------- UPLOAD IMAGE ---------------- */
