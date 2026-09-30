@@ -21,6 +21,7 @@ logs/
 .env
 **/.env
 **/.env.*
+!frontend/.env.production
 .DS_Store
 **/.DS_Store
 
