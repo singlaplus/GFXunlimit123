@@ -36,8 +36,14 @@ const {
 
 const app = express();
 const BACKUP_ROOT = path.join(__dirname, "backup");
+const FRONTEND_BUILD_PATH = path.join(path.resolve(__dirname, ".."), "frontend", "build");
+const FRONTEND_INDEX_PATH = path.join(FRONTEND_BUILD_PATH, "index.html");
 const JWT_SECRET = process.env.JWT_SECRET || "secretkey";
 const LEGACY_JWT_SECRET = "secretkey";
+
+const acceptsHtmlDocument = (req) => (req.get("accept") || "")
+  .split(",")
+  .some((mediaType) => mediaType.split(";")[0].trim().toLowerCase() === "text/html");
 
 const BLOG_HTML_OPTIONS = {
   allowedTags: ["p", "br", "strong", "b", "em", "i", "u", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "a", "img", "span", "div"],
@@ -1510,6 +1516,13 @@ app.use(
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 app.use(cookieParser());
+
+if (process.env.NODE_ENV === "production") {
+  app.get(["/profile", "/dashboard", "/favorites"], (req, res, next) => {
+    if (!acceptsHtmlDocument(req)) return next();
+    return res.sendFile(FRONTEND_INDEX_PATH);
+  });
+}
 
 const SUPPORTED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"];
 const IMAGE_CONTENT_TYPES = {
@@ -6164,7 +6177,7 @@ async function verifySuperAdmin(
 
 /* ---------------- HEALTH CHECK ---------------- */
 
-app.get("/", async (req, res) => {
+app.get("/health", async (req, res) => {
 
   try {
 
@@ -6178,9 +6191,7 @@ app.get("/", async (req, res) => {
 
     console.error(err);
 
-    res.status(500).send(
-      "Database connection error"
-    );
+    res.status(500).json({ error: "Database connection error" });
 
   }
 
@@ -13854,4 +13865,21 @@ try {
   registerOrderRoutes(app, pool, verifyAdmin, authenticateToken);
 } catch (err) {
   console.error('Failed to mount order routes', err);
+}
+
+if (process.env.NODE_ENV === "production") {
+  app.use(express.static(FRONTEND_BUILD_PATH));
+  app.use((req, res, next) => {
+    if (
+      req.method !== "GET" ||
+      !acceptsHtmlDocument(req) ||
+      req.path === "/api" ||
+      req.path.startsWith("/api/") ||
+      path.extname(req.path)
+    ) {
+      return next();
+    }
+
+    return res.sendFile(FRONTEND_INDEX_PATH);
+  });
 }
