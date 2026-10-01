@@ -161,7 +161,15 @@ function CardWrapper({ cardId, cardOrder, isLayoutEditMode, isDarkMode, moveCard
   const canMoveRight = cardIndex < safeCardOrder.length - 1;
 
   if (!isLayoutEditMode) {
-    return <div className={`admin-panel-card ${className}`.trim()} style={{ order: cardIndex, flexBasis: "calc(33.333% - 14px)", ...style }}>{children}</div>;
+    return <div className={`admin-panel-card ${className}`.trim()} style={{
+      order: cardIndex,
+      flexBasis: "calc(33.333% - 14px)",
+      background: isDarkMode ? "linear-gradient(180deg, rgba(15,23,42,0.96), rgba(17,24,39,0.96))" : "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.94))",
+      border: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.3)",
+      color: isDarkMode ? "#f8fafc" : "#0f172a",
+      boxShadow: isDarkMode ? "0 10px 28px rgba(2, 6, 23, 0.32), inset 0 1px 0 rgba(148,163,184,0.08)" : "0 10px 28px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255,255,255,0.8)",
+      ...style
+    }}>{children}</div>;
   }
 
   return (
@@ -171,6 +179,7 @@ function CardWrapper({ cardId, cardOrder, isLayoutEditMode, isDarkMode, moveCard
         position: "relative",
         border: "2px solid #2196f3",
         background: isDarkMode ? "#111827" : "#f0f8ff",
+        color: isDarkMode ? "#f8fafc" : "#0f172a",
         order: cardIndex,
         flexBasis: "calc(33.333% - 14px)",
         ...style
@@ -6759,7 +6768,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             <div style={{ display: "grid", gap: "10px", marginTop: "8px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
                 <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Status</span>
-                <span style={{ padding: "4px 8px", borderRadius: "999px", background: "#dcfce7", color: "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
+                <span style={{ padding: "4px 8px", borderRadius: "999px", background: isDarkMode ? "#14532d" : "#dcfce7", color: isDarkMode ? "#dcfce7" : "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
               </div>
               <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.9rem" }}>Primary application database is online and responding normally.</p>
               <button type="button" onClick={() => {
@@ -6778,7 +6787,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             <div style={{ display: "grid", gap: "10px", marginTop: "8px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
                 <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Status</span>
-                <span style={{ padding: "4px 8px", borderRadius: "999px", background: "#dcfce7", color: "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
+                <span style={{ padding: "4px 8px", borderRadius: "999px", background: isDarkMode ? "#14532d" : "#dcfce7", color: isDarkMode ? "#dcfce7" : "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
               </div>
               <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.9rem" }}>Asset storage is available for uploads, previews, and media delivery.</p>
               <button type="button" onClick={() => {
@@ -6795,13 +6804,19 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="manage-categories">
             <h3>Manage Categories</h3>
             <label style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "12px" }}>
-              <span style={{ fontSize: "0.95rem", color: "#333", fontWeight: 600 }}>Add new Category</span>
+              <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Add new Category</span>
               <input
                 type="text"
                 placeholder="New category name"
                 value={newCategory}
                 onChange={(e) => setNewCategory(e.target.value)}
-                style={{ padding: "10px", borderRadius: "8px", border: "1px solid #ccc" }}
+                style={{
+                  padding: "10px",
+                  borderRadius: "8px",
+                  border: isDarkMode ? "1px solid #475569" : "1px solid #ccc",
+                  background: isDarkMode ? "#0f172a" : "#fff",
+                  color: isDarkMode ? "#f8fafc" : "#0f172a"
+                }}
               />
             </label>
             <button
@@ -6871,21 +6886,21 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             <h3 style={{ margin: 0 }}>Website Branding</h3>
             <form onSubmit={uploadBranding} style={{ display: "grid", gap: "12px" }}>
               <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <span style={{ fontSize: "0.95rem", color: "#333", fontWeight: 600 }}>Add new Logo</span>
+                <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Add new Logo</span>
                 <input
                   type="file"
                   accept="image/*"
                   onChange={(e) => setBrandingLogoFile(e.target.files?.[0] || null)}
-                  style={{ padding: "10px", background: "white", borderRadius: "8px", border: "1px solid #ccc" }}
+                  style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }}
                 />
               </label>
               <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <span style={{ fontSize: "0.95rem", color: "#333", fontWeight: 600 }}>Add new Favicon</span>
+                <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Add new Favicon</span>
                 <input
                   type="file"
                   accept="image/*"
                   onChange={(e) => setBrandingFaviconFile(e.target.files?.[0] || null)}
-                  style={{ padding: "10px", background: "white", borderRadius: "8px", border: "1px solid #ccc" }}
+                  style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }}
                 />
               </label>
               <button
@@ -6927,21 +6942,21 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="profile-icons">
             <h3 style={{ margin: 0 }}>Profile Icons</h3>
-            <p style={{ margin: 0, color: "#555", fontSize: "0.9rem" }}>
+            <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.9rem" }}>
               Upload PNG replacements for the customer crown, contributor ribbon, and admin tick. Each image is displayed automatically at the current icon size.
             </p>
             <form onSubmit={uploadProfileIcons} style={{ display: "grid", gap: "12px" }}>
               <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <span style={{ fontSize: "0.95rem", color: "#333", fontWeight: 600 }}>Customer icon (29 x 17 px)</span>
-                <input type="file" accept="image/png" onChange={(e) => setProfileIconCustomerFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: "white", borderRadius: "8px", border: "1px solid #ccc" }} />
+                <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Customer icon (29 x 17 px)</span>
+                <input type="file" accept="image/png" onChange={(e) => setProfileIconCustomerFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }} />
               </label>
               <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <span style={{ fontSize: "0.95rem", color: "#333", fontWeight: 600 }}>Contributor icon (30 x 27 px)</span>
-                <input type="file" accept="image/png" onChange={(e) => setProfileIconContributorFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: "white", borderRadius: "8px", border: "1px solid #ccc" }} />
+                <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Contributor icon (30 x 27 px)</span>
+                <input type="file" accept="image/png" onChange={(e) => setProfileIconContributorFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }} />
               </label>
               <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <span style={{ fontSize: "0.95rem", color: "#333", fontWeight: 600 }}>Admin icon (23 x 23 px)</span>
-                <input type="file" accept="image/png" onChange={(e) => setProfileIconAdminFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: "white", borderRadius: "8px", border: "1px solid #ccc" }} />
+                <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Admin icon (23 x 23 px)</span>
+                <input type="file" accept="image/png" onChange={(e) => setProfileIconAdminFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }} />
               </label>
               <button type="submit" disabled={brandingUploading} style={{ background: "#2196f3", color: "white", border: "none", padding: "10px 18px", borderRadius: "8px", cursor: brandingUploading ? "not-allowed" : "pointer", width: "100%" }}>
                 {brandingUploading ? "Saving..." : "Save Profile Icons"}
@@ -7017,13 +7032,19 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="active-collections">
             <h3>Active Collections</h3>
             <label style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "12px" }}>
-              <span style={{ fontSize: "0.95rem", color: "#333", fontWeight: 600 }}>Add new Collection</span>
+              <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Add new Collection</span>
               <input
                 type="text"
                 placeholder="New collection name"
                 value={newCollection}
                 onChange={(e) => setNewCollection(e.target.value)}
-                style={{ padding: "10px", borderRadius: "8px", border: "1px solid #ccc" }}
+                style={{
+                  padding: "10px",
+                  borderRadius: "8px",
+                  border: isDarkMode ? "1px solid #475569" : "1px solid #ccc",
+                  background: isDarkMode ? "#0f172a" : "#fff",
+                  color: isDarkMode ? "#f8fafc" : "#0f172a"
+                }}
               />
             </label>
             <button
@@ -8219,14 +8240,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             >
               <div
                 onClick={(e) => e.stopPropagation()}
-                style={{ width: "100%", maxWidth: 420, padding: 24, background: isDarkMode ? "#111827" : "#ffffff", color: isDarkMode ? "#f8fafc" : "#111827", borderRadius: 16, boxShadow: "0 30px 90px rgba(2,6,23,0.35)" }}
+                style={{ width: "100%", maxWidth: 420, padding: 24, background: isDarkMode ? "#0f172a" : "#ffffff", color: isDarkMode ? "#f8fafc" : "#111827", borderRadius: 16, boxShadow: "0 30px 90px rgba(2,6,23,0.35)", border: isDarkMode ? "1px solid rgba(148,163,184,0.2)" : "1px solid rgba(15,23,42,0.08)" }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: 18 }}>
-                  <h3 style={{ margin: 0 }}>Contributor Commission</h3>
-                  <button type="button" aria-label="Close commission popup" onClick={() => setCommissionModalOpen(false)} style={{ border: 0, borderRadius: "50%", width: 34, height: 34, cursor: "pointer" }}>×</button>
+                  <h3 style={{ margin: 0, color: isDarkMode ? "#f8fafc" : "#111827" }}>Contributor Commission</h3>
+                  <button type="button" aria-label="Close commission popup" onClick={() => setCommissionModalOpen(false)} style={{ border: 0, borderRadius: "50%", width: 34, height: 34, cursor: "pointer", background: isDarkMode ? "rgba(148,163,184,0.1)" : "#e2e8f0", color: isDarkMode ? "#f8fafc" : "#111827" }}>×</button>
                 </div>
                 <label style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "18px" }}>
-                  <span style={{ fontSize: "0.95rem", fontWeight: 600 }}>Percentage</span>
+                  <span style={{ fontSize: "0.95rem", fontWeight: 600, color: isDarkMode ? "#e2e8f0" : "#111827" }}>Percentage</span>
                   <input
                     type="number"
                     min="0"
@@ -8235,14 +8256,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     value={commissionInput}
                     onChange={(e) => setCommissionInput(e.target.value)}
                     placeholder="Enter percent"
-                    style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid #ccc", fontSize: "1rem" }}
+                    style={{ padding: "10px 12px", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", background: isDarkMode ? "#111827" : "#ffffff", color: isDarkMode ? "#f8fafc" : "#111827", fontSize: "1rem" }}
                   />
                 </label>
                 <div style={{ display: "flex", gap: "10px" }}>
                   <button
                     type="button"
                     onClick={() => setCommissionModalOpen(false)}
-                    style={{ flex: 1, background: "#e2e8f0", color: "#111827", border: "none", padding: "10px 16px", borderRadius: "8px", cursor: "pointer" }}
+                    style={{ flex: 1, background: isDarkMode ? "#334155" : "#e2e8f0", color: isDarkMode ? "#f8fafc" : "#111827", border: "none", padding: "10px 16px", borderRadius: "8px", cursor: "pointer" }}
                   >
                     Cancel
                   </button>
@@ -8260,6 +8281,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         localStorage.setItem("contributorCommission", String(parsedValue));
                         setContributorCommission(parsedValue);
                         setCommissionModalOpen(false);
+                        toast.success("Contributor commission saved successfully.");
                       } catch (err) {
                         window.alert(err.response?.data?.error || "Unable to save contributor commission.");
                       }

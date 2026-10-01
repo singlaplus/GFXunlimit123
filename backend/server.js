@@ -3930,6 +3930,42 @@ app.get("/admin/settings/pricing", verifySuperAdmin, async (req, res) => {
   }
 });
 
+app.get("/admin/settings/contributor-commission", verifyAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT percentage FROM contributor_commission_settings WHERE id = 1"
+    );
+    const percentage = Number(result.rows[0]?.percentage ?? 0);
+    res.json({ percentage });
+  } catch (err) {
+    console.error("Failed to load contributor commission settings", err);
+    res.status(500).json({ error: "Failed to load contributor commission settings" });
+  }
+});
+
+app.post("/admin/settings/contributor-commission", verifyAdmin, async (req, res) => {
+  try {
+    const requestedPercentage = Number(req.body?.percentage);
+
+    if (!Number.isFinite(requestedPercentage) || requestedPercentage < 0 || requestedPercentage > 100) {
+      return res.status(400).json({ error: "Please enter a valid percentage between 0 and 100." });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO contributor_commission_settings (id, percentage, updated_at)
+       VALUES (1, $1, now())
+       ON CONFLICT (id) DO UPDATE SET percentage = EXCLUDED.percentage, updated_at = now()
+       RETURNING percentage`,
+      [requestedPercentage]
+    );
+    const percentage = Number(result.rows[0].percentage);
+    res.json({ percentage });
+  } catch (err) {
+    console.error("Failed to save contributor commission settings", err);
+    res.status(500).json({ error: "Unable to save contributor commission." });
+  }
+});
+
 app.post("/admin/settings/pricing", verifySuperAdmin, async (req, res) => {
   try {
     const {
@@ -13733,6 +13769,11 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(blogAnalyticsMigration);
+      const contributorCommissionMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "027_contributor_commission_settings.sql"),
+        "utf8"
+      );
+      await pool.query(contributorCommissionMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);

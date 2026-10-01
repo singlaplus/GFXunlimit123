@@ -3,6 +3,7 @@ import AdminPanel from "./AdminPanel";
 import { renderTaxFormTemplate } from "./AdminPanel";
 import { useLocation } from "react-router-dom";
 import axios from "axios";
+import { toast } from "react-toastify";
 
 jest.mock("react-router-dom", () => ({
   useLocation: jest.fn()
@@ -36,6 +37,28 @@ describe("AdminPanel collection controls", () => {
     expect(screen.queryByText(/^approve$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^reject$/i)).not.toBeInTheDocument();
     expect(screen.getByText(/manage categories/i)).toBeInTheDocument();
+  });
+
+  it("uses dark-friendly styling in the controls tab when dark mode is active", async () => {
+    document.body.classList.add("dark-mode");
+    useLocation.mockReturnValue({ search: "?tab=controls" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Nature" }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    const manageCard = (await screen.findByRole("heading", { name: /manage categories/i })).closest(".admin-panel-card");
+    expect(manageCard).toHaveStyle({ color: "#f8fafc" });
+    expect(screen.getByPlaceholderText(/new category name/i)).toHaveStyle({ background: "#0f172a", color: "#f8fafc" });
+
+    document.body.classList.remove("dark-mode");
   });
 
   it("shows category management controls in the controls tab", async () => {
@@ -1425,20 +1448,25 @@ describe("AdminPanel collection controls", () => {
     expect(screen.queryByRole("button", { name: /add new threshold/i })).not.toBeInTheDocument();
   });
 
-  it("shows the contributor commission card and opens a percentage prompt", async () => {
-    const promptSpy = jest.spyOn(window, "prompt").mockReturnValue("15");
-
+  it("saves the contributor commission and shows a success toast", async () => {
+    const toastSuccessSpy = jest.spyOn(toast, "success");
     render(<AdminPanel />);
 
     expect(await screen.findByText(/contributor commission/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^commission$/i }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: /percentage/i }), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
-    expect(promptSpy).toHaveBeenCalledWith("Enter contributor commission percentage (%)", "");
     await waitFor(() => {
-      expect(screen.getByText(/current: 15%/i)).toBeInTheDocument();
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/settings/contributor-commission"),
+        { percentage: 5 },
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+      expect(toastSuccessSpy).toHaveBeenCalledWith("Contributor commission saved successfully.");
     });
 
-    promptSpy.mockRestore();
+    toastSuccessSpy.mockRestore();
   });
 
   it("opens a popup when a payment gateway label is clicked", async () => {
