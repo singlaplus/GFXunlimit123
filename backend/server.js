@@ -2091,9 +2091,11 @@ app.get("/api/images/:imageId", async (req, res) => {
 const cleanCatalogPreviewCache = new Map();
 const CLEAN_CATALOG_PREVIEW_CACHE_LIMIT = 24;
 const cleanCatalogPreviewJobs = new Map();
+const CLEAN_CATALOG_PREVIEW_CACHE_DIR = path.join(__dirname, "tmp", "catalog-preview-cache");
 
-    const renderCleanCatalogPreview = async ({ imageId, filename, extension, processor }) => {
+const renderCleanCatalogPreview = async ({ imageId, filename, extension, processor, cacheFilePath }) => {
       let temporarySourcePath = null;
+  let temporaryCachePath = null;
 
       try {
         const sourcePath = filename.replace(/^\/+/, "").replace(/^uploads[\\/]+/i, "");
@@ -2167,10 +2169,18 @@ const cleanCatalogPreviewJobs = new Map();
           maxHeight: 1200,
           autoTrim: false,
         });
+        await fs.promises.mkdir(path.dirname(cacheFilePath), { recursive: true });
+        temporaryCachePath = `${cacheFilePath}.${crypto.randomUUID()}.tmp`;
+        await fs.promises.writeFile(temporaryCachePath, generatedPreview.buffer);
+        await fs.promises.rename(temporaryCachePath, cacheFilePath);
+        temporaryCachePath = null;
         return generatedPreview.buffer;
       } finally {
         if (temporarySourcePath) {
           await fs.promises.unlink(temporarySourcePath).catch(() => {});
+        }
+        if (temporaryCachePath) {
+          await fs.promises.unlink(temporaryCachePath).catch(() => {});
         }
       }
     };
@@ -2201,27 +2211,38 @@ const cleanCatalogPreviewJobs = new Map();
         }
 
         const cacheKey = `${imageId}:${filename}:${image.thumbnail_generated_at || ""}`;
+        const diskCacheName = `${crypto.createHash("sha256").update(cacheKey).digest("hex")}.jpg`;
+        const cacheFilePath = path.join(CLEAN_CATALOG_PREVIEW_CACHE_DIR, diskCacheName);
         let cleanPreview = cleanCatalogPreviewCache.get(cacheKey);
         if (cleanPreview) {
           cleanCatalogPreviewCache.delete(cacheKey);
           cleanCatalogPreviewCache.set(cacheKey, cleanPreview);
         } else {
-          let renderJob = cleanCatalogPreviewJobs.get(cacheKey);
-          if (!renderJob) {
-            renderJob = renderCleanCatalogPreview({ imageId, filename, extension, processor });
-            cleanCatalogPreviewJobs.set(cacheKey, renderJob);
+          try {
+            cleanPreview = await fs.promises.readFile(cacheFilePath);
+          } catch (error) {
+            if (error.code !== "ENOENT") throw error;
           }
 
-          try {
-            cleanPreview = await renderJob;
-            cleanCatalogPreviewCache.set(cacheKey, cleanPreview);
-            while (cleanCatalogPreviewCache.size > CLEAN_CATALOG_PREVIEW_CACHE_LIMIT) {
-              cleanCatalogPreviewCache.delete(cleanCatalogPreviewCache.keys().next().value);
+          if (!cleanPreview) {
+            let renderJob = cleanCatalogPreviewJobs.get(cacheKey);
+            if (!renderJob) {
+              renderJob = renderCleanCatalogPreview({ imageId, filename, extension, processor, cacheFilePath });
+              cleanCatalogPreviewJobs.set(cacheKey, renderJob);
             }
-          } finally {
-            if (cleanCatalogPreviewJobs.get(cacheKey) === renderJob) {
-              cleanCatalogPreviewJobs.delete(cacheKey);
+
+            try {
+              cleanPreview = await renderJob;
+            } finally {
+              if (cleanCatalogPreviewJobs.get(cacheKey) === renderJob) {
+                cleanCatalogPreviewJobs.delete(cacheKey);
+              }
             }
+          }
+
+          cleanCatalogPreviewCache.set(cacheKey, cleanPreview);
+          while (cleanCatalogPreviewCache.size > CLEAN_CATALOG_PREVIEW_CACHE_LIMIT) {
+            cleanCatalogPreviewCache.delete(cleanCatalogPreviewCache.keys().next().value);
           }
         }
 
@@ -2234,7 +2255,7 @@ const cleanCatalogPreviewJobs = new Map();
           : await sharp(cleanPreview).jpeg({ quality, progressive: true }).toBuffer();
 
         res.set("Content-Type", "image/jpeg");
-        res.set("Cache-Control", req.query.watermark === "true" ? "no-store" : "public, max-age=300");
+        res.set("Cache-Control", "public, max-age=300");
         return res.send(outputBuffer);
       } catch (error) {
         console.error("Failed to generate catalog preview", error.message || error);

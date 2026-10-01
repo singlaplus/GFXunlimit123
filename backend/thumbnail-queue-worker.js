@@ -25,6 +25,7 @@ class ThumbnailQueueManager {
     this.queue = null;
     this.worker = null;
     this.isRunning = false;
+    this.workerConcurrency = Math.max(1, Number(process.env.THUMBNAIL_WORKER_CONCURRENCY || 1));
   }
 
   /**
@@ -48,7 +49,7 @@ class ThumbnailQueueManager {
         async (job) => this.processJob(job),
         {
           connection: redisConnection,
-          concurrency: 2, // Process 2 thumbnails at a time
+          concurrency: this.workerConcurrency,
         }
       );
 
@@ -56,7 +57,7 @@ class ThumbnailQueueManager {
       this.setupWorkerListeners();
 
       this.isRunning = true;
-      console.log('✓ Thumbnail processing worker started (concurrency: 2)');
+      console.log(`✓ Thumbnail processing worker started (concurrency: ${this.workerConcurrency})`);
 
       return true;
     } catch (err) {

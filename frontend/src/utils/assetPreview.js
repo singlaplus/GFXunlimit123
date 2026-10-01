@@ -77,6 +77,7 @@ export const getAssetPreviewUrl = (image, options = {}) => {
     const params = new URLSearchParams();
     if (Number.isFinite(quality)) params.set("quality", String(quality));
     if (watermark) params.set("watermark", "true");
+    if (image.thumbnail_generated_at) params.set("v", String(image.thumbnail_generated_at));
     return `${API_BASE_URL}/api/catalog-preview/${image.id}?${params.toString()}`;
   }
 

@@ -1,5 +1,33 @@
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
+
+function DeferredPreviewImage({ src, ...imageProps }) {
+  const imageRef = useRef(null);
+  const [isNearViewport, setIsNearViewport] = useState(false);
+
+  useEffect(() => {
+    const imageElement = imageRef.current;
+    if (!imageElement) return undefined;
+
+    if (typeof IntersectionObserver === "undefined") {
+      setIsNearViewport(true);
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setIsNearViewport(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: "100px 0px" });
+
+    observer.observe(imageElement);
+    return () => observer.disconnect();
+  }, [src]);
+
+  return <img ref={imageRef} src={isNearViewport ? src : undefined} {...imageProps} />;
+}
 
 function ImageGrid(props) {
   const { filteredImages, darkMode } = props;
@@ -54,7 +82,7 @@ function ImageGrid(props) {
             cursor: "pointer",
           }}
         >
-          <img
+          <DeferredPreviewImage
             src={getAssetPreviewUrl(image, {
               quality: 50,
               watermark: false,
