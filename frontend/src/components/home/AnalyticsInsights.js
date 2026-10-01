@@ -40,8 +40,10 @@ function AnalyticsInsights(props) {
 
         {mostLikedImage && (
           <img
-            src={getAssetPreviewUrl(mostLikedImage, { quality: 50, watermark: false })}
+            src={getAssetPreviewUrl(mostLikedImage, { quality: 50, watermark: false, thumbnailOnly: true })}
             alt={mostLikedImage.title}
+            loading="lazy"
+            decoding="async"
             style={{
               width: "100%",
               height: "180px",
@@ -71,8 +73,10 @@ function AnalyticsInsights(props) {
 
   {mostViewedImage && (
     <img
-      src={getAssetPreviewUrl(mostViewedImage, { quality: 50, watermark: false })}
+      src={getAssetPreviewUrl(mostViewedImage, { quality: 50, watermark: false, thumbnailOnly: true })}
       alt={mostViewedImage.title}
+      loading="lazy"
+      decoding="async"
       style={{
         width: "100%",
         height: "180px",

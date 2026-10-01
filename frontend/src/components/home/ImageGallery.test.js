@@ -111,15 +111,12 @@ describe('ImageGallery search suggestions', () => {
         return Promise.resolve({ data: [] });
       }
 
-      if (url.includes('limit=1')) {
-        return Promise.resolve({ data: { totalImages: 117, images: [] } });
-      }
-
-      if (url.includes('limit=117')) {
-        return Promise.resolve({ data: { totalImages: 117, images: [
-          { id: 1, category: 'Images,Templates' },
-          { id: 2, category: 'Images' },
-        ] } });
+      if (url.includes('/catalog/facets')) {
+        return Promise.resolve({ data: {
+          totalImages: 117,
+          categoryCounts: [{ name: 'Images', count: 2 }, { name: 'Templates', count: 1 }],
+          collectionCounts: [],
+        } });
       }
 
       return Promise.resolve({ data: [] });
@@ -139,6 +136,32 @@ describe('ImageGallery search suggestions', () => {
       />
     );
 
-    expect(await screen.findByText('All (117)')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'All (117)' })).toBeInTheDocument();
+    expect(axios.get).not.toHaveBeenCalledWith(expect.stringContaining('/images?limit='));
+  });
+
+  it('offers bounded page sizes while showing the full catalog count', () => {
+    render(
+      <ImageGallery
+        search=""
+        setSearch={jest.fn()}
+        setCurrentPage={jest.fn()}
+        sortType="newest"
+        setSortType={jest.fn()}
+        selectedCategory="All"
+        setSelectedCategory={jest.fn()}
+        selectedCollection="All"
+        setSelectedCollection={jest.fn()}
+        darkMode={false}
+        allImages={[]}
+        totalImages={144}
+        resultsPerPage={20}
+        setResultsPerPage={jest.fn()}
+      />
+    );
+
+    expect(screen.getByText('Showing 20 of 144')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '50', exact: true })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'All', exact: true })).not.toBeInTheDocument();
   });
 });

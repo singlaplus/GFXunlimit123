@@ -110,6 +110,39 @@ describe("AdminPanel collection controls", () => {
     expect(screen.queryByRole("dialog", { name: /categories/i })).not.toBeInTheDocument();
   });
 
+  it("closes the collection dialog from its close button or backdrop", async () => {
+    render(<AdminPanel />);
+
+    const collectionsCard = (await screen.findByRole("heading", { name: /active collections/i })).closest(".admin-panel-card");
+    fireEvent.click(within(collectionsCard).getByRole("button", { name: /view collections/i }));
+    let collectionsDialog = await screen.findByRole("dialog", { name: /collections/i });
+    const collectionsPanel = collectionsDialog.querySelector("h3").parentElement.parentElement;
+    fireEvent.click(within(collectionsPanel).getByRole("button", { name: /close collections/i }));
+    expect(screen.queryByRole("dialog", { name: /collections/i })).not.toBeInTheDocument();
+
+    fireEvent.click(within(collectionsCard).getByRole("button", { name: /view collections/i }));
+    collectionsDialog = await screen.findByRole("dialog", { name: /collections/i });
+    fireEvent.click(collectionsDialog);
+    expect(screen.queryByRole("dialog", { name: /collections/i })).not.toBeInTheDocument();
+  });
+
+  it("shows success toasts after adding and deleting a collection", async () => {
+    const successToast = jest.spyOn(toast, "success");
+    render(<AdminPanel />);
+
+    fireEvent.change(screen.getByPlaceholderText(/new collection name/i), { target: { value: "Travel" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add collection$/i }));
+    await waitFor(() => expect(successToast).toHaveBeenCalledWith("Collection added successfully."));
+
+    const collectionsCard = screen.getByRole("heading", { name: /active collections/i }).closest(".admin-panel-card");
+    fireEvent.click(within(collectionsCard).getByRole("button", { name: /view collections/i }));
+    const collectionsDialog = await screen.findByRole("dialog", { name: /collections/i });
+    fireEvent.click(within(collectionsDialog).getAllByRole("button", { name: /delete/i })[0]);
+    await waitFor(() => expect(successToast).toHaveBeenCalledWith("Collection deleted successfully."));
+
+    successToast.mockRestore();
+  });
+
   it("shows a success toast after saving a category rename", async () => {
     axios.put.mockResolvedValue({ data: { id: 1, name: "Abstracts" } });
     const successToast = jest.spyOn(toast, "success");
@@ -630,16 +663,21 @@ describe("AdminPanel collection controls", () => {
         return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
       }
       if (url.includes("/admin/collections")) {
-        return Promise.resolve({ data: [{ id: 1, name: "Photos", count: 31 }, { id: 2, name: "Videos", count: 23 }] });
+        return Promise.resolve({ data: [{ id: 1, name: "Photos", count: 31, live_asset_count: 27 }, { id: 2, name: "Videos", count: 23, live_asset_count: 19 }] });
       }
       return Promise.resolve({ data: [{ id: 1, title: "Live asset", status: "approved", filename: "asset.jpg", category: "Images", keywords: "", description: "", type: "image" }] });
     });
 
     render(<AdminPanel />);
 
-    expect(await screen.findByText(/active collections/i)).toBeInTheDocument();
-    expect(await screen.findByText(/31 assets/i)).toBeInTheDocument();
-    expect(await screen.findByText(/23 assets/i)).toBeInTheDocument();
+    const collectionsCard = (await screen.findByRole("heading", { name: /active collections/i })).closest(".admin-panel-card");
+    expect(within(collectionsCard).queryByText("Photos")).not.toBeInTheDocument();
+    expect(within(collectionsCard).queryByText("Videos")).not.toBeInTheDocument();
+    fireEvent.click(within(collectionsCard).getByRole("button", { name: /view collections/i }));
+    expect(await screen.findByText(/31 total assets/i)).toBeInTheDocument();
+    expect(await screen.findByText(/27 live assets/i)).toBeInTheDocument();
+    expect(await screen.findByText(/23 total assets/i)).toBeInTheDocument();
+    expect(await screen.findByText(/19 live assets/i)).toBeInTheDocument();
   });
 
   it("uses the live backend collection list instead of stale cached values when the admin endpoint returns an empty array", async () => {
@@ -654,16 +692,19 @@ describe("AdminPanel collection controls", () => {
         return Promise.resolve({ data: [] });
       }
       if (url.includes("/collections")) {
-        return Promise.resolve({ data: [{ id: 1, name: "Photos", asset_count: 31 }, { id: 2, name: "Videos", asset_count: 23 }] });
+        return Promise.resolve({ data: [{ id: 1, name: "Photos", asset_count: 31, live_asset_count: 25 }, { id: 2, name: "Videos", asset_count: 23, live_asset_count: 21 }] });
       }
       return Promise.resolve({ data: [{ id: 1, title: "Live asset", status: "approved", filename: "asset.jpg", category: "Images", keywords: "", description: "", type: "image" }] });
     });
 
     render(<AdminPanel />);
 
-    expect(await screen.findByText(/31 assets/i)).toBeInTheDocument();
-    expect(screen.getByText(/Videos/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Photos.*0 assets/i)).not.toBeInTheDocument();
+    const collectionsCard = (await screen.findByRole("heading", { name: /active collections/i })).closest(".admin-panel-card");
+    fireEvent.click(within(collectionsCard).getByRole("button", { name: /view collections/i }));
+    expect(await screen.findByText(/31 total assets/i)).toBeInTheDocument();
+    expect(await screen.findByText(/25 live assets/i)).toBeInTheDocument();
+    expect(await screen.findByText(/23 total assets/i)).toBeInTheDocument();
+    expect(await screen.findByText(/21 live assets/i)).toBeInTheDocument();
   });
 
   it("shows a backup/restore card that opens the real admin route in the same tab", async () => {
@@ -1784,11 +1825,19 @@ describe("AdminPanel collection controls", () => {
     dispatchSpy.mockRestore();
   });
 
-  it("dispatches refresh events after saving a collection rename", async () => {
+  it("shows a success toast and preserves counts after saving a collection rename", async () => {
     useLocation.mockReturnValue({ search: "?tab=controls" });
     const dispatchSpy = jest.spyOn(window, "dispatchEvent");
+    const successToast = jest.spyOn(toast, "success");
+    let savedCollectionName = "Nature";
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/categories")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [{ id: 1, name: savedCollectionName, asset_count: 31, live_asset_count: 25 }] });
+      return Promise.resolve({ data: [] });
+    });
     axios.put.mockImplementation((url) => {
       if (url.includes("/admin/collections/")) {
+        savedCollectionName = "Forest";
         return Promise.resolve({ data: { id: 1, name: "Forest" } });
       }
       return Promise.resolve({ data: { id: 1, title: "Live asset", status: "approved", filename: "asset.jpg", category: "Images", collection: "Nature", keywords: "", description: "", type: "image" } });
@@ -1796,16 +1845,24 @@ describe("AdminPanel collection controls", () => {
 
     render(<AdminPanel />);
 
-    await screen.findByText(/active collections/i);
-    fireEvent.click(screen.getAllByRole("button", { name: /modify/i })[1]);
-    fireEvent.change(screen.getByDisplayValue(/nature/i), { target: { value: "Forest" } });
+    const collectionsCard = (await screen.findByRole("heading", { name: /active collections/i })).closest(".admin-panel-card");
+    fireEvent.click(within(collectionsCard).getByRole("button", { name: /view collections/i }));
+    const collectionsHeading = await screen.findByRole("heading", { name: "Collections", exact: true });
+    const collectionsPanel = collectionsHeading.parentElement.parentElement;
+    fireEvent.click(within(collectionsPanel).getByRole("button", { name: /modify/i }));
+    fireEvent.change(screen.getByRole("textbox", { name: /collection name/i }), { target: { value: "Forest" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => {
       expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: "asset-refresh" }));
+      expect(successToast).toHaveBeenCalledWith("Collection saved successfully.");
     });
+    expect(await screen.findByText("Forest")).toBeInTheDocument();
+    expect(screen.getByText("31 total assets")).toBeInTheDocument();
+    expect(screen.getByText("25 live assets")).toBeInTheDocument();
 
     dispatchSpy.mockRestore();
+    successToast.mockRestore();
   });
 
   it("opens the Email Analytics modal when the Email Analytics button is clicked", async () => {

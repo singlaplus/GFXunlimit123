@@ -212,8 +212,10 @@ function MyDownloads({ darkMode = false }) {
             >
 
               <img
-                src={getAssetPreviewUrl({ id: image.image_id || image.id, title: image.title, thumbnail_url: image.thumbnail_url, thumbnail_status: image.thumbnail_status }, { quality: 50, watermark: false })}
+                src={getAssetPreviewUrl({ id: image.image_id || image.id, title: image.title, thumbnail_url: image.thumbnail_url, thumbnail_status: image.thumbnail_status, thumbnail_generated_at: image.thumbnail_generated_at }, { quality: 50, watermark: false, thumbnailOnly: true })}
                 alt={image.title}
+                loading="lazy"
+                decoding="async"
                 style={{
                   width: "100%",
                   height: "180px",

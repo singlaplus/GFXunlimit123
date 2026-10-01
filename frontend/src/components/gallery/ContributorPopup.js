@@ -1,3 +1,5 @@
+import { getAssetPreviewUrl } from "../../utils/assetPreview";
+
 function ContributorPopup({
   selectedContributor,
   setSelectedContributor,
@@ -66,8 +68,10 @@ function ContributorPopup({
           {contributorImages.map((image) => (
             <img
               key={`${image.id}-${image.filename}`}
-              src={`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/api/images/${image.id}`}
+              src={getAssetPreviewUrl(image, { thumbnailOnly: true })}
               alt={image.title}
+              loading="lazy"
+              decoding="async"
               onClick={() => {
                 setSelectedContributor(null);
                 fetchSingleImage(image.id);

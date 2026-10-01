@@ -28,4 +28,7 @@ test('createWatermarkedOptionalThumbnail writes a visibly modified thumbnail fil
   assert.ok(fs.existsSync(targetPath));
   const output = fs.readFileSync(targetPath);
   assert.notEqual(Buffer.compare(original, output), 0, 'Watermarked output should differ from the original source image');
+  const metadata = await sharp(output).metadata();
+  assert.ok(metadata.width <= 600);
+  assert.ok(metadata.height <= 600);
 });

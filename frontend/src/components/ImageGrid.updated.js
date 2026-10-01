@@ -19,20 +19,7 @@ function ImageGrid(props) {
     return `/asset/${slug}-${image.id}`;
   };
 
-  const hasReadyThumbnail = (image) => {
-    if (!image || !image.thumbnail_url) return false;
-    const status = String(image.thumbnail_status ?? '').trim().toLowerCase();
-    const blockedStatuses = new Set(['pending', 'processing', 'retrying', 'failed', 'error']);
-    return !blockedStatuses.has(status);
-  };
-
-  // Determine which image source to use (thumbnail or original)
   const getImageSource = (image) => {
-    // If a saved thumbnail is available and not still pending, use it with 50% quality
-    if (hasReadyThumbnail(image)) {
-      return `${API_BASE_URL}${image.thumbnail_url}&quality=50`;
-    }
-    // Otherwise, use the regular image endpoint
     return `${API_BASE_URL}/api/images/${image.id}?quality=50`;
   };
 

@@ -115,46 +115,26 @@ class PsdProcessor extends BaseProcessor {
         }
       }
 
-      // Read PSD file
-      const fileBuffer = fs.readFileSync(filePath);
-
       let psd;
       try {
-        // Parse PSD - wrap in try-catch to catch any async errors
-        psd = await PSD.open(fileBuffer);
+        psd = await PSD.open(filePath);
       } catch (parseErr) {
-        // If PSD.open fails, throw with clear message
         throw new Error(`Failed to parse PSD file: ${parseErr.message}`);
       }
 
-      // Get composite image (merged preview)
-      const composite = psd.compositeData;
-
-      if (!composite || !composite.data) {
+      if (!psd?.image || typeof psd.image.toPng !== 'function') {
         throw new Error('No composite/preview data found in PSD');
       }
 
-      // Convert composite data to buffer
-      // The composite data should already be in a format we can work with
-      let previewBuffer = composite.data;
+      const pngStream = psd.image.toPng().pack();
+      const chunks = [];
+      await new Promise((resolve, reject) => {
+        pngStream.on('data', (chunk) => chunks.push(chunk));
+        pngStream.on('end', resolve);
+        pngStream.on('error', reject);
+      });
 
-      // If it's raw pixel data, we need to create an image
-      if (Buffer.isBuffer(previewBuffer)) {
-        const sharp = require('sharp');
-        
-        // Create PNG from raw pixel data
-        previewBuffer = await sharp({
-          raw: {
-            width: psd.width,
-            height: psd.height,
-            channels: 4, // RGBA
-          },
-        })
-          .png()
-          .toBuffer();
-      }
-
-      return previewBuffer;
+      return Buffer.concat(chunks);
     } catch (err) {
       throw new Error(`Server-side PSD extraction failed: ${err.message}`);
     }

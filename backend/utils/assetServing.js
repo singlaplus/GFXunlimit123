@@ -65,10 +65,10 @@ async function resolveAssetFile(assetRoot, requestedPath) {
   return realFilePath;
 }
 
-async function sendAssetFile(req, res, assetRoot, requestedPath) {
+async function sendAssetFile(req, res, assetRoot, requestedPath, sendFileOptions = {}) {
   try {
     const filePath = await resolveAssetFile(assetRoot, requestedPath);
-    return res.sendFile(filePath, (error) => {
+    return res.sendFile(filePath, sendFileOptions, (error) => {
       if (!error) return;
       if (res.headersSent) {
         res.destroy(error);
@@ -91,7 +91,7 @@ async function sendAssetFile(req, res, assetRoot, requestedPath) {
   }
 }
 
-function createAssetServingHandler({ getAssetRoot, getAssetPath, getRemotePath, proxyHandler, missingAssetMessage = 'Invalid asset path' }) {
+function createAssetServingHandler({ getAssetRoot, getAssetPath, getRemotePath, proxyHandler, missingAssetMessage = 'Invalid asset path', immutableVersions = false }) {
   return async (req, res) => {
     if (!/^(GET|HEAD)$/i.test(req.method)) {
       return res.status(405).json({ error: 'Method not allowed' });
@@ -108,9 +108,17 @@ function createAssetServingHandler({ getAssetRoot, getAssetPath, getRemotePath, 
       return res.status(400).json({ error: 'Invalid asset path' });
     }
 
+    const version = typeof req.query?.v === 'string' ? req.query.v : '';
+    const immutableThumbnail = immutableVersions && /^[A-Za-z0-9._:-]+$/.test(version);
+    const sendFileOptions = immutableThumbnail
+      ? { maxAge: 31536000000, immutable: true }
+      : {};
+    if (immutableThumbnail) {
+      res.locals.immutableThumbnail = true;
+    }
     const assetRoot = getAssetRoot();
     if (assetRoot) {
-      return sendAssetFile(req, res, assetRoot, assetPath);
+      return sendAssetFile(req, res, assetRoot, assetPath, sendFileOptions);
     }
 
     return proxyHandler(req, res, getRemotePath(assetPath, req));

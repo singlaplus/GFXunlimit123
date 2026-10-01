@@ -1,8 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
-
 function ImageGrid(props) {
   const { filteredImages, darkMode } = props;
   const navigate = useNavigate();
@@ -57,9 +55,15 @@ function ImageGrid(props) {
           }}
         >
           <img
-            src={getAssetPreviewUrl(image, { quality: 50, watermark: false })}
+            src={getAssetPreviewUrl(image, {
+              quality: 50,
+              watermark: false,
+              renderNonRasterPreview: true,
+            })}
             alt={image.title}
             width="100%"
+            loading="lazy"
+            decoding="async"
             onMouseEnter={(e) => {
               e.currentTarget.style.transform = "scale(1.08)";
             }}

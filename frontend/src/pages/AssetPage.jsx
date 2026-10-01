@@ -234,9 +234,15 @@ export default function AssetPage(props) {
     return null;
   }
 
-  const previewUrl = getAssetPreviewUrl(image, { quality: 10, watermark: true });
-  const popupUrl = getAssetPreviewUrl(image, { quality: 50, watermark: true });
-  const fullSizeUrl = getAssetPreviewUrl(image, { quality: 100, watermark: true });
+  const getWatermarkedPreview = (asset, quality) => getAssetPreviewUrl(asset, {
+    quality,
+    watermark: true,
+    renderNonRasterPreview: true,
+    useThumbnail: false,
+  });
+  const previewUrl = getWatermarkedPreview(image, 50);
+  const popupUrl = getWatermarkedPreview(image, 50);
+  const fullSizeUrl = getWatermarkedPreview(image, 100);
 
   return (
     <div
@@ -660,8 +666,10 @@ export default function AssetPage(props) {
                     style={{ flex: "0 0 220px", textDecoration: "none", color: "inherit" }}
                   >
                     <img
-                      src={getAssetPreviewUrl(related, { quality: 50, watermark: false })}
+                      src={getWatermarkedPreview(related, 50)}
                       alt={related.title || "Related asset"}
+                      loading="lazy"
+                      decoding="async"
                       style={{ width: "100%", aspectRatio: "16 / 10", objectFit: "cover", display: "block", borderRadius: "14px" }}
                     />
                     <div style={{ marginTop: "10px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>

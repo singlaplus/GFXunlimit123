@@ -1,19 +1,20 @@
 import { getAssetPreviewUrl, getAssetOriginalDownloadUrl, resolveThumbnailDownloadFile } from './assetPreview';
 
 describe('assetPreview', () => {
-  test('uses the 50% thumbnail route whenever an optional thumbnail is active on the site', () => {
+  test('uses an available thumbnail for listing previews', () => {
     const image = {
       id: 42,
       thumbnail_url: '/api/thumbnail?file=contri1%2F2026%2F08%2FApproved%2Fthumb.jpg',
       thumbnail_status: 'COMPLETED',
+      thumbnail_generated_at: '2026-08-20T10:15:00.000Z',
     };
 
-    expect(getAssetPreviewUrl(image, { quality: 80, watermark: false })).toBe(
-      'http://localhost:5000/api/thumbnail?file=contri1%2F2026%2F08%2FApproved%2Fthumb.jpg&quality=50'
+    expect(getAssetPreviewUrl(image, { quality: 80, watermark: false, thumbnailOnly: true })).toBe(
+      'http://localhost:5000/api/thumbnail?file=contri1%2F2026%2F08%2FApproved%2Fthumb.jpg&quality=50&v=2026-08-20T10%3A15%3A00.000Z'
     );
   });
 
-  test('applies watermark to thumbnail URL when requested on asset page', () => {
+  test('bypasses saved thumbnails to apply a watermark to asset previews', () => {
     const image = {
       id: 42,
       thumbnail_url: '/api/thumbnail?file=contri1%2F2026%2F08%2FApproved%2Fthumb.jpg',
@@ -21,26 +22,92 @@ describe('assetPreview', () => {
     };
 
     expect(getAssetPreviewUrl(image, { quality: 50, watermark: true })).toBe(
-      'http://localhost:5000/api/thumbnail?file=contri1%2F2026%2F08%2FApproved%2Fthumb.jpg&quality=50&watermark=true'
+      'http://localhost:5000/api/images/42?quality=50&watermark=true'
     );
   });
 
-  test('uses the thumbnail path even when the completion flag is lowercase', () => {
+  test('uses a saved thumbnail when available without a version timestamp', () => {
     const image = {
       id: 99,
       thumbnail_url: '/api/thumbnail?file=psd%2Fthumbnails%2Fthumbnail-psd-test-1.png',
       thumbnail_status: 'completed',
     };
 
-    expect(getAssetPreviewUrl(image, { quality: 75, watermark: false })).toBe(
+    expect(getAssetPreviewUrl(image, { quality: 75, watermark: false, thumbnailOnly: true })).toBe(
       'http://localhost:5000/api/thumbnail?file=psd%2Fthumbnails%2Fthumbnail-psd-test-1.png&quality=50'
     );
   });
 
-  test('falls back to original asset URL when no thumbnail is ready', () => {
+  test('uses a ready thumbnail for non-raster previews when requested', () => {
+    const image = {
+      id: 166,
+      filename: 'preview.psd',
+      thumbnail_url: '/api/thumbnail?file=psd%2Fthumbnail.jpg',
+      thumbnail_status: 'COMPLETED',
+    };
+
+    expect(getAssetPreviewUrl(image, { quality: 50, watermark: false, preferThumbnail: true })).toBe(
+      'http://localhost:5000/api/thumbnail?file=psd%2Fthumbnail.jpg&quality=50'
+    );
+  });
+
+  test('does not fall back to an original-backed preview for listings without a thumbnail', () => {
+    const image = { id: 8, filename: 'unthumbnailed.jpg' };
+
+    expect(getAssetPreviewUrl(image, { thumbnailOnly: true })).toBe(
+      'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
+    );
+  });
+
+  test('uses the clean catalog preview for non-raster assets when requested', () => {
+    const image = {
+      id: 166,
+      filename: 'preview.psd',
+      thumbnail_url: '/api/thumbnail?file=psd%2Fthumbnail.jpg',
+      thumbnail_status: 'COMPLETED',
+    };
+
+    expect(getAssetPreviewUrl(image, { quality: 50, watermark: false, preferThumbnail: true, renderNonRasterPreview: true })).toBe(
+      'http://localhost:5000/api/catalog-preview/166?quality=50'
+    );
+  });
+
+  test('preserves catalog previews for non-raster detail pages unless thumbnail-only is requested', () => {
+    const image = {
+      id: 166,
+      filename: 'preview.psd',
+      thumbnail_url: '/api/thumbnail?file=psd%2Fthumbnail.jpg',
+      thumbnail_status: 'COMPLETED',
+    };
+
+    expect(getAssetPreviewUrl(image, { quality: 50, watermark: true, renderNonRasterPreview: true })).toBe(
+      'http://localhost:5000/api/catalog-preview/166?quality=50&watermark=true'
+    );
+  });
+
+  test('uses a clean non-raster preview in Explore and requests a watermark on detail pages', () => {
+    const image = { id: 195, filename: 'asset.eps' };
+
+    expect(getAssetPreviewUrl(image, { quality: 50, watermark: false, renderNonRasterPreview: true })).toBe(
+      'http://localhost:5000/api/catalog-preview/195?quality=50'
+    );
+    expect(getAssetPreviewUrl(image, { quality: 50, watermark: true, renderNonRasterPreview: true })).toBe(
+      'http://localhost:5000/api/catalog-preview/195?quality=50&watermark=true'
+    );
+  });
+
+  test('keeps fallback asset previews unwatermarked by default', () => {
     const image = { id: 7 };
 
     expect(getAssetPreviewUrl(image, { quality: 60 })).toBe('http://localhost:5000/api/images/7?quality=60');
+  });
+
+  test('watermarks AssetPage fallback previews when no thumbnail is ready', () => {
+    const image = { id: 7 };
+
+    expect(getAssetPreviewUrl(image, { quality: 50, watermark: true })).toBe(
+      'http://localhost:5000/api/images/7?quality=50&watermark=true'
+    );
   });
 
   test('builds the direct original-file download URL', () => {

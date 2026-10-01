@@ -133,8 +133,10 @@ function ContributorProfile(props) {
 >
 
       <img
-        src={`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/api/images/${image.id}`}
+        src={getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true })}
         alt={image.title}
+        loading="lazy"
+        decoding="async"
         style={{
           width: "100%",
           height: "140px",
@@ -384,8 +386,10 @@ function ContributorProfile(props) {
           >
 
             <img
-              src={getAssetPreviewUrl(image, { quality: 50, watermark: false })}
+              src={getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true })}
               alt={image.title}
+              loading="lazy"
+              decoding="async"
               style={{
                 width: "100%",
                 height: "180px",

@@ -3548,7 +3548,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     return rawCollections
       .map((collection) => {
         if (typeof collection === "string") {
-          return { id: collection, name: collection, asset_count: 0 };
+          return { id: collection, name: collection, asset_count: 0, live_asset_count: 0 };
         }
 
         if (collection && typeof collection === "object") {
@@ -3563,11 +3563,18 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             collection.asset_count_total ??
             0
           );
+          const rawLiveAssetCount = Number(
+            collection.live_asset_count ??
+            collection.liveAssetCount ??
+            collection.live_count ??
+            0
+          );
 
           return {
             id: collection.id ?? collection._id ?? normalizedName,
             name: normalizedName,
-            asset_count: Number.isFinite(rawAssetCount) ? rawAssetCount : 0
+            asset_count: Number.isFinite(rawAssetCount) ? rawAssetCount : 0,
+            live_asset_count: Number.isFinite(rawLiveAssetCount) ? rawLiveAssetCount : 0
           };
         }
 
@@ -4171,7 +4178,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         status: image.status,
         created_at: image.created_at,
         filename: image.filename,
-        preview_url: getAssetPreviewUrl(image, { quality: 70, watermark: false })
+        preview_url: getAssetPreviewUrl(image, { quality: 70, watermark: false, thumbnailOnly: true })
       }));
   };
   const selectedMetricRows = selectedContributorMetric ? getContributorMetricRows(selectedContributorMetric.label) : [];
@@ -4498,6 +4505,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       }
       setNewCollection("");
       setDeleteWarning(null);
+      toast.success("Collection added successfully.");
     } catch (err) {
       console.error(err);
     }
@@ -4544,6 +4552,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         window.dispatchEvent(new Event("asset-collections-updated"));
       }
       setDeleteWarning(null);
+      toast.success("Collection deleted successfully.");
     } catch (err) {
       if (err?.response?.status === 409 && err?.response?.data) {
         setDeleteWarning({
@@ -5950,7 +5959,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(150px, 1fr))", gap: "12px", minWidth: "780px" }}>
                       {selectedMetricRows.map((row, index) => (
                         <div key={`${row.id || row.order_id || "record"}-${index}`} style={{ display: "grid", gridTemplateRows: "140px auto", gap: "10px", alignContent: "start", padding: "10px", borderRadius: "8px", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", background: isDarkMode ? "#111827" : "#f8fafc" }}>
-                          {row.preview_url ? <img src={row.preview_url} alt={row.title || "Asset preview"} style={{ width: "100%", height: "140px", objectFit: "cover", borderRadius: "6px", background: isDarkMode ? "#1e293b" : "#e2e8f0" }} /> : <div aria-hidden="true" style={{ width: "100%", height: "140px", borderRadius: "6px", background: isDarkMode ? "#1e293b" : "#e2e8f0" }} />}
+                          {row.preview_url ? <img src={row.preview_url} alt={row.title || "Asset preview"} loading="lazy" decoding="async" style={{ width: "100%", height: "140px", objectFit: "cover", borderRadius: "6px", background: isDarkMode ? "#1e293b" : "#e2e8f0" }} /> : <div aria-hidden="true" style={{ width: "100%", height: "140px", borderRadius: "6px", background: isDarkMode ? "#1e293b" : "#e2e8f0" }} />}
                           <div>
                             <strong>{row.title || `Asset ${row.id}`}</strong>
                             <div style={{ marginTop: "4px", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{row.status || "Unknown"} · Asset #{row.id}</div>
@@ -7065,37 +7074,6 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             >
               View Collections
             </button>
-            <div style={{ marginTop: "12px", display: "grid", gap: "8px" }}>
-              {visibleCollections.map((collectionItem) => (
-                <div key={collectionItem.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "8px 10px", borderRadius: "8px", background: isDarkMode ? "#111827" : "#f8fafc", border: isDarkMode ? "1px solid rgba(148,163,184,0.2)" : "1px solid #e2e8f0" }}>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px", minWidth: 0 }}>
-                    <span style={{ fontSize: "0.9rem", color: isDarkMode ? "#e2e8f0" : "#444", fontWeight: 600 }}>{collectionItem.name || "Unnamed collection"}</span>
-                    <span style={{ fontSize: "0.78rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{Number(collectionItem.asset_count || 0)} asset{Number(collectionItem.asset_count || 0) === 1 ? "" : "s"}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (collectionItem) {
-                        startEditingCollection(collectionItem);
-                      } else {
-                        setEditingCollectionInModal("__pending__");
-                        setEditingCollectionNameInModal("");
-                      }
-                    }}
-                    style={{
-                      background: "#1976d2",
-                      color: "white",
-                      border: "none",
-                      padding: "8px 12px",
-                      borderRadius: "8px",
-                      cursor: "pointer"
-                    }}
-                  >
-                    Modify
-                  </button>
-                </div>
-              ))}
-            </div>
 
             {deleteWarning && (
               <div
@@ -10127,6 +10105,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           {/* Collection Grid Modal */}
           {showCollectionGrid && (
             <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="collection-grid-title"
+              onClick={() => setShowCollectionGrid(false)}
               style={{
                 position: "fixed",
                 inset: 0,
@@ -10139,6 +10121,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               }}
             >
               <div
+                onClick={(event) => event.stopPropagation()}
                 style={{
                   width: "90%",
                   maxWidth: "1000px",
@@ -10151,8 +10134,16 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   flexDirection: "column"
                 }}
               >
-                <div style={{ padding: "18px 20px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "inherit" }}>
-                  <h3 style={{ margin: 0 }}>Collections</h3>
+                <div style={{ padding: "18px 20px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "inherit", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <h3 id="collection-grid-title" style={{ margin: 0 }}>Collections</h3>
+                  <button
+                    type="button"
+                    aria-label="Close collections"
+                    onClick={() => setShowCollectionGrid(false)}
+                    style={{ background: "transparent", border: "none", fontSize: "1.4rem", lineHeight: 1, cursor: "pointer", color: "inherit" }}
+                  >
+                    X
+                  </button>
                 </div>
                 <div style={{ padding: "20px", flex: 1 }}>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
@@ -10179,7 +10170,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         >
                           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" }}>
                             <span style={{ color: "inherit", fontWeight: 600, fontSize: "0.95rem" }}>{collectionItem.name || "Unnamed collection"}</span>
-                            <span style={{ color: "#64748b", fontSize: "0.8rem" }}>{Number(collectionItem.asset_count || 0)} asset{Number(collectionItem.asset_count || 0) === 1 ? "" : "s"}</span>
+                            <span style={{ color: "#64748b", fontSize: "0.8rem" }}>{Number(collectionItem.asset_count || 0)} total asset{Number(collectionItem.asset_count || 0) === 1 ? "" : "s"}</span>
+                            <span style={{ color: "#64748b", fontSize: "0.8rem" }}>{Number(collectionItem.live_asset_count || 0)} live asset{Number(collectionItem.live_asset_count || 0) === 1 ? "" : "s"}</span>
                           </div>
                           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
                             <button
@@ -10430,7 +10422,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                             }
                           );
                           setCollections((prev) => {
-                            const nextCollections = prev.map((collectionItem) => (collectionItem.id === editingCollectionInModal ? res.data : collectionItem));
+                            const nextCollections = prev.map((collectionItem) => (
+                              collectionItem.id === editingCollectionInModal
+                                ? { ...collectionItem, ...res.data }
+                                : collectionItem
+                            ));
                             persistCollections(nextCollections);
                             return nextCollections;
                           });
@@ -10445,6 +10441,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                           }
                           setEditingCollectionInModal(null);
                           setEditingCollectionNameInModal("");
+                          toast.success("Collection saved successfully.");
                         } catch (err) {
                           console.error(err);
                         }
@@ -10659,8 +10656,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   </div>
                 )}
                 <img
-                  src={getAssetPreviewUrl(image, { quality: 50, watermark: false })}
+                  src={getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true })}
                   alt={image.title}
+                  loading="lazy"
+                  decoding="async"
                   style={{
                     width: "100%",
                     minHeight: "120px",

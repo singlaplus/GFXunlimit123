@@ -12,15 +12,17 @@ const crypto = require('crypto');
 const AdmZip = require("adm-zip");
 const axios = require("axios");
 const sharp = require("sharp");
+const { Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const sanitizeHtml = require("sanitize-html");
 const { sendMail } = require("./email/mailer");
 const { normalizeRecipients, resolveNotificationEventKey, buildNotificationEmailContent } = require("./email/notificationRules");
 const { createMessagingRouter, createAssetNotifications, createCouponNotifications, createDirectMessage, recordEvent, recordBusinessEvent, publishEvent } = require("./messaging");
 const { buildMyUploadsQuery } = require("./myUploadsQuery");
-const { applyCatalogFilters } = require("./imageQuery");
 const { registerOrderRoutes } = require("./orders");
 const { summarizeContributorDownloadWindowCounts, summarizeContributorUploadWindowCounts } = require("./dashboardStats");
-const { createAssetServingHandler, encodeAssetPath, getProductionAssetRoot } = require("./utils/assetServing");
+const { createAssetServingHandler, encodeAssetPath, getProductionAssetRoot, resolveAssetFile } = require("./utils/assetServing");
+const { applyWatermarkToBuffer, generateWatermarkSvg } = require("./utils/watermarkEngine");
 const thumbnailQueue = require("./thumbnail-queue-worker");
 const ProcessorDetector = require("./thumbnail-engine/processor-detector");
 const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
@@ -1539,7 +1541,7 @@ const IMAGE_CONTENT_TYPES = {
 };
 
 /* Thumbnail processing support */
-const THUMBNAIL_SUPPORTED_EXTENSIONS = [".ai", ".eps", ".psd", ".psb"];
+const THUMBNAIL_SUPPORTED_EXTENSIONS = [".ai", ".eps", ".psd", ".psb", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"];
 const THUMBNAIL_SUPPORTED_MIMES = [
   "application/x-illustrator",
   "application/postscript",
@@ -1584,12 +1586,13 @@ const resolveUploadFilePath = (value) => {
   return { absolutePath, uploadsRoot };
 };
 
-const proxyPc2AssetRequest = async (req, res, upstreamPath) => {
+const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
   if (!/^(GET|HEAD)$/i.test(req.method)) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
+    const processImage = Boolean(options.processImage && req.method === "GET");
     const pc2Url = new URL(process.env.PC2_ASSET_SERVER_URL || "");
     if (
       pc2Url.protocol !== "http:" ||
@@ -1609,7 +1612,7 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath) => {
     const response = await axios.request({
       method: req.method.toLowerCase(),
       url: `${pc2Url.origin}${upstreamPath}${query}`,
-      responseType: "stream",
+      responseType: processImage ? "arraybuffer" : "stream",
       decompress: false,
       headers: {
         authorization: req.headers.authorization,
@@ -1622,6 +1625,12 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath) => {
     });
 
     res.status(response.status);
+    const cacheControlOverride = Boolean(
+      res.locals?.immutableThumbnail && response.status >= 200 && response.status < 300
+    );
+    if (cacheControlOverride) {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    }
     for (const header of [
       "content-type",
       "content-length",
@@ -1633,9 +1642,58 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath) => {
       "accept-ranges",
       "content-range",
     ]) {
+      if (processImage && ["content-length", "etag", "last-modified", "accept-ranges", "content-range"].includes(header)) {
+        continue;
+      }
+      if (header === "cache-control" && cacheControlOverride) {
+        continue;
+      }
       if (response.headers[header] !== undefined) {
         res.setHeader(header, response.headers[header]);
       }
+    }
+
+    if (processImage && response.status >= 200 && response.status < 300) {
+      const contentType = String(response.headers["content-type"] || "");
+      const imageBuffer = Buffer.from(response.data);
+
+      if (contentType.startsWith("image/")) {
+        const requestedQuality = Number(req.query.quality ?? 50);
+        const quality = Number.isFinite(requestedQuality)
+          ? Math.min(100, Math.max(10, requestedQuality))
+          : 50;
+
+        try {
+          const resizedBuffer = await sharp(imageBuffer)
+            .rotate()
+            .resize({ width: 1920, height: 1920, fit: "inside", withoutEnlargement: true })
+            .toBuffer();
+          let preview = sharp(resizedBuffer);
+
+          if (options.watermark) {
+            const metadata = await preview.metadata();
+            const watermarkSvg = await generateWatermarkSvg(metadata.width || 1920, metadata.height || 1080);
+            preview = preview.composite([{ input: watermarkSvg, blend: "over" }]);
+          }
+
+          const previewBuffer = await preview.jpeg({ quality }).toBuffer();
+          res.status(200);
+          res.set("Content-Type", "image/jpeg");
+          res.set("Content-Length", String(previewBuffer.length));
+          res.set("Cache-Control", "public, max-age=300");
+          return res.send(previewBuffer);
+        } catch (error) {
+          console.warn("PC2 image preview optimization failed", error.message);
+          res.set("Content-Type", contentType);
+          return res.send(imageBuffer);
+        }
+      }
+
+      return res.send(imageBuffer);
+    }
+
+    if (processImage) {
+      return res.send(Buffer.from(response.data));
     }
 
     response.data.on("error", (error) => {
@@ -1669,6 +1727,7 @@ const thumbnailAssetHandler = createAssetServingHandler({
   getAssetPath: (req) => req.query.file,
   getRemotePath: () => "/api/thumbnail",
   proxyHandler: proxyPc2AssetRequest,
+  immutableVersions: true,
 });
 
 const brandingAssetHandler = createAssetServingHandler({
@@ -1993,14 +2052,195 @@ const streamImageFile = async (req, res, absolutePath, { bypassProcessing = fals
 app.use("/api/files/branding", brandingAssetHandler);
 app.use("/api/files", filesAssetHandler);
 
-app.get("/api/images/:imageId", (req, res) => {
+app.get("/api/images/:imageId", async (req, res) => {
   const { imageId } = req.params;
   if (!/^[A-Za-z0-9_-]+$/.test(imageId)) {
     return res.status(400).json({ error: "Invalid image ID" });
   }
-  return proxyPc2AssetRequest(req, res, `/api/images/${encodeURIComponent(imageId)}`);
+
+  try {
+    const imageResult = await pool.query(
+      "SELECT filename FROM images WHERE id = $1",
+      [imageId]
+    );
+    const storedFilename = String(imageResult.rows[0]?.filename || "")
+      .trim()
+      .replace(/\\/g, "/");
+
+    if (!storedFilename) {
+      return res.status(404).json({ error: "Image not found" });
+    }
+
+    const assetPath = storedFilename
+      .replace(/^\/+/, "")
+      .replace(/^uploads\//, "")
+      .replace(/^api\/files\//, "");
+
+    return proxyPc2AssetRequest(
+      req,
+      res,
+      `/api/files/${encodeAssetPath(assetPath)}`,
+      { processImage: true, watermark: req.query.watermark === "true" }
+    );
+  } catch (error) {
+    console.error("Failed to resolve image file", error.message || error);
+    return res.status(500).json({ error: "Unable to load image" });
+  }
 });
 
+const cleanCatalogPreviewCache = new Map();
+const CLEAN_CATALOG_PREVIEW_CACHE_LIMIT = 24;
+const cleanCatalogPreviewJobs = new Map();
+
+    const renderCleanCatalogPreview = async ({ imageId, filename, extension, processor }) => {
+      let temporarySourcePath = null;
+
+      try {
+        const sourcePath = filename.replace(/^\/+/, "").replace(/^uploads[\\/]+/i, "");
+        const assetRoot = getLocalAssetRoot();
+        let previewSourcePath;
+
+        if (assetRoot) {
+          previewSourcePath = await resolveAssetFile(assetRoot, sourcePath);
+        } else {
+          const pc2Url = new URL(process.env.PC2_ASSET_SERVER_URL || "");
+          if (
+            pc2Url.protocol !== "http:" ||
+            pc2Url.hostname !== "100.102.63.63" ||
+            pc2Url.port !== "5000" ||
+            pc2Url.pathname !== "/" ||
+            pc2Url.search ||
+            pc2Url.hash ||
+            pc2Url.username ||
+            pc2Url.password
+          ) {
+            throw new Error("PC2_ASSET_SERVER_URL must target http://100.102.63.63:5000");
+          }
+
+          const temporaryDirectory = path.join(__dirname, "tmp", "catalog-previews");
+          await fs.promises.mkdir(temporaryDirectory, { recursive: true });
+          temporarySourcePath = path.join(temporaryDirectory, `${imageId}-${crypto.randomUUID()}${extension}`);
+          const sourceResponse = await axios.get(
+            `${pc2Url.origin}/api/files/${encodeAssetPath(sourcePath)}`,
+            {
+              responseType: "stream",
+              decompress: false,
+              timeout: 120000,
+              validateStatus: () => true,
+            }
+          );
+          if (sourceResponse.status < 200 || sourceResponse.status >= 300) {
+            sourceResponse.data.destroy();
+            const error = new Error("Preview source unavailable");
+            error.statusCode = sourceResponse.status;
+            throw error;
+          }
+          const maxSourceBytes = 512 * 1024 * 1024;
+          const declaredSize = Number(sourceResponse.headers["content-length"] || 0);
+          if (declaredSize > maxSourceBytes) {
+            sourceResponse.data.destroy();
+            const error = new Error("Preview source exceeds the 512 MB limit");
+            error.statusCode = 413;
+            throw error;
+          }
+
+          let receivedBytes = 0;
+          const sizeGuard = new Transform({
+            transform(chunk, encoding, callback) {
+              receivedBytes += chunk.length;
+              if (receivedBytes > maxSourceBytes) {
+                const error = new Error("Preview source exceeds the 512 MB limit");
+                error.statusCode = 413;
+                callback(error);
+                return;
+              }
+              callback(null, chunk);
+            },
+          });
+          await pipeline(sourceResponse.data, sizeGuard, fs.createWriteStream(temporarySourcePath));
+        }
+
+        const extractedPreview = await processor.extractPreview(previewSourcePath || temporarySourcePath);
+        const generatedPreview = await processor.generateThumbnail(extractedPreview, {
+          quality: 70,
+          maxWidth: 1200,
+          maxHeight: 1200,
+          autoTrim: false,
+        });
+        return generatedPreview.buffer;
+      } finally {
+        if (temporarySourcePath) {
+          await fs.promises.unlink(temporarySourcePath).catch(() => {});
+        }
+      }
+    };
+
+    app.get("/api/catalog-preview/:imageId", async (req, res) => {
+      try {
+        const { imageId } = req.params;
+        if (!/^\d+$/.test(imageId)) {
+          return res.status(400).json({ error: "Invalid image ID" });
+        }
+
+        const imageResult = await pool.query(
+          `SELECT filename, thumbnail_generated_at
+           FROM images
+           WHERE id = $1 AND LOWER(COALESCE(status, '')) IN ('approved', 'published', 'live')`,
+          [imageId]
+        );
+        const image = imageResult.rows[0];
+        if (!image?.filename) {
+          return res.status(404).json({ error: "Image not found" });
+        }
+
+        const filename = String(image.filename).replace(/\\/g, "/");
+        const extension = path.extname(filename).toLowerCase();
+        const processor = processorFactory.getProcessor(filename);
+        if (!processor || ![".ai", ".eps", ".psd", ".psb"].includes(extension)) {
+          return res.status(415).json({ error: "Unsupported preview format" });
+        }
+
+        const cacheKey = `${imageId}:${filename}:${image.thumbnail_generated_at || ""}`;
+        let cleanPreview = cleanCatalogPreviewCache.get(cacheKey);
+        if (cleanPreview) {
+          cleanCatalogPreviewCache.delete(cacheKey);
+          cleanCatalogPreviewCache.set(cacheKey, cleanPreview);
+        } else {
+          let renderJob = cleanCatalogPreviewJobs.get(cacheKey);
+          if (!renderJob) {
+            renderJob = renderCleanCatalogPreview({ imageId, filename, extension, processor });
+            cleanCatalogPreviewJobs.set(cacheKey, renderJob);
+          }
+
+          try {
+            cleanPreview = await renderJob;
+            cleanCatalogPreviewCache.set(cacheKey, cleanPreview);
+            while (cleanCatalogPreviewCache.size > CLEAN_CATALOG_PREVIEW_CACHE_LIMIT) {
+              cleanCatalogPreviewCache.delete(cleanCatalogPreviewCache.keys().next().value);
+            }
+          } finally {
+            if (cleanCatalogPreviewJobs.get(cacheKey) === renderJob) {
+              cleanCatalogPreviewJobs.delete(cacheKey);
+            }
+          }
+        }
+
+        const requestedQuality = Number(req.query.quality ?? 50);
+        const quality = Number.isFinite(requestedQuality)
+          ? Math.min(100, Math.max(10, requestedQuality))
+          : 50;
+        const outputBuffer = req.query.watermark === "true"
+          ? await applyWatermarkToBuffer(cleanPreview, { quality })
+          : await sharp(cleanPreview).jpeg({ quality, progressive: true }).toBuffer();
+
+        res.set("Content-Type", "image/jpeg");
+        res.set("Cache-Control", req.query.watermark === "true" ? "no-store" : "public, max-age=300");
+        return res.send(outputBuffer);
+      } catch (error) {
+        console.error("Failed to generate catalog preview", error.message || error);
+        return res.status(error.statusCode || 500).json({ error: "Unable to generate asset preview" });
+      }
+    });
 app.get("/uploads/processed", async (req, res) => {
   const { file, quality, watermark } = req.query;
   if (!file) {
@@ -5189,38 +5429,44 @@ const getCollectionsList = async () => {
       ORDER BY name
     `);
 
-    if (existing.rows.length > 0) {
-      return existing.rows;
-    }
+    if (existing.rows.length === 0) {
+      const imageCollections = await pool.query(`
+        SELECT DISTINCT TRIM(collection) AS name
+        FROM images
+        WHERE TRIM(COALESCE(collection, '')) <> ''
+        ORDER BY name
+      `);
 
-    const imageCollections = await pool.query(`
-      SELECT DISTINCT TRIM(collection) AS name
-      FROM images
-      WHERE TRIM(COALESCE(collection, '')) <> ''
-      ORDER BY name
-    `);
+      for (const collection of imageCollections.rows) {
+        if (!collection.name) continue;
 
-    const inserted = [];
-
-    for (const collection of imageCollections.rows) {
-      if (!collection.name) continue;
-
-      const created = await pool.query(
-        `
-        INSERT INTO collections (name)
-        VALUES ($1)
-        ON CONFLICT (name) DO NOTHING
-        RETURNING id, name
-        `,
-        [collection.name]
-      );
-
-      if (created.rows[0]) {
-        inserted.push(created.rows[0]);
+        await pool.query(
+          `
+          INSERT INTO collections (name)
+          VALUES ($1)
+          ON CONFLICT (name) DO NOTHING
+          `,
+          [collection.name]
+        );
       }
     }
 
-    return inserted;
+    const collections = await pool.query(`
+      SELECT
+        c.id,
+        c.name,
+        COUNT(i.id)::int AS asset_count,
+        COUNT(i.id) FILTER (
+          WHERE LOWER(TRIM(COALESCE(i.status, ''))) IN ('approved', 'published', 'live')
+        )::int AS live_asset_count
+      FROM collections c
+      LEFT JOIN images i
+        ON TRIM(COALESCE(i.collection, '')) = TRIM(c.name)
+      GROUP BY c.id, c.name
+      ORDER BY c.name
+    `);
+
+    return collections.rows;
   } catch (err) {
     console.error("Failed to load collections", err.message || err);
     return [];
@@ -7821,7 +8067,8 @@ app.post(
           likes,
           status,
           thumbnail_url,
-          thumbnail_status
+          thumbnail_status,
+          thumbnail_generated_at
         )
         VALUES
         (
@@ -7839,7 +8086,8 @@ app.post(
           0,
           'pending',
           $9,
-          $10
+          $10,
+          CASE WHEN $9 IS NOT NULL THEN NOW() ELSE NULL END
         )
         RETURNING *
         `,
@@ -7858,7 +8106,7 @@ app.post(
       );
 
       const fileExt = path.extname(originalFile.filename).toLowerCase();
-      if (isThumbnailSupportedFile(originalFile.filename)) {
+      if (isThumbnailSupportedFile(originalFile.filename) && !thumbnailUrl) {
         try {
           const fullFilePath = path.resolve(originalFile.destination, originalFile.filename);
           await thumbnailQueue.queueThumbnailJob(
@@ -8246,65 +8494,134 @@ app.post("/search-keyword", async (req, res) => {
 });
 /* ---------------- GET ALL IMAGES ---------------- */
 
+app.get("/catalog/facets", async (req, res) => {
+  try {
+    const [totalResult, categoryResult, collectionResult] = await Promise.all([
+      pool.query("SELECT COUNT(*)::int AS total_images FROM images WHERE LOWER(COALESCE(status, '')) = 'approved'"),
+      pool.query(`
+        SELECT category_value AS name, COUNT(DISTINCT images.id)::int AS count
+        FROM images
+        CROSS JOIN LATERAL unnest(string_to_array(COALESCE(images.category, ''), ',')) AS category_values(category_value)
+        WHERE LOWER(COALESCE(images.status, '')) = 'approved'
+          AND TRIM(category_value) <> ''
+        GROUP BY category_value
+        ORDER BY category_value
+      `),
+      pool.query(`
+        SELECT TRIM(collection) AS name, COUNT(*)::int AS count
+        FROM images
+        WHERE LOWER(COALESCE(status, '')) = 'approved'
+          AND TRIM(COALESCE(collection, '')) <> ''
+        GROUP BY TRIM(collection)
+        ORDER BY TRIM(collection)
+      `),
+    ]);
+
+    res.json({
+      totalImages: Number(totalResult.rows[0]?.total_images || 0),
+      categoryCounts: categoryResult.rows,
+      collectionCounts: collectionResult.rows,
+    });
+  } catch (err) {
+    console.error("Failed to load catalog facets", err.message || err);
+    res.status(500).json({ error: "Failed to load catalog facets" });
+  }
+});
+
 app.get("/images", async (req, res) => {
 
   try {
-
-    const page =
-      parseInt(req.query.page) || 1;
-
-    const limit =
-      parseInt(req.query.limit) || 12;
-
-    const offset =
-      (page - 1) * limit;
-
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit, 10) || 12));
+    const offset = (page - 1) * limit;
     const category = String(req.query.category || "").trim();
     const collection = String(req.query.collection || "").trim();
+    const search = String(req.query.search || "").trim();
+    const sort = String(req.query.sort || "newest").toLowerCase();
+    const values = [];
+    const addValue = (value) => {
+      values.push(value);
+      return `$${values.length}`;
+    };
 
-    const allApprovedImages = await pool.query(
-      `
-      SELECT
-        images.*,
-        users.username
-      FROM images
-      LEFT JOIN users
-      ON images.uploaded_by = users.id
-      WHERE images.status = 'approved'
-      ORDER BY
-        images.updated_at DESC,
-        images.created_at DESC,
-        images.id DESC
-      `
-    );
+    let where = "WHERE LOWER(COALESCE(images.status, '')) = 'approved'";
+    const normalizedCategory = category.toLowerCase().trim();
+    if (normalizedCategory && normalizedCategory !== "all") {
+      let categoryTerms = [normalizedCategory];
+      if (["photos", "photo", "images", "image", "photography", "photographies"].some((alias) => normalizedCategory.includes(alias))) {
+        categoryTerms = ["photo", "photograph", "image"];
+      } else if (["vector", "illustration"].some((alias) => normalizedCategory.includes(alias))) {
+        categoryTerms = ["vector", "illustration"];
+      } else if (["video", "animation", "motion"].some((alias) => normalizedCategory.includes(alias))) {
+        categoryTerms = ["video", "animation", "motion"];
+      } else if (normalizedCategory.includes("template")) {
+        categoryTerms = ["template"];
+      } else if (normalizedCategory.includes("psd")) {
+        categoryTerms = ["psd"];
+      } else if (normalizedCategory.includes("abstract")) {
+        categoryTerms = ["abstract"];
+      }
+      const categoryPatterns = addValue(categoryTerms.map((term) => `%${term}%`));
+      const categoryValue = addValue(normalizedCategory);
+      where += ` AND EXISTS (
+        SELECT 1
+        FROM unnest(string_to_array(COALESCE(images.category, ''), ',')) AS category_values(category_value)
+        WHERE LOWER(TRIM(category_value)) LIKE ANY(${categoryPatterns}::text[])
+          OR ${categoryValue} LIKE '%' || LOWER(TRIM(category_value)) || '%'
+      )`;
+    }
 
-    const filteredImages = applyCatalogFilters(allApprovedImages.rows, {
-      category,
-      collection,
-    });
+    const normalizedCollection = collection.toLowerCase().trim();
+    if (normalizedCollection && normalizedCollection !== "all") {
+      const collectionPattern = addValue(`%${normalizedCollection}%`);
+      where += ` AND LOWER(TRIM(COALESCE(images.collection, ''))) LIKE ${collectionPattern}`;
+    }
 
-    const pagedImages = filteredImages.slice(offset, offset + limit);
+    if (search) {
+      const searchPattern = addValue(`%${search}%`);
+      where += ` AND (
+        COALESCE(images.title, '') ILIKE ${searchPattern}
+        OR COALESCE(images.category, '') ILIKE ${searchPattern}
+        OR COALESCE(images.keywords, '') ILIKE ${searchPattern}
+      )`;
+    }
 
-    const totalCount = filteredImages.length;
-    const stats = filteredImages.reduce(
-      (acc, image) => ({
-        total_likes: acc.total_likes + Number(image.likes || 0),
-        total_downloads: acc.total_downloads + Number(image.downloads || 0),
-        total_views: acc.total_views + Number(image.views || 0),
-      }),
-      { total_likes: 0, total_downloads: 0, total_views: 0 }
-    );
+    const orderBy = {
+      newest: "COALESCE(images.updated_at, images.created_at) DESC NULLS LAST, images.id DESC",
+      oldest: "images.created_at ASC NULLS LAST, images.id ASC",
+      likes: "images.likes DESC NULLS LAST, images.id DESC",
+      downloads: "images.downloads DESC NULLS LAST, images.id DESC",
+      views: "images.views DESC NULLS LAST, images.id DESC",
+    }[sort] || "COALESCE(images.updated_at, images.created_at) DESC NULLS LAST, images.id DESC";
+
+    const limitParameter = addValue(limit);
+    const offsetParameter = addValue(offset);
+    const [statsResult, imagesResult] = await Promise.all([
+      pool.query(`
+        SELECT
+          COUNT(*)::int AS total_images,
+          COALESCE(SUM(images.likes), 0) AS total_likes,
+          COALESCE(SUM(images.downloads), 0) AS total_downloads,
+          COALESCE(SUM(images.views), 0) AS total_views
+        FROM images
+        ${where}
+      `, values.slice(0, values.length - 2)),
+      pool.query(`
+        SELECT images.*, users.username
+        FROM images
+        LEFT JOIN users ON images.uploaded_by = users.id
+        ${where}
+        ORDER BY ${orderBy}
+        LIMIT ${limitParameter} OFFSET ${offsetParameter}
+      `, values),
+    ]);
 
     res.json({
-      images: pagedImages,
-
-      totalImages: totalCount,
-
-      totalLikes: stats.total_likes,
-
-      totalDownloads: stats.total_downloads,
-
-      totalViews: stats.total_views,
+      images: imagesResult.rows,
+      totalImages: Number(statsResult.rows[0]?.total_images || 0),
+      totalLikes: Number(statsResult.rows[0]?.total_likes || 0),
+      totalDownloads: Number(statsResult.rows[0]?.total_downloads || 0),
+      totalViews: Number(statsResult.rows[0]?.total_views || 0),
     });
 
   } catch (err) {
@@ -8331,7 +8648,8 @@ app.get("/images/trending", async (req, res) => {
 
     const result = await pool.query(
       `
-      SELECT id, title, filename, downloads, views, likes, uploaded_by
+            SELECT id, title, filename, thumbnail_url, thumbnail_status, thumbnail_generated_at,
+              downloads, views, likes, uploaded_by
       FROM images
       WHERE status = 'approved'
       ORDER BY downloads DESC, id DESC
@@ -10230,7 +10548,8 @@ app.get("/public-contributors/:username", async (req, res) => {
 
     const contributor = contributorResult.rows[0];
     const assetsResult = await pool.query(
-      `SELECT id, title, type, filename, thumbnail_url, thumbnail_status, downloads, views, likes, created_at
+            `SELECT id, title, type, filename, thumbnail_url, thumbnail_status, thumbnail_generated_at,
+              downloads, views, likes, created_at
        FROM images
        WHERE uploaded_by = $1 AND LOWER(COALESCE(status, '')) IN ('approved', 'published', 'live')
        ORDER BY created_at DESC`,
@@ -11397,7 +11716,9 @@ app.get("/admin/users", verifyAdmin, async (req, res) => {
             'filename', i.filename,
             'status', i.status,
             'created_at', i.created_at,
-            'thumbnail_url', i.thumbnail_url
+            'thumbnail_url', i.thumbnail_url,
+            'thumbnail_status', i.thumbnail_status,
+            'thumbnail_generated_at', i.thumbnail_generated_at
           ) ORDER BY i.created_at DESC)
           FROM images i
           WHERE i.uploaded_by = u.id
@@ -12458,7 +12779,8 @@ app.get(
           i.title,
           i.filename,
           i.thumbnail_url,
-          i.thumbnail_status
+          i.thumbnail_status,
+          i.thumbnail_generated_at
         FROM customer_downloads cd
         JOIN images i ON i.id = cd.image_id
         WHERE cd.user_id = $1

@@ -47,9 +47,10 @@ function AssetTile({ asset, onOpen }) {
       onClick={() => onOpen(asset)}
     >
       <img
-        src={getAssetPreviewUrl(asset, { quality: 55, watermark: false })}
+        src={getAssetPreviewUrl(asset, { quality: 55, watermark: false, thumbnailOnly: true })}
         alt={asset.title || "Asset preview"}
         loading="lazy"
+        decoding="async"
       />
       <span className="account-asset-copy">
         <strong>{asset.title || asset.filename || "Untitled asset"}</strong>

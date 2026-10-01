@@ -166,7 +166,12 @@ async function createWatermarkedOptionalThumbnail(inputPath, outputPath, options
 
   const watermarkBuffer = Buffer.from(svg);
 
-  const finalTransform = sharp(source).rotate().composite([{ input: watermarkBuffer, blend: 'over' }]);
+  const watermarkedBuffer = await sharp(source)
+    .rotate()
+    .composite([{ input: watermarkBuffer, blend: 'over' }])
+    .toBuffer();
+  const finalTransform = sharp(watermarkedBuffer)
+    .resize({ width: 600, height: 600, fit: 'inside', withoutEnlargement: true });
 
   if (targetExt === '.png') {
     await finalTransform.png({ quality, compressionLevel: 9 }).toFile(target);

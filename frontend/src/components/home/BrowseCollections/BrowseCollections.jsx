@@ -3,15 +3,6 @@ import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import "./BrowseCollections.css";
 
-const getLiveAssets = async () => {
-  const probe = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images?limit=1&page=1`);
-  const totalImages = Number(probe?.data?.totalImages || 0);
-  const requestedLimit = Math.max(totalImages, 1);
-
-  const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images?limit=${requestedLimit}&page=1`);
-  return Array.isArray(res.data?.images) ? res.data.images : [];
-};
-
 const normalizeCollectionValue = (value) => {
   const normalized = String(value || "").trim().toLowerCase();
 
@@ -90,31 +81,29 @@ const getIconForCollection = (title) => {
 
 function BrowseCollections() {
   const navigate = useNavigate();
-  const [images, setImages] = useState([]);
   const [collections, setCollections] = useState([]);
-
-  const loadLiveAssets = async () => {
-    try {
-      const assets = await getLiveAssets();
-      setImages(assets);
-    } catch (err) {
-      console.error("Failed to load live assets for homepage browse view", err);
-    }
-  };
 
   useEffect(() => {
     const loadCollections = async () => {
       try {
         const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/collections`);
-        const nextCollections = Array.isArray(res.data) ? res.data.map((item) => item.name || item).filter(Boolean) : [];
+        const nextCollections = Array.isArray(res.data) ? res.data.map((item) => {
+          const title = item.name || item;
+          return title ? {
+            icon: getIconForCollection(title),
+            title,
+            slug: title.toLowerCase().replace(/\s+/g, "-"),
+            count: Number(item.live_asset_count ?? item.asset_count ?? 0),
+          } : null;
+        }).filter(Boolean) : [];
         const nextCollectionCards = nextCollections.length > 0
-          ? nextCollections.map((name) => ({ icon: getIconForCollection(name), title: name, slug: name.toLowerCase().replace(/\s+/g, "-") }))
+          ? nextCollections
           : [
-              { icon: "📷", title: "Photos", slug: "photos" },
-              { icon: "🎨", title: "Vectors", slug: "vectors" },
-              { icon: "🖌️", title: "PSD", slug: "psds" },
-              { icon: "🎥", title: "Videos", slug: "videos" },
-              { icon: "🧩", title: "Templates", slug: "templates" },
+              { icon: "📷", title: "Photos", slug: "photos", count: 0 },
+              { icon: "🎨", title: "Vectors", slug: "vectors", count: 0 },
+              { icon: "🖌️", title: "PSD", slug: "psds", count: 0 },
+              { icon: "🎥", title: "Videos", slug: "videos", count: 0 },
+              { icon: "🧩", title: "Templates", slug: "templates", count: 0 },
             ];
         setCollections(nextCollectionCards);
       } catch (err) {
@@ -123,11 +112,10 @@ function BrowseCollections() {
     };
 
     loadCollections();
-    loadLiveAssets();
 
     const handleAssetUpdate = () => {
       window.setTimeout(() => {
-        loadLiveAssets();
+        loadCollections();
       }, 250);
     };
 
@@ -144,15 +132,6 @@ function BrowseCollections() {
     };
   }, []);
 
-  const getCollectionCount = (title) => {
-    const normalizedTitle = normalizeCollectionValue(title);
-
-    return (images || []).filter((image) => {
-      const collectionValue = normalizeCollectionValue(image.collection);
-      return collectionValue === normalizedTitle;
-    }).length;
-  };
-
   return (
     <section className="browse-collections">
       <h2>Browse Collections</h2>
@@ -163,7 +142,7 @@ function BrowseCollections() {
 
       <div className="category-grid">
         {collections.map((collection) => {
-          const count = getCollectionCount(collection.title);
+          const count = collection.count;
 
           return (
             <div

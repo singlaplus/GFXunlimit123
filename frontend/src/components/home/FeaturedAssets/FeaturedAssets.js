@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
+import { getAssetPreviewUrl } from "../../../utils/assetPreview";
 
 function FeaturedImages({
   featuredImages,
@@ -107,8 +108,10 @@ function FeaturedImages({
       }}
     >
       <img
-        src={`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/api/images/${image.id}`}
+        src={getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true })}
         alt={image.title}
+        loading="lazy"
+        decoding="async"
         style={{
           width: "100%",
           height: "180px",

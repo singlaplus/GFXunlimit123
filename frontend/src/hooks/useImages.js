@@ -18,6 +18,8 @@ export default function useImages({
   setRelatedImages,
   selectedCategory,
   selectedCollection,
+  search = "",
+  sortType = "newest",
 }) {
 
   const fetchImages = async () => {
@@ -30,7 +32,9 @@ export default function useImages({
         currentPage,
         imagesPerPage,
         selectedCategory,
-        selectedCollection
+        selectedCollection,
+        search,
+        sortType
       );
 
       const data = res?.data || {};
@@ -73,16 +77,18 @@ export default function useImages({
     window.addEventListener("asset-refresh", handleAssetUpdate);
     window.addEventListener("asset-updated-detail", handleAssetUpdate);
     window.addEventListener("home-assets-refresh", handleAssetUpdate);
-    fetchImages();
+    const debounceDelay = search.trim() ? 250 : 0;
+    const fetchTimeout = window.setTimeout(fetchImages, debounceDelay);
 
     return () => {
+      window.clearTimeout(fetchTimeout);
       window.removeEventListener("asset-updated", handleAssetUpdate);
       window.removeEventListener("asset-refresh", handleAssetUpdate);
       window.removeEventListener("asset-updated-detail", handleAssetUpdate);
       window.removeEventListener("home-assets-refresh", handleAssetUpdate);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, imagesPerPage, selectedCategory, selectedCollection]);
+  }, [currentPage, imagesPerPage, selectedCategory, selectedCollection, search, sortType]);
 
   const fetchSingleImage = async (id) => {
 

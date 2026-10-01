@@ -87,9 +87,11 @@ function GalleryImageViewer({
           {relatedImages.map((image) => (
             <img
               key={`${image.id}-${image.filename}`}
-              src={getAssetPreviewUrl(image, { quality: 50, watermark: false })}
+              src={getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true })}
               alt={image.title}
               onClick={() => fetchSingleImage(image.id)}
+              loading="lazy"
+              decoding="async"
               style={{
                 width: "120px",
                 height: "80px",

@@ -1,4 +1,5 @@
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+const EMPTY_THUMBNAIL = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
 
 export const resolveThumbnailDownloadFile = (value) => {
   if (value === null || value === undefined) return "";
@@ -40,6 +41,9 @@ export const getAssetPreviewUrl = (image, options = {}) => {
     quality = 50,
     watermark = false,
     useThumbnail = true,
+    preferThumbnail = false,
+    thumbnailOnly = false,
+    renderNonRasterPreview = false,
   } = options;
 
   const buildThumbnailUrl = (baseUrl, thumbnailQuality) => {
@@ -52,6 +56,9 @@ export const getAssetPreviewUrl = (image, options = {}) => {
     if (watermark) {
       url.searchParams.set('watermark', 'true');
     }
+    if (image?.thumbnail_generated_at) {
+      url.searchParams.set('v', String(image.thumbnail_generated_at));
+    }
     return url.toString();
   };
 
@@ -62,8 +69,26 @@ export const getAssetPreviewUrl = (image, options = {}) => {
     return !blockedStatuses.has(status);
   };
 
-  // Optional thumbnails always render at 50% quality on the website
-  if (useThumbnail && image && hasReadyThumbnail(image)) {
+  if (
+    renderNonRasterPreview &&
+    image?.id &&
+    /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""))
+  ) {
+    const params = new URLSearchParams();
+    if (Number.isFinite(quality)) params.set("quality", String(quality));
+    if (watermark) params.set("watermark", "true");
+    return `${API_BASE_URL}/api/catalog-preview/${image.id}?${params.toString()}`;
+  }
+
+  if (thumbnailOnly) {
+    if (useThumbnail && image && hasReadyThumbnail(image)) {
+      const thumbnailUrl = buildThumbnailUrl(image.thumbnail_url, 50);
+      if (thumbnailUrl) return thumbnailUrl;
+    }
+    return EMPTY_THUMBNAIL;
+  }
+
+  if (useThumbnail && !watermark && preferThumbnail && image && hasReadyThumbnail(image)) {
     const thumbnailUrl = buildThumbnailUrl(image.thumbnail_url, 50);
     if (thumbnailUrl) return thumbnailUrl;
   }

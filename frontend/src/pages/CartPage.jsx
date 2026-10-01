@@ -187,7 +187,7 @@ export default function CartPage({ darkMode = false }) {
                     <div style={{ width: 88, height: 88, borderRadius: 18, display: 'grid', placeItems: 'center', background: '#fee2e2', color: '#b91c1c', fontWeight: 800, textAlign: 'center', flexShrink: 0 }}>CREDITS</div>
                   ) : (
                     <div style={{ width: 88, height: 88, borderRadius: 18, overflow: 'hidden', background: '#e2e8f0', flexShrink: 0 }}>
-                      <img src={getAssetPreviewUrl(item, { quality: 10, watermark: false })} alt={item.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      <img src={getAssetPreviewUrl(item, { quality: 10, watermark: false, thumbnailOnly: true })} alt={item.title} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     </div>
                   )}
                   <div style={{ flex: 1 }}>

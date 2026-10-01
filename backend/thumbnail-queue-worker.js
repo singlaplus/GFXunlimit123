@@ -209,10 +209,12 @@ class ThumbnailQueueManager {
 
       // Process with timeout
       const processingTimeout = 120000; // 2 minutes
+      const isRaster = processor.name === 'RasterProcessor';
       const processPromise = processorFactory.process(filePath, assetId, job.id, {
-        quality: 30,
-        maxWidth: 1200,
-        maxHeight: 1200,
+        quality: isRaster ? 65 : 30,
+        maxWidth: isRaster ? 600 : 1200,
+        maxHeight: isRaster ? 600 : 1200,
+        autoTrim: !isRaster,
       });
 
       const result = await Promise.race([

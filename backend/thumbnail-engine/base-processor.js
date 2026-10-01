@@ -305,6 +305,7 @@ class BaseProcessor {
         quality: options.quality || 30,
         maxWidth: options.maxWidth || 1200,
         maxHeight: options.maxHeight || 1200,
+        autoTrim: options.autoTrim,
       });
 
       // Step 5: Save thumbnail

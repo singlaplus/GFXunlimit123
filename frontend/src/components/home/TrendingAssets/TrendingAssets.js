@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { getAssetPreviewUrl } from "../../../utils/assetPreview";
 import "./TrendingAssets.css";
 
 function TrendingImages({
@@ -39,8 +40,10 @@ function TrendingImages({
             style={{ background: darkMode ? "#1e1e1e" : "white" }}
           >
             <img
-              src={`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/api/images/${image.id}`}
+              src={getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true })}
               alt={image.title}
+              loading="lazy"
+              decoding="async"
             />
 
             <div className="meta">

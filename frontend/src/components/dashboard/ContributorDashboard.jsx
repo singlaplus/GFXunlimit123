@@ -875,9 +875,11 @@ export default function ContributorDashboard({
                               src={getAssetPreviewUrl(asset, {
                                 quality: 60,
                                 watermark: false,
+                                thumbnailOnly: true,
                               })}
                               alt={assetTitle}
                               loading="lazy"
+                              decoding="async"
                             />
                           </div>
                           <div className="sold-asset-info">
@@ -948,9 +950,11 @@ export default function ContributorDashboard({
                         src={getAssetPreviewUrl(asset, {
                           quality: 65,
                           watermark: false,
+                          thumbnailOnly: true,
                         })}
                         alt={asset.title || "Asset preview"}
                         loading="lazy"
+                        decoding="async"
                       />
                       <span>
                         <strong>
@@ -999,9 +1003,11 @@ export default function ContributorDashboard({
                       src={getAssetPreviewUrl(asset, {
                         quality: 65,
                         watermark: false,
+                        thumbnailOnly: true,
                       })}
                       alt={asset.title || "Asset preview"}
                       loading="lazy"
+                      decoding="async"
                     />
                     <span>
                       <strong>
@@ -1259,9 +1265,11 @@ export default function ContributorDashboard({
                           src={getAssetPreviewUrl(asset, {
                             quality: 65,
                             watermark: false,
+                            thumbnailOnly: true,
                           })}
                           alt={asset.title || "Asset preview"}
                           loading="lazy"
+                          decoding="async"
                         />
                         <span>
                           <strong>

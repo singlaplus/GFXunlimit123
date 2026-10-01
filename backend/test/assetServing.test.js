@@ -74,6 +74,7 @@ test('local asset handler securely serves central files and existing thumbnails'
     getRemotePath: () => '/api/thumbnail',
     proxyHandler: (_req, res) => res.status(502).json({ error: 'Unexpected remote proxy' }),
     missingAssetMessage: 'Missing file parameter',
+    immutableVersions: true,
   }));
   const port = await listen(app, t);
 
@@ -99,7 +100,16 @@ test('local asset handler securely serves central files and existing thumbnails'
   const thumbnailResponse = await request(port, `/api/thumbnail?file=${encodeURIComponent(thumbnailRelativePath)}`);
   assert.equal(thumbnailResponse.status, 200);
   assert.equal(thumbnailResponse.headers['content-type'], 'image/jpeg');
+  assert.doesNotMatch(thumbnailResponse.headers['cache-control'], /immutable/);
   assert.deepEqual(thumbnailResponse.body, Buffer.from('thumbnail contents'));
+
+  const versionedThumbnailResponse = await request(
+    port,
+    `/api/thumbnail?file=${encodeURIComponent(thumbnailRelativePath)}&v=2026-08-20T10%3A15%3A00.000Z`
+  );
+  assert.equal(versionedThumbnailResponse.status, 200);
+  assert.match(versionedThumbnailResponse.headers['cache-control'], /max-age=31536000/);
+  assert.match(versionedThumbnailResponse.headers['cache-control'], /immutable/);
 
   const missingResponse = await request(port, '/api/files/Contri6/2026/08/Approved/missing.jpg');
   assert.equal(missingResponse.status, 404);

@@ -1,12 +1,14 @@
 import api from "./api";
 
-export const getImages = (page, limit, category = null, collection = null) => {
+export const getImages = (page, limit, category = null, collection = null, search = "", sort = "newest") => {
   return api.get("/images", {
     params: {
       page,
       limit,
       category: category || undefined,
       collection: collection || undefined,
+      search: search || undefined,
+      sort,
       t: Date.now(),
     },
   });

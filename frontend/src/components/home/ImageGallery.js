@@ -78,36 +78,28 @@ function ImageGallery(props) {
 
   const loadCategoryCounts = async () => {
     try {
-      const probe = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images?limit=1&page=1`);
-      const totalImages = Number(probe?.data?.totalImages || 0);
-      const limit = Math.max(totalImages, 1);
-      const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images?limit=${limit}&page=1`);
-      const nextImages = Array.isArray(res?.data?.images) ? res.data.images : [];
+      const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/catalog/facets`);
+      const categoryRows = Array.isArray(res?.data?.categoryCounts) ? res.data.categoryCounts : [];
+      const collectionRows = Array.isArray(res?.data?.collectionCounts) ? res.data.collectionCounts : [];
 
       const nextCounts = {};
       const nextCollectionCounts = {};
-      nextImages.forEach((image) => {
-        const slots = String(image?.category || "")
-          .split(",")
-          .map((value) => String(value || "").trim())
-          .filter(Boolean);
-
-        slots.forEach((slot) => {
-          const bucket = normalizeCategoryFilterBucket(slot);
-          if (bucket && bucket !== "All") {
-            nextCounts[bucket] = (nextCounts[bucket] || 0) + 1;
-          }
-        });
-
-        const collectionKey = normalizeCollectionValue(image?.collection);
+      categoryRows.forEach((row) => {
+        const bucket = normalizeCategoryFilterBucket(row.name);
+        if (bucket && bucket !== "All") {
+          nextCounts[bucket] = (nextCounts[bucket] || 0) + Number(row.count || 0);
+        }
+      });
+      collectionRows.forEach((row) => {
+        const collectionKey = normalizeCollectionValue(row.name);
         if (collectionKey && collectionKey !== "all") {
-          nextCollectionCounts[collectionKey] = (nextCollectionCounts[collectionKey] || 0) + 1;
+          nextCollectionCounts[collectionKey] = (nextCollectionCounts[collectionKey] || 0) + Number(row.count || 0);
         }
       });
 
       setCategoryCounts(nextCounts);
       setCollectionCounts(nextCollectionCounts);
-      setAllImagesCount(totalImages);
+      setAllImagesCount(Number(res?.data?.totalImages) || 0);
     } catch (err) {
       console.error("Failed to load live category counts", err);
     }
@@ -386,7 +378,7 @@ function ImageGallery(props) {
             <h3 style={{ margin: "0 0 8px", color: darkMode ? "#f5f5f5" : "#111" }}>Results</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <div style={{ color: darkMode ? "#9ca3af" : "#6b7280", fontSize: "14px" }}>
-                Showing {Math.min(resultsPerPage, totalImages || 0)} of {totalImages || 0}
+                Showing {resultsPerPage === "all" ? totalImages || 0 : Math.min(resultsPerPage, totalImages || 0)} of {totalImages || 0}
               </div>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                 {[10, 20, 50].map((value) => (

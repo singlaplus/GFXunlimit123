@@ -315,6 +315,8 @@ const {
   setTotalPages,
   selectedCategory,
   selectedCollection,
+  search,
+  sortType,
 });
   /* =========================================
    DASHBOARD

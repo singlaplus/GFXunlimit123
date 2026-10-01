@@ -7,6 +7,7 @@ const path = require('path');
 const AiProcessor = require('./ai-processor');
 const EpsProcessor = require('./eps-processor');
 const PsdProcessor = require('./psd-processor');
+const RasterProcessor = require('./raster-processor');
 
 class ProcessorFactory {
   constructor() {
@@ -14,6 +15,7 @@ class ProcessorFactory {
       ai: new AiProcessor(),
       eps: new EpsProcessor(),
       psd: new PsdProcessor(),
+      raster: new RasterProcessor(),
     };
   }
 
@@ -31,6 +33,11 @@ class ProcessorFactory {
       case '.psd':
       case '.psb':
         return this.processors.psd;
+      case '.jpg':
+      case '.jpeg':
+      case '.png':
+      case '.webp':
+        return this.processors.raster;
       default:
         return null;
     }
