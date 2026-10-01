@@ -1499,7 +1499,9 @@ app.use(
         "http://0.0.0.0:3001",
         "http://localhost:3002",
         "http://127.0.0.1:3002",
-        "http://0.0.0.0:3002"
+        "http://0.0.0.0:3002",
+        "https://gfxunlimit.com",
+        "https://www.gfxunlimit.com"
       ];
 
       if (!origin || allowedOrigins.includes(origin)) {
