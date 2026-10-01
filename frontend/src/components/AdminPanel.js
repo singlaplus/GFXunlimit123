@@ -700,7 +700,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
   const pageImages = images.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-  const visibleCategories = categories.length > 0 ? categories : DEFAULT_CATEGORY_OPTIONS;
+  const visibleCategories = Array.isArray(categories) ? categories : [];
   const visibleCollections = collections.length > 0 ? collections : [];
   const liveTypeOptions = Array.from(
     new Set(images.map((image) => String(image.type || "").trim()).filter(Boolean))
@@ -3484,15 +3484,27 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       const cachedCategories = localStorage.getItem(CATEGORY_STORAGE_KEY);
       if (cachedCategories) {
         const parsed = JSON.parse(cachedCategories);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+        if (Array.isArray(parsed)) {
+          const sanitized = parsed
+            .map((category) => ({
+              ...category,
+              id: category?.id ?? category?.name ?? Math.random().toString(36).slice(2),
+              name: typeof category?.name === "string" ? category.name.trim() : ""
+            }))
+            .filter((category) => category.name);
+
+          const isDefaultOnlyList = sanitized.length > 0 && sanitized.every((category) =>
+            DEFAULT_CATEGORY_OPTIONS.some((fallback) => fallback.name.toLowerCase() === category.name.toLowerCase())
+          );
+
+          return isDefaultOnlyList ? [] : sanitized;
         }
       }
     } catch (err) {
       console.error("Invalid cached categories", err);
     }
 
-    return DEFAULT_CATEGORY_OPTIONS;
+    return [];
   };
 
   const persistCategories = (nextCategories) => {
@@ -3520,7 +3532,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           headers: { Authorization: `Bearer ${token}` }
         }
       );
-      const nextCategories = Array.isArray(res.data) && res.data.length > 0 ? res.data : fallbackCategories;
+      const nextCategories = Array.isArray(res.data) ? res.data : [];
       setCategories(nextCategories);
       persistCategories(nextCategories);
     } catch (err) {
@@ -4457,6 +4469,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         window.dispatchEvent(new Event("asset-categories-updated"));
       }
       setNewCategory("");
+      toast.success("Category added successfully.");
     } catch (err) {
       console.error(err);
       setNewCategoryError("Unable to add category");
@@ -4507,6 +4520,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       if (typeof window !== "undefined") {
         window.dispatchEvent(new Event("asset-categories-updated"));
       }
+      toast.success("Category deleted successfully.");
     } catch (err) {
       console.error(err);
     }
@@ -6851,35 +6865,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             >
               View Categories
             </button>
-            <div style={{ marginTop: "12px", display: "grid", gap: "8px" }}>
-              {visibleCategories.slice(0, 1).map((categoryItem) => (
-                <div key={categoryItem.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "8px 10px", borderRadius: "8px", background: isDarkMode ? "#111827" : "transparent", border: isDarkMode ? "1px solid rgba(148,163,184,0.2)" : "none" }}>
-                  <span style={{ fontSize: "0.9rem", color: isDarkMode ? "#e2e8f0" : "#444" }}>{categoryItem.name || "Unnamed category"}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const targetCategory = visibleCategories[0] || null;
-                      if (targetCategory) {
-                        startEditingCategory(targetCategory);
-                      } else {
-                        setEditingCategoryInModal("__pending__");
-                        setEditingCategoryNameInModal("");
-                      }
-                    }}
-                    style={{
-                      background: "#1976d2",
-                      color: "white",
-                      border: "none",
-                      padding: "8px 12px",
-                      borderRadius: "8px",
-                      cursor: "pointer"
-                    }}
-                  >
-                    Modify
-                  </button>
-                </div>
-              ))}
-            </div>
+            <div style={{ marginTop: "12px" }} />
           </CardWrapper>
 
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="website-branding">
@@ -10009,6 +9995,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           {/* Category Grid Modal */}
           {showCategoryGrid && (
             <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="category-grid-title"
+              onClick={() => setShowCategoryGrid(false)}
               style={{
                 position: "fixed",
                 inset: 0,
@@ -10021,6 +10011,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               }}
             >
               <div
+                onClick={(event) => event.stopPropagation()}
                 style={{
                   width: "90%",
                   maxWidth: "1000px",
@@ -10033,71 +10024,85 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   flexDirection: "column"
                 }}
               >
-                <div style={{ padding: "18px 20px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "inherit" }}>
-                  <h3 style={{ margin: 0 }}>Categories</h3>
+                <div style={{ padding: "18px 20px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "inherit", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <h3 id="category-grid-title" style={{ margin: 0 }}>Categories</h3>
+                  <button
+                    type="button"
+                    aria-label="Close categories"
+                    onClick={() => setShowCategoryGrid(false)}
+                    style={{ background: "transparent", border: "none", fontSize: "1.4rem", lineHeight: 1, cursor: "pointer", color: "inherit" }}
+                  >
+                    X
+                  </button>
                 </div>
                 <div style={{ padding: "20px", flex: 1 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
-                    {visibleCategories.map((categoryItem) => (
-                      <div
-                        key={categoryItem.id}
-                        style={{
-                          padding: "14px",
-                          borderRadius: "12px",
-                          border: "1px solid #ddd",
-                          background: "inherit",
-                          display: "flex",
-                          flexDirection: "column",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: "10px",
-                          color: "inherit",
-                          textAlign: "center",
-                          minHeight: "100px"
-                        }}
-                      >
-                        <span style={{ color: "inherit", fontWeight: 600, fontSize: "0.95rem" }}>{categoryItem.name || "Unnamed category"}</span>
-                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingCategoryInModal(categoryItem.id);
-                              setEditingCategoryNameInModal(categoryItem.name || "");
-                            }}
-                            style={{
-                              background: "#1976d2",
-                              color: "white",
-                              border: "none",
-                              padding: "8px 16px",
-                              borderRadius: "8px",
-                              cursor: "pointer",
-                              fontSize: "0.9rem"
-                            }}
-                          >
-                            Modify
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              deleteCategory(categoryItem.id);
-                              setShowCategoryGrid(false);
-                            }}
-                            style={{
-                              background: "#e53935",
-                              color: "white",
-                              border: "none",
-                              padding: "8px 16px",
-                              borderRadius: "8px",
-                              cursor: "pointer",
-                              fontSize: "0.9rem"
-                            }}
-                          >
-                            Delete
-                          </button>
+                  {visibleCategories.length === 0 ? (
+                    <div style={{ padding: "20px", borderRadius: "10px", border: "1px dashed #cbd5e1", textAlign: "center", color: "#475569" }}>
+                      No categories yet. Add one using the form above.
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
+                      {visibleCategories.map((categoryItem) => (
+                        <div
+                          key={categoryItem.id}
+                          style={{
+                            padding: "14px",
+                            borderRadius: "12px",
+                            border: "1px solid #ddd",
+                            background: "inherit",
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: "10px",
+                            color: "inherit",
+                            textAlign: "center",
+                            minHeight: "100px"
+                          }}
+                        >
+                          <span style={{ color: "inherit", fontWeight: 600, fontSize: "0.95rem" }}>{categoryItem.name || "Unnamed category"}</span>
+                          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingCategoryInModal(categoryItem.id);
+                                setEditingCategoryNameInModal(categoryItem.name || "");
+                              }}
+                              style={{
+                                background: "#1976d2",
+                                color: "white",
+                                border: "none",
+                                padding: "8px 16px",
+                                borderRadius: "8px",
+                                cursor: "pointer",
+                                fontSize: "0.9rem"
+                              }}
+                            >
+                              Modify
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                deleteCategory(categoryItem.id);
+                                setShowCategoryGrid(false);
+                              }}
+                              style={{
+                                background: "#e53935",
+                                color: "white",
+                                border: "none",
+                                padding: "8px 16px",
+                                borderRadius: "8px",
+                                cursor: "pointer",
+                                fontSize: "0.9rem"
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div style={{ padding: "18px 20px", borderTop: "1px solid #eee", textAlign: "right", background: "white" }}>
                   <button
@@ -10242,6 +10247,13 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           {/* Edit Category Modal */}
           {editingCategoryInModal && (
             <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="edit-category-title"
+              onClick={() => {
+                setEditingCategoryInModal(null);
+                setEditingCategoryNameInModal("");
+              }}
               style={{
                 position: "fixed",
                 inset: 0,
@@ -10255,6 +10267,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             >
               <div
                 className="admin-panel-modal-panel"
+                onClick={(event) => event.stopPropagation()}
                 style={{
                   width: "100%",
                   maxWidth: "420px",
@@ -10264,8 +10277,19 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   overflow: "hidden"
                 }}
               >
-                <div style={{ padding: "18px 20px", borderBottom: "1px solid #eee" }}>
-                  <h3 style={{ margin: 0 }}>Edit Category</h3>
+                <div style={{ padding: "18px 20px", borderBottom: "1px solid #eee", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <h3 id="edit-category-title" style={{ margin: 0 }}>Edit Category</h3>
+                  <button
+                    type="button"
+                    aria-label="Close edit category"
+                    onClick={() => {
+                      setEditingCategoryInModal(null);
+                      setEditingCategoryNameInModal("");
+                    }}
+                    style={{ background: "transparent", border: "none", fontSize: "1.4rem", lineHeight: 1, cursor: "pointer", color: "inherit" }}
+                  >
+                    X
+                  </button>
                 </div>
                 <div style={{ padding: "20px", display: "grid", gap: "14px" }}>
                   <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -10306,6 +10330,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                           if (typeof window !== "undefined") {
                             window.dispatchEvent(new Event("asset-categories-updated"));
                           }
+                          toast.success("Category saved successfully.");
                           setEditingCategoryInModal(null);
                           setEditingCategoryNameInModal("");
                         } catch (err) {

@@ -1442,7 +1442,8 @@ const brandingStorage = multer.diskStorage({
     if (fieldName === "customerBanner") fieldName = "customerBanner";
     if (fieldName === "contributorBanner") fieldName = "contributorBanner";
     const ext = path.extname(file.originalname) || ".png";
-    cb(null, `${fieldName}${ext}`);
+    const version = fieldName === "favicon" ? `-${Date.now()}` : "";
+    cb(null, `${fieldName}${version}${ext}`);
   }
 });
 
@@ -1667,6 +1668,13 @@ const thumbnailAssetHandler = createAssetServingHandler({
   getAssetRoot: getLocalAssetRoot,
   getAssetPath: (req) => req.query.file,
   getRemotePath: () => "/api/thumbnail",
+  proxyHandler: proxyPc2AssetRequest,
+});
+
+const brandingAssetHandler = createAssetServingHandler({
+  getAssetRoot: () => path.join(__dirname, "uploads", "branding"),
+  getAssetPath: (req) => decodeURIComponent(String(req.path || "").replace(/^\/+/, "")),
+  getRemotePath: (assetPath) => `/api/files/branding/${encodeAssetPath(assetPath)}`,
   proxyHandler: proxyPc2AssetRequest,
 });
 
@@ -1982,6 +1990,7 @@ const streamImageFile = async (req, res, absolutePath, { bypassProcessing = fals
   return readStream.pipe(res);
 };
 
+app.use("/api/files/branding", brandingAssetHandler);
 app.use("/api/files", filesAssetHandler);
 
 app.get("/api/images/:imageId", (req, res) => {
@@ -11972,6 +11981,38 @@ app.post("/admin/categories", verifyAdmin, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).send("Failed to add category");
+  }
+});
+
+app.put("/admin/categories/:id", verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json("Category name is required");
+    }
+
+    const trimmedName = name.trim();
+
+    const updatedCategory = await pool.query(
+      `
+      UPDATE categories
+      SET name = $1
+      WHERE id = $2
+      RETURNING *
+      `,
+      [trimmedName, id]
+    );
+
+    if (updatedCategory.rows.length === 0) {
+      return res.status(404).json("Category not found");
+    }
+
+    res.json(updatedCategory.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Failed to update category");
   }
 });
 

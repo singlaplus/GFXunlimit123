@@ -68,6 +68,80 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByPlaceholderText(/new category name/i)).toBeInTheDocument();
   });
 
+  it("shows no category preview in the manage categories card when no categories exist", async () => {
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: /manage categories/i })).toBeInTheDocument();
+    expect(screen.queryByText(/images/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no categories yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/unnamed category/i)).not.toBeInTheDocument();
+  });
+
+  it("closes category dialogs from their close buttons and backdrops", async () => {
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /view categories/i }));
+    const categoriesDialog = screen.getByRole("dialog", { name: /categories/i });
+    fireEvent.click(within(categoriesDialog).getByRole("button", { name: /modify/i }));
+
+    const editDialog = screen.getByRole("dialog", { name: /edit category/i });
+    fireEvent.click(within(editDialog).getByRole("button", { name: /close edit category/i }));
+    expect(screen.queryByRole("dialog", { name: /edit category/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /categories/i })).toBeInTheDocument();
+
+    fireEvent.click(within(categoriesDialog).getByRole("button", { name: /modify/i }));
+    fireEvent.click(screen.getByRole("dialog", { name: /edit category/i }));
+    expect(screen.queryByRole("dialog", { name: /edit category/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /categories/i })).toBeInTheDocument();
+
+    fireEvent.click(within(categoriesDialog).getByRole("button", { name: /close categories/i }));
+    expect(screen.queryByRole("dialog", { name: /categories/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /view categories/i }));
+    const reopenedCategoriesDialog = screen.getByRole("dialog", { name: /categories/i });
+    fireEvent.click(reopenedCategoriesDialog);
+    expect(screen.queryByRole("dialog", { name: /categories/i })).not.toBeInTheDocument();
+  });
+
+  it("shows a success toast after saving a category rename", async () => {
+    axios.put.mockResolvedValue({ data: { id: 1, name: "Abstracts" } });
+    const successToast = jest.spyOn(toast, "success");
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /view categories/i }));
+    const categoriesDialog = screen.getByRole("dialog", { name: /categories/i });
+    fireEvent.click(within(categoriesDialog).getByRole("button", { name: /modify/i }));
+    fireEvent.change(screen.getByRole("textbox", { name: /category name/i }), { target: { value: "Abstracts" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(successToast).toHaveBeenCalledWith("Category saved successfully."));
+    expect(await screen.findByText("Abstracts")).toBeInTheDocument();
+    successToast.mockRestore();
+  });
+
+  it("shows success toasts after adding and deleting a category", async () => {
+    const successToast = jest.spyOn(toast, "success");
+    render(<AdminPanel />);
+
+    fireEvent.change(screen.getByPlaceholderText(/new category name/i), { target: { value: "Travel" } });
+    fireEvent.click(screen.getByRole("button", { name: /add category/i }));
+    await waitFor(() => expect(successToast).toHaveBeenCalledWith("Category added successfully."));
+
+    fireEvent.click(screen.getByRole("button", { name: /view categories/i }));
+    const categoriesDialog = screen.getByRole("dialog", { name: /categories/i });
+    fireEvent.click(within(categoriesDialog).getAllByRole("button", { name: /delete/i })[0]);
+    await waitFor(() => expect(successToast).toHaveBeenCalledWith("Category deleted successfully."));
+
+    successToast.mockRestore();
+  });
+
   it("renders the admin dashboard overview tab", async () => {
     useLocation.mockReturnValue({ search: "?tab=admin_dashboard" });
     render(<AdminPanel />);
