@@ -96,6 +96,26 @@ describe('assetPreview', () => {
     );
   });
 
+  test('uses the catalog preview route for raster Explore images', () => {
+    const image = {
+      id: 196,
+      filename: 'asset.jpg',
+      thumbnail_generated_at: '2026-08-31T17:23:39.361Z',
+    };
+
+    expect(getAssetPreviewUrl(image, { quality: 50, renderCatalogPreview: true })).toBe(
+      'http://localhost:5000/api/catalog-preview/196?quality=50&v=2026-08-31T17%3A23%3A39.361Z'
+    );
+  });
+
+  test('keeps unsupported Explore formats on the existing image route', () => {
+    const image = { id: 197, filename: 'asset.mp4' };
+
+    expect(getAssetPreviewUrl(image, { quality: 50, renderCatalogPreview: true })).toBe(
+      'http://localhost:5000/api/images/197?quality=50'
+    );
+  });
+
   test('keeps fallback asset previews unwatermarked by default', () => {
     const image = { id: 7 };
 

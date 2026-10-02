@@ -2205,6 +2205,19 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
 
         const filename = String(image.filename).replace(/\\/g, "/");
         const extension = path.extname(filename).toLowerCase();
+        if ([".jpg", ".jpeg", ".png", ".webp"].includes(extension)) {
+          const sourcePath = filename
+            .replace(/^\/+/, "")
+            .replace(/^uploads[\\/]+/i, "")
+            .replace(/^api\/files\//i, "");
+          return proxyPc2AssetRequest(
+            req,
+            res,
+            `/api/files/${encodeAssetPath(sourcePath)}`,
+            { processImage: true, watermark: req.query.watermark === "true" }
+          );
+        }
+
         const processor = processorFactory.getProcessor(filename);
         if (!processor || ![".ai", ".eps", ".psd", ".psb"].includes(extension)) {
           return res.status(415).json({ error: "Unsupported preview format" });

@@ -86,7 +86,7 @@ function ImageGrid(props) {
             src={getAssetPreviewUrl(image, {
               quality: 50,
               watermark: false,
-              renderNonRasterPreview: true,
+              renderCatalogPreview: true,
             })}
             alt={image.title}
             width="100%"

@@ -44,6 +44,7 @@ export const getAssetPreviewUrl = (image, options = {}) => {
     preferThumbnail = false,
     thumbnailOnly = false,
     renderNonRasterPreview = false,
+    renderCatalogPreview = false,
   } = options;
 
   const buildThumbnailUrl = (baseUrl, thumbnailQuality) => {
@@ -69,10 +70,12 @@ export const getAssetPreviewUrl = (image, options = {}) => {
     return !blockedStatuses.has(status);
   };
 
+  const isNonRasterPreview = /\.(?:ai|eps|psd|psb)$/i.test(String(image?.filename || ""));
+  const isRasterPreview = /\.(?:jpe?g|png|webp)$/i.test(String(image?.filename || ""));
   if (
-    renderNonRasterPreview &&
     image?.id &&
-    /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""))
+    ((renderNonRasterPreview && isNonRasterPreview) ||
+      (renderCatalogPreview && (isNonRasterPreview || isRasterPreview)))
   ) {
     const params = new URLSearchParams();
     if (Number.isFinite(quality)) params.set("quality", String(quality));
