@@ -40,6 +40,10 @@ class ProcessorDetector {
     this.isWindows = process.platform === 'win32';
   }
 
+  static isProcessorConfigWriteAllowed(platform = process.platform) {
+    return platform !== 'darwin';
+  }
+
   /**
    * Detect Ghostscript installation
    */
@@ -451,6 +455,11 @@ class ProcessorDetector {
    * Update database with detection results
    */
   async saveDetectionResults(results) {
+    if (!ProcessorDetector.isProcessorConfigWriteAllowed()) {
+      console.warn('Skipping processor configuration persistence on macOS; shared configuration is read-only here.');
+      return;
+    }
+
     try {
       for (const [processorName, details] of Object.entries(results.detections)) {
         const isEnabled = details.status === 'READY';

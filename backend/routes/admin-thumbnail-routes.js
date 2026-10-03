@@ -13,6 +13,15 @@ const thumbnailQueue = require('../thumbnail-queue-worker');
 
 const router = express.Router();
 
+const requireProcessorConfigWriteAccess = (req, res, next) => {
+  if (!ProcessorDetector.isProcessorConfigWriteAllowed()) {
+    return res.status(403).json({
+      error: 'Processor configuration writes are disabled on macOS to protect shared production configuration',
+    });
+  }
+  next();
+};
+
 /**
  * Middleware to verify admin
  */
@@ -66,7 +75,7 @@ router.get('/admin/thumbnail/status', verifyAdmin, async (req, res) => {
  * POST /admin/thumbnail/detect
  * Run processor detection and update configuration
  */
-router.post('/admin/thumbnail/detect', verifyAdmin, async (req, res) => {
+router.post('/admin/thumbnail/detect', verifyAdmin, requireProcessorConfigWriteAccess, async (req, res) => {
   try {
     console.log('[Admin] Starting processor detection...');
 
@@ -95,7 +104,7 @@ router.post('/admin/thumbnail/detect', verifyAdmin, async (req, res) => {
  * POST /admin/thumbnail/configure
  * Manually configure processor path
  */
-router.post('/admin/thumbnail/configure', verifyAdmin, async (req, res) => {
+router.post('/admin/thumbnail/configure', verifyAdmin, requireProcessorConfigWriteAccess, async (req, res) => {
   try {
     const { processorName, executablePath } = req.body;
 
@@ -131,7 +140,7 @@ router.post('/admin/thumbnail/configure', verifyAdmin, async (req, res) => {
  * POST /admin/thumbnail/test-processor
  * Test a specific processor
  */
-router.post('/admin/thumbnail/test-processor', verifyAdmin, async (req, res) => {
+router.post('/admin/thumbnail/test-processor', verifyAdmin, requireProcessorConfigWriteAccess, async (req, res) => {
   try {
     const { processorName } = req.body;
 
