@@ -1,0 +1,17 @@
+.asset-page-layout {
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 0.85fr);
+  align-items: start;
+}
+
+.asset-page-preview-card {
+  width: fit-content;
+  max-width: 100%;
+  align-self: start;
+  margin-inline: auto;
+}
+
+@media (max-width: 800px) {
+  .asset-page-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

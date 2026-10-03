@@ -4,12 +4,15 @@ import axios from "axios";
 import { getRelatedImages, likeImageRequest, viewImageRequest, addFavoriteRequest } from "../services/imageService";
 import { saveCartItems } from "../utils/cartPersistence";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
+import "./AssetPage.css";
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+const MAX_PREVIEW_HEIGHT = 432;
 
 export default function AssetPage(props) {
   const { imageId, darkMode } = props;
   const [image, setImage] = useState(null);
+  const [previewDimensions, setPreviewDimensions] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [isZoomOpen, setIsZoomOpen] = useState(false);
@@ -243,6 +246,12 @@ export default function AssetPage(props) {
   const previewUrl = getWatermarkedPreview(image, 50);
   const popupUrl = getWatermarkedPreview(image, 50);
   const fullSizeUrl = getWatermarkedPreview(image, 100);
+  const previewAspectRatio = previewDimensions
+    ? previewDimensions.width / previewDimensions.height
+    : null;
+  const previewWidth = previewAspectRatio
+    ? `${MAX_PREVIEW_HEIGHT * previewAspectRatio}px`
+    : "100%";
 
   return (
     <div
@@ -254,14 +263,15 @@ export default function AssetPage(props) {
       }}
     >
       <div
+        className="asset-page-layout"
         style={{
           width: "100%",
           display: "grid",
-          gridTemplateColumns: "1.45fr 0.85fr",
           gap: "32px",
         }}
       >
           <div
+            className="asset-page-preview-card"
             style={{
               borderRadius: "32px",
               overflow: "hidden",
@@ -274,10 +284,11 @@ export default function AssetPage(props) {
             style={{
               position: "relative",
               overflow: "hidden",
-              aspectRatio: "1 / 1", // make preview area square
-              width: "100%",
+              aspectRatio: previewAspectRatio || "16 / 9",
+              width: previewWidth,
+              maxWidth: "100%",
               margin: 0,
-              maxHeight: 432,
+              maxHeight: MAX_PREVIEW_HEIGHT,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -289,11 +300,17 @@ export default function AssetPage(props) {
             <img
               src={previewUrl}
               alt={image.title}
+              onLoad={(event) => {
+                const { naturalWidth, naturalHeight } = event.currentTarget;
+                if (naturalWidth > 0 && naturalHeight > 0) {
+                  setPreviewDimensions({ width: naturalWidth, height: naturalHeight });
+                }
+              }}
               onClick={() => setIsZoomOpen(true)}
               style={{
                 width: "100%",
                 height: "100%",
-                objectFit: "cover",
+                objectFit: "contain",
                 display: "block",
                 cursor: "zoom-in",
                 borderRadius: 18,
