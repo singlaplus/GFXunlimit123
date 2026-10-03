@@ -5,7 +5,7 @@ import { toast } from "react-toastify";
 import "./AdminPanel.css";
 import Pagination from "./Pagination";
 import EmailActionButton from "./EmailActionButton";
-import { getEffectiveAuthToken } from "../utils/authSession";
+import { buildAuthHeaders as getAuthHeaders, getEffectiveAuthToken } from "../utils/authSession";
 import AdminEmailSettings from "../pages/AdminEmailSettings";
 import AdminEmailLogs from "../pages/AdminEmailLogs";
 import AdminNewsletter from "../pages/AdminNewsletter";
@@ -25,6 +25,73 @@ const CATEGORY_STORAGE_KEY = "asset-categories";
 const COLLECTION_STORAGE_KEY = "asset-collections";
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const USER_DELETE_COOLING_PERIOD_MINUTES = 60;
+function AdminAssetThumbnail({ image, isDarkMode }) {
+  const [thumbnailUrl, setThumbnailUrl] = useState("");
+  const [thumbnailUnavailable, setThumbnailUnavailable] = useState(false);
+  const requestUrl = getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true });
+  const alt = image.title || "Asset thumbnail";
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = null;
+    setThumbnailUrl("");
+    setThumbnailUnavailable(false);
+
+    axios.get(requestUrl, { responseType: "blob", headers: getAuthHeaders() })
+      .then(({ data }) => {
+        if (!data.type?.startsWith("image/")) {
+          throw new Error("Thumbnail endpoint did not return an image");
+        }
+        objectUrl = URL.createObjectURL(data);
+        if (active) {
+          setThumbnailUrl(objectUrl);
+        } else {
+          URL.revokeObjectURL(objectUrl);
+        }
+      })
+      .catch((error) => {
+        if (!active) return;
+        console.error(`Failed to load thumbnail for asset ${image.id}:`, error.response?.status || error.message);
+        setThumbnailUnavailable(true);
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [image.id, requestUrl]);
+
+  const style = {
+    width: "100%",
+    minHeight: "120px",
+    maxHeight: "150px",
+    objectFit: "cover",
+    borderRadius: "6px",
+  };
+
+  if (thumbnailUrl) {
+    return <img src={thumbnailUrl} alt={alt} loading="lazy" decoding="async" style={style} />;
+  }
+
+  return (
+    <div
+      role="img"
+      aria-label={`${alt} thumbnail ${thumbnailUnavailable ? "unavailable" : "loading"}`}
+      style={{
+        ...style,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: isDarkMode ? "#cbd5e1" : "#64748b",
+        background: isDarkMode ? "#111827" : "#f1f5f9",
+        fontSize: "0.85rem",
+      }}
+    >
+      {thumbnailUnavailable ? "Thumbnail unavailable" : "Loading thumbnail…"}
+    </div>
+  );
+}
+
 const normalizeAdminUser = (user = {}) => ({
   ...user,
   total_uploads: user.total_uploads ?? user.upload_count ?? user.accepted_upload_count ?? 0,
@@ -4957,11 +5024,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   };
 
   const deleteImage = async (id) => {
-    const confirmDelete = window.confirm("Permanently delete this image?");
+    const image = images.find((item) => Number(item.id) === Number(id));
+    const confirmDelete = window.confirm(
+      `Permanently delete "${image?.title || "this image"}" (ID ${id}), including its original file and thumbnail? This cannot be undone.`
+    );
     if (!confirmDelete) return;
 
     try {
-      await axios.delete(`${API_BASE_URL}/images/${id}`);
+      await axios.delete(`${API_BASE_URL}/images/${id}`, { headers: getAuthHeaders() });
       if (tabParam === "live-assets") {
         fetchApprovedImages();
       } else {
@@ -10655,19 +10725,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     Live
                   </div>
                 )}
-                <img
-                  src={getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true })}
-                  alt={image.title}
-                  loading="lazy"
-                  decoding="async"
-                  style={{
-                    width: "100%",
-                    minHeight: "120px",
-                    maxHeight: "150px",
-                    objectFit: "cover",
-                    borderRadius: "6px"
-                  }}
-                />
+                <AdminAssetThumbnail image={image} isDarkMode={isDarkMode} />
                 <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Title: {image.title}</p>
                 <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Collection: {image.collection || "-"}</p>
                 <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Type: {image.type || "-"}</p>

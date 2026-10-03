@@ -1,5 +1,5 @@
 import axios from "axios";
-import { hasActiveSession, shouldTriggerAuthSessionExpired } from "../utils/authSession";
+import { buildAuthHeaders, hasActiveSession, shouldTriggerAuthSessionExpired } from "../utils/authSession";
 import { readLastActivityAt } from "../utils/inactivitySession";
 
 const api = (axios && typeof axios.create === 'function')
@@ -46,7 +46,7 @@ export const getImages = (params) => {
 };
 
 export const getSingleImage = (id) => {
-  return api.get(`/images/${id}`);
+  return api.get(`/images/${id}`, { headers: buildAuthHeaders() });
 };
 
 // ======================

@@ -8217,7 +8217,7 @@ app.post(
           'pending',
           $9,
           $10,
-          CASE WHEN $9 IS NOT NULL THEN NOW() ELSE NULL END
+          CASE WHEN $9::text IS NOT NULL THEN NOW() ELSE NULL END
         )
         RETURNING *
         `,
@@ -9624,6 +9624,7 @@ app.get(
 
 app.delete(
   "/images/:id",
+  (req, res, next) => authenticateToken(req, res, next),
   async (req, res) => {
 
     try {
@@ -9671,6 +9672,18 @@ app.delete(
         return res.status(400).json("Invalid file path");
       }
 
+      const thumbnailRecord = await pool.query(
+        `SELECT thumbnail_path FROM asset_thumbnail_metadata WHERE asset_id = $1`,
+        [id]
+      );
+      const thumbnailDeleted = await assetThumbnails.deleteAssetThumbnail(
+        id,
+        thumbnailRecord.rows[0]?.thumbnail_path || null
+      );
+      if (!thumbnailDeleted) {
+        return res.status(500).json({ error: "Unable to delete asset thumbnail" });
+      }
+
       // Delete favorites
 
       await pool.query(
@@ -9690,12 +9703,6 @@ app.delete(
         `,
         [id]
       );
-
-      const thumbnailRecord = await pool.query(
-        `SELECT thumbnail_path FROM asset_thumbnail_metadata WHERE asset_id = $1`,
-        [id]
-      );
-      await assetThumbnails.deleteAssetThumbnail(id, thumbnailRecord.rows[0]?.thumbnail_path || null);
 
       // Delete image record
       await pool.query(
