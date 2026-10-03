@@ -30,6 +30,10 @@ const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
 const restoreRoutes = require("./routes/restore-routes");
 const processorFactory = require("./thumbnail-engine/processor-factory");
 const {
+  proxyRemoteThumbnail,
+  shouldProxyRemoteThumbnail,
+} = require("./utils/thumbnailRemoteProxy");
+const {
   buildOptionalThumbnailName,
   getPublicThumbnailUrl,
   getThumbnailStorageDirectory,
@@ -8008,6 +8012,7 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
     if (!asset) return res.status(404).json({ error: "Asset not found" });
 
     const isPublicAsset = ["approved", "published", "live"].includes(String(asset.asset_status || "").toLowerCase());
+    let verifiedThumbnailToken = null;
     if (!isPublicAsset) {
       let decoded;
       try {
@@ -8016,6 +8021,7 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
           ? authHeader.slice(7)
           : String(req.cookies?.authToken || "");
         decoded = verifyJwtToken(token);
+        verifiedThumbnailToken = token;
       } catch (error) {
         return res.status(404).json({ error: "Asset not found" });
       }
@@ -8025,6 +8031,22 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
           return res.status(404).json({ error: "Asset not found" });
         }
       }
+    }
+
+    if (shouldProxyRemoteThumbnail()) {
+      const version = String(req.query.v || "");
+      const currentVersion = asset.generated_at ? new Date(asset.generated_at).toISOString() : "";
+      const immutable = Boolean(version && version === currentVersion);
+      return proxyRemoteThumbnail({
+        req,
+        res,
+        assetId: numericAssetId,
+        authorization: isPublicAsset ? null : `Bearer ${verifiedThumbnailToken}`,
+        cacheControl: assetThumbnails.getThumbnailCacheControl(
+          isPublicAsset,
+          immutable && /^[A-Za-z0-9._:-]+$/.test(version)
+        ),
+      });
     }
 
     if (asset.thumbnail_status === "READY" && asset.thumbnail_path) {
@@ -8901,16 +8923,15 @@ app.get(
   async (req, res) => {
 
     try {
-      await authenticateToken(req, res, () => {});
-      if (res.headersSent) return;
-
       const { id } = req.params;
 
       const image =
         await pool.query(
 
           `
-          SELECT *
+          SELECT id, title, filename, category, keywords, created_at, downloads, views, likes,
+            status, collection, description, type, file_size, extension, mime_type, original_filename,
+            thumbnail_url, thumbnail_generated_at, thumbnail_status
           FROM images
           WHERE id = $1
           `,
@@ -8929,9 +8950,30 @@ app.get(
 
       }
 
-      res.json(
-        image.rows[0]
-      );
+      const hasCredentials = Boolean(req.headers["authorization"] || req.cookies?.authToken);
+      const isApproved = String(image.rows[0].status || "").trim().toLowerCase() === "approved";
+
+      if (!isApproved || hasCredentials) {
+        await authenticateToken(req, res, () => {});
+        if (res.headersSent) return;
+
+        const authenticatedImage = await pool.query(
+          `
+          SELECT *
+          FROM images
+          WHERE id = $1
+          `,
+          [id]
+        );
+
+        if (authenticatedImage.rows.length === 0) {
+          return res.status(404).json("Image not found");
+        }
+
+        return res.json(authenticatedImage.rows[0]);
+      }
+
+      res.json(image.rows[0]);
 
     } catch (err) {
 

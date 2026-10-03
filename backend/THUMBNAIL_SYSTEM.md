@@ -12,15 +12,18 @@ The new derivative system stores one deterministic WebP file per asset, separate
 
 ## Storage configuration
 
-On Mac Studio, mount the two PC2 SMB shares over Tailscale before starting the backend. The source share should be readable; the thumbnail share must be writable. Use Finder > Go > Connect to Server with the actual SMB share names configured on PC2, and save credentials in macOS Keychain rather than an environment file. Do not create local placeholder directories at the mount points. The application verifies that a configured `/Volumes` thumbnail path exists and fails closed when it is not mounted.
+On Mac Studio, serving existing thumbnails does not require a mounted thumbnail share: the backend proxies the existing thumbnail endpoint on PC2 after checking authorization locally. No production thumbnail files are copied to Mac. If running Mac-side thumbnail generation, mount the PC2 asset and thumbnail shares over Tailscale first; the source share should be readable and the thumbnail share writable. Use Finder > Go > Connect to Server with the actual SMB share names configured on PC2, and save credentials in macOS Keychain rather than an environment file. Do not create local placeholder directories at the mount points. The application verifies that a configured `/Volumes` thumbnail path exists and fails closed when it is not mounted.
 
-Set these variables in `backend/.env` on Mac Studio after the mounts are available:
+Set these variables in `backend/.env` on Mac Studio. The storage paths are needed for Mac-side generation; the PC2 URL is used for remote source and thumbnail requests:
 
 ```text
 ASSETS_ROOT=/Volumes/GFXunlimitAssets
 THUMBNAIL_STORAGE_PATH=/Volumes/GFXunlimitThumbnails
 THUMBNAIL_CONCURRENCY=2
+PC2_ASSET_SERVER_URL=http://100.102.63.63:5000
 ```
+
+On macOS, `/api/assets/:id/thumbnail` is served by proxying PC2's existing thumbnail endpoint after the Mac backend performs its normal database authorization checks. The browser continues to use the Mac backend URL, and no production thumbnail files are copied to Mac. `PC2_ASSET_SERVER_URL` must be the PC2 backend origin; do not include credentials, a path, or a query string. Windows continues serving thumbnails from its configured local storage.
 
 Set these variables in the backend environment on PC2:
 
