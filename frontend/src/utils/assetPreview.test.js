@@ -10,7 +10,7 @@ describe('assetPreview', () => {
     };
 
     expect(getAssetPreviewUrl(image, { quality: 80, watermark: false, thumbnailOnly: true })).toBe(
-      'http://localhost:5000/api/thumbnail?file=contri1%2F2026%2F08%2FApproved%2Fthumb.jpg&quality=50&v=2026-08-20T10%3A15%3A00.000Z'
+      'http://localhost:5000/api/assets/42/thumbnail?v=2026-08-20T10%3A15%3A00.000Z'
     );
   });
 
@@ -34,7 +34,7 @@ describe('assetPreview', () => {
     };
 
     expect(getAssetPreviewUrl(image, { quality: 75, watermark: false, thumbnailOnly: true })).toBe(
-      'http://localhost:5000/api/thumbnail?file=psd%2Fthumbnails%2Fthumbnail-psd-test-1.png&quality=50'
+      'http://localhost:5000/api/assets/99/thumbnail'
     );
   });
 
@@ -52,7 +52,7 @@ describe('assetPreview', () => {
   });
 
   test('does not fall back to an original-backed preview for listings without a thumbnail', () => {
-    const image = { id: 8, filename: 'unthumbnailed.jpg' };
+    const image = { filename: 'unthumbnailed.jpg' };
 
     expect(getAssetPreviewUrl(image, { thumbnailOnly: true })).toBe(
       'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='

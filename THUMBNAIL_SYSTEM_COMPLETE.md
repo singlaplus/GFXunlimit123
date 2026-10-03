@@ -1,4 +1,6 @@
-# 🎉 THUMBNAIL SYSTEM - COMPLETE & DEPLOYED
+# Legacy JPEG Thumbnail System (Historical)
+
+> This document describes the pre-existing JPEG thumbnail system. It is not evidence that the new shared WebP system has been backfilled or verified in production. See [backend/THUMBNAIL_SYSTEM.md](./backend/THUMBNAIL_SYSTEM.md) for the current implementation and safe rollout steps. Legacy files are intentionally retained until production coverage is verified.
 
 ## ✅ WHAT'S BEEN ACCOMPLISHED
 

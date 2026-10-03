@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
 
-function DeferredPreviewImage({ src, ...imageProps }) {
+function DeferredPreviewImage({ src, alt = "", ...imageProps }) {
   const imageRef = useRef(null);
   const [isNearViewport, setIsNearViewport] = useState(false);
 
@@ -26,7 +26,7 @@ function DeferredPreviewImage({ src, ...imageProps }) {
     return () => observer.disconnect();
   }, [src]);
 
-  return <img ref={imageRef} src={isNearViewport ? src : undefined} {...imageProps} />;
+  return <img ref={imageRef} src={isNearViewport ? src : undefined} alt={alt} {...imageProps} />;
 }
 
 function ImageGrid(props) {
@@ -86,6 +86,7 @@ function ImageGrid(props) {
             src={getAssetPreviewUrl(image, {
               quality: 50,
               watermark: false,
+              thumbnailOnly: true,
               renderCatalogPreview: true,
             })}
             alt={image.title}

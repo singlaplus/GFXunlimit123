@@ -666,11 +666,11 @@ export default function AssetPage(props) {
                     style={{ flex: "0 0 220px", textDecoration: "none", color: "inherit" }}
                   >
                     <img
-                      src={getWatermarkedPreview(related, 50)}
+                      src={getAssetPreviewUrl(related, { thumbnailOnly: true })}
                       alt={related.title || "Related asset"}
                       loading="lazy"
                       decoding="async"
-                      style={{ width: "100%", aspectRatio: "16 / 10", objectFit: "cover", display: "block", borderRadius: "14px" }}
+                      style={{ width: "100%", aspectRatio: "16 / 10", objectFit: "contain", background: "#e8eaed", display: "block", borderRadius: "14px" }}
                     />
                     <div style={{ marginTop: "10px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {related.title || "Untitled asset"}

@@ -10,6 +10,7 @@ const Redis = require('ioredis');
 const path = require('path');
 const pool = require('./db');
 const processorFactory = require('./thumbnail-engine/processor-factory');
+const assetThumbnails = require('./utils/assetThumbnails');
 const { createAssetNotifications } = require('./messaging');
 
 // Redis connection
@@ -25,7 +26,16 @@ class ThumbnailQueueManager {
     this.queue = null;
     this.worker = null;
     this.isRunning = false;
-    this.workerConcurrency = Math.max(1, Number(process.env.THUMBNAIL_WORKER_CONCURRENCY || 1));
+    const configuredConcurrency = Number(process.env.THUMBNAIL_CONCURRENCY || process.env.THUMBNAIL_WORKER_CONCURRENCY || 2);
+    const concurrencyIsValid = Number.isSafeInteger(configuredConcurrency) &&
+      configuredConcurrency > 0 &&
+      configuredConcurrency <= assetThumbnails.MAX_THUMBNAIL_CONCURRENCY;
+    if (!concurrencyIsValid) {
+      console.warn(
+        `Invalid thumbnail concurrency ${configuredConcurrency}; using default 2 (maximum ${assetThumbnails.MAX_THUMBNAIL_CONCURRENCY})`
+      );
+    }
+    this.workerConcurrency = concurrencyIsValid ? configuredConcurrency : 2;
   }
 
   /**
@@ -171,10 +181,68 @@ class ThumbnailQueueManager {
     }
   }
 
+  async queueAssetThumbnailJob(assetId, contributorId, options = {}) {
+    if (!this.queue) throw new Error('Thumbnail queue is not initialized');
+    const normalizedId = Number(assetId);
+    if (!Number.isSafeInteger(normalizedId) || normalizedId <= 0) {
+      throw new Error('Invalid asset ID for thumbnail job');
+    }
+    const activeJobs = await this.queue.getJobs(['waiting', 'active', 'delayed']);
+    const existingJob = activeJobs.find(
+      (job) => job.name === 'generate-asset-thumbnail' && Number(job.data?.assetId) === normalizedId
+    );
+    if (existingJob) {
+      if (options.previewPath && options.previewPath !== existingJob.data?.previewPath) {
+        await assetThumbnails.removeStagedOptionalThumbnail(options.previewPath);
+      }
+      return existingJob.id;
+    }
+
+    const job = await this.queue.add(
+      'generate-asset-thumbnail',
+      {
+        assetId: normalizedId,
+        contributorId: contributorId ? Number(contributorId) : null,
+        force: Boolean(options.force),
+        previewPath: options.previewPath || null,
+      },
+      {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+        removeOnComplete: false,
+        removeOnFailed: false,
+      }
+    );
+    return job.id;
+  }
+
   /**
    * Process a single thumbnail job
    */
   async processJob(job) {
+    if (job.name === 'generate-asset-thumbnail') {
+      const assetId = Number(job.data?.assetId);
+      try {
+        await assetThumbnails.generateAssetThumbnail(assetId, {
+          force: Boolean(job.data?.force),
+          previewPath: job.data?.previewPath,
+        });
+        if (job.data?.previewPath) {
+          await assetThumbnails.removeStagedOptionalThumbnail(job.data.previewPath);
+        }
+        return { success: true, assetId, thumbnail: 'webp' };
+      } catch (error) {
+        const isFinalAttempt = job.attemptsMade + 1 >= Number(job.opts?.attempts || 1);
+        if (error.permanent && typeof job.discard === 'function') job.discard();
+        if ((error.permanent || isFinalAttempt) && job.data?.previewPath) {
+          await assetThumbnails.removeStagedOptionalThumbnail(job.data.previewPath).catch((cleanupError) => {
+            console.error(`Failed to remove staged thumbnail input for asset ${assetId}: ${cleanupError.message}`);
+          });
+        }
+        throw error;
+      }
+    }
+
     const { assetId, contributorId, filePath, fileType } = job.data;
     const startTime = Date.now();
 

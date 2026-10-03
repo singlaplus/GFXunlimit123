@@ -1,3 +1,9 @@
 {
-    "git.ignoreLimitWarning": true
+    "git.ignoreLimitWarning": true,
+    "chat.tools.terminal.autoApprove": {
+        "/^node <<'NODE'\nconst fs = require\\('node:fs'\\);\nconst path = require\\('node:path'\\);\nconst crypto = require\\('node:crypto'\\);\nrequire\\('dotenv'\\)\\.config\\(\\{ path: path\\.resolve\\('backend/\\.env'\\) \\}\\);\nconst filename = 'contri1/2026/08/Approved/1788196996663-68033886_9674091\\.psd';\nconst generatedAt = '2026-08-31T17:23:39\\.361Z';\nconst key = `197:\\$\\{filename\\}:\\$\\{generatedAt\\}`;\nconst cacheName = `\\$\\{crypto\\.createHash\\('sha256'\\)\\.update\\(key\\)\\.digest\\('hex'\\)\\}\\.jpg`;\nconst localSource = path\\.resolve\\('backend/uploads', filename\\);\nconst cachePath = path\\.resolve\\('backend/tmp/catalog-preview-cache', cacheName\\);\nconst isLocalRoot = process\\.env\\.NODE_ENV === 'production' && Boolean\\(process\\.env\\.ASSETS_ROOT\\?\\.trim\\(\\)\\);\nconsole\\.log\\(JSON\\.stringify\\(\\{\n  nodeEnv: process\\.env\\.NODE_ENV \\|\\| 'unset',\n  usesConfiguredLocalAssetRoot: isLocalRoot,\n  localSourcePath: localSource,\n  localSourceExists: fs\\.existsSync\\(localSource\\),\n  generatedPreviewCachePath: cachePath,\n  generatedPreviewCacheExists: fs\\.existsSync\\(cachePath\\),\n  developmentRemoteFileUrl: `http://100\\.102\\.63\\.63:5000/api/files/\\$\\{filename\\}`\n\\}, null, 2\\)\\);\nNODE$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }

@@ -72,6 +72,15 @@ export const getAssetPreviewUrl = (image, options = {}) => {
 
   const isNonRasterPreview = /\.(?:ai|eps|psd|psb)$/i.test(String(image?.filename || ""));
   const isRasterPreview = /\.(?:jpe?g|png|webp)$/i.test(String(image?.filename || ""));
+
+  if (thumbnailOnly) {
+    if (!image?.id) return EMPTY_THUMBNAIL;
+    const version = image.thumbnail_generated_at
+      ? `?v=${encodeURIComponent(String(image.thumbnail_generated_at))}`
+      : "";
+    return `${API_BASE_URL.replace(/\/+$/, "")}/api/assets/${encodeURIComponent(String(image.id))}/thumbnail${version}`;
+  }
+
   if (
     image?.id &&
     ((renderNonRasterPreview && isNonRasterPreview) ||
@@ -82,14 +91,6 @@ export const getAssetPreviewUrl = (image, options = {}) => {
     if (watermark) params.set("watermark", "true");
     if (image.thumbnail_generated_at) params.set("v", String(image.thumbnail_generated_at));
     return `${API_BASE_URL}/api/catalog-preview/${image.id}?${params.toString()}`;
-  }
-
-  if (thumbnailOnly) {
-    if (useThumbnail && image && hasReadyThumbnail(image)) {
-      const thumbnailUrl = buildThumbnailUrl(image.thumbnail_url, 50);
-      if (thumbnailUrl) return thumbnailUrl;
-    }
-    return EMPTY_THUMBNAIL;
   }
 
   if (useThumbnail && !watermark && preferThumbnail && image && hasReadyThumbnail(image)) {

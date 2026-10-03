@@ -9,11 +9,12 @@
 const BaseProcessor = require('./base-processor');
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const crypto = require('crypto');
+const { execFile } = require('child_process');
 const { promisify } = require('util');
 const pool = require('../db');
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 class PsdProcessor extends BaseProcessor {
   constructor(options = {}) {
@@ -178,47 +179,39 @@ class PsdProcessor extends BaseProcessor {
    * This method works for all PSD files regardless of embedded preview
    */
   async extractPreviewWithImageMagick(filePath) {
-    return new Promise(async (resolve, reject) => {
+    let imageMagickPath = process.env.IMAGEMAGICK_PATH;
+    if (!imageMagickPath) {
       try {
-        // Use ImageMagick to convert PSD to PNG
-        // [0] means first page (for multi-page PSD)
-        console.log('[PsdProcessor] Converting PSD to PNG using ImageMagick...');
-        
-        const tempPngPath = path.join(path.dirname(filePath), `temp-${Date.now()}.png`);
-        
-        // Use convert command with specific settings for PSD
-        const command = `convert "${filePath}"[0] -flatten -quality 90 "${tempPngPath}" 2>&1`;
-        
-        const { stdout, stderr } = await execAsync(command, { 
-          timeout: 60000, // 60 second timeout
-          maxBuffer: 10 * 1024 * 1024 // 10MB buffer
-        });
-
-        if (stderr) {
-          console.warn(`[PsdProcessor] ImageMagick warning: ${stderr}`);
-        }
-
-        // Read the converted PNG
-        if (!fs.existsSync(tempPngPath)) {
-          throw new Error('ImageMagick conversion failed to create output file');
-        }
-
-        const previewBuffer = fs.readFileSync(tempPngPath);
-        
-        // Clean up temp file
-        try {
-          fs.unlinkSync(tempPngPath);
-        } catch (e) {
-          console.warn(`[PsdProcessor] Could not delete temp file: ${e.message}`);
-        }
-
-        console.log(`[PsdProcessor] Successfully converted PSD using ImageMagick (${previewBuffer.length} bytes)`);
-        resolve(previewBuffer);
-      } catch (err) {
-        console.error(`[PsdProcessor] ImageMagick extraction failed: ${err.message}`);
-        reject(new Error(`ImageMagick PSD extraction failed: ${err.message}`));
+        const config = await pool.query(
+          'SELECT executable_path FROM processor_config WHERE processor_name = $1',
+          ['imagemagick']
+        );
+        imageMagickPath = config.rows[0]?.executable_path;
+      } catch (error) {
+        console.warn(`[PsdProcessor] Processor config unavailable: ${error.message}`);
       }
-    });
+    }
+    imageMagickPath ||= process.platform === 'win32' ? 'magick' : 'convert';
+
+    const tempPngPath = path.join(path.dirname(filePath), `thumbnail-${crypto.randomUUID()}.png`);
+    try {
+      const { stderr } = await execFileAsync(
+        imageMagickPath,
+        [`${filePath}[0]`, '-flatten', '-quality', '90', tempPngPath],
+        { timeout: 60000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }
+      );
+      if (stderr) console.warn(`[PsdProcessor] ImageMagick warning: ${stderr}`);
+      const previewBuffer = await fs.promises.readFile(tempPngPath);
+      console.log(`[PsdProcessor] Successfully converted PSD using ImageMagick (${previewBuffer.length} bytes)`);
+      return previewBuffer;
+    } catch (error) {
+      console.error(`[PsdProcessor] ImageMagick extraction failed: ${error.message}`);
+      throw new Error(`ImageMagick PSD extraction failed: ${error.message}`);
+    } finally {
+      await fs.promises.unlink(tempPngPath).catch((error) => {
+        if (error.code !== 'ENOENT') console.warn(`[PsdProcessor] Could not delete temp file: ${error.message}`);
+      });
+    }
   }
 
   /**

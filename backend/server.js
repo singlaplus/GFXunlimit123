@@ -21,9 +21,10 @@ const { createMessagingRouter, createAssetNotifications, createCouponNotificatio
 const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { registerOrderRoutes } = require("./orders");
 const { summarizeContributorDownloadWindowCounts, summarizeContributorUploadWindowCounts } = require("./dashboardStats");
-const { createAssetServingHandler, encodeAssetPath, getProductionAssetRoot, resolveAssetFile } = require("./utils/assetServing");
+const { createAssetServingHandler, encodeAssetPath, resolveAssetFile } = require("./utils/assetServing");
 const { applyWatermarkToBuffer, generateWatermarkSvg } = require("./utils/watermarkEngine");
 const thumbnailQueue = require("./thumbnail-queue-worker");
+const assetThumbnails = require("./utils/assetThumbnails");
 const ProcessorDetector = require("./thumbnail-engine/processor-detector");
 const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
 const restoreRoutes = require("./routes/restore-routes");
@@ -1314,8 +1315,7 @@ const storage = multer.diskStorage({
           const statusFolder = "Pending";
 
           const uploadPath = path.join(
-            __dirname,
-            "uploads",
+            assetThumbnails.getOriginalAssetStorageRoot(),
             username,
             year,
             month,
@@ -1358,14 +1358,20 @@ const upload = multer({
 
   fileFilter: (req, file, cb) => {
 
+    const allowedExtensions = [
+      ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".psd", ".psb", ".ai", ".eps", ".pdf",
+      ".zip", ".mp4", ".avi", ".mkv", ".mov", ".webm", ".aep", ".prproj",
+    ];
     const allowedTypes = [
       "image/jpeg",
       "image/jpg",
       "image/png",
       "image/webp",
+      "image/gif",
       "image/svg+xml",
       "image/vnd.adobe.photoshop",
       "application/postscript",
+      "application/pdf",
       "video/mp4",
       "video/quicktime",
       "video/x-msvideo",
@@ -1385,7 +1391,7 @@ const upload = multer({
 
     const isAllowed = file.fieldname === "thumbnail"
       ? thumbnailTypes.includes(file.mimetype)
-      : allowedTypes.includes(file.mimetype);
+      : allowedTypes.includes(file.mimetype) || allowedExtensions.includes(path.extname(file.originalname || "").toLowerCase());
 
     if (isAllowed) {
       cb(null, true);
@@ -1394,7 +1400,7 @@ const upload = multer({
         new Error(
           file.fieldname === "thumbnail"
             ? "Optional thumbnail must be an image file such as JPG, PNG, WEBP, GIF, or SVG."
-            : "Only JPG, PNG, WEBP, SVG, PSD, video, and ZIP template files are allowed"
+            : "Only supported image, design, document, video, and project files are allowed"
         )
       );
     }
@@ -1541,7 +1547,10 @@ const IMAGE_CONTENT_TYPES = {
 };
 
 /* Thumbnail processing support */
-const THUMBNAIL_SUPPORTED_EXTENSIONS = [".ai", ".eps", ".psd", ".psb", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"];
+const THUMBNAIL_SUPPORTED_EXTENSIONS = [
+  ".ai", ".eps", ".psd", ".psb", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg",
+  ".pdf", ".zip", ".mp4", ".avi", ".mkv", ".mov", ".webm", ".aep", ".prproj",
+];
 const THUMBNAIL_SUPPORTED_MIMES = [
   "application/x-illustrator",
   "application/postscript",
@@ -1575,7 +1584,7 @@ const resolveUploadFilePath = (value) => {
     throw new Error("Invalid file path");
   }
 
-  const uploadsRoot = path.resolve(__dirname, "uploads");
+  const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot();
   const absolutePath = path.resolve(uploadsRoot, normalizedPath);
   const relativeToUploads = path.relative(uploadsRoot, absolutePath);
 
@@ -1712,7 +1721,11 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
 };
 
 const getLocalAssetRoot = () => {
-  return getProductionAssetRoot(process.env.NODE_ENV, process.env.ASSETS_ROOT);
+  const configuredRoot = String(process.env.ASSETS_ROOT || "").trim();
+  if (process.env.NODE_ENV === "production" || configuredRoot) {
+    return assetThumbnails.getOriginalAssetStorageRoot();
+  }
+  return null;
 };
 
 const filesAssetHandler = createAssetServingHandler({
@@ -1742,13 +1755,13 @@ const persistEpsThumbnailIfMissing = async (imageRow) => {
     return false;
   }
 
-  const originalFilePath = path.resolve(__dirname, "uploads", String(imageRow.filename).replace(/^\/+/, ""));
+  const originalFilePath = path.resolve(assetThumbnails.getOriginalAssetStorageRoot(), String(imageRow.filename).replace(/^\/+/, ""));
   if (!fs.existsSync(originalFilePath) || path.extname(originalFilePath).toLowerCase() !== ".eps") {
     return false;
   }
 
   const expectedThumbnailPath = buildGeneratedThumbnailPath(originalFilePath, ".jpg");
-  const relativeFromUploads = path.relative(path.resolve(__dirname, "uploads"), expectedThumbnailPath).replace(/\\/g, "/");
+  const relativeFromUploads = path.relative(assetThumbnails.getOriginalAssetStorageRoot(), expectedThumbnailPath).replace(/\\/g, "/");
   const thumbnailUrl = `/api/thumbnail?file=${encodeURIComponent(relativeFromUploads)}`;
 
   if (fs.existsSync(expectedThumbnailPath)) {
@@ -1792,7 +1805,7 @@ const resolveOriginalEpsFromThumbnailPath = (thumbnailPath) => {
       return null;
     }
 
-    const uploadsRoot = path.resolve(__dirname, "uploads");
+    const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot();
     const absoluteThumbPath = path.resolve(uploadsRoot, String(thumbnailPath).replace(/^\/+/, ""));
     if (!fs.existsSync(absoluteThumbPath)) {
       return null;
@@ -2286,7 +2299,7 @@ app.get("/uploads/processed", async (req, res) => {
     ? Math.min(100, Math.max(10, parsedQuality))
     : 50;
 
-  const uploadsRoot = path.join(__dirname, "uploads");
+  const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot();
   const rawFile = String(file || "").trim();
   const strippedFile = rawFile
     .replace(/^\/+/, "")
@@ -3695,7 +3708,7 @@ app.get("/admin/backup/list", verifyAdmin, async (req, res) => {
 
 app.get("/admin/assets/location", verifyAdmin, async (req, res) => {
   try {
-    const uploadFolderPath = path.resolve(__dirname, "uploads");
+    const uploadFolderPath = assetThumbnails.getOriginalAssetStorageRoot();
     let folderSizeBytes = 0;
     const pendingDirectories = [uploadFolderPath];
     while (pendingDirectories.length > 0) {
@@ -3712,7 +3725,12 @@ app.get("/admin/assets/location", verifyAdmin, async (req, res) => {
     const driveStats = fs.statfsSync(uploadFolderPath);
     const blockSize = Number(driveStats.bsize || 0);
     const driveFreeBytes = blockSize * Number(driveStats.bavail || 0);
-    res.json({ uploadFolderPath, exists: fs.existsSync(uploadFolderPath), folderSizeBytes, driveFreeBytes });
+    res.json({
+      uploadFolderPath: "Original asset storage",
+      exists: fs.existsSync(uploadFolderPath),
+      folderSizeBytes,
+      driveFreeBytes
+    });
   } catch (error) {
     console.error("Failed to resolve upload folder path", error);
     res.status(500).json({ error: "Unable to resolve upload folder path" });
@@ -7969,6 +7987,99 @@ app.get("/api/thumbnail", async (req, res) => {
   return thumbnailAssetHandler(req, res);
 });
 
+app.get("/api/assets/:id/thumbnail", async (req, res) => {
+  res.setHeader("Cache-Control", "private, no-store");
+  const assetId = String(req.params.id || "");
+  const numericAssetId = assetThumbnails.parseThumbnailAssetId(assetId);
+  if (numericAssetId === null) {
+    return res.status(400).json({ error: "Invalid asset ID" });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT i.thumbnail_url, i.thumbnail_generated_at, i.status AS asset_status, i.uploaded_by,
+              t.status AS thumbnail_status, t.format, t.thumbnail_path, t.generated_at
+       FROM images i
+       LEFT JOIN asset_thumbnail_metadata t ON t.asset_id = i.id
+       WHERE i.id = $1`,
+      [numericAssetId]
+    );
+    const asset = result.rows[0];
+    if (!asset) return res.status(404).json({ error: "Asset not found" });
+
+    const isPublicAsset = ["approved", "published", "live"].includes(String(asset.asset_status || "").toLowerCase());
+    if (!isPublicAsset) {
+      let decoded;
+      try {
+        const authHeader = req.headers.authorization || "";
+        const token = authHeader.startsWith("Bearer ")
+          ? authHeader.slice(7)
+          : String(req.cookies?.authToken || "");
+        decoded = verifyJwtToken(token);
+      } catch (error) {
+        return res.status(404).json({ error: "Asset not found" });
+      }
+      if (String(decoded.user) !== String(asset.uploaded_by)) {
+        const userResult = await pool.query("SELECT role FROM users WHERE id = $1", [decoded.user]);
+        if (userResult.rows[0]?.role !== "admin") {
+          return res.status(404).json({ error: "Asset not found" });
+        }
+      }
+    }
+
+    if (asset.thumbnail_status === "READY" && asset.thumbnail_path) {
+      const thumbnailRoot = assetThumbnails.getThumbnailStorageRoot();
+      let thumbnailPath;
+      try {
+        thumbnailPath = assetThumbnails.getThumbnailFilePath(
+          assetId,
+          thumbnailRoot,
+          asset.thumbnail_path
+        );
+      } catch (error) {
+        console.error(`Invalid thumbnail path for asset ${assetId}: ${error.message}`);
+        return res.status(404).json({ error: "Thumbnail not found" });
+      }
+      const stats = await fs.promises.lstat(thumbnailPath).catch((error) => {
+        if (["ENOENT", "ENOTDIR"].includes(error.code)) return null;
+        throw error;
+      });
+      if (stats?.isFile() && !stats.isSymbolicLink() &&
+        asset.format === "webp" &&
+        await assetThumbnails.isThumbnailPathInsideRoot(thumbnailPath) &&
+        await assetThumbnails.isValidThumbnailFile(thumbnailPath)) {
+        const version = String(req.query.v || "");
+        const currentVersion = asset.generated_at ? new Date(asset.generated_at).toISOString() : "";
+        const immutable = Boolean(version && version === currentVersion);
+        res.setHeader("Content-Type", "image/webp");
+        res.setHeader("Cache-Control", assetThumbnails.getThumbnailCacheControl(
+          isPublicAsset,
+          immutable && /^[A-Za-z0-9._:-]+$/.test(version)
+        ));
+        res.setHeader("Last-Modified", stats.mtime.toUTCString());
+        res.setHeader("ETag", `W/"${stats.size.toString(16)}-${Math.trunc(stats.mtimeMs).toString(16)}"`);
+        return res.sendFile(thumbnailPath, { lastModified: true, etag: true, cacheControl: false });
+      }
+      console.error(`Thumbnail record exists but file is missing for asset ${assetId}`);
+    }
+
+    // Keep existing pages populated while the new backfill is in progress.
+    if (isPublicAsset) {
+      const legacyThumbnailUrl = String(asset.thumbnail_url || "");
+      if (legacyThumbnailUrl.startsWith("/api/thumbnail?file=")) {
+        const legacyUrl = new URL(legacyThumbnailUrl, "http://localhost");
+        if (legacyUrl.pathname === "/api/thumbnail" && legacyUrl.searchParams.has("file")) {
+          return res.redirect(302, `${legacyUrl.pathname}${legacyUrl.search}`);
+        }
+      }
+    }
+    return res.status(404).json({ error: "Thumbnail not generated" });
+  } catch (error) {
+    console.error(`Failed to serve thumbnail for asset ${assetId}:`, error.message || error);
+    return res.status(500).json({ error: "Unable to load asset thumbnail" });
+  }
+});
+
 /* ---------------- UPLOAD IMAGE ---------------- */
 
 app.post(
@@ -8034,7 +8145,7 @@ app.post(
 
       const uploaded_by = decoded.user;
       const uploadRelativeDir = path.relative(
-        path.join(__dirname, "uploads"),
+        assetThumbnails.getOriginalAssetStorageRoot(),
         path.resolve(originalFile.destination)
       ).replace(/\\/g, "/");
 
@@ -8043,45 +8154,8 @@ app.post(
         originalFile.filename
       );
 
-      let thumbnailUrl = null;
-      let thumbnailStatus = "pending";
-
-      if (optionalThumbnailFile) {
-        const thumbnailFilename = buildOptionalThumbnailName(originalFile.originalname, optionalThumbnailFile.originalname);
-        const thumbnailOutputDir = getThumbnailStorageDirectory(originalFile.path || originalFile.destination);
-        const targetThumbnailPath = path.join(thumbnailOutputDir, thumbnailFilename);
-        const optionalThumbnailQuality = getOptionalThumbnailQuality();
-
-        try {
-          fs.mkdirSync(thumbnailOutputDir, { recursive: true });
-          if (fs.existsSync(targetThumbnailPath)) {
-            fs.unlinkSync(targetThumbnailPath);
-          }
-
-          const sourceExt = path.extname(optionalThumbnailFile.originalname || '').toLowerCase();
-
-          if (['.jpg', '.jpeg', '.png', '.webp'].includes(sourceExt)) {
-            await createWatermarkedOptionalThumbnail(optionalThumbnailFile.path, targetThumbnailPath, {
-              quality: optionalThumbnailQuality,
-            });
-
-            if (fs.existsSync(optionalThumbnailFile.path)) {
-              fs.unlinkSync(optionalThumbnailFile.path);
-            }
-          } else {
-            fs.renameSync(optionalThumbnailFile.path, targetThumbnailPath);
-          }
-          
-          const thumbnailRelativePath = path.relative(
-            path.resolve(__dirname, "uploads"),
-            targetThumbnailPath
-          ).replace(/\\/g, "/");
-          thumbnailUrl = getPublicThumbnailUrl(thumbnailRelativePath);
-          thumbnailStatus = "COMPLETED";
-        } catch (err) {
-          console.warn("Failed to save optional thumbnail:", err.message || err);
-        }
-      }
+      const thumbnailUrl = null;
+      const thumbnailStatus = "pending";
 
       const newImage = await pool.query(
         `
@@ -8139,18 +8213,38 @@ app.post(
         ]
       );
 
-      const fileExt = path.extname(originalFile.filename).toLowerCase();
-      if (isThumbnailSupportedFile(originalFile.filename) && !thumbnailUrl) {
+      let stagedOptionalPreviewPath = null;
+      if (optionalThumbnailFile?.path) {
         try {
-          const fullFilePath = path.resolve(originalFile.destination, originalFile.filename);
-          await thumbnailQueue.queueThumbnailJob(
+          stagedOptionalPreviewPath = await assetThumbnails.stageOptionalThumbnail(optionalThumbnailFile.path);
+        } catch (error) {
+          console.error(`Failed to stage optional thumbnail input for asset ${newImage.rows[0].id}: ${error.message}`);
+        }
+        await fs.promises.unlink(optionalThumbnailFile.path).catch((error) => {
+          if (error.code !== "ENOENT") {
+            console.error("Failed to remove uploaded legacy thumbnail input:", error.message || error);
+          }
+        });
+      }
+
+      const fileExt = path.extname(originalFile.filename).toLowerCase();
+      if (fileExt) {
+        try {
+          await thumbnailQueue.queueAssetThumbnailJob(
             newImage.rows[0].id,
             decoded.user,
-            fullFilePath,
-            fileExt.substring(1)
+            { previewPath: stagedOptionalPreviewPath }
           );
         } catch (err) {
           console.warn(`Failed to queue thumbnail processing: ${err.message}`);
+          await assetThumbnails.removeStagedOptionalThumbnail(stagedOptionalPreviewPath).catch((cleanupError) => {
+            console.error(`Failed to remove staged thumbnail input for asset ${newImage.rows[0].id}: ${cleanupError.message}`);
+          });
+          try {
+            await assetThumbnails.recordThumbnailQueueFailure(newImage.rows[0].id, err);
+          } catch (recordError) {
+            console.error(`Failed to record thumbnail queue error for asset ${newImage.rows[0].id}:`, recordError.message);
+          }
         }
       }
 
@@ -8807,6 +8901,8 @@ app.get(
   async (req, res) => {
 
     try {
+      await authenticateToken(req, res, () => {});
+      if (res.headersSent) return;
 
       const { id } = req.params;
 
@@ -9338,7 +9434,7 @@ app.get(
 
       // Resolve file path safely
       const filename = image.filename;
-      const uploadsRoot = path.join(__dirname, "uploads");
+      const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot();
       const filePath = path.resolve(uploadsRoot, filename);
       const uploadsRootResolved = path.resolve(uploadsRoot);
       const relativeToUploads = path.relative(uploadsRootResolved, filePath);
@@ -9461,8 +9557,8 @@ app.get(
         return res.status(404).json("Thumbnail file reference missing");
       }
 
-      const thumbnailFilePath = path.resolve(__dirname, "uploads", sourcePath);
-      const uploadsRootResolved = path.resolve(__dirname, "uploads");
+      const thumbnailFilePath = path.resolve(assetThumbnails.getOriginalAssetStorageRoot(), sourcePath);
+      const uploadsRootResolved = assetThumbnails.getOriginalAssetStorageRoot();
       const relativeToUploads = path.relative(uploadsRootResolved, thumbnailFilePath);
 
       if (!relativeToUploads || relativeToUploads.startsWith("..") || path.isAbsolute(sourcePath)) {
@@ -9514,8 +9610,24 @@ app.delete(
 
       }
 
+      const requesterResult = await pool.query(
+        `SELECT role FROM users WHERE id = $1`,
+        [req.user.id]
+      );
+      const requesterIsOwner = Number(image.rows[0].uploaded_by) === Number(req.user.id);
+      const requesterIsAdmin = String(requesterResult.rows[0]?.role || "").toLowerCase() === "admin";
+      if (!requesterIsOwner && !requesterIsAdmin) {
+        return res.status(403).json("Access denied");
+      }
+
       const filename =
         image.rows[0].filename;
+      const assetRoot = assetThumbnails.getOriginalAssetStorageRoot();
+      const filePath = path.resolve(assetRoot, filename);
+      const relativeToAssetRoot = path.relative(assetRoot, filePath);
+      if (!relativeToAssetRoot || relativeToAssetRoot.startsWith("..") || path.isAbsolute(relativeToAssetRoot)) {
+        return res.status(400).json("Invalid file path");
+      }
 
       // Delete favorites
 
@@ -9537,8 +9649,13 @@ app.delete(
         [id]
       );
 
-      // Delete image record
+      const thumbnailRecord = await pool.query(
+        `SELECT thumbnail_path FROM asset_thumbnail_metadata WHERE asset_id = $1`,
+        [id]
+      );
+      await assetThumbnails.deleteAssetThumbnail(id, thumbnailRecord.rows[0]?.thumbnail_path || null);
 
+      // Delete image record
       await pool.query(
         `
         DELETE FROM images
@@ -9548,13 +9665,6 @@ app.delete(
       );
 
       // Delete physical file
-
-      const filePath =
-        path.join(
-          __dirname,
-          "uploads",
-          filename
-        );
 
       if (
         fs.existsSync(filePath)
@@ -9669,6 +9779,8 @@ app.post(
   "/images/:id/thumbnail",
   upload.single("thumbnail"),
   async (req, res) => {
+    let stagedOptionalPreviewPath = null;
+    let previewJobQueued = false;
     try {
       const authHeader = req.headers["authorization"];
       if (!authHeader) {
@@ -9701,55 +9813,48 @@ app.post(
         return res.status(400).json("No thumbnail uploaded");
       }
 
-      const originalBaseName = path.basename(image.filename, path.extname(image.filename)) || "asset";
-      const safeBaseName = String(originalBaseName)
-        .trim()
-        .replace(/[^a-zA-Z0-9._-]+/g, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-+|-+$/g, "") || "asset";
-      const targetExtension = path.extname(req.file.originalname) || ".png";
-      const thumbnailFilename = `thumbnail-${safeBaseName}${targetExtension}`;
-      const assetPath = path.join(__dirname, "uploads", image.filename);
-      const thumbnailDir = getThumbnailStorageDirectory(assetPath);
-      const targetPath = path.join(thumbnailDir, thumbnailFilename);
-      const optionalThumbnailQuality = getOptionalThumbnailQuality();
-
-      fs.mkdirSync(thumbnailDir, { recursive: true });
-
-      if (fs.existsSync(targetPath)) {
-        fs.unlinkSync(targetPath);
-      }
-
-      const sourceExt = path.extname(req.file.originalname || '').toLowerCase();
-
-      if (['.jpg', '.jpeg', '.png', '.webp'].includes(sourceExt)) {
-        await createWatermarkedOptionalThumbnail(req.file.path, targetPath, {
-          quality: optionalThumbnailQuality,
+      try {
+        stagedOptionalPreviewPath = await assetThumbnails.stageOptionalThumbnail(req.file.path);
+      } catch (error) {
+        await fs.promises.unlink(req.file.path).catch((cleanupError) => {
+          if (cleanupError.code !== "ENOENT") {
+            console.error("Failed to remove invalid manual thumbnail input:", cleanupError.message);
+          }
         });
-
-        if (fs.existsSync(req.file.path)) {
-          fs.unlinkSync(req.file.path);
-        }
-      } else {
-        fs.renameSync(req.file.path, targetPath);
+        return res.status(400).json({ error: `Invalid thumbnail image: ${error.message}` });
       }
 
-      const relativePath = path.relative(path.join(__dirname, "uploads"), targetPath).replace(/\\/g, "/");
-      const thumbnailUrl = getPublicThumbnailUrl(relativePath);
-
-      const updated = await pool.query(
-        `UPDATE images
-         SET thumbnail_url = $1,
-             thumbnail_status = 'COMPLETED',
-             thumbnail_generated_at = NOW(),
-             thumbnail_error = NULL
-         WHERE id = $2
-         RETURNING *`,
-        [thumbnailUrl, id]
+      const jobId = await thumbnailQueue.queueAssetThumbnailJob(id, decoded.user, {
+        force: true,
+        previewPath: stagedOptionalPreviewPath,
+      });
+      previewJobQueued = true;
+      await pool.query(
+        `UPDATE images SET thumbnail_status = 'PROCESSING', thumbnail_error = NULL WHERE id = $1`,
+        [id]
       );
-
-      res.json(updated.rows[0]);
+      await fs.promises.unlink(req.file.path).catch((error) => {
+        if (error.code !== "ENOENT") console.error(`Failed to remove manual thumbnail upload for asset ${id}:`, error.message);
+      });
+      return res.status(202).json({
+        id: image.id,
+        thumbnail_status: "PROCESSING",
+        thumbnail_job_id: jobId,
+        message: "Thumbnail generation queued from the original asset.",
+      });
     } catch (err) {
+      if (!previewJobQueued) {
+        await assetThumbnails.removeStagedOptionalThumbnail(stagedOptionalPreviewPath).catch((cleanupError) => {
+          console.error("Failed to remove staged manual thumbnail input:", cleanupError.message);
+        });
+      }
+      if (req.file?.path) {
+        await fs.promises.unlink(req.file.path).catch((cleanupError) => {
+          if (cleanupError.code !== "ENOENT") {
+            console.error("Failed to remove rejected manual thumbnail upload:", cleanupError.message);
+          }
+        });
+      }
       console.error("Thumbnail update error", err);
       res.status(500).json(err.message || "Thumbnail update failed");
     }
@@ -10532,7 +10637,7 @@ app.post('/checkout/confirm-google-pay', authenticateToken, async (req, res) => 
           return res.status(404).json({ error: 'File not available' });
         }
 
-        const filePath = path.join(__dirname, 'uploads', dl.filename);
+        const filePath = path.join(assetThumbnails.getOriginalAssetStorageRoot(), dl.filename);
         if (!fs.existsSync(filePath)) {
           return res.status(404).json({ error: 'File missing on server' });
         }
@@ -11323,7 +11428,7 @@ const moveGeneratedThumbnailFile = (currentFilename) => {
   }
 
   const normalized = currentFilename.replace(/\\/g, "/");
-  const assetPath = path.join(__dirname, "uploads", ...normalized.split("/"));
+  const assetPath = path.join(assetThumbnails.getOriginalAssetStorageRoot(), ...normalized.split("/"));
   const thumbnailDir = getThumbnailStorageDirectory(assetPath);
   const assetDir = path.dirname(assetPath);
   const assetExt = path.extname(assetPath);
@@ -11344,7 +11449,7 @@ const moveGeneratedThumbnailFile = (currentFilename) => {
   fs.renameSync(oldThumbPath, newThumbPath);
 
   const relativeThumbPath = path.relative(
-    path.resolve(__dirname, "uploads"),
+    assetThumbnails.getOriginalAssetStorageRoot(),
     newThumbPath
   ).replace(/\\/g, "/");
 
@@ -11369,8 +11474,8 @@ const moveImageFile = async (currentFilename, newStatus) => {
   }
 
   const newRelativePath = [...targetParts, fileName].join("/");
-  const oldPath = path.join(__dirname, "uploads", ...normalized.split("/"));
-  const newPath = path.join(__dirname, "uploads", ...newRelativePath.split("/"));
+  const oldPath = path.join(assetThumbnails.getOriginalAssetStorageRoot(), ...normalized.split("/"));
+  const newPath = path.join(assetThumbnails.getOriginalAssetStorageRoot(), ...newRelativePath.split("/"));
 
   fs.mkdirSync(path.dirname(newPath), { recursive: true });
 
@@ -14021,6 +14126,7 @@ async function recordGfxSyncChange({ deviceId, tableName, recordId, operation, c
 /* ----------- THUMBNAIL SYSTEM INITIALIZATION ----------- */
 
 async function initializeThumbnailSystem() {
+  let schemaReady = false;
   try {
     console.log("\n========== THUMBNAIL SYSTEM INITIALIZATION ==========\n");
 
@@ -14176,14 +14282,28 @@ async function initializeThumbnailSystem() {
       console.warn("Migration warning:", err.message);
     }
 
+    const thumbnailSchema = await pool.query(`
+      SELECT
+        to_regclass('public.asset_thumbnail_metadata') AS thumbnail_metadata,
+        to_regclass('public.asset_thumbnail_orphans') AS orphans
+    `);
+    schemaReady = Boolean(
+      thumbnailSchema.rows[0]?.thumbnail_metadata &&
+      thumbnailSchema.rows[0]?.orphans
+    );
+    if (!schemaReady) {
+      console.error(
+        "Thumbnail schema is incomplete. Back up PostgreSQL and apply migration 028 as a separate deployment step."
+      );
+      return false;
+    }
+
     // Detect processors
     console.log("\nDetecting thumbnail processors...");
     const detector = new ProcessorDetector();
     const detectionResults = await detector.runAllDetections();
     await detector.saveDetectionResults(detectionResults);
     await detector.printStatusTable();
-
-    await backfillPendingEpsThumbnails();
 
     // Initialize thumbnail queue
     console.log("\nInitializing thumbnail processing queue...");
@@ -14193,8 +14313,10 @@ async function initializeThumbnailSystem() {
     }
 
     console.log("\n========== THUMBNAIL SYSTEM READY ==========\n");
+    return schemaReady;
   } catch (err) {
     console.error("Thumbnail system initialization error:", err);
+    return schemaReady;
   }
 }
 
@@ -14242,7 +14364,12 @@ if (require.main === module) {
       return;
     }
 
-    await initializeThumbnailSystem();
+    const thumbnailSystemReady = await initializeThumbnailSystem();
+    if (!thumbnailSystemReady) {
+      console.error("Server startup aborted because thumbnail system initialization failed.");
+      process.exitCode = 1;
+      return;
+    }
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on port ${PORT}`);
     });

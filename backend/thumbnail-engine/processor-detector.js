@@ -6,12 +6,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync, spawn } = require('child_process');
+const { execFileSync, execSync, spawn } = require('child_process');
 const pool = require('../db');
 
 // Windows-specific paths for common tool installations
 const WINDOWS_TOOL_PATHS = {
   ghostscript: [
+    'C:\\Program Files\\gs\\gs10.08.0\\bin\\gswin64c.exe',
     'C:\\Program Files\\gs\\gs10.01.2\\bin\\gswin64c.exe',
     'C:\\Program Files\\gs\\gs10.00.0\\bin\\gswin64c.exe',
     'C:\\Program Files (x86)\\gs\\gs10.01.2\\bin\\gswin64c.exe',
@@ -44,6 +45,26 @@ class ProcessorDetector {
    */
   async detectGhostscript() {
     try {
+      if (process.env.GHOSTSCRIPT_PATH) {
+        try {
+          const version = execFileSync(process.env.GHOSTSCRIPT_PATH, ['-version'], {
+            encoding: 'utf8',
+            windowsHide: true,
+          }).trim();
+          return {
+            status: 'READY',
+            executablePath: process.env.GHOSTSCRIPT_PATH,
+            version: version.split('\n')[0] || 'unknown',
+            message: `Found at ${process.env.GHOSTSCRIPT_PATH}`,
+          };
+        } catch (err) {
+          return {
+            status: 'ERROR',
+            message: `Configured GHOSTSCRIPT_PATH could not run: ${err.message}`,
+          };
+        }
+      }
+
       // For Unix-like systems (macOS, Linux)
       if (!this.isWindows) {
         try {
@@ -114,6 +135,26 @@ class ProcessorDetector {
    */
   async detectImageMagick() {
     try {
+      if (process.env.IMAGEMAGICK_PATH) {
+        try {
+          const version = execFileSync(process.env.IMAGEMAGICK_PATH, ['-version'], {
+            encoding: 'utf8',
+            windowsHide: true,
+          }).trim();
+          return {
+            status: 'READY',
+            executablePath: process.env.IMAGEMAGICK_PATH,
+            version: version.split('\n')[0] || 'unknown',
+            message: `Found at ${process.env.IMAGEMAGICK_PATH}`,
+          };
+        } catch (err) {
+          return {
+            status: 'ERROR',
+            message: `Configured IMAGEMAGICK_PATH could not run: ${err.message}`,
+          };
+        }
+      }
+
       // For Unix-like systems (macOS, Linux)
       if (!this.isWindows) {
         try {
@@ -185,7 +226,13 @@ class ProcessorDetector {
   async detectSharp() {
     try {
       const sharp = require('sharp');
-      const metadata = await sharp.cache(false).metadata();
+      sharp.cache(false);
+      const { info } = await sharp({
+        create: { width: 1, height: 1, channels: 3, background: '#000000' },
+      }).png().toBuffer({ resolveWithObject: true });
+      if (info.width !== 1 || info.height !== 1) {
+        throw new Error('Sharp test image had unexpected dimensions');
+      }
       return {
         status: 'READY',
         version: require('sharp/package.json').version,
@@ -232,6 +279,28 @@ class ProcessorDetector {
       return {
         status: 'ERROR',
         message: `Failed to detect PSD processor: ${err.message}`,
+      };
+    }
+  }
+
+  async detectFfmpeg() {
+    const executablePath = process.env.FFMPEG_PATH || 'ffmpeg';
+    try {
+      const output = execFileSync(executablePath, ['-version'], {
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      const version = output.match(/ffmpeg version ([^\s]+)/i)?.[1] || 'unknown';
+      return {
+        status: 'READY',
+        executablePath,
+        version,
+        message: `Found at ${executablePath}`,
+      };
+    } catch (err) {
+      return {
+        status: 'NOT_AVAILABLE',
+        message: `FFmpeg could not run (${executablePath}): ${err.message}`,
       };
     }
   }
@@ -347,6 +416,14 @@ class ProcessorDetector {
     } catch (err) {
       console.error(`✗ PSD Processor detection failed: ${err.message}`);
       results.detections.psd_processor = { status: 'ERROR', message: err.message };
+    }
+
+    try {
+      results.detections.ffmpeg = await this.detectFfmpeg();
+      console.log(`✓ FFmpeg: ${results.detections.ffmpeg.status}`);
+    } catch (err) {
+      console.error(`✗ FFmpeg detection failed: ${err.message}`);
+      results.detections.ffmpeg = { status: 'ERROR', message: err.message };
     }
 
     try {
