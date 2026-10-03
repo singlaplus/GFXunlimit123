@@ -20,6 +20,8 @@ const {
   normalizeStoredFilename,
   sanitizeFilenamePart,
   deleteAssetThumbnail,
+  acquireContributorUploadLock,
+  deleteContributorUploadFolderIfUnused,
   generateAssetThumbnail,
   removeStagedOptionalThumbnail,
   stageOptionalThumbnail,
@@ -379,6 +381,205 @@ test('deletion removes the recorded thumbnail without touching originals', async
     pool.query = originalQuery;
     if (originalThumbnailRoot === undefined) delete process.env.THUMBNAIL_STORAGE_PATH;
     else process.env.THUMBNAIL_STORAGE_PATH = originalThumbnailRoot;
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('keeps a contributor upload folder when another asset remains', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-contributor-folder-retained-'));
+  const contributorDirectory = path.join(temporaryDirectory, 'contributor-a');
+  fs.mkdirSync(path.join(contributorDirectory, '2026', '10', 'Approved'), { recursive: true });
+  fs.writeFileSync(path.join(contributorDirectory, '2026', '10', 'Approved', 'remaining.jpg'), 'asset');
+  const originalAssetsRoot = process.env.ASSETS_ROOT;
+  const originalQuery = pool.query;
+  process.env.ASSETS_ROOT = temporaryDirectory;
+  pool.query = async (sql, values) => {
+    assert.match(sql, /COUNT\(i\.id\)::int AS remaining_asset_count/);
+    assert.deepEqual(values, [81]);
+    return { rows: [{ username: 'contributor-a', role: 'contributor', remaining_asset_count: 1, username_user_count: 1 }] };
+  };
+
+  try {
+    assert.equal(await deleteContributorUploadFolderIfUnused(81), false);
+    assert.equal(fs.existsSync(path.join(contributorDirectory, '2026', '10', 'Approved', 'remaining.jpg')), true);
+  } finally {
+    pool.query = originalQuery;
+    if (originalAssetsRoot === undefined) delete process.env.ASSETS_ROOT;
+    else process.env.ASSETS_ROOT = originalAssetsRoot;
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('removes only an empty contributor upload folder and preserves other and system folders', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-contributor-folder-delete-'));
+  const contributorDirectory = path.join(temporaryDirectory, 'contributor-a');
+  fs.mkdirSync(path.join(contributorDirectory, '2026', '10', 'Approved'), { recursive: true });
+  fs.writeFileSync(path.join(contributorDirectory, '2026', '10', 'Approved', 'deleted.jpg'), 'asset');
+  const otherContributorDirectory = path.join(temporaryDirectory, 'contributor-b');
+  const brandingDirectory = path.join(temporaryDirectory, 'branding');
+  fs.mkdirSync(otherContributorDirectory);
+  fs.mkdirSync(brandingDirectory);
+  const originalAssetsRoot = process.env.ASSETS_ROOT;
+  const originalQuery = pool.query;
+  process.env.ASSETS_ROOT = temporaryDirectory;
+  pool.query = async (sql, values) => {
+    assert.match(sql, /COUNT\(i\.id\)::int AS remaining_asset_count/);
+    assert.deepEqual(values, [82]);
+    return { rows: [{ username: 'contributor-a', role: 'contributor', remaining_asset_count: 0, username_user_count: 1 }] };
+  };
+
+  try {
+    assert.equal(await deleteContributorUploadFolderIfUnused(82), true);
+    assert.equal(fs.existsSync(contributorDirectory), false);
+    assert.equal(fs.existsSync(otherContributorDirectory), true);
+    assert.equal(fs.existsSync(brandingDirectory), true);
+  } finally {
+    pool.query = originalQuery;
+    if (originalAssetsRoot === undefined) delete process.env.ASSETS_ROOT;
+    else process.env.ASSETS_ROOT = originalAssetsRoot;
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('treats a missing empty contributor upload folder as already cleaned', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-contributor-folder-missing-'));
+  const originalAssetsRoot = process.env.ASSETS_ROOT;
+  const originalQuery = pool.query;
+  process.env.ASSETS_ROOT = temporaryDirectory;
+  pool.query = async (sql, values) => {
+    assert.match(sql, /COUNT\(i\.id\)::int AS remaining_asset_count/);
+    assert.deepEqual(values, [83]);
+    return { rows: [{ username: 'contributor-a', role: 'contributor', remaining_asset_count: 0, username_user_count: 1 }] };
+  };
+
+  try {
+    assert.equal(await deleteContributorUploadFolderIfUnused(83), false);
+  } finally {
+    pool.query = originalQuery;
+    if (originalAssetsRoot === undefined) delete process.env.ASSETS_ROOT;
+    else process.env.ASSETS_ROOT = originalAssetsRoot;
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('refuses to remove a shared system directory as a contributor folder', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-contributor-folder-system-'));
+  const brandingDirectory = path.join(temporaryDirectory, 'branding');
+  fs.mkdirSync(brandingDirectory);
+  const originalAssetsRoot = process.env.ASSETS_ROOT;
+  const originalQuery = pool.query;
+  process.env.ASSETS_ROOT = temporaryDirectory;
+  pool.query = async () => ({
+    rows: [{ username: 'branding', role: 'contributor', remaining_asset_count: 0, username_user_count: 1 }],
+  });
+
+  try {
+    await assert.rejects(deleteContributorUploadFolderIfUnused(84), /Invalid contributor upload directory name/);
+    assert.equal(fs.existsSync(brandingDirectory), true);
+  } finally {
+    pool.query = originalQuery;
+    if (originalAssetsRoot === undefined) delete process.env.ASSETS_ROOT;
+    else process.env.ASSETS_ROOT = originalAssetsRoot;
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+for (const username of ['branding.', 'website', 'Rejected.', 'settings', 'contributor-a ']) {
+  test(`refuses Windows alias or reserved contributor folder name ${username}`, async () => {
+    const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-contributor-folder-alias-'));
+    const protectedDirectoryName = username.replace(/[.\s]+$/, '');
+    const protectedDirectory = path.join(temporaryDirectory, protectedDirectoryName);
+    fs.mkdirSync(protectedDirectory);
+    const originalAssetsRoot = process.env.ASSETS_ROOT;
+    const originalQuery = pool.query;
+    process.env.ASSETS_ROOT = temporaryDirectory;
+    pool.query = async () => ({
+      rows: [{ username, role: 'contributor', remaining_asset_count: 0, username_user_count: 1 }],
+    });
+
+    try {
+      await assert.rejects(deleteContributorUploadFolderIfUnused(86), /Invalid contributor upload directory name/);
+      assert.equal(fs.existsSync(protectedDirectory), true);
+    } finally {
+      pool.query = originalQuery;
+      if (originalAssetsRoot === undefined) delete process.env.ASSETS_ROOT;
+      else process.env.ASSETS_ROOT = originalAssetsRoot;
+      fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+}
+
+test('keeps a folder when the username maps to more than one user', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-contributor-folder-collision-'));
+  const contributorDirectory = path.join(temporaryDirectory, 'contributor-a');
+  fs.mkdirSync(contributorDirectory);
+  const originalAssetsRoot = process.env.ASSETS_ROOT;
+  const originalQuery = pool.query;
+  process.env.ASSETS_ROOT = temporaryDirectory;
+  pool.query = async () => ({
+    rows: [{ username: 'contributor-a', role: 'contributor', remaining_asset_count: 0, username_user_count: 2 }],
+  });
+
+  try {
+    assert.equal(await deleteContributorUploadFolderIfUnused(85), false);
+    assert.equal(fs.existsSync(contributorDirectory), true);
+  } finally {
+    pool.query = originalQuery;
+    if (originalAssetsRoot === undefined) delete process.env.ASSETS_ROOT;
+    else process.env.ASSETS_ROOT = originalAssetsRoot;
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('serializes same-contributor uploads and cleanup while allowing another contributor concurrently', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-contributor-folder-lock-'));
+  const contributorDirectory = path.join(temporaryDirectory, 'contributor-a');
+  fs.mkdirSync(contributorDirectory);
+  const originalAssetsRoot = process.env.ASSETS_ROOT;
+  const originalQuery = pool.query;
+  process.env.ASSETS_ROOT = temporaryDirectory;
+  let cleanupQueryStarted = false;
+  let notifyCleanupQueryStarted;
+  const cleanupQueryStartedPromise = new Promise((resolve) => {
+    notifyCleanupQueryStarted = resolve;
+  });
+  pool.query = async () => {
+    cleanupQueryStarted = true;
+    notifyCleanupQueryStarted();
+    return {
+      rows: [{ username: 'contributor-a', role: 'contributor', remaining_asset_count: 0, username_user_count: 1 }],
+    };
+  };
+
+  let releaseUpload;
+  let releaseWaitingUpload;
+  let releaseOtherContributor;
+  try {
+    releaseUpload = await acquireContributorUploadLock(87);
+    const cleanup = deleteContributorUploadFolderIfUnused(87);
+    let waitingUploadAcquired = false;
+    const waitingUpload = acquireContributorUploadLock(87).then((releaseLock) => {
+      waitingUploadAcquired = true;
+      releaseWaitingUpload = releaseLock;
+    });
+    assert.equal(cleanupQueryStarted, false);
+
+    releaseOtherContributor = await acquireContributorUploadLock(88);
+    assert.equal(cleanupQueryStarted, false);
+    assert.equal(waitingUploadAcquired, false);
+    releaseUpload();
+    await cleanupQueryStartedPromise;
+    assert.equal(await cleanup, true);
+    await waitingUpload;
+    assert.equal(waitingUploadAcquired, true);
+    assert.equal(fs.existsSync(contributorDirectory), false);
+  } finally {
+    releaseUpload?.();
+    releaseWaitingUpload?.();
+    releaseOtherContributor?.();
+    pool.query = originalQuery;
+    if (originalAssetsRoot === undefined) delete process.env.ASSETS_ROOT;
+    else process.env.ASSETS_ROOT = originalAssetsRoot;
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });

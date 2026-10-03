@@ -19,6 +19,21 @@ const MAX_DIMENSIONS = { width: 640, height: 360 };
 const QUALITY_STEPS = [60, 54, 48, 42, 36, 30];
 const BACKGROUND = { r: 232, g: 234, b: 237, alpha: 1 };
 const OPTIONAL_PREVIEW_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg']);
+const NON_CONTRIBUTOR_UPLOAD_DIRECTORIES = new Set([
+  'approved',
+  'backups',
+  'branding',
+  'pending',
+  'payments',
+  'processed',
+  'rejected',
+  'restore',
+  'settings',
+  'thumbnails',
+  'unknown',
+  'website',
+]);
+const contributorUploadLocks = new Map();
 
 function getStagedSourceDirectory() {
   return path.resolve(__dirname, '..', 'tmp', 'asset-thumbnail-sources');
@@ -862,6 +877,132 @@ async function deleteAssetThumbnail(assetId, thumbnailPathOverride) {
   return true;
 }
 
+function resolveContributorUploadDirectory(username) {
+  if (
+    typeof username !== 'string' ||
+    !username ||
+    username !== username.trim() ||
+    /[.\s]$/u.test(username) ||
+    username === '.' ||
+    username === '..' ||
+    /[<>:"/\\|?*\u0000-\u001f\u007f]/.test(username) ||
+    path.basename(username) !== username ||
+    path.win32.basename(username) !== username ||
+    NON_CONTRIBUTOR_UPLOAD_DIRECTORIES.has(username.toLowerCase())
+  ) {
+    throw new Error('Invalid contributor upload directory name');
+  }
+
+  const assetRoot = path.resolve(getOriginalAssetStorageRoot());
+  const contributorDirectory = path.resolve(assetRoot, username);
+  const relativePath = path.relative(assetRoot, contributorDirectory);
+  if (
+    !relativePath ||
+    relativePath === '..' ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativePath)
+  ) {
+    throw new Error('Contributor upload directory resolves outside asset storage');
+  }
+
+  return { assetRoot, contributorDirectory };
+}
+
+async function acquireContributorUploadLock(contributorId) {
+  const id = Number(contributorId);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid contributor ID');
+
+  const previousLock = contributorUploadLocks.get(id) || Promise.resolve();
+  let releaseLock;
+  const currentLock = new Promise((resolve) => {
+    releaseLock = resolve;
+  });
+  contributorUploadLocks.set(id, currentLock);
+  await previousLock;
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (contributorUploadLocks.get(id) === currentLock) {
+      contributorUploadLocks.delete(id);
+    }
+    releaseLock();
+  };
+}
+
+async function deleteContributorUploadFolderIfUnused(contributorId) {
+  const releaseLock = await acquireContributorUploadLock(contributorId);
+  try {
+    return await deleteContributorUploadFolderIfUnusedLocked(contributorId);
+  } finally {
+    releaseLock();
+  }
+}
+
+async function deleteContributorUploadFolderIfUnusedLocked(contributorId) {
+  const id = Number(contributorId);
+
+  const contributorResult = await pool.query(
+    `SELECT u.username, u.role, COUNT(i.id)::int AS remaining_asset_count,
+            (SELECT COUNT(*)::int FROM users u2 WHERE lower(u2.username) = lower(u.username)) AS username_user_count
+     FROM users u
+     LEFT JOIN images i ON i.uploaded_by = u.id
+     WHERE u.id = $1
+     GROUP BY u.id`,
+    [id]
+  );
+  const contributor = contributorResult.rows[0];
+  if (!contributor || String(contributor.role || '').toLowerCase() !== 'contributor') {
+    return false;
+  }
+  if (
+    Number(contributor.remaining_asset_count) !== 0 ||
+    Number(contributor.username_user_count) !== 1
+  ) {
+    return false;
+  }
+
+  const { assetRoot, contributorDirectory } = resolveContributorUploadDirectory(contributor.username);
+  let rootRealPath;
+  try {
+    rootRealPath = fs.realpathSync(assetRoot);
+  } catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+    return false;
+  }
+
+  let directoryStats;
+  try {
+    directoryStats = fs.lstatSync(contributorDirectory);
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+  if (directoryStats.isSymbolicLink() || !directoryStats.isDirectory()) {
+    throw new Error('Contributor upload path is not a dedicated directory');
+  }
+
+  const directoryRealPath = fs.realpathSync(contributorDirectory);
+  const relativeRealPath = path.relative(rootRealPath, directoryRealPath);
+  if (
+    !relativeRealPath ||
+    relativeRealPath === '..' ||
+    relativeRealPath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeRealPath)
+  ) {
+    throw new Error('Contributor upload directory resolves outside asset storage');
+  }
+
+  try {
+    fs.rmSync(contributorDirectory, { recursive: true, force: false });
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
 module.exports = {
   BACKGROUND,
   HARD_TARGET_BYTES,
@@ -887,6 +1028,8 @@ module.exports = {
   isValidThumbnailFile,
   normalizeStoredFilename,
   deleteAssetThumbnail,
+  acquireContributorUploadLock,
+  deleteContributorUploadFolderIfUnused,
   recordThumbnailQueueFailure,
   stageOptionalThumbnail,
   removeStagedOptionalThumbnail,

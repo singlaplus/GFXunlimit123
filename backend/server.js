@@ -8104,12 +8104,51 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
 
 /* ---------------- UPLOAD IMAGE ---------------- */
 
-app.post(
-  "/upload",
+const lockContributorUpload = async (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) return next();
+
+  let contributorId;
+  try {
+    contributorId = verifyJwtToken(authHeader.split(" ")[1]).user;
+  } catch (_error) {
+    return next();
+  }
+  if (!contributorId) return next();
+
+  try {
+    const releaseLock = await assetThumbnails.acquireContributorUploadLock(contributorId);
+    if (req.aborted) {
+      releaseLock();
+      return;
+    }
+    req.releaseContributorUploadLock = releaseLock;
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+const releaseContributorUploadLock = (req) => {
+  const releaseLock = req.releaseContributorUploadLock;
+  req.releaseContributorUploadLock = null;
+  if (typeof releaseLock === "function") releaseLock();
+};
+
+const parseUploadFiles = (req, res, next) => {
   upload.fields([
     { name: "image", maxCount: 1 },
     { name: "thumbnail", maxCount: 1 }
-  ]),
+  ])(req, res, (error) => {
+    if (error) releaseContributorUploadLock(req);
+    next(error);
+  });
+};
+
+app.post(
+  "/upload",
+  lockContributorUpload,
+  parseUploadFiles,
   async (req, res) => {
 
     try {
@@ -8285,6 +8324,8 @@ app.post(
     } catch (err) {
       console.error("UPLOAD ERROR:", err);
       res.status(500).json(err.message);
+    } finally {
+      releaseContributorUploadLock(req);
     }
 
   }
@@ -9721,6 +9762,15 @@ app.delete(
 
         fs.unlinkSync(filePath);
 
+      }
+
+      try {
+        await assetThumbnails.deleteContributorUploadFolderIfUnused(image.rows[0].uploaded_by);
+      } catch (cleanupError) {
+        console.error(
+          `Failed to remove empty upload folder for contributor ${image.rows[0].uploaded_by}:`,
+          cleanupError
+        );
       }
 
       await createAssetNotifications(pool, {
