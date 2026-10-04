@@ -77,7 +77,8 @@ async function ensureAuthSessionsTable() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `);
-  console.log("Authentication sessions preserved across backend startup.");
+  await pool.query("DELETE FROM auth_sessions");
+  console.log("Active authentication sessions cleared on backend startup.");
 }
 
 function verifyJwtToken(token) {
@@ -10805,7 +10806,7 @@ const submitGooglePayPayment = async (req, res) => {
     );
     await client.query(
       `UPDATE orders
-       SET payment_status = 'completed', order_status = 'completed', download_status = 'available', updated_at = NOW()
+       SET payment_status = 'paid', order_status = 'completed', download_status = 'available', updated_at = NOW()
        WHERE id = $1`,
       [orderId]
     );
@@ -10838,7 +10839,7 @@ const submitGooglePayPayment = async (req, res) => {
       success: true,
       orderId,
       orderNumber: order.order_number,
-      paymentStatus: 'completed',
+      paymentStatus: 'paid',
       message: 'Payment details submitted. Your order is complete and downloads are available.',
     });
   } catch (error) {

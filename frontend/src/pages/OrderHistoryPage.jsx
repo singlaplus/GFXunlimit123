@@ -213,7 +213,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
       );
       setOrders((currentOrders) => currentOrders.map((order) => (
         order.id === retryPaymentOrder.id
-          ? { ...order, payment_status: "completed", order_status: "completed", download_status: "available", payment_submitted: true }
+          ? { ...order, payment_status: "paid", order_status: "completed", download_status: "available", payment_submitted: true }
           : order
       )));
       setRetryPaymentOrder(null);
@@ -574,7 +574,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
                                       border: `1px solid ${isPending ? (isDarkMode ? "rgba(248,113,113,0.45)" : "#fecaca") : isPaid ? (isDarkMode ? "rgba(74,222,128,0.35)" : "#bbf7d0") : (isDarkMode ? "rgba(148,163,184,0.25)" : "#e2e8f0")}`,
                                     }}
                                   >
-                                    {isSubmitted ? "Pending Verification" : isPending ? "Payment pending" : isPaid ? "Paid" : paymentStatus}
+                                    {isPaid ? "Paid" : isSubmitted ? "Pending Verification" : isPending ? "Payment pending" : paymentStatus}
                                   </span>
                                   {!isContributor && isPending && !isSubmitted && Number(order.total_amount) > 0 && (
                                     <button

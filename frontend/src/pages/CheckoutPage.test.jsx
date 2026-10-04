@@ -38,7 +38,7 @@ describe("CheckoutPage manual Google Pay submission", () => {
       if (url.endsWith("/checkout/place-order")) {
         return Promise.resolve({ data: { orderId: 15, orderNumber: "GFX-15" } });
       }
-      return Promise.resolve({ data: { success: true, paymentStatus: "completed", message: "Payment details submitted. Your order is complete and downloads are available." } });
+      return Promise.resolve({ data: { success: true, paymentStatus: "paid", message: "Payment details submitted. Your order is complete and downloads are available." } });
     });
   });
 
