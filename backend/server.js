@@ -8017,6 +8017,8 @@ app.get("/api/thumbnail", async (req, res) => {
   return thumbnailAssetHandler(req, res);
 });
 
+const thumbnailRegenerationJobs = new Map();
+
 app.get("/api/assets/:id/thumbnail", async (req, res) => {
   res.setHeader("Cache-Control", "private, no-store");
   const assetId = String(req.params.id || "");
@@ -8092,10 +8094,12 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
         if (["ENOENT", "ENOTDIR"].includes(error.code)) return null;
         throw error;
       });
-      if (stats?.isFile() && !stats.isSymbolicLink() &&
+      const validThumbnail = async (filePath, fileStats) => fileStats?.isFile() &&
+        !fileStats.isSymbolicLink() &&
         asset.format === "webp" &&
-        await assetThumbnails.isThumbnailPathInsideRoot(thumbnailPath) &&
-        await assetThumbnails.isValidThumbnailFile(thumbnailPath)) {
+        await assetThumbnails.isThumbnailPathInsideRoot(filePath) &&
+        await assetThumbnails.isValidThumbnailFile(filePath);
+      const sendThumbnail = (filePath, fileStats) => {
         const version = String(req.query.v || "");
         const currentVersion = asset.generated_at ? new Date(asset.generated_at).toISOString() : "";
         const immutable = Boolean(version && version === currentVersion);
@@ -8104,9 +8108,34 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
           isPublicAsset,
           immutable && /^[A-Za-z0-9._:-]+$/.test(version)
         ));
-        res.setHeader("Last-Modified", stats.mtime.toUTCString());
-        res.setHeader("ETag", `W/"${stats.size.toString(16)}-${Math.trunc(stats.mtimeMs).toString(16)}"`);
-        return res.sendFile(thumbnailPath, { lastModified: true, etag: true, cacheControl: false });
+        res.setHeader("Last-Modified", fileStats.mtime.toUTCString());
+        res.setHeader("ETag", `W/"${fileStats.size.toString(16)}-${Math.trunc(fileStats.mtimeMs).toString(16)}"`);
+        return res.sendFile(filePath, { lastModified: true, etag: true, cacheControl: false });
+      };
+
+      if (await validThumbnail(thumbnailPath, stats)) {
+        return sendThumbnail(thumbnailPath, stats);
+      }
+
+      if (!stats && !isPublicAsset) {
+        let regeneration = thumbnailRegenerationJobs.get(numericAssetId);
+        if (!regeneration) {
+          regeneration = assetThumbnails.generateAssetThumbnail(numericAssetId, { force: true });
+          thumbnailRegenerationJobs.set(numericAssetId, regeneration);
+        }
+        try {
+          const result = await regeneration;
+          const regeneratedPath = result.thumbnailPath;
+          const regeneratedStats = await fs.promises.lstat(regeneratedPath);
+          if (await validThumbnail(regeneratedPath, regeneratedStats)) {
+            return sendThumbnail(regeneratedPath, regeneratedStats);
+          }
+          throw new Error("Regenerated thumbnail is missing or invalid");
+        } finally {
+          if (thumbnailRegenerationJobs.get(numericAssetId) === regeneration) {
+            thumbnailRegenerationJobs.delete(numericAssetId);
+          }
+        }
       }
       console.error(`Thumbnail record exists but file is missing for asset ${assetId}`);
     }

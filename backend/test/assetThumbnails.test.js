@@ -278,7 +278,7 @@ test('rejects thumbnail roots that resolve through symlinks into original storag
   }
 });
 
-test('generation skips a valid existing thumbnail instead of creating a duplicate', async () => {
+test('generation skips valid thumbnails and repairs missing files', async () => {
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-generation-'));
   const assetsRoot = path.join(temporaryDirectory, 'assets');
   const thumbnailsRoot = path.join(temporaryDirectory, 'thumbnails');
@@ -349,6 +349,13 @@ test('generation skips a valid existing thumbnail instead of creating a duplicat
       createdAt: asset.created_date,
     });
     const outputPath = path.join(thumbnailsRoot, ...relativePath.split('/'));
+    assert.equal(fs.existsSync(outputPath), true);
+    fs.unlinkSync(outputPath);
+    const regenerated = await generateAssetThumbnail(asset.id);
+    const repaired = await generateAssetThumbnail(asset.id);
+    assert.equal(regenerated.status, 'regenerated');
+    assert.equal(repaired.status, 'already-valid');
+    assert.equal(thumbnailUpserts, 4);
     assert.equal(fs.existsSync(outputPath), true);
     const generatedFiles = [];
     const walk = (directory) => {
