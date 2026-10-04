@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
+import { buildAuthHeaders, getEffectiveAuthToken } from "../utils/authSession";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
 import Pagination from "./Pagination";
 
@@ -9,7 +10,7 @@ function MyDownloads({ darkMode = false }) {
     useState([]);
   const [page, setPage] = useState(1);
   const [limit] = useState(20);
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token = getEffectiveAuthToken();
 
   useEffect(() => {
 
@@ -21,19 +22,23 @@ function MyDownloads({ darkMode = false }) {
 
     try {
 
-      const token = localStorage.getItem("token");
+      const authHeaders = buildAuthHeaders();
+      if (!authHeaders.Authorization) {
+        setDownloads([]);
+        return;
+      }
 
       const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
       // customer_downloads with tokens and expiry
       const res1 = await axios.get(`${apiBaseUrl}/my-customer-downloads`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: authHeaders,
       });
 
       // older downloads history (optional)
       let res2 = { data: [] };
       try {
         res2 = await axios.get(`${apiBaseUrl}/downloads`, {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: authHeaders,
         });
       } catch (e) {
         // ignore if not present
@@ -86,13 +91,13 @@ function MyDownloads({ darkMode = false }) {
 
   const handleDownload = async (image) => {
     try {
-      const tokenLocal = localStorage.getItem('token');
-      if (!tokenLocal) return alert('You must be logged in to download.');
+      const authHeaders = buildAuthHeaders();
+      if (!authHeaders.Authorization) return alert('You must be logged in to download.');
 
       // Get active customer download token for this image
       const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
       const tokenRes = await axios.get(`${apiBaseUrl}/customer-download-token/${image.image_id}`, {
-        headers: { Authorization: `Bearer ${tokenLocal}` },
+        headers: authHeaders,
       });
 
       const dlToken = tokenRes.data && tokenRes.data.download_token;
@@ -100,7 +105,7 @@ function MyDownloads({ darkMode = false }) {
 
       const res = await axios.get(`${apiBaseUrl}/customer-download/${dlToken}`, {
         responseType: 'blob',
-        headers: { Authorization: `Bearer ${tokenLocal}` },
+        headers: authHeaders,
       });
 
       if (!res || res.status !== 200 || !res.data) {

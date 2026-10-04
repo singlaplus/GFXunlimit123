@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import axios from "axios";
 import ImageGallery from "./home/ImageGallery";
 import "./MarketplaceContainer.css";
@@ -12,6 +12,13 @@ import ContributorPopup from "./gallery/ContributorPopup";
 export default function MarketplaceContainer(props) {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const { search, setSearch, setCurrentPage, allImages = [] } = props.galleryProps || {};
+  const { isExplore } = props;
+
+  useLayoutEffect(() => {
+    if (isExplore) {
+      window.scrollTo(0, 0);
+    }
+  }, [isExplore]);
 
   const suggestions = (allImages || [])
     .filter((image) => {

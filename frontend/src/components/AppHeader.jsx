@@ -281,16 +281,6 @@ export default function AppHeader({
   }, []);
 
   useEffect(() => {
-    if (!branding?.favicon) {
-      const existingIcon = document.querySelector('link[rel="icon"]');
-      if (existingIcon) {
-        existingIcon.remove();
-      }
-      return;
-    }
-
-    const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
-    const faviconUrl = `${apiBaseUrl}${branding.favicon}`;
     let iconLink = document.querySelector('link[rel="icon"]');
 
     if (!iconLink) {
@@ -299,7 +289,14 @@ export default function AppHeader({
       document.head.appendChild(iconLink);
     }
 
-    iconLink.href = faviconUrl;
+    if (branding?.favicon) {
+      const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+      iconLink.href = `${apiBaseUrl}${branding.favicon}`;
+      iconLink.removeAttribute("type");
+    } else {
+      iconLink.href = `${process.env.PUBLIC_URL || ""}/favicon.svg`;
+      iconLink.type = "image/svg+xml";
+    }
   }, [branding]);
 
   useEffect(() => {

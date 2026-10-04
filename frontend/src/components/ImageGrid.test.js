@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import ImageGrid from './ImageGrid';
 
 describe('ImageGrid dark mode', () => {
@@ -32,7 +32,7 @@ describe('ImageGrid dark mode', () => {
     expect(screen.queryByRole('heading', { name: /sample title/i })).not.toBeInTheDocument();
   });
 
-  it('renders explore thumbnails using a 16:9 asset ratio', () => {
+  it('sizes thumbnails by their natural proportions without cropping', () => {
     const props = {
       filteredImages: [
         {
@@ -60,7 +60,91 @@ describe('ImageGrid dark mode', () => {
     render(<ImageGrid {...props} />);
 
     const image = screen.getByRole('img', { name: /sample title/i });
+    expect(image.style.height).toBe('auto');
     expect(image.style.aspectRatio).toBe('16 / 9');
+    expect(image.style.objectFit).toBe('contain');
+    expect(image.getAttribute('src')).toContain('/api/catalog-preview/1?quality=50');
+
+    const grid = image.parentElement.parentElement;
+    expect(grid).toHaveClass('explore-asset-grid');
+    expect(image.parentElement.style.minWidth).toBe('0');
+
+    image.parentElement.getBoundingClientRect = () => ({ width: 220 });
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 300 });
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 600 });
+    fireEvent.load(image);
+
+    expect(image.style.aspectRatio).toBe('300 / 600');
+    expect(image.parentElement.style.gridRowEnd).toBe('span 19');
+  });
+
+  it('renders assets in the provided newest-first order across the grid', () => {
+    const firstAsset = { id: 1, filename: 'first.jpg', title: 'First image' };
+    const secondAsset = { id: 2, filename: 'second.jpg', title: 'Second image' };
+    render(
+      <ImageGrid filteredImages={[firstAsset, secondAsset]} darkMode={false} />
+    );
+    const firstCard = screen.getByRole('img', { name: 'First image' }).parentElement;
+    expect(screen.getByRole('img', { name: 'First image' }).parentElement).toBe(firstCard);
+    expect([...document.querySelectorAll('.explore-asset-grid img')].map((image) => image.alt))
+      .toEqual(['First image', 'Second image']);
+    expect(screen.getByRole('img', { name: 'Second image' })).toBeInTheDocument();
+  });
+
+  it('requests each thumbnail only when it approaches the viewport', () => {
+    const observers = [];
+    const observerOptions = [];
+    const OriginalIntersectionObserver = global.IntersectionObserver;
+    global.IntersectionObserver = class MockIntersectionObserver {
+      constructor(callback, options) {
+        this.callback = callback;
+        observerOptions.push(options);
+        observers.push(this);
+      }
+
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+
+    try {
+      render(
+        <ImageGrid
+          filteredImages={[
+            { id: 1, filename: 'one.jpg', title: 'First image' },
+            { id: 2, filename: 'two.jpg', title: 'Second image' },
+          ]}
+          darkMode={false}
+        />
+      );
+
+      const firstImage = screen.getByRole('img', { name: 'First image' });
+      const secondImage = screen.getByRole('img', { name: 'Second image' });
+      expect(firstImage).not.toHaveAttribute('src');
+      expect(secondImage).not.toHaveAttribute('src');
+      expect(observers).toHaveLength(1);
+      expect(observerOptions[0]).toEqual({ rootMargin: '0px' });
+
+      firstImage.getBoundingClientRect = () => ({
+        top: window.innerHeight + 20,
+        bottom: window.innerHeight + 220,
+      });
+      act(() => {
+        observers[0].callback([{ target: firstImage, isIntersecting: true }]);
+      });
+
+      expect(firstImage).not.toHaveAttribute('src');
+
+      firstImage.getBoundingClientRect = () => ({ top: 10, bottom: 210 });
+      act(() => {
+        observers[0].callback([{ target: firstImage, isIntersecting: true }]);
+      });
+
+      expect(firstImage.getAttribute('src')).toContain('/api/catalog-preview/1?quality=50');
+      expect(secondImage).not.toHaveAttribute('src');
+    } finally {
+      global.IntersectionObserver = OriginalIntersectionObserver;
+    }
   });
 
   it('applies dark styling to cards and text when dark mode is enabled', () => {

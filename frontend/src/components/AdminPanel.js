@@ -25,6 +25,74 @@ const CATEGORY_STORAGE_KEY = "asset-categories";
 const COLLECTION_STORAGE_KEY = "asset-collections";
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const USER_DELETE_COOLING_PERIOD_MINUTES = 60;
+
+export const getAnimatedCountIncrement = (target, stepIndex) => {
+  const magnitude = target > 1000000 ? 100000
+    : target > 100000 ? 10000
+      : target > 10000 ? 1000
+        : target > 1000 ? 100
+          : target > 100 ? 10
+            : 1;
+  const variation = ((stepIndex * 37 + target * 13) % 31) / 100;
+  return Math.max(1, Math.round(magnitude * (0.85 + variation)));
+};
+
+export const buildAnimatedCountSteps = (target) => {
+  if (!Number.isFinite(target) || target <= 0) return [];
+
+  const normalizedTarget = Math.floor(target);
+  const magnitude = normalizedTarget > 1000000 ? 100000
+    : normalizedTarget > 100000 ? 10000
+      : normalizedTarget > 10000 ? 1000
+        : normalizedTarget > 1000 ? 100
+          : normalizedTarget > 100 ? 10
+            : 1;
+  const stepCount = Math.min(100, Math.ceil(normalizedTarget / magnitude));
+  const rawSteps = Array.from(
+    { length: stepCount },
+    (_, index) => getAnimatedCountIncrement(normalizedTarget, index + 1)
+  );
+  const rawTotal = rawSteps.reduce((total, step) => total + step, 0);
+  const steps = rawSteps.map((step) => Math.max(1, Math.floor((step / rawTotal) * normalizedTarget)));
+  const currentTotal = steps.reduce((total, step) => total + step, 0);
+  steps[steps.length - 1] += normalizedTarget - currentTotal;
+  return steps;
+};
+
+export const getAnimatedCountDuration = (target) => (
+  target > 100000 ? 4000 : target > 1000 ? 3000 : 2000
+);
+
+function AnimatedAssetCount({ value }) {
+  const [displayedValue, setDisplayedValue] = useState(0);
+
+  useEffect(() => {
+    const target = Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0;
+    const prefersReducedMotion = typeof window !== "undefined"
+      && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (prefersReducedMotion || target === 0) {
+      setDisplayedValue(target);
+      return undefined;
+    }
+
+    const steps = buildAnimatedCountSteps(target);
+    const intervalMs = getAnimatedCountDuration(target) / steps.length;
+    setDisplayedValue(0);
+    let currentValue = 0;
+    let stepIndex = 0;
+    const timer = window.setInterval(() => {
+      currentValue = Math.min(target, currentValue + steps[stepIndex]);
+      stepIndex += 1;
+      setDisplayedValue(currentValue);
+      if (currentValue >= target) window.clearInterval(timer);
+    }, intervalMs);
+
+    return () => window.clearInterval(timer);
+  }, [value]);
+
+  return <span className="admin-asset-count" aria-label={Number(value).toLocaleString()}>{displayedValue.toLocaleString()}</span>;
+}
+
 function AdminAssetThumbnail({ image, isDarkMode }) {
   const [thumbnailUrl, setThumbnailUrl] = useState("");
   const [thumbnailUnavailable, setThumbnailUnavailable] = useState(false);
@@ -135,6 +203,13 @@ const formatTaxFormSubmittedAt = (submittedAt) => {
   const parsedDate = new Date(submittedAt);
   return Number.isNaN(parsedDate.getTime()) ? "—" : parsedDate.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
 };
+const formatAssetReviewDate = (reviewedAt) => {
+  if (!reviewedAt) return "Date unavailable";
+  const parsedDate = new Date(reviewedAt);
+  return Number.isNaN(parsedDate.getTime())
+    ? "Date unavailable"
+    : parsedDate.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+};
 const formatTaxFormExpiresIn = (submittedAt, status, now = new Date()) => {
   if (String(status || "").toLowerCase() === "expired") return "Expired";
   if (!submittedAt) return "—";
@@ -212,7 +287,7 @@ const HERO_BADGE_DEFAULT = "✨ World's Next Creative Marketplace";
 const HERO_HEADING_LINE_1_DEFAULT = "Discover Millions of";
 const HERO_HEADING_LINE_2_DEFAULT = "Creative Stock Assets";
 const HERO_PARAGRAPH_DEFAULT = "Browse {totalImages}+ royalty-free photos, vectors, illustrations, PSD files, templates and creative assets from creators around the world.";
-const TOP_TAB_DEFAULT = "React App";
+const TOP_TAB_DEFAULT = "GFXunlimit";
 const DEFAULT_CATEGORY_OPTIONS = [
   { id: "default-images", name: "Images" },
   { id: "default-vector", name: "Vector/illustrations" },
@@ -447,6 +522,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [liveCategoryFilter, setLiveCategoryFilter] = useState("");
   const [liveCollectionFilter, setLiveCollectionFilter] = useState("");
   const [liveTypeFilter, setLiveTypeFilter] = useState("");
+  const [isLiveAssetSelectionMode, setIsLiveAssetSelectionMode] = useState(false);
+  const [selectedLiveAssetIds, setSelectedLiveAssetIds] = useState(() => new Set());
+  const [bulkLiveAssetAction, setBulkLiveAssetAction] = useState("");
   const [selectedImage, setSelectedImage] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [thumbnailFile, setThumbnailFile] = useState(null);
@@ -455,6 +533,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [deleteConfirmationUser, setDeleteConfirmationUser] = useState(null);
   const [userFilter, setUserFilter] = useState("all");
+  const [userSearchQuery, setUserSearchQuery] = useState("");
+  const [isUserSelectionMode, setIsUserSelectionMode] = useState(false);
+  const [selectedUserIds, setSelectedUserIds] = useState(() => new Set());
+  const [bulkUserAction, setBulkUserAction] = useState("");
   const [contributorSearch, setContributorSearch] = useState("");
   const [taxFormSearch, setTaxFormSearch] = useState("");
   const [selectedContributor, setSelectedContributor] = useState(null);
@@ -672,6 +754,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const isBackupTab = tabParam === "backup";
   const isEmptyAdminBodyTab = tabParam === "restore";
   const isLiveAssetsTab = tabParam === "live-assets";
+  const isRejectedAssetsView = !tabParam && statusFilter === "rejected";
+  const isPendingAssetsView = !tabParam && statusFilter === "pending";
+  const isApprovedAssetsView = !tabParam && statusFilter === "approved";
+  const isBulkAssetSelectionView = isLiveAssetsTab || isRejectedAssetsView || isPendingAssetsView || isApprovedAssetsView;
   const isUsersTab = tabParam === "users";
   const isContributorDetailsTab = tabParam === "contributordetails";
   const isTaxFormsTab = tabParam === "taxforms";
@@ -679,6 +765,19 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const isControlsDatabaseTab = tabParam === "controls_database";
   const isControlsAssetsTab = tabParam === "controls_assets";
   const isCustomerDetailsTab = tabParam === "customerdetails";
+
+  useEffect(() => {
+    setSelectedLiveAssetIds(new Set());
+  }, [currentPage, liveCurrentPage, statusFilter, tabParam]);
+
+  useEffect(() => {
+    setIsLiveAssetSelectionMode(false);
+  }, [statusFilter, tabParam]);
+
+  useEffect(() => {
+    setIsUserSelectionMode(false);
+    setSelectedUserIds(new Set());
+  }, [userFilter, userSearchQuery, tabParam]);
 
   useEffect(() => {
     if (!isControlsAssetsTab) return undefined;
@@ -762,7 +861,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   const isPromotionsTab = tabParam === "promotions";
   const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab && !isControlsDatabaseTab && !isControlsAssetsTab;
-  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "controls_database" ? "Database Connection" : tabParam === "controls_assets" ? "Assets Connection" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : "Admin Panel";
+  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "controls_database" ? "Database Connection" : tabParam === "controls_assets" ? "Assets Connection" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : statusFilter === "reviewed" ? "Reviewed Panel" : statusFilter === "pending" ? "Pending Panel" : statusFilter === "approved" ? "Approved Panel" : statusFilter === "rejected" ? "Rejected Panel" : "All Assets";
 
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
@@ -3512,8 +3611,18 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       );
       const assets = Array.isArray(res.data) ? res.data : [];
       const normalizedStatus = statusFilter === "all" ? "" : statusFilter;
+      const reviewedSince = Date.now() - 30 * 24 * 60 * 60 * 1000;
       const filteredAssets = assets.filter((image) => {
         if (!normalizedStatus) return true;
+        if (normalizedStatus === "reviewed") {
+          const imageStatus = String(image.status || "").toLowerCase();
+          const reviewTimestamp = Date.parse(image.reviewed_at || image.updated_at || image.created_at || "");
+          return (
+            (imageStatus === "approved" || imageStatus === "rejected")
+            && Number.isFinite(reviewTimestamp)
+            && reviewTimestamp >= reviewedSince
+          );
+        }
         return String(image.status || "").toLowerCase() === normalizedStatus;
       });
 
@@ -4206,10 +4315,21 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   };
 
   const filteredUsers = users.filter((user) => {
-    if (userFilter === "all") return true;
-    if (userFilter === "admin") return String(user.role || "").toLowerCase() === "admin";
-    if (userFilter === "blocked") return String(user.status || "").toLowerCase() === "blocked";
-    return String(user.status || "").toLowerCase() === userFilter;
+    const matchesFilter = userFilter === "all"
+      || (["admin", "customer", "contributor"].includes(userFilter)
+        ? String(user.role || "").toLowerCase() === userFilter
+        : String(user.status || "").toLowerCase() === userFilter);
+    const searchValue = userSearchQuery.trim().toLowerCase();
+    const idSearchValue = searchValue.replace(/^(?:id\s*[:#]?\s*|#\s*)/, "");
+    const matchesSearch = !searchValue || [
+      user.username,
+      user.email,
+      user.full_name,
+      user.id
+    ].some((value) => String(value ?? "").toLowerCase().includes(searchValue))
+      || Boolean(idSearchValue && [user.id, user.user_id]
+        .some((value) => String(value ?? "").toLowerCase().includes(idSearchValue)));
+    return matchesFilter && matchesSearch;
   });
   const contributorUsers = users.filter((user) => String(user.role || "").toLowerCase() === "contributor");
   const filteredContributorUsers = contributorUsers.filter((user) => {
@@ -4417,6 +4537,66 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           err.message ||
           "Failed to block user. Please try again."
       );
+    }
+  };
+
+  const applyBulkUserAction = async (action) => {
+    const userIds = Array.from(selectedUserIds);
+    if (userIds.length < 2 || bulkUserAction) return;
+
+    if (action === "delete" && !window.confirm(
+      `Start the ${USER_DELETE_COOLING_PERIOD_MINUTES}-minute deletion period for ${userIds.length} selected users?`
+    )) {
+      return;
+    }
+
+    setBulkUserAction(action);
+    const endpointByAction = {
+      active: (id) => `${API_BASE_URL}/admin/users/${id}/approve`,
+      inactive: (id) => `${API_BASE_URL}/admin/users/${id}/deactivate`,
+      block: (id) => `${API_BASE_URL}/admin/users/${id}/block`,
+      delete: (id) => `${API_BASE_URL}/admin/users/${id}`
+    };
+    const results = await Promise.allSettled(userIds.map((id) => (
+      action === "delete"
+        ? axios.delete(endpointByAction[action](id), { headers: getAuthHeaders() })
+        : axios.put(endpointByAction[action](id), {}, { headers: getAuthHeaders() })
+    )));
+    const succeededIds = [];
+    const failedIds = [];
+
+    results.forEach((result, index) => {
+      const id = userIds[index];
+      if (result.status === "rejected") {
+        failedIds.push(id);
+        console.error(`Failed to ${action} user ${id}`, result.reason);
+        return;
+      }
+
+      succeededIds.push(id);
+      if (action === "delete" && result.value.status !== 202) {
+        setUsers((previous) => previous.filter((user) => String(user.id) !== String(id)));
+      } else if (result.value.data?.user || result.value.data?.id) {
+        const updatedUser = result.value.data.user || result.value.data;
+        setUsers((previous) => previous.map((user) => (
+          String(user.id) === String(id) ? { ...user, ...updatedUser } : user
+        )));
+      } else if (action === "delete") {
+        setUsers((previous) => previous.map((user) => (
+          String(user.id) === String(id) ? { ...user, deletion_requested_at: new Date().toISOString() } : user
+        )));
+      }
+    });
+
+    setSelectedUserIds(new Set());
+    setIsUserSelectionMode(false);
+    setBulkUserAction("");
+    if (succeededIds.length > 0) {
+      const actionLabel = action === "active" ? "activated" : action === "inactive" ? "set inactive" : action === "block" ? "blocked" : "scheduled for deletion";
+      toast.success(`${succeededIds.length} user${succeededIds.length === 1 ? "" : "s"} ${actionLabel} successfully.`);
+    }
+    if (failedIds.length > 0) {
+      toast.error(`Failed to ${action} ${failedIds.length} selected user${failedIds.length === 1 ? "" : "s"}.`);
     }
   };
 
@@ -4994,6 +5174,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         window.dispatchEvent(new Event("asset-collections-updated"));
         window.dispatchEvent(new Event("home-assets-refresh"));
       }
+      toast.success("Asset details saved successfully.");
       setIsEditing(false);
       await closeModal();
     } catch (err) {
@@ -5068,6 +5249,117 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     }
   };
 
+  const applyBulkLiveAssetAction = async (action) => {
+    const assetIds = Array.from(selectedLiveAssetIds);
+    if (assetIds.length < 2 || bulkLiveAssetAction) return;
+
+    if (action === "delete") {
+      const confirmDelete = window.confirm(
+        `Permanently delete ${assetIds.length} selected assets, including their original files and thumbnails? This cannot be undone.`
+      );
+      if (!confirmDelete) return;
+    }
+
+    setBulkLiveAssetAction(action);
+    const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+    const results = await Promise.allSettled(
+      assetIds.map((id) => action === "delete"
+        ? axios.delete(`${API_BASE_URL}/images/${id}`, { headers: getAuthHeaders() })
+        : axios.put(
+          `${API_BASE_URL}/admin/${action}/${id}`,
+          {},
+          { headers: { Authorization: `Bearer ${token}` } }
+        ))
+    );
+    const succeededIds = assetIds.filter((_, index) => results[index].status === "fulfilled");
+    const failedIds = assetIds.filter((_, index) => results[index].status === "rejected");
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        console.error(`Failed to ${action} live asset ${assetIds[index]}`, result.reason);
+      }
+    });
+
+    if (succeededIds.length > 0) {
+      if (action !== "delete") {
+        await fetchCollections();
+        window.dispatchEvent(new Event("asset-refresh"));
+        window.dispatchEvent(new Event("asset-updated"));
+        window.dispatchEvent(new Event("asset-collections-updated"));
+      }
+      if (isLiveAssetsTab) {
+        await fetchApprovedImages();
+      } else {
+        await fetchImages();
+      }
+    }
+    if (failedIds.length > 0) {
+      toast.error(`Failed to ${action} ${failedIds.length} selected asset${failedIds.length === 1 ? "" : "s"}.`);
+    }
+
+    const actionPastTense = action === "approve" ? "approved" : action === "reject" ? "rejected" : "deleted";
+    setSelectedLiveAssetIds(new Set(failedIds));
+    setBulkLiveAssetAction("");
+    if (succeededIds.length > 0) {
+      toast.success(`${succeededIds.length} asset${succeededIds.length === 1 ? "" : "s"} ${actionPastTense} successfully.`);
+    }
+  };
+
+  const bulkAssetSelectionToggle = isBulkAssetSelectionView ? (
+    <button
+      type="button"
+      aria-pressed={isLiveAssetSelectionMode}
+      onClick={() => {
+        if (bulkLiveAssetAction) return;
+        setIsLiveAssetSelectionMode((isSelecting) => !isSelecting);
+        setSelectedLiveAssetIds(new Set());
+      }}
+      disabled={Boolean(bulkLiveAssetAction)}
+      style={{
+        borderRadius: "16px",
+        border: isLiveAssetSelectionMode ? "1px solid #64748b" : "none",
+        background: isLiveAssetSelectionMode ? (isDarkMode ? "#334155" : "#e2e8f0") : "#475569",
+        color: isLiveAssetSelectionMode ? (isDarkMode ? "#f8fafc" : "#1e293b") : "white",
+        padding: "10px 14px",
+        cursor: bulkLiveAssetAction ? "wait" : "pointer"
+      }}
+    >
+      {isLiveAssetSelectionMode ? "Done" : "Select"}
+    </button>
+  ) : null;
+
+  const bulkSelectionCount = isLiveAssetSelectionMode && isBulkAssetSelectionView ? (
+    <span aria-live="polite" style={{ color: isDarkMode ? "#cbd5e1" : "#555" }}>
+      {selectedLiveAssetIds.size} selected
+    </span>
+  ) : null;
+
+  const bulkSelectionControls = isBulkAssetSelectionView && selectedLiveAssetIds.size >= 2 ? (
+    <>
+      {[
+        { action: "approve", label: "Approve", progressLabel: "Approving…", background: "#2e7d32" },
+        { action: "reject", label: "Reject", progressLabel: "Rejecting…", background: "#ed6c02" },
+        { action: "delete", label: "Delete", progressLabel: "Deleting…", background: "#d32f2f" }
+      ].map(({ action, label, progressLabel, background }) => (
+        <button
+          key={action}
+          type="button"
+          onClick={() => applyBulkLiveAssetAction(action)}
+          disabled={Boolean(bulkLiveAssetAction)}
+          style={{
+            borderRadius: "16px",
+            border: "none",
+            background: bulkLiveAssetAction ? "#94a3b8" : background,
+            color: "white",
+            padding: "10px 14px",
+            cursor: bulkLiveAssetAction ? "wait" : "pointer"
+          }}
+        >
+          {bulkLiveAssetAction === action ? progressLabel : label}
+        </button>
+      ))}
+    </>
+  ) : null;
+
   const downloadOriginalFile = async (imageId) => {
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
@@ -5104,14 +5396,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   const downloadThumbnail = async (image) => {
     try {
-      if (!image.thumbnail_url) {
-        toast.warning("No thumbnail available for this asset");
-        return;
-      }
-
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+      const thumbnailUrl = getAssetPreviewUrl(image, {
+        quality: 50,
+        watermark: false,
+        thumbnailOnly: true
+      });
       const response = await axios.get(
-        `${API_BASE_URL}/images/${image.id}/download-thumbnail`,
+        thumbnailUrl,
         {
           headers: { Authorization: `Bearer ${token}` },
           responseType: 'blob'
@@ -5122,13 +5414,20 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       const link = document.createElement('a');
       link.href = url;
       
-      // Extract filename from response or use default
-      const contentDisposition = response.headers['content-disposition'];
-      let filename = `thumbnail-${image.id}`;
-      if (contentDisposition) {
-        const match = contentDisposition.match(/filename="([^"]+)"/);
-        filename = match ? match[1] : filename;
-      }
+      const contentType = response.data.type || response.headers['content-type'] || '';
+      const extension = contentType.includes('png')
+        ? 'png'
+        : contentType.includes('jpeg') || contentType.includes('jpg')
+          ? 'jpg'
+          : contentType.includes('gif')
+            ? 'gif'
+            : 'webp';
+      const originalFilename = String(image.filename || image.title || `asset-${image.id}`)
+        .replace(/\\/g, "/")
+        .split("/")
+        .pop();
+      const filenameBase = originalFilename.replace(/\.[^.]*$/, "") || `asset-${image.id}`;
+      const filename = `${filenameBase}.${extension}`;
       
       link.setAttribute('download', filename);
       document.body.appendChild(link);
@@ -5137,15 +5436,98 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error(err);
-      toast.error("Failed to download thumbnail");
+      if (err.response?.status === 404) {
+        toast.warning("No thumbnail available for this asset");
+      } else {
+        toast.error("Failed to download thumbnail");
+      }
     }
   };
 
   return (
     <div style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}>
-      {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && <h2>{adminPageHeading}</h2>}
+      {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && (
+        isUsersTab ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
+            <h2 aria-label={adminPageHeading} style={{ display: "flex", alignItems: "baseline", gap: "8px", margin: 0 }}>
+              {adminPageHeading}
+              <span style={{ fontSize: "0.8em", color: isDarkMode ? "#cbd5e1" : "#64748b", fontWeight: 500 }}>
+                (<AnimatedAssetCount value={filteredUsers.length} />)
+              </span>
+            </h2>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              {selectedUserIds.size >= 2 && (
+                <>
+                  {[
+                    { action: "active", label: "Set Active", progressLabel: "Activating…", background: "#2e7d32" },
+                    { action: "inactive", label: "Set Inactive", progressLabel: "Deactivating…", background: "#64748b" },
+                    { action: "block", label: "Block Selected", progressLabel: "Blocking…", background: "#ed6c02" },
+                    { action: "delete", label: "Delete Selected", progressLabel: "Deleting…", background: "#d32f2f" }
+                  ].map(({ action, label, progressLabel, background }) => (
+                    <button
+                      key={action}
+                      type="button"
+                      onClick={() => applyBulkUserAction(action)}
+                      disabled={Boolean(bulkUserAction)}
+                      style={{
+                        borderRadius: "16px",
+                        border: "none",
+                        background: bulkUserAction ? "#94a3b8" : background,
+                        color: "white",
+                        padding: "10px 14px",
+                        cursor: bulkUserAction ? "wait" : "pointer"
+                      }}
+                    >
+                      {bulkUserAction === action ? progressLabel : label}
+                    </button>
+                  ))}
+                </>
+              )}
+              {isUserSelectionMode && (
+                <span aria-live="polite">{selectedUserIds.size} selected</span>
+              )}
+              <button
+                type="button"
+                aria-pressed={isUserSelectionMode}
+                disabled={Boolean(bulkUserAction)}
+                onClick={() => {
+                  if (bulkUserAction) return;
+                  setIsUserSelectionMode((isSelecting) => !isSelecting);
+                  setSelectedUserIds(new Set());
+                }}
+                style={{
+                  borderRadius: "16px",
+                  border: isUserSelectionMode ? "1px solid #64748b" : "none",
+                  background: isUserSelectionMode ? (isDarkMode ? "#334155" : "#e2e8f0") : "#475569",
+                  color: isUserSelectionMode ? (isDarkMode ? "#f8fafc" : "#1e293b") : "white",
+                  padding: "10px 14px",
+                  cursor: bulkUserAction ? "wait" : "pointer"
+                }}
+              >
+                {isUserSelectionMode ? "Done" : "Select"}
+              </button>
+            </div>
+          </div>
+        ) : isPendingAssetsView || isRejectedAssetsView || isApprovedAssetsView ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
+            <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              {bulkSelectionControls}
+              {bulkAssetSelectionToggle}
+              {bulkSelectionCount}
+            </div>
+          </div>
+        ) : (
+          <h2>{adminPageHeading}</h2>
+        )
+      )}
 
-      {shouldShowImageGrid && <p>Total Images: {images.length}</p>}
+      {shouldShowImageGrid && (
+        <p>
+          Total Assets:{" "}
+          <AnimatedAssetCount value={images.length} />
+        </p>
+      )}
 
       {isAdminDashboardTab ? (
         <AdminDashboardContent images={images} users={users} collections={collections} isDarkMode={isDarkMode} />
@@ -6100,10 +6482,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
                 {[
                   { key: "all", label: "All" },
-                  { key: "admin", label: "Admin" },
                   { key: "active", label: "Active" },
-                  { key: "pending", label: "Pending" },
-                  { key: "blocked", label: "Blocked" }
+                  { key: "admin", label: "Admin" },
+                  { key: "blocked", label: "Blocked" },
+                  { key: "contributor", label: "Contributor" },
+                  { key: "customer", label: "Customer" },
+                  { key: "pending", label: "Pending" }
                 ].map((button) => (
                   <button
                     key={button.key}
@@ -6123,6 +6507,23 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   </button>
                 ))}
               </div>
+              <input
+                type="search"
+                aria-label="Search users"
+                placeholder="Search username, email, name, or ID"
+                value={userSearchQuery}
+                onChange={(event) => setUserSearchQuery(event.target.value)}
+                style={{
+                  flex: "1 1 220px",
+                  minWidth: "180px",
+                  maxWidth: "320px",
+                  padding: "9px 12px",
+                  borderRadius: "8px",
+                  border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1",
+                  background: isDarkMode ? "#111827" : "#fff",
+                  color: isDarkMode ? "#f8fafc" : "#111827"
+                }}
+              />
               <div style={{ display: "flex", gap: "10px", marginLeft: "auto", alignItems: "center" }}>
                 <button
                   type="button"
@@ -6194,9 +6595,44 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         display: "flex",
                         flexDirection: "column",
                         gap: "6px",
-                        boxShadow: isDarkMode ? "inset 0 1px 0 rgba(148,163,184,0.08)" : "none"
+                        boxShadow: isDarkMode ? "inset 0 1px 0 rgba(148,163,184,0.08)" : "none",
+                        position: "relative"
                       }}
                     >
+                      {isUserSelectionMode && (
+                        <label
+                          style={{
+                            position: "absolute",
+                            top: "10px",
+                            right: "10px",
+                            zIndex: 1,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: "30px",
+                            height: "30px",
+                            borderRadius: "6px",
+                            background: isDarkMode ? "rgba(15, 23, 42, 0.9)" : "rgba(255, 255, 255, 0.92)",
+                            boxShadow: "0 1px 4px rgba(0, 0, 0, 0.25)",
+                            cursor: "pointer"
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${user.full_name || user.username || "user"}`}
+                            checked={selectedUserIds.has(String(user.id))}
+                            onChange={(event) => {
+                              const userId = String(user.id);
+                              setSelectedUserIds((previous) => {
+                                const next = new Set(previous);
+                                if (event.target.checked) next.add(userId);
+                                else next.delete(userId);
+                                return next;
+                              });
+                            }}
+                          />
+                        </label>
+                      )}
                       <div style={{ fontWeight: 600 }}>{user.full_name || user.username || "Unnamed user"}</div>
                       <div style={{ color: isDarkMode ? "#cbd5e1" : "#555" }}>Username: {user.username || "-"}</div>
                       <div style={{ color: isDarkMode ? "#cbd5e1" : "#555" }}>Email: {user.email || "-"}</div>
@@ -6396,6 +6832,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
             {isUserModalOpen && (
               <div
+                onClick={(event) => {
+                  if (event.target === event.currentTarget && !isUserSaving) {
+                    cancelEditingUser();
+                  }
+                }}
                 style={{
                   position: "fixed",
                   inset: 0,
@@ -6404,18 +6845,23 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   alignItems: "center",
                   justifyContent: "center",
                   padding: "24px",
+                  overflowY: "auto",
                   zIndex: 1100
                 }}
               >
                 <div
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Edit User"
                   style={{
                     width: "100%",
                     maxWidth: "620px",
+                    maxHeight: "90vh",
                     background: isDarkMode ? "#111827" : "white",
                     color: isDarkMode ? "#f5f5f5" : "#111827",
                     borderRadius: "14px",
                     boxShadow: "0 24px 60px rgba(0,0,0,0.25)",
-                    overflow: "hidden",
+                    overflowY: "auto",
                     border: isDarkMode ? "1px solid rgba(148, 163, 184, 0.25)" : "none"
                   }}
                 >
@@ -10574,6 +11020,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px" }}>
                   <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                    {bulkSelectionControls}
+                    {bulkAssetSelectionToggle}
+                    {bulkSelectionCount}
                     <button
                       type="button"
                       onClick={exportLiveAssetsCsv}
@@ -10698,6 +11147,40 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   position: "relative"
                 }}
               >
+                {isBulkAssetSelectionView && isLiveAssetSelectionMode && (
+                  <label
+                    style={{
+                      position: "absolute",
+                      top: "12px",
+                      right: "12px",
+                      zIndex: 2,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: "30px",
+                      height: "30px",
+                      borderRadius: "6px",
+                      background: isDarkMode ? "rgba(15, 23, 42, 0.9)" : "rgba(255, 255, 255, 0.92)",
+                      boxShadow: "0 1px 4px rgba(0, 0, 0, 0.25)",
+                      cursor: "pointer"
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${image.title || image.filename || "asset"}`}
+                      checked={selectedLiveAssetIds.has(String(image.id))}
+                      onChange={(event) => {
+                        const assetId = String(image.id);
+                        setSelectedLiveAssetIds((previous) => {
+                          const next = new Set(previous);
+                          if (event.target.checked) next.add(assetId);
+                          else next.delete(assetId);
+                          return next;
+                        });
+                      }}
+                    />
+                  </label>
+                )}
                 {isAssetCurrentlyLive(image) && (
                   <div
                     style={{
@@ -10726,6 +11209,30 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   </div>
                 )}
                 <AdminAssetThumbnail image={image} isDarkMode={isDarkMode} />
+                {statusFilter === "reviewed" && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "4px",
+                      padding: "8px 10px",
+                      borderRadius: "8px",
+                      background: String(image.status || "").toLowerCase() === "approved"
+                        ? (isDarkMode ? "rgba(34, 197, 94, 0.14)" : "#ecfdf5")
+                        : (isDarkMode ? "rgba(239, 68, 68, 0.14)" : "#fef2f2"),
+                      color: String(image.status || "").toLowerCase() === "approved"
+                        ? (isDarkMode ? "#86efac" : "#166534")
+                        : (isDarkMode ? "#fca5a5" : "#991b1b")
+                    }}
+                  >
+                    <span style={{ fontSize: "0.85rem", fontWeight: 700 }}>
+                      Status: {String(image.status || "").toLowerCase() === "approved" ? "Approved" : "Rejected"}
+                    </span>
+                    <span style={{ fontSize: "0.8rem" }}>
+                      {String(image.status || "").toLowerCase() === "approved" ? "Approved" : "Rejected"} on: {formatAssetReviewDate(image.reviewed_at || image.updated_at || image.created_at)}
+                    </span>
+                  </div>
+                )}
                 <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Title: {image.title}</p>
                 <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Collection: {image.collection || "-"}</p>
                 <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Type: {image.type || "-"}</p>

@@ -44,6 +44,7 @@ describe('ImageGallery search suggestions', () => {
       />
     );
 
+    await userEvent.click(screen.getByRole('button', { name: /^Categories/ }));
     await userEvent.click(screen.getByRole('button', { name: /Images/i }));
 
     expect(setSelectedCategory).toHaveBeenCalledWith('Images');
@@ -51,7 +52,7 @@ describe('ImageGallery search suggestions', () => {
     expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
   });
 
-  it('shows a scrollable category panel so the full category list remains visible', () => {
+  it('keeps categories closed until the filter is clicked', async () => {
     render(
       <StatefulImageGallery
         setCurrentPage={jest.fn()}
@@ -66,7 +67,14 @@ describe('ImageGallery search suggestions', () => {
       />
     );
 
+    const categoriesToggle = screen.getByRole('button', { name: /^Categories/ });
     const categoriesPanel = screen.getByTestId('categories-panel');
+    expect(categoriesToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(categoriesPanel).toHaveStyle({ maxHeight: '0px', pointerEvents: 'none' });
+
+    await userEvent.click(categoriesToggle);
+
+    expect(categoriesToggle).toHaveAttribute('aria-expanded', 'true');
     expect(categoriesPanel).toHaveStyle({ maxHeight: '360px', overflowY: 'auto' });
   });
 
@@ -140,7 +148,7 @@ describe('ImageGallery search suggestions', () => {
     expect(axios.get).not.toHaveBeenCalledWith(expect.stringContaining('/images?limit='));
   });
 
-  it('offers bounded page sizes while showing the full catalog count', () => {
+  it('offers page sizes of 50, 100, and 200 while showing the full catalog count', () => {
     render(
       <ImageGallery
         search=""
@@ -153,15 +161,18 @@ describe('ImageGallery search suggestions', () => {
         selectedCollection="All"
         setSelectedCollection={jest.fn()}
         darkMode={false}
-        allImages={[]}
+        allImages={Array.from({ length: 50 }, (_, index) => ({ id: index + 1 }))}
         totalImages={144}
-        resultsPerPage={20}
+        resultsPerPage={50}
         setResultsPerPage={jest.fn()}
       />
     );
 
-    expect(screen.getByText('Showing 20 of 144')).toBeInTheDocument();
+    expect(screen.getByText('Showing 50 of 144')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '50', exact: true })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'All', exact: true })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '100', exact: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '200', exact: true })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '10', exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '20', exact: true })).not.toBeInTheDocument();
   });
 });

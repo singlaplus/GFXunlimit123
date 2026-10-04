@@ -43,6 +43,13 @@ export default function OrderHistoryPage({ darkMode = false }) {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [retryPaymentOrder, setRetryPaymentOrder] = useState(null);
+  const [retryPaymentUpiId, setRetryPaymentUpiId] = useState("");
+  const [retryPaymentError, setRetryPaymentError] = useState("");
+  const [retryPaymentSubmitting, setRetryPaymentSubmitting] = useState(false);
+  const [retryPaymentPreparing, setRetryPaymentPreparing] = useState(false);
+  const [retryPaymentCredits, setRetryPaymentCredits] = useState(null);
+  const [retryPaymentSuccess, setRetryPaymentSuccess] = useState("");
 
   const pathname = typeof window !== "undefined" ? window.location.pathname : "/orders";
   const orderIdMatch = pathname.match(/^\/orders\/(\d+)/);
@@ -105,6 +112,116 @@ export default function OrderHistoryPage({ darkMode = false }) {
     window.location.href = "/orders";
   };
 
+  const openPaymentRetry = async (order) => {
+    setRetryPaymentOrder(order);
+    setRetryPaymentUpiId("");
+    setRetryPaymentError("");
+    setRetryPaymentSuccess("");
+    setRetryPaymentCredits(null);
+    setRetryPaymentPreparing(true);
+
+    try {
+      const token = localStorage.getItem("token");
+      const [settingsResult, profileResult] = await Promise.allSettled([
+        axios.get(`${apiBaseUrl}/payment-settings`),
+        axios.get(`${apiBaseUrl}/profile`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }),
+      ]);
+      if (profileResult.status === "rejected") {
+        throw profileResult.reason;
+      }
+
+      const paymentSettings = settingsResult.status === "fulfilled" ? settingsResult.value.data : {};
+      const googlePayId = String(paymentSettings?.googlePayId || "").trim();
+      const enabledGateways = Array.isArray(paymentSettings?.enabledGateways)
+        ? paymentSettings.enabledGateways
+        : [];
+      const googlePayEnabled = enabledGateways.some(
+        (gateway) => String(gateway).trim().toLowerCase() === "google pay"
+      );
+      const availableCredits = Math.max(0, Number(profileResult.value.data?.credits || 0));
+      const creditsRequired = Math.ceil(Number(order.total_amount || 0));
+      setRetryPaymentCredits({ available: availableCredits, required: creditsRequired });
+
+      if (googlePayEnabled && googlePayId) {
+        const paymentUri = `upi://pay?pa=${encodeURIComponent(googlePayId)}&pn=${encodeURIComponent("GFXunlimit")}&am=${encodeURIComponent(Number(order.total_amount).toFixed(2))}&cu=${encodeURIComponent(String(order.currency || "INR").toUpperCase())}`;
+        setRetryPaymentOrder({ ...order, googlePayId, paymentUri });
+      } else if (availableCredits < creditsRequired) {
+        setRetryPaymentError(
+          settingsResult.status === "rejected"
+            ? settingsResult.reason.response?.data?.error || "Unable to load payment options. Please try again."
+            : `Google Pay is not configured, and this order needs ${creditsRequired} credits. Your current balance is ${availableCredits}.`
+        );
+      }
+    } catch (requestError) {
+      console.error("Failed to prepare payment retry", requestError);
+      setRetryPaymentError(requestError.response?.data?.error || "Unable to prepare payment retry. Please try again.");
+    } finally {
+      setRetryPaymentPreparing(false);
+    }
+  };
+
+  const submitCreditRetry = async () => {
+    if (!retryPaymentOrder) return;
+    setRetryPaymentSubmitting(true);
+    setRetryPaymentError("");
+    try {
+      const token = localStorage.getItem("token");
+      const response = await axios.post(
+        `${apiBaseUrl}/checkout/retry-with-credits`,
+        { orderId: retryPaymentOrder.id },
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      );
+      setOrders((currentOrders) => currentOrders.map((order) => (
+        order.id === retryPaymentOrder.id
+          ? { ...order, payment_status: "paid", order_status: "completed" }
+          : order
+      )));
+      setRetryPaymentOrder(null);
+      setRetryPaymentCredits(null);
+      setRetryPaymentSuccess(response.data?.message || "Payment completed with GFX Credits.");
+    } catch (requestError) {
+      console.error("Credit payment retry failed", requestError);
+      setRetryPaymentError(requestError.response?.data?.error || "Credit payment failed. Please try again.");
+    } finally {
+      setRetryPaymentSubmitting(false);
+    }
+  };
+
+  const submitPaymentRetry = async () => {
+    const upiId = retryPaymentUpiId.trim();
+    if (!upiId || !retryPaymentOrder) {
+      setRetryPaymentError("Enter the UPI ID used to make the payment.");
+      return;
+    }
+
+    setRetryPaymentSubmitting(true);
+    setRetryPaymentError("");
+    try {
+      const token = localStorage.getItem("token");
+      const response = await axios.post(
+        `${apiBaseUrl}/checkout/confirm-google-pay`,
+        { orderId: retryPaymentOrder.id, upiId },
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      );
+      setOrders((currentOrders) => currentOrders.map((order) => (
+        order.id === retryPaymentOrder.id
+          ? { ...order, payment_status: "completed", order_status: "completed" }
+          : order
+      )));
+      setRetryPaymentOrder(null);
+      setRetryPaymentUpiId("");
+      setRetryPaymentError("");
+      setRetryPaymentSuccess(response.data?.message || "Payment submitted successfully.");
+    } catch (requestError) {
+      console.error("Payment retry failed", requestError);
+      setRetryPaymentError(requestError.response?.data?.error || "Payment retry failed. Please try again.");
+    } finally {
+      setRetryPaymentSubmitting(false);
+    }
+  };
+
   const rowsToShow = orders.length > 0 ? orders : [];
 
   if (error && !selectedOrderId) {
@@ -151,7 +268,13 @@ export default function OrderHistoryPage({ darkMode = false }) {
                   <strong>Status:</strong> {orderDetail.order.order_status}
                 </p>
                 <p>
-                  <strong>Payment status:</strong> {orderDetail.order.payment_status}
+                  <strong>Payment status:</strong>{" "}
+                  <span style={{
+                    color: String(orderDetail.order.payment_status || "").toLowerCase() === "pending" ? "#dc2626" : "inherit",
+                    fontWeight: String(orderDetail.order.payment_status || "").toLowerCase() === "pending" ? 700 : 400,
+                  }}>
+                    {String(orderDetail.order.payment_status || "").toLowerCase() === "pending" ? "Payment pending" : orderDetail.order.payment_status}
+                  </span>
                 </p>
                 <p>
                   <strong>UPI ID:</strong> {orderDetail.order.payer_upi_id || "—"}
@@ -388,13 +511,14 @@ export default function OrderHistoryPage({ darkMode = false }) {
                       <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Order</th>
                       <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Invoice</th>
                       <th style={{ textAlign: "right", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>{isContributor ? "Contributor earning" : "Total"}</th>
+                      <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Payment status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {rowsToShow.length === 0 ? (
                       <tr style={{ background: isDarkMode ? "rgba(148, 163, 184, 0.04)" : "#f8fafc" }}>
                         <td
-                          colSpan={6}
+                          colSpan={7}
                           style={{
                             padding: "16px 12px",
                             textAlign: "center",
@@ -454,6 +578,40 @@ export default function OrderHistoryPage({ darkMode = false }) {
                             <div>{formatCurrency(isContributor ? order.contributor_earnings : order.total_amount, order.currency)}</div>
                             <div style={{ marginTop: "4px", fontSize: "0.72rem", color: isDarkMode ? "#cbd5e1" : "#64748b", fontWeight: 600 }}>{order.currency || "USD"}</div>
                           </td>
+                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.82rem" }}>
+                            {(() => {
+                              const paymentStatus = String(order.payment_status || "unknown").trim().toLowerCase();
+                              const isPending = paymentStatus === "pending";
+                              const isPaid = paymentStatus === "paid" || paymentStatus === "completed";
+                              return (
+                                <div style={{ display: "grid", justifyItems: "start", gap: "8px" }}>
+                                  <span
+                                    style={{
+                                      display: "inline-block",
+                                      padding: "5px 9px",
+                                      borderRadius: "999px",
+                                      fontSize: "0.75rem",
+                                      fontWeight: 700,
+                                      color: isPending ? "#b91c1c" : isPaid ? "#15803d" : (isDarkMode ? "#cbd5e1" : "#475569"),
+                                      background: isPending ? (isDarkMode ? "rgba(220,38,38,0.18)" : "#fef2f2") : isPaid ? (isDarkMode ? "rgba(22,163,74,0.18)" : "#f0fdf4") : (isDarkMode ? "rgba(148,163,184,0.12)" : "#f1f5f9"),
+                                      border: `1px solid ${isPending ? (isDarkMode ? "rgba(248,113,113,0.45)" : "#fecaca") : isPaid ? (isDarkMode ? "rgba(74,222,128,0.35)" : "#bbf7d0") : (isDarkMode ? "rgba(148,163,184,0.25)" : "#e2e8f0")}`,
+                                    }}
+                                  >
+                                    {isPending ? "Payment pending" : isPaid ? "Paid" : paymentStatus}
+                                  </span>
+                                  {!isContributor && isPending && Number(order.total_amount) > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openPaymentRetry(order)}
+                                      style={{ border: "none", borderRadius: "8px", padding: "7px 10px", background: "#dc2626", color: "#fff", fontWeight: 700, cursor: "pointer" }}
+                                    >
+                                      Retry payment
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </td>
                         </tr>
                       ))
                     )}
@@ -469,10 +627,63 @@ export default function OrderHistoryPage({ darkMode = false }) {
                   darkMode={isDarkMode}
                 />
               )}
+              {retryPaymentSuccess && <p role="status" style={{ color: "#15803d", fontWeight: 600 }}>{retryPaymentSuccess}</p>}
             </>
           )}
+        </div>
+      )}
+      {retryPaymentOrder && (
+        <div role="dialog" aria-modal="true" aria-labelledby="retry-payment-title" style={{ position: "fixed", inset: 0, zIndex: 50, display: "grid", placeItems: "center", padding: 20, background: "rgba(15, 23, 42, 0.65)" }}>
+          <section style={{ width: "min(440px, 100%)", padding: 24, borderRadius: 18, background: isDarkMode ? "#0f172a" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", textAlign: "center", boxShadow: "0 20px 60px rgba(15, 23, 42, 0.3)" }}>
+            <h2 id="retry-payment-title" style={{ marginTop: 0 }}>Retry payment</h2>
+            <p>Order {retryPaymentOrder.order_number} · {formatCurrency(retryPaymentOrder.total_amount, retryPaymentOrder.currency)}</p>
+            {retryPaymentCredits && (
+              <div style={{ margin: "12px 0", padding: 12, borderRadius: 10, background: isDarkMode ? "#1e293b" : "#f1f5f9" }}>
+                Available credits: <strong>{retryPaymentCredits.available}</strong> · Required: <strong>{retryPaymentCredits.required}</strong>
+                {retryPaymentCredits.available >= retryPaymentCredits.required ? (
+                  <button
+                    type="button"
+                    onClick={submitCreditRetry}
+                    disabled={retryPaymentSubmitting}
+                    style={{ display: "block", width: "100%", border: "none", borderRadius: 10, padding: 12, marginTop: 10, background: "#16a34a", color: "#fff", fontWeight: 700, cursor: retryPaymentSubmitting ? "not-allowed" : "pointer" }}
+                  >
+                    {retryPaymentSubmitting ? "Paying…" : `Pay with ${retryPaymentCredits.required} credits`}
+                  </button>
+                ) : (
+                  <p style={{ margin: "8px 0 0", color: "#dc2626" }}>Not enough credits to pay this order.</p>
+                )}
+              </div>
+            )}
+            {retryPaymentOrder.paymentUri ? (
+              <>
+                <hr style={{ border: 0, borderTop: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", margin: "16px 0" }} />
+                <strong>Or pay with Google Pay</strong>
+                <p style={{ wordBreak: "break-word", color: isDarkMode ? "#cbd5e1" : "#475569" }}>Google Pay ID: {retryPaymentOrder.googlePayId}</p>
+                <a href={retryPaymentOrder.paymentUri} style={{ display: "inline-block", marginBottom: 12, borderRadius: 10, padding: "10px 14px", background: "#1d4ed8", color: "#fff", textDecoration: "none", fontWeight: 700 }}>Open payment app</a>
+                <label style={{ display: "grid", gap: 6, textAlign: "left", fontWeight: 700 }}>
+                  Your UPI ID
+                  <input value={retryPaymentUpiId} onChange={(event) => setRetryPaymentUpiId(event.target.value)} placeholder="example@upi" style={inputStyle} />
+                </label>
+                <button type="button" onClick={submitPaymentRetry} disabled={retryPaymentSubmitting} style={{ border: "none", borderRadius: 12, padding: "12px 18px", marginTop: 12, background: "#16a34a", color: "#fff", fontWeight: 700, cursor: retryPaymentSubmitting ? "not-allowed" : "pointer" }}>
+                  {retryPaymentSubmitting ? "Submitting…" : "Submit UPI ID"}
+                </button>
+              </>
+            ) : (
+              !retryPaymentCredits && <p>{retryPaymentPreparing ? "Preparing the payment option…" : "Payment option unavailable."}</p>
+            )}
+            {retryPaymentError && <p role="alert" style={{ color: "#dc2626", fontWeight: 600 }}>{retryPaymentError}</p>}
+            <button type="button" onClick={() => setRetryPaymentOrder(null)} style={{ display: "block", margin: "16px auto 0", border: "none", background: "transparent", color: isDarkMode ? "#cbd5e1" : "#475569", cursor: "pointer" }}>Close</button>
+          </section>
         </div>
       )}
     </div>
   );
 }
+
+const inputStyle = {
+  width: "100%",
+  borderRadius: 14,
+  border: "1px solid #cbd5e1",
+  padding: "12px 14px",
+  fontSize: "0.96rem",
+};

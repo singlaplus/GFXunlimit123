@@ -10,7 +10,7 @@ export default function ExplorePage(props) {
         color: props.darkMode ? "#f5f5f5" : "#111",
       }}
     >
-      <MarketplaceContainer {...props} />
+      <MarketplaceContainer {...props} isExplore />
     </div>
   );
 }

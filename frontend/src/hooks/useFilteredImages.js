@@ -191,8 +191,8 @@ export default function useFilteredImages({
 
     filteredImages.sort(
       (a, b) => {
-        const aDate = new Date(a.updated_at || a.created_at);
-        const bDate = new Date(b.updated_at || b.created_at);
+        const aDate = new Date(a.created_at);
+        const bDate = new Date(b.created_at);
         return bDate - aDate;
       }
     );

@@ -14,6 +14,10 @@ import reportWebVitals from "./reportWebVitals";
 
 axios.defaults.withCredentials = true;
 
+if ("scrollRestoration" in window.history) {
+  window.history.scrollRestoration = "manual";
+}
+
 let refreshPromise = null;
 
 const refreshAccessToken = () => {

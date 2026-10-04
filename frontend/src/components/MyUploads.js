@@ -12,12 +12,65 @@ function MyUploads({ darkMode = false }) {
   const [editKeywords, setEditKeywords] = useState("");
   const [thumbnailFile, setThumbnailFile] = useState(null);
   const [selectedView, setSelectedView] = useState("pending");
+  const [thumbnailUrls, setThumbnailUrls] = useState({});
   const activeRequestIdRef = useRef(0);
 
 
   useEffect(() => {
     fetchMyUploads(selectedView);
   }, [selectedView]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const objectUrls = [];
+
+    setThumbnailUrls({});
+
+    const loadThumbnails = async () => {
+      const token = localStorage.getItem("token");
+      const thumbnails = await Promise.all(
+        images.map(async (image) => {
+          if (!image.thumbnail_url && !image.thumbnail_generated_at) {
+            return null;
+          }
+
+          try {
+            const response = await axios.get(
+              getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true }),
+              {
+                responseType: "blob",
+                headers: token ? { Authorization: `Bearer ${token}` } : {}
+              }
+            );
+
+            if (cancelled || !response.data) {
+              return null;
+            }
+
+            const url = URL.createObjectURL(response.data);
+            objectUrls.push(url);
+            return [image.id, url];
+          } catch (error) {
+            if (error.response?.status !== 404) {
+              console.error(error);
+            }
+            return null;
+          }
+        })
+      );
+
+      if (!cancelled) {
+        setThumbnailUrls(Object.fromEntries(thumbnails.filter(Boolean)));
+      }
+    };
+
+    loadThumbnails();
+
+    return () => {
+      cancelled = true;
+      objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [images]);
 
   const fetchMyUploads = async (view = selectedView) => {
     const requestId = Date.now();
@@ -253,7 +306,7 @@ function MyUploads({ darkMode = false }) {
               }}
             >
               <img
-                src={getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true })}
+                src={thumbnailUrls[image.id]}
                 alt={image.title}
                 loading="lazy"
                 decoding="async"

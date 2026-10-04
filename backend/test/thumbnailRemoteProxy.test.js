@@ -125,6 +125,32 @@ test('streams a remote WebP thumbnail with safe headers and the verified authori
   assert.deepEqual(response.body, image);
 });
 
+test('sets a download filename when proxying a thumbnail download', async (t) => {
+  const app = express();
+  app.get('/api/assets/:id/thumbnail', (req, res) => proxyRemoteThumbnail({
+    req,
+    res,
+    assetId: req.params.id,
+    cacheControl: 'private, no-store',
+    contentDisposition: 'attachment; filename="thumbnail-21.webp"',
+    baseUrl: PC2_BASE_URL,
+    httpClient: {
+      async get() {
+        return {
+          status: 200,
+          headers: { 'content-type': 'image/webp' },
+          data: Readable.from(Buffer.from('webp-image-data')),
+        };
+      },
+    },
+  }));
+  const port = await listen(app, t);
+  const response = await request(port, '/api/assets/21/thumbnail');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-disposition'), 'attachment; filename="thumbnail-21.webp"');
+});
+
 test('does not forward credentials for public thumbnail requests', async (t) => {
   let requestedHeaders;
   const app = makeProxyApp({

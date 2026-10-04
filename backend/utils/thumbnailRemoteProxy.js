@@ -49,6 +49,7 @@ async function proxyRemoteThumbnail({
   assetId,
   authorization,
   cacheControl,
+  contentDisposition,
   baseUrl = process.env.PC2_ASSET_SERVER_URL,
   httpClient = axios,
   timeoutMs = THUMBNAIL_PROXY_TIMEOUT_MS,
@@ -122,6 +123,7 @@ async function proxyRemoteThumbnail({
     res.status(response.status);
     res.setHeader('Content-Type', 'image/webp');
     res.setHeader('Cache-Control', cacheControl);
+    if (contentDisposition) res.setHeader('Content-Disposition', contentDisposition);
     const contentLength = String(response.headers?.['content-length'] || '');
     if (/^\d+$/.test(contentLength)) res.setHeader('Content-Length', contentLength);
     for (const header of ['content-encoding', 'etag', 'last-modified']) {

@@ -138,7 +138,7 @@ function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const nextTitle = branding?.topTab || branding?.browserTabTitle || "React App";
+    const nextTitle = branding?.topTab || branding?.browserTabTitle || "GFXunlimit";
     document.title = nextTitle;
   }, [branding]);
 
@@ -284,7 +284,7 @@ const [showNotifications, setShowNotifications] = useState(false);
   }, [darkMode]);
 
   const [sortType, setSortType] = useState("newest");
-  const [resultsPerPage, setResultsPerPage] = useState(20);
+  const [resultsPerPage, setResultsPerPage] = useState(50);
 
   const [loading, setLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
@@ -296,14 +296,20 @@ const [showNotifications, setShowNotifications] = useState(false);
 
 const imagesPerPage = resultsPerPage;
 useLeaderboard(
-  currentPage,
+  location.pathname === "/explore" ? 1 : currentPage,
   setLeaderboard
 );
 const {
   fetchImages,
   fetchSingleImage,
+  loadMoreImages,
+  hasMore: hasMoreImages,
+  loadingMore: loadingMoreImages,
+  loadMoreError: loadMoreImagesError,
 } = useImages({
   currentPage,
+  totalPages,
+  setCurrentPage,
   imagesPerPage,
   images,
   setImages,
@@ -313,10 +319,13 @@ const {
   setTotalDownloads,
   setTotalViews,
   setTotalPages,
+  setSelectedImage,
+  setRelatedImages,
   selectedCategory,
   selectedCollection,
   search,
   sortType,
+  isExplorePage: location.pathname === "/explore",
 });
   /* =========================================
    DASHBOARD
@@ -543,6 +552,10 @@ const containerProps = {
   filteredImages,
   currentPage,
   totalPages,
+  loadMoreImages,
+  hasMoreImages,
+  loadingMoreImages,
+  loadMoreImagesError,
   totalImages,
   setCurrentPage,
   selectedImage,

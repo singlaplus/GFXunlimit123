@@ -2727,7 +2727,7 @@ const DEFAULT_BRANDING_CONFIG = {
   heroHeadingLine1: "Discover Millions of",
   heroHeadingLine2: "Creative Stock Assets",
   heroParagraph: "Browse {totalImages}+ royalty-free photos, vectors, illustrations, PSD files, templates and creative assets from creators around the world.",
-  topTab: "React App"
+  topTab: "GFXunlimit"
 };
 
 const normalizeBrandingConfig = (config) => {
@@ -5604,6 +5604,16 @@ const getCollectionsList = async () => {
       ALTER TABLE images
       ADD COLUMN IF NOT EXISTS description TEXT,
       ADD COLUMN IF NOT EXISTS type TEXT
+    `);
+    await pool.query(`
+      ALTER TABLE images
+      ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ
+    `);
+    await pool.query(`
+      UPDATE images
+      SET reviewed_at = COALESCE(updated_at, created_at)
+      WHERE reviewed_at IS NULL
+        AND LOWER(COALESCE(status, '')) IN ('approved', 'rejected')
     `);
 
     await pool.query(`
@@ -8778,12 +8788,12 @@ app.get("/images", async (req, res) => {
     }
 
     const orderBy = {
-      newest: "COALESCE(images.updated_at, images.created_at) DESC NULLS LAST, images.id DESC",
+      newest: "images.created_at DESC NULLS LAST, images.id DESC",
       oldest: "images.created_at ASC NULLS LAST, images.id ASC",
       likes: "images.likes DESC NULLS LAST, images.id DESC",
       downloads: "images.downloads DESC NULLS LAST, images.id DESC",
       views: "images.views DESC NULLS LAST, images.id DESC",
-    }[sort] || "COALESCE(images.updated_at, images.created_at) DESC NULLS LAST, images.id DESC";
+    }[sort] || "images.created_at DESC NULLS LAST, images.id DESC";
 
     const limitParameter = addValue(limit);
     const offsetParameter = addValue(offset);
@@ -9579,7 +9589,11 @@ app.get(
       const { id } = req.params;
 
       const imageResult = await pool.query(
-        `SELECT id, filename, thumbnail_url, uploaded_by, status FROM images WHERE id = $1`,
+        `SELECT i.id, i.filename, i.thumbnail_url, i.uploaded_by, i.status,
+                t.thumbnail_path, t.status AS generated_thumbnail_status, t.format
+         FROM images i
+         LEFT JOIN asset_thumbnail_metadata t ON t.asset_id = i.id
+         WHERE i.id = $1`,
         [id]
       );
 
@@ -9596,6 +9610,48 @@ app.get(
 
       if (!isContributor && !isAdmin && !isApproved) {
         return res.status(403).json("Thumbnail not available for download");
+      }
+
+      if (shouldProxyRemoteThumbnail()) {
+        return proxyRemoteThumbnail({
+          req,
+          res,
+          assetId: image.id,
+          authorization: isApproved ? null : authHeader,
+          cacheControl: "private, no-store",
+          contentDisposition: `attachment; filename="thumbnail-${image.id}.webp"`,
+        });
+      }
+
+      if (image.generated_thumbnail_status === "READY" && image.thumbnail_path) {
+        const thumbnailRoot = assetThumbnails.getThumbnailStorageRoot();
+        let thumbnailFilePath;
+        try {
+          thumbnailFilePath = assetThumbnails.getThumbnailFilePath(
+            image.id,
+            thumbnailRoot,
+            image.thumbnail_path
+          );
+        } catch (error) {
+          console.error(`Invalid generated thumbnail path for asset ${image.id}: ${error.message}`);
+          return res.status(404).json("Thumbnail not available");
+        }
+
+        const thumbnailStats = await fs.promises.lstat(thumbnailFilePath).catch((error) => {
+          if (["ENOENT", "ENOTDIR"].includes(error.code)) return null;
+          throw error;
+        });
+        if (
+          thumbnailStats?.isFile() &&
+          !thumbnailStats.isSymbolicLink() &&
+          image.format === "webp" &&
+          await assetThumbnails.isThumbnailPathInsideRoot(thumbnailFilePath, thumbnailRoot) &&
+          await assetThumbnails.isValidThumbnailFile(thumbnailFilePath)
+        ) {
+          res.setHeader("Content-Type", "image/webp");
+          res.setHeader("Content-Disposition", `attachment; filename="${path.basename(thumbnailFilePath)}"`);
+          return streamImageFile(req, res, thumbnailFilePath, { bypassProcessing: true });
+        }
       }
 
       if (!image.thumbnail_url) {
@@ -10705,6 +10761,143 @@ app.post('/checkout/confirm-google-pay', authenticateToken, async (req, res) => 
   }
 });
 
+app.post('/checkout/retry-with-credits', authenticateToken, async (req, res) => {
+  const orderId = Number(req.body?.orderId);
+  if (!Number.isInteger(orderId) || orderId <= 0) {
+    return res.status(400).json({ error: 'Invalid order id' });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const orderResult = await client.query(
+      `SELECT id, order_number, customer_id, total_amount, currency, payment_status
+       FROM orders
+       WHERE id = $1 AND customer_id = $2
+       FOR UPDATE`,
+      [orderId, req.user.id]
+    );
+    if (!orderResult.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = orderResult.rows[0];
+    if (['paid', 'completed'].includes(String(order.payment_status || '').trim().toLowerCase())) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This order is already paid.' });
+    }
+    if (String(order.payment_status || '').trim().toLowerCase() !== 'pending') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Only pending orders can be paid with credits.' });
+    }
+
+    const creditsRequired = Math.ceil(Number(order.total_amount || 0));
+    if (!Number.isFinite(creditsRequired) || creditsRequired <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'This order cannot be paid with credits.' });
+    }
+
+    const debitResult = await client.query(
+      `UPDATE users
+       SET credits = COALESCE(credits, 0) - $1
+       WHERE id = $2 AND COALESCE(credits, 0) >= $1
+       RETURNING credits`,
+      [creditsRequired, req.user.id]
+    );
+    if (!debitResult.rows[0]) {
+      const balanceResult = await client.query(
+        'SELECT COALESCE(credits, 0)::int AS credits FROM users WHERE id = $1',
+        [req.user.id]
+      );
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `Insufficient credits. This order requires ${creditsRequired} credits; your current balance is ${Number(balanceResult.rows[0]?.credits || 0)}.`,
+        creditsRequired,
+        availableCredits: Number(balanceResult.rows[0]?.credits || 0),
+      });
+    }
+
+    const transactionId = await getNextTransactionId(client);
+    await client.query(
+      `INSERT INTO credits_history (user_id, credits, payment_method, transaction_id, amount_paid, currency)
+       VALUES ($1, $2, 'purchase', $3, $4, $5)`,
+      [req.user.id, -creditsRequired, transactionId, Number(order.total_amount), String(order.currency || 'INR').toUpperCase()]
+    );
+    await client.query(
+      `UPDATE orders
+       SET payment_status = 'paid',
+           order_status = 'completed',
+           download_status = 'available',
+           payment_gateway = 'gfx_credits',
+           payment_method = 'GFX Credits',
+           transaction_id = $1,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [transactionId, orderId]
+    );
+    await client.query(
+      `UPDATE order_items SET download_status = 'available' WHERE order_id = $1`,
+      [orderId]
+    );
+    await client.query(
+      `UPDATE customer_downloads
+       SET is_active = TRUE
+       WHERE order_id = $1 AND user_id = $2`,
+      [orderId, req.user.id]
+    );
+    await client.query(
+      `INSERT INTO payments (order_id, amount, currency, gateway, transaction_id, status, response, created_at)
+       VALUES ($1, $2, $3, 'gfx_credits', $4, 'paid', $5::jsonb, NOW())`,
+      [
+        orderId,
+        Number(order.total_amount),
+        String(order.currency || 'INR').toUpperCase(),
+        transactionId,
+        JSON.stringify({ paymentMethod: 'GFX Credits', creditsUsed: creditsRequired }),
+      ]
+    );
+    await client.query(
+      `INSERT INTO downloads (user_id, image_id, downloaded_at, order_id)
+       SELECT cd.user_id, cd.image_id, NOW(), cd.order_id
+       FROM customer_downloads cd
+       WHERE cd.order_id = $1 AND cd.user_id = $2 AND cd.is_active = TRUE
+       ON CONFLICT DO NOTHING`,
+      [orderId, req.user.id]
+    );
+    await client.query(
+      `INSERT INTO order_activity_logs (order_id, event, actor_role, details, ip_address, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      [
+        orderId,
+        'Order paid with credits',
+        'customer',
+        JSON.stringify({ creditsUsed: creditsRequired, transactionId }),
+        req.ip || req.headers['x-forwarded-for'] || null,
+      ]
+    );
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      orderId,
+      orderNumber: order.order_number,
+      paymentStatus: 'paid',
+      creditsUsed: creditsRequired,
+      remainingCredits: Number(debitResult.rows[0].credits),
+      message: 'Payment completed with GFX Credits. Downloads are now available.',
+    });
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('Credit payment retry failed', error);
+    res.status(500).json({ error: 'Unable to complete credit payment' });
+  } finally {
+    client?.release();
+  }
+});
+
     app.get('/customer-download/:token', authenticateToken, async (req, res) => {
       try {
         const token = String(req.params.token || '').trim();
@@ -10728,7 +10921,8 @@ app.post('/checkout/confirm-google-pay', authenticateToken, async (req, res) => 
           return res.status(410).json({ error: 'Download expired or inactive' });
         }
 
-        if (dl.payment_status !== 'completed' && dl.order_status !== 'completed') {
+        const paymentStatus = String(dl.payment_status || '').trim().toLowerCase();
+        if (dl.order_id && !['paid', 'completed'].includes(paymentStatus)) {
           return res.status(402).json({ error: 'Payment is not confirmed. Download is unavailable.' });
         }
 
@@ -11436,6 +11630,10 @@ function buildAccountStatusNotificationMessage({ newStatus, action, previousStat
     return `${accountLabel} has been blocked by an administrator.`;
   }
 
+  if (normalizedAction === 'deactivate' || normalizedStatus === 'inactive') {
+    return `${accountLabel} has been set inactive by an administrator.`;
+  }
+
   if (normalizedAction === 'reject' || normalizedStatus === 'rejected') {
     return `${accountLabel} has been rejected by an administrator.`;
   }
@@ -11613,7 +11811,7 @@ app.put(
       const image = await pool.query(
         `
         UPDATE images
-        SET status = 'approved', filename = $1, thumbnail_url = COALESCE($2, thumbnail_url)
+        SET status = 'approved', filename = $1, thumbnail_url = COALESCE($2, thumbnail_url), reviewed_at = NOW()
         WHERE id = $3
         RETURNING *
         `,
@@ -11660,7 +11858,7 @@ app.put(
       const image = await pool.query(
         `
         UPDATE images
-        SET status = 'rejected', filename = $1, thumbnail_url = COALESCE($2, thumbnail_url)
+        SET status = 'rejected', filename = $1, thumbnail_url = COALESCE($2, thumbnail_url), reviewed_at = NOW()
         WHERE id = $3
         RETURNING *
         `,
@@ -12143,7 +12341,7 @@ app.put("/admin/users/:id/deactivate", verifyAdmin, async (req, res) => {
     const updatedUser = await pool.query(
       `
       UPDATE users
-      SET status = 'blocked'
+      SET status = 'inactive'
       WHERE id = $1
       RETURNING id, full_name, username, email, role, identity_number, credits, status, created_at, deletion_requested_at
       `,
@@ -12154,7 +12352,8 @@ app.put("/admin/users/:id/deactivate", verifyAdmin, async (req, res) => {
       return res.status(404).json("User not found");
     }
 
-    await notifyUserAccountStatusChange({ targetUserId: Number(id), actorId: req.user?.id, previousStatus: previousUser?.status, newStatus: 'blocked', action: 'block' });
+    await recordAdminAudit(req, 'ADMIN_USER_UPDATED', `Admin deactivated user #${id}`, previousUser ? { status: previousUser.status, role: previousUser.role } : null, { status: 'inactive', role: updatedUser.rows[0].role }, { target_user_id: Number(id), action: 'deactivate' });
+    await notifyUserAccountStatusChange({ targetUserId: Number(id), actorId: req.user?.id, previousStatus: previousUser?.status, newStatus: 'inactive', action: 'deactivate' });
     res.json(updatedUser.rows[0]);
   } catch (err) {
     console.error(err);
@@ -12941,7 +13140,12 @@ app.get(
                   'direct' AS source
                 FROM downloads d
                 JOIN images ON d.image_id = images.id
+                LEFT JOIN orders download_order ON download_order.id = d.order_id
                 WHERE d.user_id = $1
+                  AND (
+                    d.order_id IS NULL
+                    OR LOWER(COALESCE(download_order.payment_status, '')) IN ('paid', 'completed')
+                  )
 
                 UNION
 
@@ -12952,7 +13156,12 @@ app.get(
                   'customer_download' AS source
                 FROM customer_downloads cd
                 JOIN images ON cd.image_id = images.id
+                LEFT JOIN orders download_order ON download_order.id = cd.order_id
                 WHERE cd.user_id = $1
+                  AND (
+                    cd.order_id IS NULL
+                    OR LOWER(COALESCE(download_order.payment_status, '')) IN ('paid', 'completed')
+                  )
 
                 UNION
 
@@ -12965,7 +13174,7 @@ app.get(
                 JOIN orders o ON oi.order_id = o.id
                 JOIN images ON oi.asset_id = images.id
                 WHERE o.customer_id = $1
-                  AND (o.payment_status = 'completed' OR o.order_status = 'completed')
+                  AND LOWER(COALESCE(o.payment_status, '')) IN ('paid', 'completed')
 
               ) t
               ORDER BY downloaded_at DESC
@@ -13021,7 +13230,12 @@ app.get(
           i.thumbnail_generated_at
         FROM customer_downloads cd
         JOIN images i ON i.id = cd.image_id
+        LEFT JOIN orders o ON o.id = cd.order_id
         WHERE cd.user_id = $1
+          AND (
+            cd.order_id IS NULL
+            OR LOWER(COALESCE(o.payment_status, '')) IN ('paid', 'completed')
+          )
         ORDER BY cd.created_at DESC
         `,
         [userId]
@@ -13051,12 +13265,21 @@ app.get(
       const q = await pool.query(
         `
         SELECT download_token, expires_at, is_active
-        FROM customer_downloads
-        WHERE user_id = $1
-          AND image_id = $2
-          AND is_active = TRUE
-          AND expires_at > NOW()
-        ORDER BY created_at DESC
+        FROM customer_downloads cd
+        WHERE cd.user_id = $1
+          AND cd.image_id = $2
+          AND cd.is_active = TRUE
+          AND cd.expires_at > NOW()
+          AND (
+            cd.order_id IS NULL
+            OR EXISTS (
+              SELECT 1
+              FROM orders o
+              WHERE o.id = cd.order_id
+                AND LOWER(COALESCE(o.payment_status, '')) IN ('paid', 'completed')
+            )
+          )
+        ORDER BY cd.created_at DESC
         LIMIT 1
         `,
         [userId, imageId]

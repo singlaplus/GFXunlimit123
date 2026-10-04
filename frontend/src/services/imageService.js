@@ -1,6 +1,6 @@
 import api from "./api";
 
-export const getImages = (page, limit, category = null, collection = null, search = "", sort = "newest") => {
+export const getImages = (page, limit, category = null, collection = null, search = "", sort = "newest", signal) => {
   return api.get("/images", {
     params: {
       page,
@@ -11,6 +11,7 @@ export const getImages = (page, limit, category = null, collection = null, searc
       sort,
       t: Date.now(),
     },
+    signal,
   });
 };
 export const getRelatedImages = (id) => api.get(`/images/related/${id}`);

@@ -22,10 +22,15 @@ function request(options, body) {
   });
 }
 
-test('buildAccountStatusNotificationMessage covers active, blocked, rejected, and deleted states', () => {
+test('buildAccountStatusNotificationMessage covers active, inactive, blocked, rejected, and deleted states', () => {
   assert.equal(
     buildAccountStatusNotificationMessage({ newStatus: 'active', action: 'approve', username: 'johndoe' }),
     "Account 'johndoe' has been approved and activated by an administrator."
+  );
+
+  assert.equal(
+    buildAccountStatusNotificationMessage({ newStatus: 'inactive', action: 'deactivate', username: 'johndoe' }),
+    "Account 'johndoe' has been set inactive by an administrator."
   );
 
   assert.equal(

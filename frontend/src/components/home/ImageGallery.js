@@ -17,7 +17,7 @@ function ImageGallery(props) {
     darkMode,
     allImages = [],
     totalImages = 0,
-    resultsPerPage = 20,
+    resultsPerPage = 50,
     setResultsPerPage = () => {},
   } = props;
 
@@ -28,7 +28,7 @@ function ImageGallery(props) {
   const [allImagesCount, setAllImagesCount] = useState(0);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showSortOptions, setShowSortOptions] = useState(false);
-  const [showCategories, setShowCategories] = useState(true);
+  const [showCategories, setShowCategories] = useState(false);
   const [showCollections, setShowCollections] = useState(false);
 
   const CATEGORY_STORAGE_KEY = "asset-categories";
@@ -200,6 +200,7 @@ function ImageGallery(props) {
 
   const visibleCategories = categories.length > 0 ? categories : ["Images", "Vector/illustrations", "PSD", "Videos", "Templates"];
   const visibleCollections = collections.length > 0 ? collections : [];
+  const loadedAssetsCount = Array.isArray(allImages) ? allImages.length : 0;
   const dropdownPanelStyle = (isOpen) => ({
     maxHeight: isOpen ? "360px" : "0px",
     opacity: isOpen ? 1 : 0,
@@ -234,10 +235,7 @@ function ImageGallery(props) {
               ? "0 10px 24px rgba(0,0,0,0.25)"
               : "0 10px 24px rgba(15, 23, 42, 0.06)",
             flexShrink: 0,
-            position: "sticky",
-            top: "20px",
-            alignSelf: "flex-start",
-            zIndex: 10,
+            boxSizing: "border-box",
           }}
         >
           <div style={{ marginBottom: "16px" }}>
@@ -310,6 +308,8 @@ function ImageGallery(props) {
             <button
               type="button"
               onClick={() => setShowCategories((value) => !value)}
+              aria-expanded={showCategories}
+              aria-controls="explore-categories-panel"
               style={{
                 width: "100%",
                 padding: "10px 12px",
@@ -328,6 +328,7 @@ function ImageGallery(props) {
               <span>{showCategories ? "▾" : "▸"}</span>
             </button>
             <div
+              id="explore-categories-panel"
               data-testid="categories-panel"
               style={{ ...dropdownPanelStyle(showCategories), marginTop: "8px" }}
             >
@@ -378,10 +379,10 @@ function ImageGallery(props) {
             <h3 style={{ margin: "0 0 8px", color: darkMode ? "#f5f5f5" : "#111" }}>Results</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <div style={{ color: darkMode ? "#9ca3af" : "#6b7280", fontSize: "14px" }}>
-                Showing {resultsPerPage === "all" ? totalImages || 0 : Math.min(resultsPerPage, totalImages || 0)} of {totalImages || 0}
+                Showing {Math.min(loadedAssetsCount, totalImages || 0)} of {totalImages || 0}
               </div>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                {[10, 20, 50].map((value) => (
+                {[50, 100, 200].map((value) => (
                   <button
                     key={value}
                     type="button"

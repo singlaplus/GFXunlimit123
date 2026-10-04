@@ -162,4 +162,50 @@ describe('MyUploads', () => {
       expect(screen.getByText('Approved asset')).toBeInTheDocument();
     });
   });
+
+  it('loads private thumbnails with the contributor authorization header', async () => {
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const createObjectURLMock = jest.fn(() => 'blob:private-thumbnail');
+    const revokeObjectURLMock = jest.fn();
+    URL.createObjectURL = createObjectURLMock;
+    URL.revokeObjectURL = revokeObjectURLMock;
+
+    axios.get
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: 8,
+            title: 'Private thumbnail',
+            status: 'pending',
+            thumbnail_url: '/api/thumbnail?file=uploads%2Fthumb.jpg',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: new Blob(['thumbnail'], { type: 'image/jpeg' }) });
+
+    const { unmount } = render(<MyUploads />);
+
+    try {
+      await waitFor(() => {
+        expect(axios.get).toHaveBeenLastCalledWith(
+          expect.stringContaining('/api/assets/8/thumbnail'),
+          expect.objectContaining({
+            responseType: 'blob',
+            headers: { Authorization: 'Bearer test-token' },
+          })
+        );
+      });
+      expect(await screen.findByAltText('Private thumbnail')).toHaveAttribute(
+        'src',
+        'blob:private-thumbnail'
+      );
+    } finally {
+      unmount();
+      URL.createObjectURL = originalCreateObjectURL;
+      URL.revokeObjectURL = originalRevokeObjectURL;
+    }
+
+    expect(revokeObjectURLMock).toHaveBeenCalledWith('blob:private-thumbnail');
+  });
 });

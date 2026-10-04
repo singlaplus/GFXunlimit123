@@ -1659,6 +1659,14 @@ export default function AppRoutes(props) {
 
           totalPages={props.homeSectionProps.containerProps.totalPages}
 
+          loadMoreImages={props.homeSectionProps.containerProps.loadMoreImages}
+
+          hasMoreImages={props.homeSectionProps.containerProps.hasMoreImages}
+
+          loadingMoreImages={props.homeSectionProps.containerProps.loadingMoreImages}
+
+          loadMoreImagesError={props.homeSectionProps.containerProps.loadMoreImagesError}
+
           totalImages={props.homeSectionProps.containerProps.totalImages}
 
           setCurrentPage={props.homeSectionProps.containerProps.setCurrentPage}

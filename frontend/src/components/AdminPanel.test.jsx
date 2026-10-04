@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import AdminPanel from "./AdminPanel";
-import { renderTaxFormTemplate } from "./AdminPanel";
+import { buildAnimatedCountSteps, getAnimatedCountDuration, getAnimatedCountIncrement, renderTaxFormTemplate } from "./AdminPanel";
 import { useLocation } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -11,9 +11,41 @@ jest.mock("react-router-dom", () => ({
 
 jest.mock("axios");
 
-jest.mock("./Pagination", () => () => <div data-testid="pagination" />);
+jest.mock("./Pagination", () => ({ currentPage, setCurrentPage }) => (
+  <div data-testid="pagination">
+    <button type="button" onClick={() => setCurrentPage(currentPage + 1)}>Next page</button>
+  </div>
+));
 
 describe("AdminPanel collection controls", () => {
+  it("uses irregular count-up increments at the requested magnitude", () => {
+    expect(getAnimatedCountIncrement(100, 1)).toBe(1);
+    expect(getAnimatedCountIncrement(101, 1)).toBeGreaterThanOrEqual(8);
+    expect(getAnimatedCountIncrement(101, 1)).toBeLessThanOrEqual(12);
+    expect(getAnimatedCountIncrement(1001, 1)).toBeGreaterThanOrEqual(85);
+    expect(getAnimatedCountIncrement(1001, 1)).toBeLessThanOrEqual(115);
+    expect(getAnimatedCountIncrement(1001, 1)).not.toBe(getAnimatedCountIncrement(1001, 2));
+    expect(getAnimatedCountIncrement(10001, 1)).toBeGreaterThanOrEqual(850);
+    expect(getAnimatedCountIncrement(100001, 1)).toBeGreaterThanOrEqual(8500);
+    expect(getAnimatedCountIncrement(1000001, 1)).toBeGreaterThanOrEqual(85000);
+  });
+
+  it("distributes count-up steps across a two-second animation and reaches the exact total", () => {
+    const steps = buildAnimatedCountSteps(145);
+
+    expect(steps.length).toBe(15);
+    expect(steps.reduce((total, step) => total + step, 0)).toBe(145);
+    expect(new Set(steps).size).toBeGreaterThan(1);
+    expect(buildAnimatedCountSteps(0)).toEqual([]);
+  });
+
+  it("uses longer count-up durations for larger asset totals", () => {
+    expect(getAnimatedCountDuration(1000)).toBe(2000);
+    expect(getAnimatedCountDuration(1001)).toBe(3000);
+    expect(getAnimatedCountDuration(100000)).toBe(3000);
+    expect(getAnimatedCountDuration(100001)).toBe(4000);
+  });
+
   beforeEach(() => {
     window.history.pushState({}, "", "/");
     useLocation.mockReturnValue({ search: "?tab=controls" });
@@ -1659,6 +1691,401 @@ describe("AdminPanel collection controls", () => {
     expect(await screen.findByText(/Contributor: alpha_uploader/i)).toBeInTheDocument();
   });
 
+  it("toggles individual live asset checkboxes from the Select button", async () => {
+    useLocation.mockReturnValue({ search: "?tab=live-assets" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/images?limit=1000&page=1")) {
+        return Promise.resolve({ data: { images: [{ id: 2, title: "Live asset", status: "approved" }] } });
+      }
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 2, title: "Live asset", status: "approved", filename: "live.jpg", category: "Images", keywords: "", description: "", type: "image" }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    const selectButton = await screen.findByRole("button", { name: "Select" });
+    expect(screen.queryByRole("checkbox", { name: "Select Live asset" })).not.toBeInTheDocument();
+    fireEvent.click(selectButton);
+
+    const assetCheckbox = await screen.findByRole("checkbox", { name: "Select Live asset" });
+    expect(assetCheckbox.closest("label")).toHaveStyle({
+      position: "absolute",
+      top: "12px",
+      right: "12px"
+    });
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+    fireEvent.click(assetCheckbox);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("checkbox", { name: "Select Live asset" })).not.toBeInTheDocument();
+  });
+
+  it("shows bulk status and delete actions after selecting at least two live assets", async () => {
+    useLocation.mockReturnValue({ search: "?tab=live-assets" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/images?limit=1000&page=1")) {
+        return Promise.resolve({ data: { images: [{ id: 2, title: "Live asset A", status: "approved" }, { id: 3, title: "Live asset B", status: "approved" }] } });
+      }
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 2, title: "Live asset A", status: "approved", filename: "live-a.jpg", category: "Images", keywords: "", description: "", type: "image" },
+            { id: 3, title: "Live asset B", status: "approved", filename: "live-b.jpg", category: "Images", keywords: "", description: "", type: "image" }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { success: true } });
+    axios.delete.mockResolvedValue({ data: { success: true } });
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+    try {
+      render(<AdminPanel />);
+      fireEvent.click(await screen.findByRole("button", { name: "Select" }));
+
+      const selectBothAssets = async () => {
+        fireEvent.click(await screen.findByRole("checkbox", { name: "Select Live asset A" }));
+        fireEvent.click(screen.getByRole("checkbox", { name: "Select Live asset B" }));
+      };
+
+      fireEvent.click(await screen.findByRole("checkbox", { name: "Select Live asset A" }));
+      expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select Live asset B" }));
+      expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+      await waitFor(() => {
+        expect(axios.put).toHaveBeenCalledWith(expect.stringContaining("/admin/approve/2"), {}, expect.anything());
+        expect(axios.put).toHaveBeenCalledWith(expect.stringContaining("/admin/approve/3"), {}, expect.anything());
+      });
+      await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+
+      await selectBothAssets();
+      fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+      await waitFor(() => {
+        expect(axios.put).toHaveBeenCalledWith(expect.stringContaining("/admin/reject/2"), {}, expect.anything());
+        expect(axios.put).toHaveBeenCalledWith(expect.stringContaining("/admin/reject/3"), {}, expect.anything());
+      });
+      await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+
+      await selectBothAssets();
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+      await waitFor(() => {
+        expect(confirmSpy).toHaveBeenCalledTimes(1);
+        expect(axios.delete).toHaveBeenCalledWith(expect.stringContaining("/images/2"), expect.anything());
+        expect(axios.delete).toHaveBeenCalledWith(expect.stringContaining("/images/3"), expect.anything());
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("offers the same bulk selection actions in the rejected assets view", async () => {
+    useLocation.mockReturnValue({ search: "?status=rejected" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 4, title: "Rejected asset A", status: "rejected", filename: "rejected-a.jpg", category: "Images", keywords: "", description: "", type: "image" },
+            { id: 5, title: "Rejected asset B", status: "rejected", filename: "rejected-b.jpg", category: "Images", keywords: "", description: "", type: "image" }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { success: true } });
+
+    render(<AdminPanel />);
+    const rejectedHeading = await screen.findByRole("heading", { name: "Rejected Panel" });
+    expect(document.querySelector(".admin-asset-count").parentElement).toHaveTextContent("Total Assets:");
+    const selectButton = screen.getByRole("button", { name: "Select" });
+    expect(rejectedHeading.parentElement).toContainElement(selectButton);
+    expect(rejectedHeading.parentElement).toHaveStyle({ justifyContent: "space-between" });
+    fireEvent.click(selectButton);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Rejected asset A" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Rejected asset B" }));
+
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(rejectedHeading.parentElement).toContainElement(screen.getByRole("button", { name: "Approve" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/approve/4"),
+        {},
+        expect.anything()
+      );
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/approve/5"),
+        {},
+        expect.anything()
+      );
+    });
+  });
+
+  it("offers the same bulk selection actions in the pending assets view", async () => {
+    useLocation.mockReturnValue({ search: "?status=pending" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 6, title: "Pending asset A", status: "pending", filename: "pending-a.jpg", category: "Images", keywords: "", description: "", type: "image" },
+            { id: 7, title: "Pending asset B", status: "pending", filename: "pending-b.jpg", category: "Images", keywords: "", description: "", type: "image" }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { success: true } });
+
+    render(<AdminPanel />);
+    expect(await screen.findByRole("heading", { name: "Pending Panel" })).toBeInTheDocument();
+    const totalAssetsCount = document.querySelector(".admin-asset-count");
+    expect(totalAssetsCount).toHaveClass("admin-asset-count");
+    expect(totalAssetsCount.parentElement).toHaveTextContent("Total Assets:");
+    expect(totalAssetsCount).toHaveTextContent("0");
+    await waitFor(() => expect(totalAssetsCount).toHaveTextContent("2"), { timeout: 3000 });
+    const pendingHeading = await screen.findByRole("heading", { name: "Pending Panel" });
+    const selectButton = screen.getByRole("button", { name: "Select" });
+    expect(pendingHeading.parentElement).toContainElement(selectButton);
+    expect(pendingHeading.parentElement).toHaveStyle({ justifyContent: "space-between" });
+    fireEvent.click(selectButton);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Pending asset A" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Pending asset B" }));
+
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(pendingHeading.parentElement).toContainElement(screen.getByRole("button", { name: "Approve" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/approve/6"),
+        {},
+        expect.anything()
+      );
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/approve/7"),
+        {},
+        expect.anything()
+      );
+    });
+  });
+
+  it("offers the same bulk selection actions in the approved assets view", async () => {
+    useLocation.mockReturnValue({ search: "?status=approved" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 8, title: "Approved asset A", status: "approved", filename: "approved-a.jpg", category: "Images", keywords: "", description: "", type: "image" },
+            { id: 9, title: "Approved asset B", status: "approved", filename: "approved-b.jpg", category: "Images", keywords: "", description: "", type: "image" }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { success: true } });
+
+    render(<AdminPanel />);
+    const approvedHeading = await screen.findByRole("heading", { name: "Approved Panel" });
+    expect(document.querySelector(".admin-asset-count").parentElement).toHaveTextContent("Total Assets:");
+    const selectButton = screen.getByRole("button", { name: "Select" });
+    expect(approvedHeading.parentElement).toContainElement(selectButton);
+    expect(approvedHeading.parentElement).toHaveStyle({ justifyContent: "space-between" });
+    fireEvent.click(selectButton);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Approved asset A" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Approved asset B" }));
+
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(approvedHeading.parentElement).toContainElement(screen.getByRole("button", { name: "Approve" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/reject/8"),
+        {},
+        expect.anything()
+      );
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/reject/9"),
+        {},
+        expect.anything()
+      );
+    });
+  });
+
+  it("clears selected assets when changing pages", async () => {
+    useLocation.mockReturnValue({ search: "?status=pending" });
+    const pendingAssets = [
+      { id: 10, title: "Pending asset A", status: "pending", filename: "pending-a.jpg", category: "Images", keywords: "", description: "", type: "image" },
+      { id: 11, title: "Pending asset B", status: "pending", filename: "pending-b.jpg", category: "Images", keywords: "", description: "", type: "image" },
+      ...Array.from({ length: 19 }, (_, index) => ({
+        id: 12 + index,
+        title: `Pending asset ${index + 3}`,
+        status: "pending",
+        filename: `pending-${index + 3}.jpg`,
+        category: "Images",
+        keywords: "",
+        description: "",
+        type: "image"
+      }))
+    ];
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({ data: pendingAssets });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "Select" }));
+    const firstAssetCheckbox = await screen.findByRole("checkbox", { name: "Select Pending asset A" });
+    fireEvent.click(firstAssetCheckbox);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Pending asset B" }));
+    expect(await screen.findByText("2 selected")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+
+    await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+  });
+
+  it("exits selection mode when switching asset status views", async () => {
+    useLocation.mockReturnValue({ search: "?status=approved" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 30, title: "Approved selection asset A", status: "approved", filename: "approved-a.jpg", category: "Images", keywords: "", description: "", type: "image" },
+            { id: 31, title: "Approved selection asset B", status: "approved", filename: "approved-b.jpg", category: "Images", keywords: "", description: "", type: "image" },
+            { id: 32, title: "Approved selection asset C", status: "approved", filename: "approved-c.jpg", category: "Images", keywords: "", description: "", type: "image" },
+            { id: 33, title: "Rejected destination asset", status: "rejected", filename: "rejected.jpg", category: "Images", keywords: "", description: "", type: "image" }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    const { rerender } = render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Approved selection asset A" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Approved selection asset B" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Approved selection asset C" }));
+    expect(await screen.findByText("3 selected")).toBeInTheDocument();
+
+    useLocation.mockReturnValue({ search: "?status=rejected" });
+    rerender(<AdminPanel />);
+
+    expect(await screen.findByRole("button", { name: "Select" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
+    expect(screen.queryByText("3 selected")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Select Rejected destination asset" })).not.toBeInTheDocument();
+  });
+
+  it("shows approved and rejected assets reviewed within the last 30 days", async () => {
+    useLocation.mockReturnValue({ search: "?status=reviewed" });
+    const now = Date.now();
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 40, title: "Recently approved", status: "approved", contributor_username: "approved_contributor", reviewed_at: new Date(now - 10 * 24 * 60 * 60 * 1000).toISOString() },
+            { id: 41, title: "Recently rejected", status: "rejected", contributor_username: "rejected_contributor", reviewed_at: new Date(now - 29 * 24 * 60 * 60 * 1000).toISOString() },
+            { id: 42, title: "Old approval", status: "approved", reviewed_at: new Date(now - 31 * 24 * 60 * 60 * 1000).toISOString() },
+            { id: 43, title: "Still pending", status: "pending", reviewed_at: new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString() }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewed Panel" })).toBeInTheDocument();
+    expect(await screen.findByText("Title: Recently approved")).toBeInTheDocument();
+    expect(screen.getByText("Title: Recently rejected")).toBeInTheDocument();
+    const reviewedAssetCount = document.querySelector(".admin-asset-count");
+    expect(reviewedAssetCount.parentElement).toHaveTextContent("Total Assets:");
+    expect(reviewedAssetCount).toHaveTextContent("0");
+    await waitFor(() => expect(reviewedAssetCount).toHaveTextContent("2"), { timeout: 3000 });
+    expect(screen.getByText("Contributor: approved_contributor")).toBeInTheDocument();
+    expect(screen.getByText("Contributor: rejected_contributor")).toBeInTheDocument();
+    expect(screen.getByText("Status: Approved")).toBeInTheDocument();
+    expect(screen.getByText("Status: Rejected")).toBeInTheDocument();
+    expect(screen.getByText(`Approved on: ${new Date(now - 10 * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}`)).toBeInTheDocument();
+    expect(screen.getByText(`Rejected on: ${new Date(now - 29 * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}`)).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Recently approved thumbnail/ })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Recently rejected thumbnail/ })).toBeInTheDocument();
+    expect(screen.queryByText("Title: Old approval")).not.toBeInTheDocument();
+    expect(screen.queryByText("Title: Still pending")).not.toBeInTheDocument();
+  });
+
   it("shows all asset statuses when the All filter is selected", async () => {
     useLocation.mockReturnValue({ search: "" });
     axios.get.mockImplementation((url) => {
@@ -1682,9 +2109,103 @@ describe("AdminPanel collection controls", () => {
 
     render(<AdminPanel />);
 
+    expect(await screen.findByRole("heading", { name: "All Assets" })).toBeInTheDocument();
+    expect(document.querySelector(".admin-asset-count").parentElement).toHaveTextContent("Total Assets:");
     expect(await screen.findByText(/pending asset/i)).toBeInTheDocument();
     expect(screen.getByText(/approved asset/i)).toBeInTheDocument();
     expect(screen.getByText(/rejected asset/i)).toBeInTheDocument();
+  });
+
+  it("downloads the generated preview when no legacy thumbnail URL is present", async () => {
+    useLocation.mockReturnValue({ search: "?status=pending" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/api/assets/1/thumbnail")) {
+        return Promise.resolve({
+          data: new Blob(["thumbnail"], { type: "image/webp" }),
+          headers: { "content-type": "image/webp" }
+        });
+      }
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 1, title: "Pending asset", status: "pending", filename: "pending.jpg", category: "Images", keywords: "", description: "", type: "commercial", thumbnail_generated_at: "2026-10-04T00:00:00.000Z" }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const clickSpy = jest.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    URL.createObjectURL = jest.fn(() => "blob:download-thumbnail");
+    URL.revokeObjectURL = jest.fn();
+
+    let unmount;
+    try {
+      ({ unmount } = render(<AdminPanel />));
+      fireEvent.click(await screen.findByTitle("Download Thumbnail"));
+
+      await waitFor(() => {
+        expect(axios.get).toHaveBeenCalledWith(
+          expect.stringContaining("/api/assets/1/thumbnail"),
+          expect.objectContaining({ responseType: "blob" })
+        );
+        expect(clickSpy).toHaveBeenCalled();
+      });
+      expect(clickSpy.mock.instances[0]).toHaveAttribute("download", "pending.webp");
+    } finally {
+      unmount?.();
+      URL.createObjectURL = originalCreateObjectURL;
+      URL.revokeObjectURL = originalRevokeObjectURL;
+      clickSpy.mockRestore();
+    }
+  });
+
+  it("shows a success toast after saving edited asset details", async () => {
+    useLocation.mockReturnValue({ search: "?status=pending" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 1, title: "Pending asset", status: "pending", filename: "pending.jpg", category: "Images", keywords: "", description: "", type: "commercial" }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { id: 1, title: "Updated asset" } });
+    const successToast = jest.spyOn(toast, "success");
+
+    render(<AdminPanel />);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: /^edit$/i }))[0]);
+    fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
+      target: { value: "Updated asset" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/images/1"),
+        expect.objectContaining({ title: "Updated asset" }),
+        expect.anything()
+      );
+      expect(successToast).toHaveBeenCalledWith("Asset details saved successfully.");
+    });
+
+    successToast.mockRestore();
   });
 
   it("loads assets from the admin endpoint for the All view", async () => {
@@ -2103,6 +2624,161 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByText(/test user/i)).toBeInTheDocument();
     expect(screen.getByText(/inactive user/i)).toBeInTheDocument();
     expect(screen.getByText(/blocked user/i)).toBeInTheDocument();
+    const userCount = document.querySelector(".admin-asset-count");
+    expect(userCount).toBeInTheDocument();
+    await waitFor(() => expect(userCount).toHaveTextContent("3"), { timeout: 3000 });
+
+    const usersHeading = screen.getByRole("heading", { name: "Users" });
+    const selectButton = screen.getByRole("button", { name: "Select" });
+    expect(usersHeading.parentElement).toContainElement(selectButton);
+    fireEvent.click(selectButton);
+    const testUserCheckbox = screen.getByRole("checkbox", { name: "Select Test User" });
+    expect(testUserCheckbox.closest("label")).toHaveStyle({ position: "absolute", top: "10px", right: "10px" });
+    fireEvent.click(testUserCheckbox);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inactive User" }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("checkbox", { name: "Select Test User" })).not.toBeInTheDocument();
+  });
+
+  it("filters users by customer and contributor roles", async () => {
+    useLocation.mockReturnValue({ search: "?tab=users" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [
+          { id: 31, full_name: "Customer Account", username: "customer-one", role: "customer", status: "active" },
+          { id: 32, full_name: "Contributor Account", username: "contributor-one", role: "contributor", status: "active" },
+          { id: 33, full_name: "Admin Account", username: "admin-one", role: "admin", status: "active" }
+        ] });
+      }
+      if (url.includes("/admin/categories")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    expect(await screen.findByText(/customer account/i)).toBeInTheDocument();
+    expect(screen.getByText(/contributor account/i)).toBeInTheDocument();
+    expect(screen.getByText(/admin account/i)).toBeInTheDocument();
+    const roleFilterButtons = ["All", "Active", "Admin", "Blocked", "Contributor", "Customer", "Pending"]
+      .map((name) => screen.getByRole("button", { name }));
+    expect(roleFilterButtons.map((button) => button.textContent)).toEqual([
+      "All", "Active", "Admin", "Blocked", "Contributor", "Customer", "Pending"
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Customer" }));
+    expect(await screen.findByText(/customer account/i)).toBeInTheDocument();
+    expect(screen.queryByText(/contributor account/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/admin account/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Contributor" }));
+    expect(await screen.findByText(/contributor account/i)).toBeInTheDocument();
+    expect(screen.queryByText(/customer account/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/admin account/i)).not.toBeInTheDocument();
+  });
+
+  it("searches users by username, email, full name, and ID", async () => {
+    useLocation.mockReturnValue({ search: "?tab=users" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [
+          { id: 98765, full_name: "Jane Searchable", username: "findmeuser", email: "findme@example.com", role: "customer", status: "active" },
+          { id: 54321, full_name: "Other Account", username: "otheruser", email: "other@example.com", role: "contributor", status: "active" }
+        ] });
+      }
+      if (url.includes("/admin/categories")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    const searchBox = await screen.findByRole("searchbox", { name: "Search users" });
+    expect(screen.getByPlaceholderText("Search username, email, name, or ID")).toBe(searchBox);
+
+    for (const query of ["findmeuser", "findme@example.com", "Jane Searchable", "98765", "#98765", "id: 98765", "ID 98765"]) {
+      fireEvent.change(searchBox, { target: { value: query } });
+      expect(await screen.findByText("Jane Searchable")).toBeInTheDocument();
+      expect(screen.queryByText("Other Account")).not.toBeInTheDocument();
+    }
+  });
+
+  it("offers bulk active, inactive, block and delete actions for selected users", async () => {
+    useLocation.mockReturnValue({ search: "?tab=users" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [
+          { id: 21, full_name: "Bulk User A", username: "bulk-a", email: "bulk-a@example.com", role: "customer", status: "active" },
+          { id: 22, full_name: "Bulk User B", username: "bulk-b", email: "bulk-b@example.com", role: "contributor", status: "pending" }
+        ] });
+      }
+      if (url.includes("/admin/categories")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockImplementation((url) => {
+      const id = Number(url.match(/\/users\/(\d+)\//)?.[1]);
+      return Promise.resolve({ data: { id, status: url.endsWith("/approve") ? "active" : url.endsWith("/deactivate") ? "inactive" : "blocked" } });
+    });
+    axios.delete.mockImplementation((url) => {
+      const id = Number(url.match(/\/users\/(\d+)$/)?.[1]);
+      return Promise.resolve({ status: 202, data: { user: { id, deletion_requested_at: new Date().toISOString() } } });
+    });
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+    try {
+      render(<AdminPanel />);
+      const selectBothUsers = () => {
+        fireEvent.click(screen.getByRole("checkbox", { name: "Select Bulk User A" }));
+        fireEvent.click(screen.getByRole("checkbox", { name: "Select Bulk User B" }));
+      };
+      const expectActionForBothUsers = async (action, endpoint) => {
+        fireEvent.click(await screen.findByRole("button", { name: "Select" }));
+        selectBothUsers();
+        expect(await screen.findByRole("button", { name: "Set Active" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Set Inactive" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Block Selected" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Delete Selected" })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: action }));
+        await waitFor(() => {
+          expect(axios.put).toHaveBeenCalledWith(
+            expect.stringContaining(`/admin/users/21/${endpoint}`),
+            {},
+            expect.anything()
+          );
+          expect(axios.put).toHaveBeenCalledWith(
+            expect.stringContaining(`/admin/users/22/${endpoint}`),
+            {},
+            expect.anything()
+          );
+        });
+        await waitFor(() => {
+          expect(screen.getByRole("button", { name: "Select" })).toBeInTheDocument();
+          expect(screen.queryByRole("button", { name: "Set Active" })).not.toBeInTheDocument();
+          expect(screen.queryByRole("button", { name: "Set Inactive" })).not.toBeInTheDocument();
+          expect(screen.queryByRole("button", { name: "Block Selected" })).not.toBeInTheDocument();
+          expect(screen.queryByRole("button", { name: "Delete Selected" })).not.toBeInTheDocument();
+          expect(screen.queryByText(/selected$/)).not.toBeInTheDocument();
+        });
+      };
+
+      await expectActionForBothUsers("Set Active", "approve");
+      await expectActionForBothUsers("Set Inactive", "deactivate");
+      await expectActionForBothUsers("Block Selected", "block");
+
+      fireEvent.click(screen.getByRole("button", { name: "Select" }));
+      selectBothUsers();
+      fireEvent.click(await screen.findByRole("button", { name: "Delete Selected" }));
+      await waitFor(() => {
+        expect(confirmSpy).toHaveBeenCalledTimes(1);
+        expect(axios.delete).toHaveBeenCalledWith(expect.stringContaining("/admin/users/21"), expect.anything());
+        expect(axios.delete).toHaveBeenCalledWith(expect.stringContaining("/admin/users/22"), expect.anything());
+        expect(screen.getByRole("button", { name: "Select" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Delete Selected" })).not.toBeInTheDocument();
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
   });
 
   it("uses dark-neutral panel styling in the users tab when dark mode is active", async () => {
@@ -2311,9 +2987,36 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByText(/^Delete$/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByText(/^Modify$/i));
-    expect(screen.getByPlaceholderText(/full name/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/username/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^save$/i })).toBeInTheDocument();
+    const editUserDialog = screen.getByRole("dialog", { name: "Edit User" });
+    expect(editUserDialog).toHaveStyle({ maxHeight: "90vh", overflowY: "auto" });
+    expect(within(editUserDialog).getByPlaceholderText(/full name/i)).toBeInTheDocument();
+    expect(within(editUserDialog).getByPlaceholderText(/username/i)).toBeInTheDocument();
+    expect(within(editUserDialog).getByRole("button", { name: /^save$/i })).toBeInTheDocument();
+  });
+
+  it("closes the edit user dialog on backdrop click without saving changes", async () => {
+    useLocation.mockReturnValue({ search: "?tab=users" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [
+          { id: 81, full_name: "Backdrop User", username: "backdrop-user", email: "backdrop@example.com", role: "customer", status: "active" }
+        ] });
+      }
+      if (url.includes("/admin/categories")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "Modify" }));
+    fireEvent.change(screen.getByPlaceholderText("Full name"), { target: { value: "Unsaved Name" } });
+
+    const dialog = screen.getByRole("dialog", { name: "Edit User" });
+    fireEvent.click(dialog.parentElement);
+
+    expect(screen.queryByRole("dialog", { name: "Edit User" })).not.toBeInTheDocument();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(screen.getByText("Backdrop User")).toBeInTheDocument();
   });
 
   it("starts a 60-minute cooling period before deleting a user", async () => {

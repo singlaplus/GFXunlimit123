@@ -75,6 +75,23 @@ test('renders the home hero content', () => {
   expect(screen.getByText(/Discover Millions of/i)).toBeInTheDocument();
 });
 
+test('uses the local brand title and favicon when branding is unavailable', async () => {
+  axios.get.mockImplementation((url) => {
+    if (typeof url === 'string' && url.includes('/branding')) {
+      return Promise.reject(new Error('Backend unavailable'));
+    }
+    return Promise.resolve({ data: [] });
+  });
+  jest.spyOn(console, 'error').mockImplementation(() => {});
+
+  render(<App />);
+
+  await waitFor(() => expect(document.title).toBe('GFXunlimit'));
+  expect(document.querySelector('link[rel="icon"]')?.getAttribute('href')).toContain('favicon.svg');
+
+  console.error.mockRestore();
+});
+
 test('resets scroll position when the app is mounted through a navigation context', () => {
   const scrollToSpy = jest.fn();
   window.scrollTo = scrollToSpy;

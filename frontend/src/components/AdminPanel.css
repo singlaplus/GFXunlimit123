@@ -5,6 +5,11 @@
   align-items: stretch;
 }
 
+.admin-asset-count {
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+}
+
 .admin-panel-controls-grid .profile-icons-card {
   order: 9999;
 }

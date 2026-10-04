@@ -6,6 +6,7 @@ import { loadCartItems, saveCartItems, clearCartItems } from '../utils/cartPersi
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
 const REQUEST_ADMIN_PAYMENT_METHOD = "Request to Admin";
+const GFX_CREDITS_PAYMENT_METHOD = "GFX's Credits";
 
 function formatCurrency(value, currency = null) {
   const amount = Number(value || 0);
@@ -41,6 +42,7 @@ export default function CheckoutPage({ darkMode = false }) {
   const [googlePayUpiId, setGooglePayUpiId] = useState('');
   const [taxSettings, setTaxSettings] = useState([{ enabled: true, rate: 18, label: 'GST', id: 1 }]);
   const [subscriptionRestricted, setSubscriptionRestricted] = useState(false);
+  const [availableCredits, setAvailableCredits] = useState(null);
   const resolveEnabledPaymentMethods = (settings = {}) => {
     const normalizedSettings = settings && typeof settings === 'object' ? settings : {};
     const explicitGateways = Array.isArray(normalizedSettings.enabledGateways)
@@ -77,17 +79,26 @@ export default function CheckoutPage({ darkMode = false }) {
         ]);
         if (settingsResult.status === 'fulfilled') {
           setGooglePayId(settingsResult.value.data?.googlePayId || '');
-          nextMethods = [...(hasCreditPackage ? [REQUEST_ADMIN_PAYMENT_METHOD] : []), ...resolveEnabledPaymentMethods(settingsResult.value.data || {})];
+          nextMethods = [
+            ...(hasCreditPackage ? [REQUEST_ADMIN_PAYMENT_METHOD] : []),
+            ...(!hasCreditPackage ? [GFX_CREDITS_PAYMENT_METHOD] : []),
+            ...resolveEnabledPaymentMethods(settingsResult.value.data || {}),
+          ];
+        } else if (!hasCreditPackage) {
+          nextMethods = [GFX_CREDITS_PAYMENT_METHOD];
         }
         if (profileResult.status === 'fulfilled') {
+          const credits = Number(profileResult.value.data?.credits);
+          setAvailableCredits(Number.isFinite(credits) ? Math.max(0, credits) : null);
+        } else {
+          console.error('Failed to load customer credit balance:', profileResult.reason);
+          setAvailableCredits(null);
         }
       } catch (error) {
         console.error('Failed to load payment settings from backend:', error);
       }
       setAvailablePaymentMethods(nextMethods);
-      setPaymentMethod((currentMethod) => nextMethods.length > 0
-        ? (nextMethods.includes(currentMethod) ? currentMethod : nextMethods[0])
-        : '');
+      setPaymentMethod((currentMethod) => nextMethods.includes(currentMethod) ? currentMethod : '');
     };
 
     syncPaymentMethods();
@@ -184,6 +195,30 @@ export default function CheckoutPage({ darkMode = false }) {
   );
 
   const totals = useMemo(() => calculateCartTotals(items, { coupon, taxSettings, currency: cartCurrency }), [items, coupon, taxSettings, cartCurrency]);
+  const creditsRequired = Math.ceil(totals.total);
+  const hasEnoughCredits = availableCredits !== null && availableCredits >= creditsRequired;
+
+  useEffect(() => {
+    if (!availablePaymentMethods.length) return;
+
+    setPaymentMethod((currentMethod) => {
+      const currentIsCredits = currentMethod.toLowerCase() === GFX_CREDITS_PAYMENT_METHOD.toLowerCase();
+      if (availablePaymentMethods.includes(currentMethod) && (!currentIsCredits || hasEnoughCredits)) {
+        return currentMethod;
+      }
+
+      const creditsMethod = availablePaymentMethods.find(
+        (method) => method.toLowerCase() === GFX_CREDITS_PAYMENT_METHOD.toLowerCase()
+      );
+      if (!currentMethod && creditsMethod && hasEnoughCredits) {
+        return creditsMethod;
+      }
+
+      return availablePaymentMethods.find(
+        (method) => method.toLowerCase() !== GFX_CREDITS_PAYMENT_METHOD.toLowerCase()
+      ) || (creditsMethod && hasEnoughCredits ? creditsMethod : '');
+    });
+  }, [availablePaymentMethods, hasEnoughCredits]);
 
   const applyCoupon = async () => {
     const nextCode = normalizeCouponCode(couponCode);
@@ -219,6 +254,12 @@ export default function CheckoutPage({ darkMode = false }) {
     }
     if (totals.total > 0 && paymentMethod === 'Google Pay' && !googlePayId) {
       setMessage('Google Pay is not configured. Please contact support.');
+      return;
+    }
+    if (totals.total > 0 && paymentMethod === GFX_CREDITS_PAYMENT_METHOD && !hasEnoughCredits) {
+      setMessage(availableCredits === null
+        ? 'Unable to verify your GFX Credits balance. Please refresh and try again.'
+        : `Insufficient credits. This order requires ${creditsRequired} credits; your current balance is ${availableCredits}.`);
       return;
     }
     setSubmitting(true);
@@ -299,12 +340,23 @@ export default function CheckoutPage({ darkMode = false }) {
             <div style={{ display: 'grid', gap: 10 }}>
               {totals.total > 0 ? (
                 availablePaymentMethods.length > 0 ? (
-                  availablePaymentMethods.map((method) => (
-                    <label key={method} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 14, border: paymentMethod === method ? '1px solid #ED2224' : '1px solid #cbd5e1' }}>
-                      <input type="radio" name="paymentMethod" value={method} aria-label={method} checked={paymentMethod === method} onChange={() => setPaymentMethod(method)} />
-                      <span>{method}</span>
-                    </label>
-                  ))
+                  availablePaymentMethods.map((method) => {
+                    const isCreditsMethod = method.toLowerCase() === GFX_CREDITS_PAYMENT_METHOD.toLowerCase();
+                    const creditsUnavailable = isCreditsMethod && !hasEnoughCredits;
+                    return (
+                      <label key={method} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '12px 14px', borderRadius: 14, border: paymentMethod === method ? '1px solid #ED2224' : '1px solid #cbd5e1', opacity: creditsUnavailable ? 0.65 : 1 }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <input type="radio" name="paymentMethod" value={method} aria-label={method} checked={paymentMethod === method} disabled={creditsUnavailable} onChange={() => setPaymentMethod(method)} />
+                          <span>{method}</span>
+                        </span>
+                        {isCreditsMethod && (
+                          <span style={{ opacity: 0.5, textAlign: 'right' }}>
+                            ({availableCredits === null ? 'balance unavailable' : `${availableCredits} available; ${creditsRequired} required`})
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })
                 ) : (
                   <div style={{ padding: '12px 14px', borderRadius: 14, border: '1px solid #cbd5e1' }}>No payment methods enabled by admin</div>
                 )
@@ -352,7 +404,7 @@ export default function CheckoutPage({ darkMode = false }) {
               {couponMessage ? <div style={{ marginTop: 8, color: coupon ? '#16a34a' : '#DC2626', fontSize: '0.95rem' }}>{couponMessage}</div> : null}
             </div>
 
-            <button disabled={submitting || !items.length || (totals.total > 0 && !paymentMethod)} onClick={submitOrder} style={{ width: '100%', marginTop: 18, border: 'none', borderRadius: 16, padding: '14px 16px', background: '#ED2224', color: '#fff', fontWeight: 800, cursor: 'pointer' }}>
+            <button disabled={submitting || !items.length || (totals.total > 0 && (!paymentMethod || (paymentMethod === GFX_CREDITS_PAYMENT_METHOD && !hasEnoughCredits)))} onClick={submitOrder} style={{ width: '100%', marginTop: 18, border: 'none', borderRadius: 16, padding: '14px 16px', background: '#ED2224', color: '#fff', fontWeight: 800, cursor: 'pointer' }}>
               {submitting ? 'Placing order…' : 'Place order'}
             </button>
             {message ? <div style={{ marginTop: 12, color: '#16a34a', fontWeight: 600 }}>{message}</div> : null}
