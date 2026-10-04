@@ -575,8 +575,7 @@ async function isValidThumbnailFile(filePath) {
       metadata.width > MAX_DIMENSIONS.width ||
       metadata.height > MAX_DIMENSIONS.height ||
       !metadata.width ||
-      !metadata.height ||
-      Math.abs(metadata.width / metadata.height - (16 / 9)) > 0.01
+      !metadata.height
     ) return false;
     await sharp(filePath).webp().toBuffer();
     return true;

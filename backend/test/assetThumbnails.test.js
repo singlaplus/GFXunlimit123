@@ -186,14 +186,20 @@ test('rejects unsafe and mismatched thumbnail paths', () => {
 test('does not accept symlinked thumbnail outputs and keeps private assets out of shared caches', async () => {
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-audit-'));
   const targetPath = path.join(temporaryDirectory, 'target.webp');
+  const proportionalPath = path.join(temporaryDirectory, 'proportional.webp');
   const linkPath = path.join(temporaryDirectory, 'link.webp');
   try {
     const validImage = await sharp({
       create: { width: 16, height: 9, channels: 3, background: '#8899aa' },
     }).webp().toBuffer();
+    const proportionalImage = await sharp({
+      create: { width: 450, height: 360, channels: 3, background: '#8899aa' },
+    }).webp().toBuffer();
     fs.writeFileSync(targetPath, validImage);
+    fs.writeFileSync(proportionalPath, proportionalImage);
     fs.symlinkSync(targetPath, linkPath);
     assert.equal(await isValidThumbnailFile(targetPath), true);
+    assert.equal(await isValidThumbnailFile(proportionalPath), true);
     assert.equal(await isValidThumbnailFile(linkPath), false);
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
