@@ -26,6 +26,8 @@ export default function AssetPage(props) {
   const [cartCurrency, setCartCurrency] = useState(null);
   const [subscriptionActive, setSubscriptionActive] = useState(false);
   const [relatedImages, setRelatedImages] = useState([]);
+  const [privatePreview, setPrivatePreview] = useState({ url: "", loading: false, error: "" });
+  const [privateFullSizePreview, setPrivateFullSizePreview] = useState("");
   const relatedSliderRef = useRef(null);
 
   useEffect(() => {
@@ -71,6 +73,94 @@ export default function AssetPage(props) {
       .then((response) => setRelatedImages(Array.isArray(response.data) ? response.data : []))
       .catch(() => setRelatedImages([]));
   }, [image]);
+
+  useEffect(() => {
+    if (!image?.id) return undefined;
+    const status = String(image.status || "").trim().toLowerCase();
+    if (["approved", "published", "live"].includes(status)) {
+      setPrivatePreview({ url: "", loading: false, error: "" });
+      return undefined;
+    }
+
+    let cancelled = false;
+    let objectUrl = "";
+    setPrivatePreview({ url: "", loading: true, error: "" });
+
+    const loadPreview = async () => {
+      try {
+        const token = localStorage.getItem("token");
+        if (!token) throw new Error("Admin authentication is required to preview this asset.");
+        const url = getAssetPreviewUrl(image, {
+          quality: 50,
+          watermark: true,
+          renderNonRasterPreview: true,
+          useThumbnail: false,
+        });
+        const response = await axios.get(url, {
+          responseType: "blob",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        objectUrl = URL.createObjectURL(response.data);
+        if (!cancelled) {
+          setPrivatePreview({ url: objectUrl, loading: false, error: "" });
+        }
+      } catch (previewError) {
+        console.error("Failed to load private asset preview", previewError);
+        if (!cancelled) {
+          setPrivatePreview({
+            url: "",
+            loading: false,
+            error: "Unable to load asset preview.",
+          });
+        }
+      }
+    };
+
+    loadPreview();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [image]);
+
+  useEffect(() => {
+    if (!image?.id || !isZoomOpen) return undefined;
+    const status = String(image.status || "").trim().toLowerCase();
+    if (["approved", "published", "live"].includes(status)) {
+      setPrivateFullSizePreview("");
+      return undefined;
+    }
+
+    let cancelled = false;
+    let objectUrl = "";
+    setPrivateFullSizePreview("");
+    const loadPreview = async () => {
+      try {
+        const token = localStorage.getItem("token");
+        if (!token) throw new Error("Admin authentication is required to preview this asset.");
+        const url = getAssetPreviewUrl(image, {
+          quality: 100,
+          watermark: true,
+          renderNonRasterPreview: true,
+          useThumbnail: false,
+        });
+        const response = await axios.get(url, {
+          responseType: "blob",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        objectUrl = URL.createObjectURL(response.data);
+        if (!cancelled) setPrivateFullSizePreview(objectUrl);
+      } catch (previewError) {
+        console.error("Failed to load full-size private asset preview", previewError);
+      }
+    };
+
+    loadPreview();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [image, isZoomOpen]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -243,9 +333,13 @@ export default function AssetPage(props) {
     renderNonRasterPreview: true,
     useThumbnail: false,
   });
-  const previewUrl = getWatermarkedPreview(image, 50);
-  const popupUrl = getWatermarkedPreview(image, 50);
-  const fullSizeUrl = getWatermarkedPreview(image, 100);
+  const isPrivateAsset = !["approved", "published", "live"].includes(
+    String(image.status || "").trim().toLowerCase()
+  );
+  const previewUrl = isPrivateAsset ? privatePreview.url : getWatermarkedPreview(image, 50);
+  const fullSizeUrl = isPrivateAsset
+    ? privateFullSizePreview || privatePreview.url
+    : getWatermarkedPreview(image, 100);
   const previewAspectRatio = previewDimensions
     ? previewDimensions.width / previewDimensions.height
     : null;
@@ -297,25 +391,31 @@ export default function AssetPage(props) {
               boxShadow: darkMode ? "0 8px 24px rgba(0,0,0,0.24)" : "0 6px 18px rgba(15,23,42,0.06)",
             }}
           >
-            <img
-              src={previewUrl}
-              alt={image.title}
-              onLoad={(event) => {
-                const { naturalWidth, naturalHeight } = event.currentTarget;
-                if (naturalWidth > 0 && naturalHeight > 0) {
-                  setPreviewDimensions({ width: naturalWidth, height: naturalHeight });
-                }
-              }}
-              onClick={() => setIsZoomOpen(true)}
-              style={{
-                width: "100%",
-                height: "100%",
-                objectFit: "contain",
-                display: "block",
-                cursor: "zoom-in",
-                borderRadius: 18,
-              }}
-            />
+            {previewUrl ? (
+              <img
+                src={previewUrl}
+                alt={image.title}
+                onLoad={(event) => {
+                  const { naturalWidth, naturalHeight } = event.currentTarget;
+                  if (naturalWidth > 0 && naturalHeight > 0) {
+                    setPreviewDimensions({ width: naturalWidth, height: naturalHeight });
+                  }
+                }}
+                onClick={() => setIsZoomOpen(true)}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                  display: "block",
+                  cursor: "zoom-in",
+                  borderRadius: 18,
+                }}
+              />
+            ) : isPrivateAsset ? (
+              <div role="status" style={{ padding: 20, textAlign: "center" }}>
+                {privatePreview.loading ? "Loading asset preview..." : privatePreview.error || "Preview unavailable."}
+              </div>
+            ) : null}
 
             {isZoomOpen && (
               <div
@@ -358,19 +458,21 @@ export default function AssetPage(props) {
                       Loading...
                     </div>
                   )}
-                  <img
-                    src={fullSizeUrl}
-                    alt={image.title}
-                    onLoad={() => setZoomImageLoading(false)}
-                    onLoadStart={() => setZoomImageLoading(true)}
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "contain",
-                      cursor: "zoom-out",
-                      display: "block",
-                    }}
-                  />
+                  {fullSizeUrl ? (
+                    <img
+                      src={fullSizeUrl}
+                      alt={image.title}
+                      onLoad={() => setZoomImageLoading(false)}
+                      onLoadStart={() => setZoomImageLoading(true)}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "contain",
+                        cursor: "zoom-out",
+                        display: "block",
+                      }}
+                    />
+                  ) : null}
                 </div>
               </div>
             )}

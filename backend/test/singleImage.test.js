@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const cron = require('node-cron');
 const { Pool } = require('pg');
+const jwt = require('jsonwebtoken');
 
 process.env.DISABLE_EMAIL_SCHEDULER = 'true';
 process.env.DISABLE_CURRENCY_SCHEDULER = 'true';
@@ -27,19 +28,21 @@ test.after(async () => {
   await pool.end();
 });
 
-function request(port, requestPath) {
+function request(port, requestPath, headers = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request({
       hostname: '127.0.0.1',
       port,
       path: requestPath,
       method: 'GET',
+      headers,
     }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => resolve({
         status: res.statusCode,
         body: Buffer.concat(chunks).toString(),
+        headers: res.headers,
       }));
     });
     req.on('error', reject);
@@ -155,4 +158,43 @@ test('single-image endpoint returns the existing 404 response before authenticat
   const response = await request(server.address().port, '/images/999999');
   assert.equal(response.status, 404);
   assert.equal(JSON.parse(response.body), 'Image not found');
+});
+
+test('catalog preview requires admin access for pending assets', async (t) => {
+  const originalQuery = pool.query;
+  let imageStatus = 'pending';
+  pool.query = async (sql, values) => {
+    if (/SELECT filename, thumbnail_generated_at, status\s+FROM images\s+WHERE id = \$1/i.test(sql)) {
+      return { rows: [{ filename: 'pending.bmp', status: imageStatus }] };
+    }
+    if (/SELECT role, status\s+FROM users\s+WHERE id = \$1/i.test(sql)) {
+      return { rows: [{ role: 'admin', status: 'active' }] };
+    }
+    return originalQuery(sql, values);
+  };
+
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(async () => {
+    pool.query = originalQuery;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  const port = server.address().port;
+  const anonymousResponse = await request(port, '/api/catalog-preview/218');
+  assert.equal(anonymousResponse.status, 401);
+
+  const token = jwt.sign({ user: 7 }, process.env.JWT_SECRET || 'secretkey');
+  const adminResponse = await request(port, '/api/catalog-preview/218', {
+    Authorization: `Bearer ${token}`,
+  });
+  assert.equal(adminResponse.status, 415);
+  assert.equal(adminResponse.headers['cache-control'], 'private, no-store');
+
+  imageStatus = 'approved';
+  const publicResponse = await request(port, '/api/catalog-preview/218');
+  assert.equal(publicResponse.status, 415);
+  assert.equal(publicResponse.headers['cache-control'], 'public, max-age=300');
 });

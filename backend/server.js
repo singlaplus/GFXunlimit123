@@ -2203,7 +2203,7 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
       }
     };
 
-    app.get("/api/catalog-preview/:imageId", async (req, res) => {
+    app.get("/api/catalog-preview/:imageId", async (req, res, next) => {
       try {
         const { imageId } = req.params;
         if (!/^\d+$/.test(imageId)) {
@@ -2211,9 +2211,9 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
         }
 
         const imageResult = await pool.query(
-          `SELECT filename, thumbnail_generated_at
+          `SELECT filename, thumbnail_generated_at, status
            FROM images
-           WHERE id = $1 AND LOWER(COALESCE(status, '')) IN ('approved', 'published', 'live')`,
+           WHERE id = $1`,
           [imageId]
         );
         const image = imageResult.rows[0];
@@ -2221,6 +2221,22 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
           return res.status(404).json({ error: "Image not found" });
         }
 
+        req.catalogPreviewImage = image;
+        const isPublicAsset = ["approved", "published", "live"].includes(
+          String(image.status || "").trim().toLowerCase()
+        );
+        res.set("Cache-Control", isPublicAsset ? "public, max-age=300" : "private, no-store");
+        if (!isPublicAsset) {
+          return verifyAdmin(req, res, next);
+        }
+        return next();
+      } catch (error) {
+        console.error("Failed to authorize catalog preview", error.message || error);
+        return res.status(500).json({ error: "Unable to generate asset preview" });
+      }
+    }, async (req, res) => {
+      try {
+        const image = req.catalogPreviewImage;
         const filename = String(image.filename).replace(/\\/g, "/");
         const extension = path.extname(filename).toLowerCase();
         if ([".jpg", ".jpeg", ".png", ".webp"].includes(extension)) {
@@ -2286,7 +2302,6 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
           : await sharp(cleanPreview).jpeg({ quality, progressive: true }).toBuffer();
 
         res.set("Content-Type", "image/jpeg");
-        res.set("Cache-Control", "public, max-age=300");
         return res.send(outputBuffer);
       } catch (error) {
         console.error("Failed to generate catalog preview", error.message || error);
