@@ -103,20 +103,17 @@ class EpsProcessor extends BaseProcessor {
 
         const tempOutput = path.join(tempDir, `preview-${Date.now()}.png`);
 
-        // Ghostscript command to render EPS to PNG
-        // Use BoundingBox from EPS and scale to fit output dimensions
-        // Increased DPI for better quality
+        // Let Ghostscript size the raster from the EPS BoundingBox so portrait
+        // and landscape artwork keep their original aspect ratio.
         const gsArgs = [
           '-dNOPAUSE',
           '-dBATCH',
           '-dSAFER',
           '-sDEVICE=pngalpha',
-          '-r200',  // 200 DPI for 20% better quality
+          '-r200',
           '-dTextAlphaBits=4',
           '-dGraphicsAlphaBits=4',
-          '-dEPSCrop',  // Respect EPS BoundingBox
-          '-dFitPage',  // Fit to page
-          '-g1200x720',  // Output dimensions (16:9 from BoundingBox 5950:3550)
+          '-dEPSCrop',
           `-sOutputFile=${tempOutput}`,
           filePath,
         ];

@@ -10,7 +10,7 @@ const pool = require('../db');
 const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
 
-const PROCESSOR_VERSION = 'webp-16x9-v1';
+const PROCESSOR_VERSION = 'webp-16x9-v2';
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024;
 const HARD_TARGET_BYTES = 75 * 1024;
 const PREFERRED_TARGET_BYTES = 50 * 1024;
