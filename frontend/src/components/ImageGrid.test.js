@@ -93,6 +93,7 @@ describe('ImageGrid dark mode', () => {
     expect(vectorImage.getAttribute('src')).toContain('/api/assets/218/thumbnail');
     expect(screen.getByRole('img', { name: 'Layered asset' }).getAttribute('src'))
       .toContain('/api/assets/197/thumbnail');
+    expect(screen.queryByTestId('asset-watermark')).not.toBeInTheDocument();
 
     Object.defineProperty(vectorImage, 'naturalWidth', { configurable: true, value: 144 });
     Object.defineProperty(vectorImage, 'naturalHeight', { configurable: true, value: 360 });

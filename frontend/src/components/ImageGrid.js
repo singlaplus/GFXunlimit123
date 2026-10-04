@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getAssetPreviewUrl, getAssetSourceUrl } from "../utils/assetPreview";
+import { getAssetSourceDimensions } from "../utils/assetDimensions";
 
 let deferredPreviewObserver;
 const deferredPreviewCallbacks = new WeakMap();
@@ -77,41 +78,6 @@ function getMasonryRowSpan(card, aspectRatio) {
   );
 }
 
-function getEpsDimensions(header) {
-  const number = "(-?\\d+(?:\\.\\d+)?)";
-  const parseBox = (label) => {
-    const match = header.match(
-      new RegExp(`^%%${label}:\\s*${number}\\s+${number}\\s+${number}\\s+${number}\\s*$`, "m")
-    );
-    if (!match) return null;
-
-    const [left, bottom, right, top] = match.slice(1).map(Number);
-    const width = right - left;
-    const height = top - bottom;
-    return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0
-      ? { width, height }
-      : null;
-  };
-
-  return parseBox("HiResBoundingBox") || parseBox("BoundingBox");
-}
-
-function getPsdDimensions(buffer) {
-  if (buffer.byteLength < 26) return null;
-
-  const bytes = new Uint8Array(buffer, 0, 6);
-  const signature = String.fromCharCode(...bytes.subarray(0, 4));
-  const view = new DataView(buffer);
-  const version = view.getUint16(4, false);
-  if (signature !== "8BPS" || (version !== 1 && version !== 2)) return null;
-
-  const height = view.getUint32(14, false);
-  const width = view.getUint32(18, false);
-  return width > 0 && height > 0
-    ? { width, height }
-    : null;
-}
-
 function MasonryAssetCard({ image, darkMode, onClick }) {
   const cardRef = useRef(null);
   const imageRef = useRef(null);
@@ -138,9 +104,7 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
       }
 
       const buffer = await response.arrayBuffer();
-      const dimensions = /\.eps$/i.test(String(image.filename || ""))
-        ? getEpsDimensions(Array.from(new Uint8Array(buffer), (byte) => String.fromCharCode(byte)).join(""))
-        : getPsdDimensions(buffer);
+      const dimensions = getAssetSourceDimensions(buffer, image.filename);
       if (!dimensions) {
         throw new Error("Asset source does not contain valid dimensions in its header");
       }

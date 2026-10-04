@@ -3,7 +3,12 @@ import { getSingleImage } from "../services/api";
 import axios from "axios";
 import { getRelatedImages, likeImageRequest, viewImageRequest, addFavoriteRequest } from "../services/imageService";
 import { saveCartItems } from "../utils/cartPersistence";
-import { getAssetPreviewUrl } from "../utils/assetPreview";
+import {
+  getAssetPreviewUrl,
+  getAssetSourceUrl,
+} from "../utils/assetPreview";
+import { getAssetSourceDimensions } from "../utils/assetDimensions";
+import AssetWatermark from "../components/AssetWatermark";
 import "./AssetPage.css";
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
@@ -13,6 +18,8 @@ export default function AssetPage(props) {
   const { imageId, darkMode } = props;
   const [image, setImage] = useState(null);
   const [previewDimensions, setPreviewDimensions] = useState(null);
+  const [zoomPreviewDimensions, setZoomPreviewDimensions] = useState(null);
+  const [sourceDimensions, setSourceDimensions] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [isZoomOpen, setIsZoomOpen] = useState(false);
@@ -119,6 +126,41 @@ export default function AssetPage(props) {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
+  }, [image]);
+
+  useEffect(() => {
+    if (!image?.id || !/\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""))) {
+      setSourceDimensions(null);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const readDimensions = async () => {
+      const response = await fetch(getAssetSourceUrl(image), {
+        credentials: "include",
+        headers: { Range: "bytes=0-65535" },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Asset source request failed with status ${response.status}`);
+      }
+      if (response.status !== 206) {
+        throw new Error("Asset source server did not honor the bounded range request");
+      }
+
+      const dimensions = getAssetSourceDimensions(await response.arrayBuffer(), image.filename);
+      if (!dimensions) {
+        throw new Error("Asset source does not contain valid dimensions in its header");
+      }
+      if (!controller.signal.aborted) setSourceDimensions(dimensions);
+    };
+
+    readDimensions().catch((dimensionError) => {
+      if (!controller.signal.aborted) {
+        console.error(`Failed to read artwork dimensions for asset ${image.id}`, dimensionError);
+      }
+    });
+    return () => controller.abort();
   }, [image]);
 
   useEffect(() => {
@@ -286,21 +328,29 @@ export default function AssetPage(props) {
     return null;
   }
 
-  const getWatermarkedPreview = (asset, quality) => getAssetPreviewUrl(asset, {
+  const getDetailPreview = (asset, quality) => getAssetPreviewUrl(asset, {
     quality,
-    watermark: true,
+    watermark: false,
     renderNonRasterPreview: true,
     useThumbnail: false,
   });
   const usesGeneratedThumbnail = /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
-  const previewUrl = usesGeneratedThumbnail ? privatePreview.url : getWatermarkedPreview(image, 50);
-  const fullSizeUrl = usesGeneratedThumbnail ? privatePreview.url : getWatermarkedPreview(image, 100);
-  const previewAspectRatio = previewDimensions
-    ? previewDimensions.width / previewDimensions.height
+  const previewUrl = usesGeneratedThumbnail ? privatePreview.url : getDetailPreview(image, 50);
+  const fullSizeUrl = usesGeneratedThumbnail ? privatePreview.url : getDetailPreview(image, 100);
+  const displayDimensions = sourceDimensions || previewDimensions;
+  const previewAspectRatio = displayDimensions
+    ? displayDimensions.width / displayDimensions.height
     : null;
   const previewWidth = previewAspectRatio
     ? `${MAX_PREVIEW_HEIGHT * previewAspectRatio}px`
     : "100%";
+  const zoomAspectRatio = zoomPreviewDimensions
+    ? zoomPreviewDimensions.width / zoomPreviewDimensions.height
+    : previewAspectRatio;
+  const zoomWidth = zoomAspectRatio
+    ? Math.min(window.innerWidth * 0.9, window.innerHeight * 0.9 * zoomAspectRatio)
+    : Math.min(window.innerWidth * 0.9, window.innerHeight * 0.9 * (16 / 9));
+  const zoomHeight = zoomWidth / (zoomAspectRatio || (16 / 9));
 
   return (
     <div
@@ -333,7 +383,7 @@ export default function AssetPage(props) {
             style={{
               position: "relative",
               overflow: "hidden",
-              aspectRatio: previewAspectRatio || "16 / 9",
+              aspectRatio: previewAspectRatio ? `${displayDimensions.width} / ${displayDimensions.height}` : "16 / 9",
               width: previewWidth,
               maxWidth: "100%",
               margin: 0,
@@ -347,25 +397,31 @@ export default function AssetPage(props) {
             }}
           >
             {previewUrl ? (
-              <img
-                src={previewUrl}
-                alt={image.title}
-                onLoad={(event) => {
-                  const { naturalWidth, naturalHeight } = event.currentTarget;
-                  if (naturalWidth > 0 && naturalHeight > 0) {
-                    setPreviewDimensions({ width: naturalWidth, height: naturalHeight });
-                  }
-                }}
-                onClick={() => setIsZoomOpen(true)}
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "contain",
-                  display: "block",
-                  cursor: "zoom-in",
-                  borderRadius: 18,
-                }}
-              />
+              <>
+                <img
+                  src={previewUrl}
+                  alt={image.title}
+                  onLoad={(event) => {
+                    const { naturalWidth, naturalHeight } = event.currentTarget;
+                    if (naturalWidth > 0 && naturalHeight > 0) {
+                      setPreviewDimensions({ width: naturalWidth, height: naturalHeight });
+                    }
+                  }}
+                  onClick={() => setIsZoomOpen(true)}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: sourceDimensions ? "cover" : "contain",
+                    display: "block",
+                    cursor: "zoom-in",
+                    borderRadius: 18,
+                  }}
+                />
+                <AssetWatermark
+                  width={displayDimensions?.width || 640}
+                  height={displayDimensions?.height || 360}
+                />
+              </>
             ) : usesGeneratedThumbnail ? (
               <div role="status" style={{ padding: 20, textAlign: "center" }}>
                 {privatePreview.loading ? "Loading asset preview..." : privatePreview.error || "Preview unavailable."}
@@ -390,15 +446,12 @@ export default function AssetPage(props) {
                 <div
                   onClick={(e) => e.stopPropagation()}
                   style={{
-                    width: "min(90vw, 90vh)",
-                    height: "min(90vw, 90vh)",
-                    background: "#000",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
+                    width: `${zoomWidth}px`,
+                    height: `${zoomHeight}px`,
                     borderRadius: 8,
                     overflow: "hidden",
                     position: "relative",
+                    flex: "0 0 auto",
                   }}
                 >
                   {zoomImageLoading && (
@@ -417,7 +470,13 @@ export default function AssetPage(props) {
                     <img
                       src={fullSizeUrl}
                       alt={image.title}
-                      onLoad={() => setZoomImageLoading(false)}
+                      onLoad={(event) => {
+                        setZoomImageLoading(false);
+                        const { naturalWidth, naturalHeight } = event.currentTarget;
+                        if (naturalWidth > 0 && naturalHeight > 0) {
+                          setZoomPreviewDimensions({ width: naturalWidth, height: naturalHeight });
+                        }
+                      }}
                       onLoadStart={() => setZoomImageLoading(true)}
                       style={{
                         width: "100%",
@@ -428,6 +487,12 @@ export default function AssetPage(props) {
                       }}
                     />
                   ) : null}
+                  {fullSizeUrl && (
+                    <AssetWatermark
+                      width={zoomPreviewDimensions?.width || displayDimensions?.width || 640}
+                      height={zoomPreviewDimensions?.height || displayDimensions?.height || 360}
+                    />
+                  )}
                 </div>
               </div>
             )}
