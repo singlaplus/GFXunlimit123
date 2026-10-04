@@ -11,6 +11,7 @@ const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
 
 const PROCESSOR_VERSION = 'webp-16x9-v2';
+const PROPORTIONAL_PROCESSOR_VERSION = 'webp-proportional-v3';
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024;
 const HARD_TARGET_BYTES = 75 * 1024;
 const PREFERRED_TARGET_BYTES = 50 * 1024;
@@ -34,6 +35,12 @@ const NON_CONTRIBUTOR_UPLOAD_DIRECTORIES = new Set([
   'website',
 ]);
 const contributorUploadLocks = new Map();
+
+function getProcessorVersion(filename) {
+  return ['.ai', '.eps', '.psd', '.psb'].includes(path.extname(String(filename || '')).toLowerCase())
+    ? PROPORTIONAL_PROCESSOR_VERSION
+    : PROCESSOR_VERSION;
+}
 
 function getStagedSourceDirectory() {
   return path.resolve(__dirname, '..', 'tmp', 'asset-thumbnail-sources');
@@ -508,7 +515,7 @@ async function extractPreview(sourcePath, extension) {
   throw error;
 }
 
-async function encodeThumbnail(previewBuffer) {
+async function encodeThumbnail(previewBuffer, { preserveAspectRatio = false } = {}) {
   let lastResult;
   for (const bounds of [
     MAX_DIMENSIONS,
@@ -529,21 +536,25 @@ async function encodeThumbnail(previewBuffer) {
       .resize(bounds.width, bounds.height, { fit: 'inside', withoutEnlargement: true })
       .png()
       .toBuffer({ resolveWithObject: true });
-    const imageWidth = fitted.info.width;
-    const imageHeight = fitted.info.height;
-    const left = Math.floor((bounds.width - imageWidth) / 2);
-    const right = bounds.width - imageWidth - left;
-    const top = Math.floor((bounds.height - imageHeight) / 2);
-    const bottom = bounds.height - imageHeight - top;
-    const canvas = await sharp(fitted.data)
-      .extend({ top, bottom, left, right, background: BACKGROUND })
-      .png()
-      .toBuffer();
+    const canvas = preserveAspectRatio
+      ? fitted.data
+      : await sharp(fitted.data)
+        .extend({
+          top: Math.floor((bounds.height - fitted.info.height) / 2),
+          bottom: bounds.height - fitted.info.height - Math.floor((bounds.height - fitted.info.height) / 2),
+          left: Math.floor((bounds.width - fitted.info.width) / 2),
+          right: bounds.width - fitted.info.width - Math.floor((bounds.width - fitted.info.width) / 2),
+          background: BACKGROUND,
+        })
+        .png()
+        .toBuffer();
+    const outputWidth = preserveAspectRatio ? fitted.info.width : bounds.width;
+    const outputHeight = preserveAspectRatio ? fitted.info.height : bounds.height;
 
     let acceptableResult = null;
     for (const quality of QUALITY_STEPS) {
       const buffer = await sharp(canvas).webp({ quality, effort: 6, smartSubsample: true }).toBuffer();
-      lastResult = { buffer, width: bounds.width, height: bounds.height, quality };
+      lastResult = { buffer, width: outputWidth, height: outputHeight, quality };
       if (buffer.length <= PREFERRED_TARGET_BYTES) return lastResult;
       if (!acceptableResult && buffer.length <= HARD_TARGET_BYTES) acceptableResult = lastResult;
     }
@@ -636,6 +647,7 @@ async function generateAssetThumbnail(assetId, options = {}) {
     if (asset) await markThumbnailFailure(id, error);
     throw error;
   }
+  const processorVersion = getProcessorVersion(asset.filename);
   const thumbnailPath = getThumbnailRelativePath({
     assetId: id,
     originalFilename: asset.original_filename || asset.filename,
@@ -675,7 +687,7 @@ async function generateAssetThumbnail(assetId, options = {}) {
   const existingFileIsValid = record ? await isValidThumbnailFile(outputPath) : false;
   const existingFileStats = existingFileIsValid ? await fsp.stat(outputPath) : null;
   const existingFileMetadata = existingFileIsValid ? await sharp(outputPath).metadata() : null;
-  if (!options.force && record?.status === 'READY' && record.processor_version === PROCESSOR_VERSION &&
+  if (!options.force && record?.status === 'READY' && record.processor_version === processorVersion &&
     record.format === 'webp' && record.thumbnail_path === thumbnailPath &&
     Number(record.file_size) === Number(existingFileStats?.size) &&
     Number(record.width) === existingFileMetadata.width &&
@@ -700,7 +712,7 @@ async function generateAssetThumbnail(assetId, options = {}) {
             status = 'PROCESSING', error_message = NULL,
             attempt_count = asset_thumbnail_metadata.attempt_count + 1,
             last_attempt_at = NOW(), updated_at = NOW()
-    `, [id, thumbnailPath, PROCESSOR_VERSION]);
+    `, [id, thumbnailPath, processorVersion]);
 
     let sourcePath = sourceInfo.sourcePath;
     if (sourceInfo.kind === 'remote') {
@@ -729,7 +741,9 @@ async function generateAssetThumbnail(assetId, options = {}) {
       previewBuffer = await extractPreview(sourcePath, extension);
     }
     if (!Buffer.isBuffer(previewBuffer) || previewBuffer.length === 0) throw new Error('Processor returned an empty preview');
-    const thumbnail = await encodeThumbnail(previewBuffer);
+    const thumbnail = await encodeThumbnail(previewBuffer, {
+      preserveAspectRatio: ['.ai', '.eps', '.psd', '.psb'].includes(extension),
+    });
     if (thumbnail.width > MAX_DIMENSIONS.width || thumbnail.height > MAX_DIMENSIONS.height) {
       throw new Error('Generated thumbnail exceeds maximum dimensions');
     }
@@ -760,7 +774,7 @@ async function generateAssetThumbnail(assetId, options = {}) {
     `, [
       id, thumbnailPath, thumbnail.width, thumbnail.height, finalStats.size, thumbnail.quality,
       updatedAt, processorName, sourceSize,
-      sourceModifiedAt, PROCESSOR_VERSION,
+      sourceModifiedAt, processorVersion,
     ]);
     await pool.query(
       `UPDATE images SET thumbnail_status = 'COMPLETED', thumbnail_error = NULL,
@@ -1010,8 +1024,10 @@ module.exports = {
   MAX_DIMENSIONS,
   PREFERRED_TARGET_BYTES,
   PROCESSOR_VERSION,
+  PROPORTIONAL_PROCESSOR_VERSION,
   encodeThumbnail,
   generateAssetThumbnail,
+  getProcessorVersion,
   getDateDirectory,
   getThumbnailRelativePath,
   parseThumbnailAssetId,

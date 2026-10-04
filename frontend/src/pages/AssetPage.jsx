@@ -27,7 +27,6 @@ export default function AssetPage(props) {
   const [subscriptionActive, setSubscriptionActive] = useState(false);
   const [relatedImages, setRelatedImages] = useState([]);
   const [privatePreview, setPrivatePreview] = useState({ url: "", loading: false, error: "" });
-  const [privateFullSizePreview, setPrivateFullSizePreview] = useState("");
   const relatedSliderRef = useRef(null);
 
   useEffect(() => {
@@ -77,7 +76,9 @@ export default function AssetPage(props) {
   useEffect(() => {
     if (!image?.id) return undefined;
     const status = String(image.status || "").trim().toLowerCase();
-    if (["approved", "published", "live"].includes(status)) {
+    const isPublicAsset = ["approved", "published", "live"].includes(status);
+    const usesGeneratedThumbnail = /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
+    if (!usesGeneratedThumbnail) {
       setPrivatePreview({ url: "", loading: false, error: "" });
       return undefined;
     }
@@ -89,16 +90,13 @@ export default function AssetPage(props) {
     const loadPreview = async () => {
       try {
         const token = localStorage.getItem("token");
-        if (!token) throw new Error("Admin authentication is required to preview this asset.");
-        const url = getAssetPreviewUrl(image, {
-          quality: 50,
-          watermark: true,
-          renderNonRasterPreview: true,
-          useThumbnail: false,
-        });
+        if (!isPublicAsset && !token) {
+          throw new Error("Admin authentication is required to preview this asset.");
+        }
+        const url = getAssetPreviewUrl(image, { thumbnailOnly: true });
         const response = await axios.get(url, {
           responseType: "blob",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         objectUrl = URL.createObjectURL(response.data);
         if (!cancelled) {
@@ -122,45 +120,6 @@ export default function AssetPage(props) {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [image]);
-
-  useEffect(() => {
-    if (!image?.id || !isZoomOpen) return undefined;
-    const status = String(image.status || "").trim().toLowerCase();
-    if (["approved", "published", "live"].includes(status)) {
-      setPrivateFullSizePreview("");
-      return undefined;
-    }
-
-    let cancelled = false;
-    let objectUrl = "";
-    setPrivateFullSizePreview("");
-    const loadPreview = async () => {
-      try {
-        const token = localStorage.getItem("token");
-        if (!token) throw new Error("Admin authentication is required to preview this asset.");
-        const url = getAssetPreviewUrl(image, {
-          quality: 100,
-          watermark: true,
-          renderNonRasterPreview: true,
-          useThumbnail: false,
-        });
-        const response = await axios.get(url, {
-          responseType: "blob",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        objectUrl = URL.createObjectURL(response.data);
-        if (!cancelled) setPrivateFullSizePreview(objectUrl);
-      } catch (previewError) {
-        console.error("Failed to load full-size private asset preview", previewError);
-      }
-    };
-
-    loadPreview();
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [image, isZoomOpen]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -333,13 +292,9 @@ export default function AssetPage(props) {
     renderNonRasterPreview: true,
     useThumbnail: false,
   });
-  const isPrivateAsset = !["approved", "published", "live"].includes(
-    String(image.status || "").trim().toLowerCase()
-  );
-  const previewUrl = isPrivateAsset ? privatePreview.url : getWatermarkedPreview(image, 50);
-  const fullSizeUrl = isPrivateAsset
-    ? privateFullSizePreview || privatePreview.url
-    : getWatermarkedPreview(image, 100);
+  const usesGeneratedThumbnail = /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
+  const previewUrl = usesGeneratedThumbnail ? privatePreview.url : getWatermarkedPreview(image, 50);
+  const fullSizeUrl = usesGeneratedThumbnail ? privatePreview.url : getWatermarkedPreview(image, 100);
   const previewAspectRatio = previewDimensions
     ? previewDimensions.width / previewDimensions.height
     : null;
@@ -411,7 +366,7 @@ export default function AssetPage(props) {
                   borderRadius: 18,
                 }}
               />
-            ) : isPrivateAsset ? (
+            ) : usesGeneratedThumbnail ? (
               <div role="status" style={{ padding: 20, textAlign: "center" }}>
                 {privatePreview.loading ? "Loading asset preview..." : privatePreview.error || "Preview unavailable."}
               </div>

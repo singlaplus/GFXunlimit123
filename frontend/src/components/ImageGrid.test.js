@@ -78,6 +78,29 @@ describe('ImageGrid dark mode', () => {
     expect(image.parentElement.style.gridRowEnd).toBe('span 19');
   });
 
+  it('uses the generated thumbnail for vector and layered assets in Explore', () => {
+    render(
+      <ImageGrid
+        filteredImages={[
+          { id: 218, filename: 'new-year.eps', title: 'New Year' },
+          { id: 197, filename: 'layered.psd', title: 'Layered asset' },
+        ]}
+        darkMode={false}
+      />
+    );
+
+    const vectorImage = screen.getByRole('img', { name: 'New Year' });
+    expect(vectorImage.getAttribute('src')).toContain('/api/assets/218/thumbnail');
+    expect(screen.getByRole('img', { name: 'Layered asset' }).getAttribute('src'))
+      .toContain('/api/assets/197/thumbnail');
+
+    Object.defineProperty(vectorImage, 'naturalWidth', { configurable: true, value: 144 });
+    Object.defineProperty(vectorImage, 'naturalHeight', { configurable: true, value: 360 });
+    fireEvent.load(vectorImage);
+
+    expect(vectorImage.style.aspectRatio).toBe('144 / 360');
+  });
+
   it('renders assets in the provided newest-first order across the grid', () => {
     const firstAsset = { id: 1, filename: 'first.jpg', title: 'First image' };
     const secondAsset = { id: 2, filename: 'second.jpg', title: 'Second image' };

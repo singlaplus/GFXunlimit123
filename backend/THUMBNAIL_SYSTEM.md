@@ -4,8 +4,8 @@ The new derivative system stores one deterministic WebP file per asset, separate
 
 ## Processing
 
-- Output presentation is 16:9, up to 640×360, WebP, with quality attempts starting at 60 and stepping down to 30.
-- The encoder fits and centers the complete source on a neutral background without stretching or cropping. It targets 50 KB, tries smaller 16:9 canvases when quality reduction is insufficient, and enforces an approximately 75 KB maximum (down to 32×18 in the exceptional case).
+- Raster, SVG/GIF, PDF, and video thumbnails use a 16:9 presentation up to 640×360. AI/EPS and PSD/PSB thumbnails preserve the rendered artwork aspect ratio within 640×360 so Explore can lay them out proportionally. All outputs are WebP, with quality attempts starting at 60 and stepping down to 30.
+- The encoder fits and centers the complete source without stretching or cropping. It uses a neutral background for 16:9 thumbnails and does not add a canvas to proportional vector/layered thumbnails. It targets 50 KB, tries smaller bounds when quality reduction is insufficient, and enforces an approximately 75 KB maximum.
 - Raster, SVG/GIF, AI/EPS, PSD/PSB, PDF, and common video formats use Sharp, existing GFXunlimit processors, Ghostscript/ImageMagick, or FFmpeg.
 - No reliable After Effects/Premiere project renderer exists in this repository. An AEP/PRPROJ upload without a supplied image preview records a permanent thumbnail-processing failure, keeps the original upload intact, and has no new thumbnail until a renderer is added. If an upload includes its optional image preview (or an existing asset's owner/admin replaces its preview), that image is staged outside asset storage and encoded as the asset's one WebP thumbnail; the optional input is removed after successful processing or the final failed attempt.
 - The processor stages remote and layered-design sources under `backend/tmp/asset-thumbnail-sources`; it writes only to the separate thumbnail root and never modifies originals. Root overlap checks resolve existing symlinks before accepting storage paths.
@@ -49,7 +49,7 @@ npm run thumbnails:cleanup
 npm run thumbnails:cleanup -- --apply
 ```
 
-Backfill is resumable by offset/limit, skips valid unchanged outputs, and continues after per-asset failures. `--retry=N` is the number of additional attempts; `--all` is required to select every asset. Backfill/check/cleanup are read-only with respect to schema and require migration 028 to have been deliberately applied. Check reports missing, invalid, duplicate, orphan, and unexpected storage entries. Cleanup is a dry run unless `--apply` is supplied; it reports the current new-thumbnail count/size, legacy-reference count, and each orphan's size and reason before any removal. Cleanup only considers safe, dated WebP paths below the dedicated thumbnail root. Original assets, legacy thumbnail files, and unexpected entries are not eligible for removal.
+Backfill is resumable by offset/limit, skips valid unchanged outputs, and continues after per-asset failures. `--retry=N` is the number of additional attempts; `--all` is required to select every asset. After deploying a thumbnail processor version change, run backfill so existing derivatives are regenerated; the proportional-vector version changes only AI/EPS and PSD/PSB assets, while unchanged raster versions are skipped. Backfill/check/cleanup are read-only with respect to schema and require migration 028 to have been deliberately applied. Check reports missing, invalid, duplicate, orphan, and unexpected storage entries. Cleanup is a dry run unless `--apply` is supplied; it reports the current new-thumbnail count/size, legacy-reference count, and each orphan's size and reason before any removal. Cleanup only considers safe, dated WebP paths below the dedicated thumbnail root. Original assets, legacy thumbnail files, and unexpected entries are not eligible for removal.
 
 ## Rollout and deployment
 
@@ -82,6 +82,13 @@ Backfill is resumable by offset/limit, skips valid unchanged outputs, and contin
    npm run thumbnails:check
    ```
 
-7. If the trial passes, process explicitly bounded successive batches by increasing `--offset`. Re-run check and investigate failures before wider traffic. Test upload and asset deletion separately.
+7. If the trial passes, regenerate existing assets with the new processor version. The proportional-vector version change causes only AI/EPS and PSD/PSB thumbnails to be regenerated; unchanged raster assets are skipped:
+
+   ```text
+   npm run thumbnails:backfill -- --all --concurrency=2 --retry=1
+   npm run thumbnails:check
+   ```
+
+   Investigate failures before wider traffic. Test upload and asset deletion separately.
 8. Verify Explore and Related assets request the WebP endpoint. Keep legacy thumbnail data/files until full coverage and production checks pass. No legacy cleanup is performed by this implementation.
 9. The legacy thumbnail system is intentionally retained during migration. Remove it only in a separately reviewed change after coverage, deletion, upload, and production verification.

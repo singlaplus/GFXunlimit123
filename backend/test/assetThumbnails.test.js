@@ -14,6 +14,7 @@ const {
   getDateDirectory,
   parseThumbnailAssetId,
   getThumbnailCacheControl,
+  getProcessorVersion,
   getThumbnailStorageRoot,
   isValidThumbnailFile,
   normalizeThumbnailRelativePath,
@@ -63,6 +64,26 @@ test('does not enlarge a small portrait source and preserves its proportions', a
   assert.equal(metadata.height, 360);
   assert.ok(top[2] > 180);
   assert.ok(outside[0] > 200 && outside[2] > 200);
+});
+
+test('preserves original dimensions for proportional vector previews', async () => {
+  const source = Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="500"><rect width="200" height="500" fill="#0000ff"/></svg>'
+  );
+  const result = await encodeThumbnail(source, { preserveAspectRatio: true });
+  const metadata = await sharp(result.buffer).metadata();
+
+  assert.equal(metadata.width, 144);
+  assert.equal(metadata.height, 360);
+  assert.equal(result.width, 144);
+  assert.equal(result.height, 360);
+  assert.ok(result.buffer.length <= HARD_TARGET_BYTES);
+});
+
+test('uses proportional thumbnail versioning only for vector and layered assets', () => {
+  assert.equal(getProcessorVersion('asset.eps'), 'webp-proportional-v3');
+  assert.equal(getProcessorVersion('asset.psb'), 'webp-proportional-v3');
+  assert.equal(getProcessorVersion('asset.jpg'), 'webp-16x9-v2');
 });
 
 test('fits 4:3 and extremely wide sources without cropping into a 16:9 presentation', async () => {

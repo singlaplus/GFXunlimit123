@@ -136,6 +136,7 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
   const supportsProportionalPreview = /\.(?:jpe?g|png|webp|ai|eps|psd|psb)$/i.test(
     String(image.filename || "")
   );
+  const usesGeneratedThumbnail = /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
 
   return (
     <div
@@ -165,7 +166,9 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
     >
       <DeferredPreviewImage
         ref={imageRef}
-        src={supportsProportionalPreview
+        src={usesGeneratedThumbnail
+          ? getAssetPreviewUrl(image, { thumbnailOnly: true })
+          : supportsProportionalPreview
           ? getAssetPreviewUrl(image, { quality: 50, renderCatalogPreview: true })
           : getAssetPreviewUrl(image, { thumbnailOnly: true })}
         alt={image.title}
