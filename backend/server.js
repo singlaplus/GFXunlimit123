@@ -8117,27 +8117,37 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
         return sendThumbnail(thumbnailPath, stats);
       }
 
-      if (!stats && !isPublicAsset) {
-        let regeneration = thumbnailRegenerationJobs.get(numericAssetId);
-        if (!regeneration) {
-          regeneration = assetThumbnails.generateAssetThumbnail(numericAssetId, { force: true });
-          thumbnailRegenerationJobs.set(numericAssetId, regeneration);
-        }
-        try {
-          const result = await regeneration;
-          const regeneratedPath = result.thumbnailPath;
-          const regeneratedStats = await fs.promises.lstat(regeneratedPath);
-          if (await validThumbnail(regeneratedPath, regeneratedStats)) {
-            return sendThumbnail(regeneratedPath, regeneratedStats);
-          }
+      console.error(`Stored thumbnail is missing or invalid for asset ${assetId}`);
+    }
+
+    if (!isPublicAsset) {
+      let regeneration = thumbnailRegenerationJobs.get(numericAssetId);
+      if (!regeneration) {
+        regeneration = assetThumbnails.generateAssetThumbnail(numericAssetId, { force: true });
+        thumbnailRegenerationJobs.set(numericAssetId, regeneration);
+      }
+      try {
+        const result = await regeneration;
+        const regeneratedPath = result.thumbnailPath;
+        const regeneratedStats = await fs.promises.lstat(regeneratedPath);
+        if (
+          !regeneratedStats.isFile() ||
+          regeneratedStats.isSymbolicLink() ||
+          !(await assetThumbnails.isThumbnailPathInsideRoot(regeneratedPath)) ||
+          !(await assetThumbnails.isValidThumbnailFile(regeneratedPath))
+        ) {
           throw new Error("Regenerated thumbnail is missing or invalid");
-        } finally {
-          if (thumbnailRegenerationJobs.get(numericAssetId) === regeneration) {
-            thumbnailRegenerationJobs.delete(numericAssetId);
-          }
+        }
+        res.setHeader("Content-Type", "image/webp");
+        res.setHeader("Cache-Control", "private, no-store");
+        res.setHeader("Last-Modified", regeneratedStats.mtime.toUTCString());
+        res.setHeader("ETag", `W/"${regeneratedStats.size.toString(16)}-${Math.trunc(regeneratedStats.mtimeMs).toString(16)}"`);
+        return res.sendFile(regeneratedPath, { lastModified: true, etag: true, cacheControl: false });
+      } finally {
+        if (thumbnailRegenerationJobs.get(numericAssetId) === regeneration) {
+          thumbnailRegenerationJobs.delete(numericAssetId);
         }
       }
-      console.error(`Thumbnail record exists but file is missing for asset ${assetId}`);
     }
 
     // Keep existing pages populated while the new backfill is in progress.
