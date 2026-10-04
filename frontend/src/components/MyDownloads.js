@@ -50,6 +50,8 @@ function MyDownloads({ darkMode = false }) {
           id: d.id,
           image_id: imgId,
           title: d.title || d.filename || '',
+          filename: d.filename || '',
+          order_number: d.order_number || '',
           downloaded_at: d.created_at || null,
           expires_at: d.expires_at || null,
           is_active: d.is_active,
@@ -133,13 +135,12 @@ function MyDownloads({ darkMode = false }) {
           }
         } catch (e) {}
       }
-      // Prefer the image title as filename
       const sanitize = (s) => (s || '').toString().trim().replace(/\s+/g, '_').replace(/[^a-z0-9._-]/gi, '_').slice(0, 200);
-      const titleBase = sanitize(image.title || image.image_id || 'asset');
-      let ext = '';
-      if (filename && filename.includes('.')) {
-        ext = '.' + filename.split('.').pop().split('?')[0];
-      } else {
+      if (!filename) {
+        const titleBase = sanitize(image.title || image.image_id || 'asset');
+        const actualName = sanitize((image.filename || tokenRes.data?.filename || '').split('/').pop().replace(/\.[^.]+$/, '')) || 'file';
+        const orderNumber = sanitize(image.order_number || tokenRes.data?.order_number || 'order');
+        let ext = '';
         try {
           const respUrl = res.request && res.request.responseURL;
           if (respUrl) {
@@ -148,8 +149,9 @@ function MyDownloads({ darkMode = false }) {
             if (last && last.includes('.')) ext = '.' + last.split('.').pop().split('?')[0];
           }
         } catch (e) {}
+        filename = `${titleBase}_${actualName}_${orderNumber}${ext || ''}`;
       }
-      a.download = `${titleBase}${ext || ''}`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();

@@ -10904,7 +10904,7 @@ app.post('/checkout/retry-with-credits', authenticateToken, async (req, res) => 
         if (!token) return res.status(400).json({ error: 'Token is required' });
 
         const downloadResult = await pool.query(
-          `SELECT cd.*, o.payment_status, o.order_status, i.filename, i.title, i.uploaded_by FROM customer_downloads cd LEFT JOIN orders o ON o.id = cd.order_id LEFT JOIN images i ON i.id = cd.image_id WHERE cd.download_token = $1 LIMIT 1`,
+          `SELECT cd.*, o.payment_status, o.order_status, o.order_number, i.filename, i.title, i.uploaded_by FROM customer_downloads cd LEFT JOIN orders o ON o.id = cd.order_id LEFT JOIN images i ON i.id = cd.image_id WHERE cd.download_token = $1 LIMIT 1`,
           [token]
         );
 
@@ -10935,7 +10935,19 @@ app.post('/checkout/retry-with-credits', authenticateToken, async (req, res) => 
           return res.status(404).json({ error: 'File missing on server' });
         }
 
-        const suggestedName = dl.title ? `${dl.title}${path.extname(dl.filename)}` : path.basename(dl.filename);
+        const fileExtension = path.extname(dl.filename);
+        const actualFileBase = path.basename(dl.filename, fileExtension);
+        const sanitizeFilenamePart = (value) => String(value || '')
+          .trim()
+          .replace(/\s+/g, '_')
+          .replace(/[^a-z0-9._-]/gi, '_')
+          .replace(/^\.|\.+$/g, '')
+          .slice(0, 120);
+        const suggestedName = [
+          sanitizeFilenamePart(dl.title) || 'asset',
+          sanitizeFilenamePart(actualFileBase) || 'file',
+          sanitizeFilenamePart(dl.order_number) || 'order',
+        ].join('_') + fileExtension;
         console.debug('Serving customer download', { token, image_id: dl.image_id, user_id: dl.user_id, filename: dl.filename, suggestedName });
         res.download(filePath, suggestedName, async (downloadError) => {
           if (!downloadError) {
@@ -13225,6 +13237,7 @@ app.get(
           cd.created_at,
           i.title,
           i.filename,
+          o.order_number,
           i.thumbnail_url,
           i.thumbnail_status,
           i.thumbnail_generated_at
@@ -13264,8 +13277,11 @@ app.get(
 
       const q = await pool.query(
         `
-        SELECT download_token, expires_at, is_active
+        SELECT cd.download_token, cd.expires_at, cd.is_active,
+          i.filename, i.title, o.order_number
         FROM customer_downloads cd
+        JOIN images i ON i.id = cd.image_id
+        LEFT JOIN orders o ON o.id = cd.order_id
         WHERE cd.user_id = $1
           AND cd.image_id = $2
           AND cd.is_active = TRUE

@@ -558,9 +558,11 @@ async function registerOrderRoutes(app, pool, verifyAdmin, authenticateToken) {
     ] = await Promise.all([
       pool.query(`SELECT * FROM order_items WHERE order_id = $1 ORDER BY id ASC`, [orderId]),
       pool.query(
-        `SELECT cd.id, cd.user_id, cd.image_id, cd.download_token, cd.license, cd.expires_at, cd.is_active, cd.created_at
+        `SELECT cd.id, cd.user_id, cd.image_id, cd.download_token, cd.license, cd.expires_at, cd.is_active, cd.created_at,
+           i.title, i.filename, o.order_number
          FROM customer_downloads cd
          JOIN orders o ON o.id = cd.order_id
+         JOIN images i ON i.id = cd.image_id
          WHERE cd.order_id = $1
            AND LOWER(COALESCE(o.payment_status, '')) IN ('paid', 'completed')`,
         [orderId]

@@ -359,55 +359,28 @@ export default function OrderHistoryPage({ darkMode = false }) {
                       console.log('All response headers:', res.headers);
                       console.log('Response headers keys:', Object.keys(res.headers || {}));
                       
-                      // Extract extension helper
-                      const extractExt = (str) => {
-                        if (!str) return '';
-                        const s = str.toString();
-                        const q = s.split('?')[0].split('#')[0];
-                        const idx = q.lastIndexOf('.');
-                        if (idx === -1) return '';
-                        const e = q.slice(idx);
-                        if (e.length > 0 && e.length <= 10) return e;
-                        return '';
-                      };
-                      
-                      // Try to get filename from Content-Disposition header (case insensitive)
                       let finalFilename = '';
                       const headerKeys = res.headers ? Object.keys(res.headers) : [];
                       const cdKey = headerKeys.find(k => k.toLowerCase() === 'content-disposition');
                       const cd = cdKey ? res.headers[cdKey] : null;
-                      console.log('Content-Disposition key found:', cdKey, 'value:', cd);
-                      
                       if (cd) {
-                        // Try RFC 5987 first: filename*=UTF-8''...
                         let m = cd.match(/filename\*=UTF-8''([^;\n]+)/i);
-                        if (m) {
-                          finalFilename = decodeURIComponent(m[1]);
-                          console.log('Extracted filename from RFC 5987:', finalFilename);
-                        }
-                        // Fall back to standard format: filename="..."
+                        if (m) finalFilename = decodeURIComponent(m[1]);
                         if (!finalFilename) {
                           m = cd.match(/filename="([^"]+)"/i);
-                          if (m) {
-                            finalFilename = m[1];
-                            console.log('Extracted filename from standard format:', finalFilename);
-                          }
+                          if (m) finalFilename = m[1];
                         }
                       }
-                      
-                      // Use extracted filename if available, otherwise construct from title
-                      if (finalFilename) {
-                        a.download = finalFilename;
-                      } else {
-                        const sanitize = (s) => (s || '').toString().trim().replace(/\s+/g, '_').replace(/[^a-z0-9._-]/gi, '_').slice(0, 200);
-                        const titleBase = sanitize(item.title || item.asset_id || 'asset');
-                        let ext = '';
-                        if (item && item.title && item.title.includes('.')) {
-                          ext = extractExt(item.title);
-                        }
-                        a.download = `${titleBase}${ext || ''}`;
-                      }
-                      console.log('Final download filename:', a.download);
+                      const sanitize = (s) => (s || '').toString().trim().replace(/\s+/g, '_').replace(/[^a-z0-9._-]/gi, '_').slice(0, 200);
+                      const originalFilename = dl.filename || '';
+                      const originalBase = originalFilename.split('/').pop() || '';
+                      const originalExtension = originalBase.includes('.') ? `.${originalBase.split('.').pop()}` : '';
+                      const actualBase = originalExtension ? originalBase.slice(0, -originalExtension.length) : originalBase;
+                      a.download = finalFilename || [
+                        sanitize(item.title || item.asset_id || 'asset'),
+                        sanitize(actualBase) || 'file',
+                        sanitize(orderDetail.order.order_number) || 'order',
+                      ].join('_') + originalExtension;
                       document.body.appendChild(a);
                       console.log('Anchor element appended, clicking now...');
                       a.click();
