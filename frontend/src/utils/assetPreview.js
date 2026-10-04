@@ -110,6 +110,11 @@ export const getAssetPreviewUrl = (image, options = {}) => {
   return `${API_BASE_URL}/api/images/${image.id}${qs ? `?${qs}` : ''}`;
 };
 
+export const getAssetSourceUrl = (image) => {
+  if (!image?.id) return "";
+  return `${API_BASE_URL.replace(/\/+$/, "")}/api/images/${encodeURIComponent(String(image.id))}`;
+};
+
 export const getAssetOriginalDownloadUrl = (imageId) => {
   if (!imageId) return "";
   return `${API_BASE_URL}/images/${imageId}/download-original`;

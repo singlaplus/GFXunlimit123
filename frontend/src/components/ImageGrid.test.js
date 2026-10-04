@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import ImageGrid from './ImageGrid';
 
 describe('ImageGrid dark mode', () => {
@@ -99,6 +99,102 @@ describe('ImageGrid dark mode', () => {
     fireEvent.load(vectorImage);
 
     expect(vectorImage.style.aspectRatio).toBe('144 / 360');
+  });
+
+  it('uses the EPS source bounding box when cached thumbnails still have a 16:9 canvas', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 206,
+      arrayBuffer: jest.fn().mockResolvedValue(
+        Uint8Array.from(
+          [...'%!PS-Adobe-3.0 EPSF-3.0\n%%HiResBoundingBox: 0 0 595.2756 841.8898\n']
+            .map((character) => character.charCodeAt(0))
+        ).buffer
+      ),
+    });
+
+    try {
+      render(
+        <ImageGrid
+          filteredImages={[{ id: 218, filename: 'new-year.eps', title: 'New Year' }]}
+          darkMode={false}
+        />
+      );
+
+      const image = screen.getByRole('img', { name: 'New Year' });
+      image.parentElement.getBoundingClientRect = () => ({ width: 220 });
+      Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 640 });
+      Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 360 });
+      fireEvent.load(image);
+
+      await waitFor(() => {
+        expect(image.style.aspectRatio).toBe('595.2756 / 841.8898');
+      });
+      expect(image.style.objectFit).toBe('cover');
+      expect(image.parentElement.style.gridRowEnd).toBe('span 14');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://localhost:5000/api/images/218',
+        expect.objectContaining({
+          credentials: 'include',
+          headers: { Range: 'bytes=0-65535' },
+        })
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it.each([
+    ['psd', 1],
+    ['psb', 2],
+  ])('uses the %s source dimensions instead of a stale 16:9 thumbnail', async (extension, version) => {
+    const originalFetch = global.fetch;
+    const header = new ArrayBuffer(26);
+    const view = new DataView(header);
+    new Uint8Array(header, 0, 4).set([0x38, 0x42, 0x50, 0x53]);
+    view.setUint16(4, version, false);
+    view.setUint16(12, 3, false);
+    view.setUint32(14, 2400, false);
+    view.setUint32(18, 1600, false);
+    view.setUint16(22, 8, false);
+    view.setUint16(24, 3, false);
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 206,
+      arrayBuffer: jest.fn().mockResolvedValue(header),
+    });
+
+    try {
+      render(
+        <ImageGrid
+          filteredImages={[{ id: 197, filename: `layered.${extension}`, title: 'Layered asset' }]}
+          darkMode={false}
+        />
+      );
+
+      const image = screen.getByRole('img', { name: 'Layered asset' });
+      image.parentElement.getBoundingClientRect = () => ({ width: 220 });
+      Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 640 });
+      Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 360 });
+      fireEvent.load(image);
+
+      await waitFor(() => {
+        expect(image.style.aspectRatio).toBe('1600 / 2400');
+      });
+      expect(image.style.objectFit).toBe('cover');
+      expect(image.parentElement.style.gridRowEnd).toBe('span 15');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://localhost:5000/api/images/197',
+        expect.objectContaining({
+          credentials: 'include',
+          headers: { Range: 'bytes=0-65535' },
+        })
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 
   it('renders assets in the provided newest-first order across the grid', () => {

@@ -81,8 +81,10 @@ test('preserves original dimensions for proportional vector previews', async () 
 });
 
 test('uses proportional thumbnail versioning only for vector and layered assets', () => {
-  assert.equal(getProcessorVersion('asset.eps'), 'webp-proportional-v3');
-  assert.equal(getProcessorVersion('asset.psb'), 'webp-proportional-v3');
+  assert.equal(getProcessorVersion('asset.eps'), 'webp-proportional-v4-watermarked');
+  assert.equal(getProcessorVersion('asset.psb'), 'webp-proportional-v4-watermarked');
+  assert.equal(getProcessorVersion('asset.ai'), 'webp-proportional-v4-watermarked');
+  assert.equal(getProcessorVersion('asset.psd'), 'webp-proportional-v4-watermarked');
   assert.equal(getProcessorVersion('asset.jpg'), 'webp-16x9-v2');
 });
 

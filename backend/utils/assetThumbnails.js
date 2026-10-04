@@ -9,9 +9,10 @@ const sharp = require('sharp');
 const pool = require('../db');
 const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
+const { applyWatermarkToBuffer } = require('./watermarkEngine');
 
 const PROCESSOR_VERSION = 'webp-16x9-v2';
-const PROPORTIONAL_PROCESSOR_VERSION = 'webp-proportional-v3';
+const PROPORTIONAL_PROCESSOR_VERSION = 'webp-proportional-v4-watermarked';
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024;
 const HARD_TARGET_BYTES = 75 * 1024;
 const PREFERRED_TARGET_BYTES = 50 * 1024;
@@ -515,7 +516,7 @@ async function extractPreview(sourcePath, extension) {
   throw error;
 }
 
-async function encodeThumbnail(previewBuffer, { preserveAspectRatio = false } = {}) {
+async function encodeThumbnail(previewBuffer, { preserveAspectRatio = false, watermark = false } = {}) {
   let lastResult;
   for (const bounds of [
     MAX_DIMENSIONS,
@@ -550,10 +551,13 @@ async function encodeThumbnail(previewBuffer, { preserveAspectRatio = false } = 
         .toBuffer();
     const outputWidth = preserveAspectRatio ? fitted.info.width : bounds.width;
     const outputHeight = preserveAspectRatio ? fitted.info.height : bounds.height;
+    const encodedSource = watermark
+      ? await applyWatermarkToBuffer(canvas, { quality: QUALITY_STEPS[0] })
+      : canvas;
 
     let acceptableResult = null;
     for (const quality of QUALITY_STEPS) {
-      const buffer = await sharp(canvas).webp({ quality, effort: 6, smartSubsample: true }).toBuffer();
+      const buffer = await sharp(encodedSource).webp({ quality, effort: 6, smartSubsample: true }).toBuffer();
       lastResult = { buffer, width: outputWidth, height: outputHeight, quality };
       if (buffer.length <= PREFERRED_TARGET_BYTES) return lastResult;
       if (!acceptableResult && buffer.length <= HARD_TARGET_BYTES) acceptableResult = lastResult;
@@ -743,6 +747,7 @@ async function generateAssetThumbnail(assetId, options = {}) {
     if (!Buffer.isBuffer(previewBuffer) || previewBuffer.length === 0) throw new Error('Processor returned an empty preview');
     const thumbnail = await encodeThumbnail(previewBuffer, {
       preserveAspectRatio: ['.ai', '.eps', '.psd', '.psb'].includes(extension),
+      watermark: ['.ai', '.eps', '.psd', '.psb'].includes(extension),
     });
     if (thumbnail.width > MAX_DIMENSIONS.width || thumbnail.height > MAX_DIMENSIONS.height) {
       throw new Error('Generated thumbnail exceeds maximum dimensions');

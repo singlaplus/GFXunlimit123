@@ -1,4 +1,4 @@
-import { getAssetPreviewUrl, getAssetOriginalDownloadUrl, resolveThumbnailDownloadFile } from './assetPreview';
+import { getAssetPreviewUrl, getAssetSourceUrl, getAssetOriginalDownloadUrl, resolveThumbnailDownloadFile } from './assetPreview';
 
 describe('assetPreview', () => {
   test('uses an available thumbnail for listing previews', () => {
@@ -120,6 +120,11 @@ describe('assetPreview', () => {
     const image = { id: 7 };
 
     expect(getAssetPreviewUrl(image, { quality: 60 })).toBe('http://localhost:5000/api/images/7?quality=60');
+  });
+
+  test('builds a source URL for reading bounded asset metadata', () => {
+    expect(getAssetSourceUrl({ id: 218 })).toBe('http://localhost:5000/api/images/218');
+    expect(getAssetSourceUrl({})).toBe('');
   });
 
   test('watermarks AssetPage fallback previews when no thumbnail is ready', () => {

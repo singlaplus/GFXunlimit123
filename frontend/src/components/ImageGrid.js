@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getAssetPreviewUrl } from "../utils/assetPreview";
+import { getAssetPreviewUrl, getAssetSourceUrl } from "../utils/assetPreview";
 
 let deferredPreviewObserver;
 const deferredPreviewCallbacks = new WeakMap();
@@ -77,22 +77,97 @@ function getMasonryRowSpan(card, aspectRatio) {
   );
 }
 
+function getEpsDimensions(header) {
+  const number = "(-?\\d+(?:\\.\\d+)?)";
+  const parseBox = (label) => {
+    const match = header.match(
+      new RegExp(`^%%${label}:\\s*${number}\\s+${number}\\s+${number}\\s+${number}\\s*$`, "m")
+    );
+    if (!match) return null;
+
+    const [left, bottom, right, top] = match.slice(1).map(Number);
+    const width = right - left;
+    const height = top - bottom;
+    return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0
+      ? { width, height }
+      : null;
+  };
+
+  return parseBox("HiResBoundingBox") || parseBox("BoundingBox");
+}
+
+function getPsdDimensions(buffer) {
+  if (buffer.byteLength < 26) return null;
+
+  const bytes = new Uint8Array(buffer, 0, 6);
+  const signature = String.fromCharCode(...bytes.subarray(0, 4));
+  const view = new DataView(buffer);
+  const version = view.getUint16(4, false);
+  if (signature !== "8BPS" || (version !== 1 && version !== 2)) return null;
+
+  const height = view.getUint32(14, false);
+  const width = view.getUint32(18, false);
+  return width > 0 && height > 0
+    ? { width, height }
+    : null;
+}
+
 function MasonryAssetCard({ image, darkMode, onClick }) {
   const cardRef = useRef(null);
   const imageRef = useRef(null);
   const [aspectRatio, setAspectRatio] = useState("16 / 9");
   const [rowSpan, setRowSpan] = useState(1);
+  const [sourceDimensions, setSourceDimensions] = useState(null);
+  const hasSourceDimensions = /\.(?:eps|psd|psb)$/i.test(String(image.filename || ""));
+
+  useEffect(() => {
+    if (!hasSourceDimensions) return undefined;
+
+    const controller = new AbortController();
+    const readDimensions = async () => {
+      const response = await fetch(getAssetSourceUrl(image), {
+        credentials: "include",
+        headers: { Range: "bytes=0-65535" },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Asset source request failed with status ${response.status}`);
+      }
+      if (response.status !== 206) {
+        throw new Error("EPS source server did not honor the bounded range request");
+      }
+
+      const buffer = await response.arrayBuffer();
+      const dimensions = /\.eps$/i.test(String(image.filename || ""))
+        ? getEpsDimensions(Array.from(new Uint8Array(buffer), (byte) => String.fromCharCode(byte)).join(""))
+        : getPsdDimensions(buffer);
+      if (!dimensions) {
+        throw new Error("Asset source does not contain valid dimensions in its header");
+      }
+      if (!controller.signal.aborted) setSourceDimensions(dimensions);
+    };
+
+    readDimensions().catch((error) => {
+      if (!controller.signal.aborted) {
+        console.error(`Failed to read artwork dimensions for asset ${image.id}`, error);
+      }
+    });
+
+    return () => controller.abort();
+  }, [image, hasSourceDimensions]);
 
   useLayoutEffect(() => {
     const updateRowSpan = (loadedAspectRatio) => {
       const card = cardRef.current;
       const naturalWidth = imageRef.current?.naturalWidth || 0;
       const naturalHeight = imageRef.current?.naturalHeight || 0;
-      const imageAspectRatio = loadedAspectRatio || (
+      const imageAspectRatio = sourceDimensions
+        ? sourceDimensions.width / sourceDimensions.height
+        : loadedAspectRatio || (
         naturalWidth > 0 && naturalHeight > 0
           ? naturalWidth / naturalHeight
           : 16 / 9
-      );
+        );
       const nextRowSpan = getMasonryRowSpan(card, imageAspectRatio);
       if (nextRowSpan === null) return;
 
@@ -116,14 +191,15 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
       resizeObserver?.disconnect();
       window.removeEventListener("resize", updateRowSpan);
     };
-  }, []);
+  }, [sourceDimensions]);
 
   const handleImageLoad = (event) => {
     const { naturalWidth, naturalHeight } = event.currentTarget;
     if (naturalWidth <= 0 || naturalHeight <= 0) return;
 
-    const nextAspectRatio = naturalWidth / naturalHeight;
-    setAspectRatio(`${naturalWidth} / ${naturalHeight}`);
+    const dimensions = sourceDimensions || { width: naturalWidth, height: naturalHeight };
+    const nextAspectRatio = dimensions.width / dimensions.height;
+    setAspectRatio(`${dimensions.width} / ${dimensions.height}`);
     const nextRowSpan = getMasonryRowSpan(cardRef.current, nextAspectRatio);
     if (nextRowSpan !== null) setRowSpan(nextRowSpan);
   };
@@ -185,8 +261,8 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
         style={{
           width: "100%",
           height: "auto",
-          aspectRatio,
-          objectFit: "contain",
+          aspectRatio: sourceDimensions ? `${sourceDimensions.width} / ${sourceDimensions.height}` : aspectRatio,
+          objectFit: sourceDimensions ? "cover" : "contain",
           transition: "0.4s",
           display: "block",
         }}
