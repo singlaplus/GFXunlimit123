@@ -668,10 +668,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       ? normalizedSettings.enabledGateways
       : [];
 
-    const inferredGateways = Object.values(normalizedSettings)
-      .filter((value) => value && typeof value === "object" && value.gateway)
-      .map((value) => String(value.gateway).trim())
-      .filter(Boolean);
+    const inferredGateways = Array.isArray(normalizedSettings.enabledGateways)
+      ? []
+      : Object.values(normalizedSettings)
+        .filter((value) => value && typeof value === "object" && value.gateway)
+        .map((value) => String(value.gateway).trim())
+        .filter(Boolean);
 
     return [...new Set([...explicitGateways, ...inferredGateways].map((gateway) => String(gateway).trim()).filter(Boolean))];
   };
@@ -7782,7 +7784,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 onClick={(event) => event.stopPropagation()}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                  <h3 style={{ margin: 0 }}>{selectedPaymentGateway}</h3>
+                  <h3 style={{ margin: 0 }}>{selectedPaymentGateway === "Google Pay" ? "Google Pay / UPI" : selectedPaymentGateway}</h3>
                   <button
                     type="button"
                     onClick={() => setSelectedPaymentGateway(null)}
@@ -7798,15 +7800,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   </button>
                 </div>
                 <p style={{ margin: 0 }}>
-                  {enabledPaymentGateways.includes(selectedPaymentGateway) ? "Currently active" : "Currently inactive"}
+                  Status: {enabledPaymentGateways.includes(selectedPaymentGateway) ? "Enabled" : "Disabled"}
                 </p>
                 {selectedPaymentGateway === "Google Pay" ? (
                   <div style={{ marginTop: "12px", display: "grid", gap: "10px" }}>
-                    <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-                      Active Google Pay ID: {paymentGatewaySettings["google pay"]?.identifier || "Not configured"}
-                    </p>
                     <label style={{ display: "grid", gap: "6px", fontWeight: 600 }}>
-                      Google Pay ID
+                      UPI ID / VPA
                       <input
                         type="text"
                         placeholder="Enter Google Pay ID"
@@ -7815,6 +7814,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid #cbd5e1" }}
                       />
                     </label>
+                    <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>
+                      This UPI ID will be used to generate the payment QR shown to customers.
+                    </p>
                     <button
                       type="button"
                       onClick={() => savePaymentGatewaySettings(selectedPaymentGateway, paymentGatewayIdentifier)}
@@ -7828,14 +7830,16 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         cursor: paymentGatewaySaving ? "not-allowed" : "pointer"
                       }}
                     >
-                      {paymentGatewaySaving ? "Saving..." : "Save Google Pay ID"}
+                      {paymentGatewaySaving ? "Saving..." : "Save Changes"}
                     </button>
                     {paymentGatewayMessage ? <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#475569" }}>{paymentGatewayMessage}</p> : null}
                   </div>
                 ) : null}
-                <p style={{ margin: "12px 0 0", color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-                  Use the checkbox to enable or disable this payment method.
-                </p>
+                {selectedPaymentGateway !== "Google Pay" ? (
+                  <p style={{ margin: "12px 0 0", color: isDarkMode ? "#cbd5e1" : "#475569" }}>
+                    Use the checkbox to enable or disable this payment method.
+                  </p>
+                ) : null}
               </div>
             </div>
           )}

@@ -44,7 +44,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState(null);
   const [retryPaymentOrder, setRetryPaymentOrder] = useState(null);
-  const [retryPaymentUpiId, setRetryPaymentUpiId] = useState("");
+  const [retryPaymentUtr, setRetryPaymentUtr] = useState("");
   const [retryPaymentError, setRetryPaymentError] = useState("");
   const [retryPaymentSubmitting, setRetryPaymentSubmitting] = useState(false);
   const [retryPaymentPreparing, setRetryPaymentPreparing] = useState(false);
@@ -114,7 +114,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
 
   const openPaymentRetry = async (order) => {
     setRetryPaymentOrder(order);
-    setRetryPaymentUpiId("");
+    setRetryPaymentUtr("");
     setRetryPaymentError("");
     setRetryPaymentSuccess("");
     setRetryPaymentCredits(null);
@@ -145,7 +145,8 @@ export default function OrderHistoryPage({ darkMode = false }) {
       setRetryPaymentCredits({ available: availableCredits, required: creditsRequired });
 
       if (googlePayEnabled && googlePayId) {
-        const paymentUri = `upi://pay?pa=${encodeURIComponent(googlePayId)}&pn=${encodeURIComponent("GFXunlimit")}&am=${encodeURIComponent(Number(order.total_amount).toFixed(2))}&cu=${encodeURIComponent(String(order.currency || "INR").toUpperCase())}`;
+        const paymentReference = order.order_number || `Order ${order.id}`;
+        const paymentUri = `upi://pay?pa=${encodeURIComponent(googlePayId)}&pn=${encodeURIComponent("GFXunlimit")}&am=${encodeURIComponent(Number(order.total_amount).toFixed(2))}&cu=${encodeURIComponent(String(order.currency || "INR").toUpperCase())}&tn=${encodeURIComponent(paymentReference)}`;
         setRetryPaymentOrder({ ...order, googlePayId, paymentUri });
       } else if (availableCredits < creditsRequired) {
         setRetryPaymentError(
@@ -190,9 +191,14 @@ export default function OrderHistoryPage({ darkMode = false }) {
   };
 
   const submitPaymentRetry = async () => {
-    const upiId = retryPaymentUpiId.trim();
-    if (!upiId || !retryPaymentOrder) {
-      setRetryPaymentError("Enter the UPI ID used to make the payment.");
+    const utr = retryPaymentUtr.trim();
+    if (!retryPaymentOrder) return;
+    if (!utr) {
+      setRetryPaymentError("Enter UTR / Transaction ID.");
+      return;
+    }
+    if (!/^\d{7,64}$/.test(utr)) {
+      setRetryPaymentError("Enter UTR / Transaction ID.");
       return;
     }
 
@@ -201,19 +207,19 @@ export default function OrderHistoryPage({ darkMode = false }) {
     try {
       const token = localStorage.getItem("token");
       const response = await axios.post(
-        `${apiBaseUrl}/checkout/confirm-google-pay`,
-        { orderId: retryPaymentOrder.id, upiId },
+        `${apiBaseUrl}/checkout/submit-google-pay-payment`,
+        { orderId: retryPaymentOrder.id, utr },
         { headers: token ? { Authorization: `Bearer ${token}` } : {} }
       );
       setOrders((currentOrders) => currentOrders.map((order) => (
         order.id === retryPaymentOrder.id
-          ? { ...order, payment_status: "completed", order_status: "completed" }
+          ? { ...order, payment_status: "completed", order_status: "completed", download_status: "available", payment_submitted: true }
           : order
       )));
       setRetryPaymentOrder(null);
-      setRetryPaymentUpiId("");
+      setRetryPaymentUtr("");
       setRetryPaymentError("");
-      setRetryPaymentSuccess(response.data?.message || "Payment submitted successfully.");
+      setRetryPaymentSuccess(response.data?.message || "Payment details submitted. Your order is complete and downloads are available.");
     } catch (requestError) {
       console.error("Payment retry failed", requestError);
       setRetryPaymentError(requestError.response?.data?.error || "Payment retry failed. Please try again.");
@@ -275,9 +281,6 @@ export default function OrderHistoryPage({ darkMode = false }) {
                   }}>
                     {String(orderDetail.order.payment_status || "").toLowerCase() === "pending" ? "Payment pending" : orderDetail.order.payment_status}
                   </span>
-                </p>
-                <p>
-                  <strong>UPI ID:</strong> {orderDetail.order.payer_upi_id || "—"}
                 </p>
                 <p>
                   <strong>Refund status:</strong> {orderDetail.order.refund_status}
@@ -555,6 +558,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
                             {(() => {
                               const paymentStatus = String(order.payment_status || "unknown").trim().toLowerCase();
                               const isPending = paymentStatus === "pending";
+                              const isSubmitted = Boolean(order.payment_submitted);
                               const isPaid = paymentStatus === "paid" || paymentStatus === "completed";
                               return (
                                 <div style={{ display: "grid", justifyItems: "start", gap: "8px" }}>
@@ -570,9 +574,9 @@ export default function OrderHistoryPage({ darkMode = false }) {
                                       border: `1px solid ${isPending ? (isDarkMode ? "rgba(248,113,113,0.45)" : "#fecaca") : isPaid ? (isDarkMode ? "rgba(74,222,128,0.35)" : "#bbf7d0") : (isDarkMode ? "rgba(148,163,184,0.25)" : "#e2e8f0")}`,
                                     }}
                                   >
-                                    {isPending ? "Payment pending" : isPaid ? "Paid" : paymentStatus}
+                                    {isSubmitted ? "Pending Verification" : isPending ? "Payment pending" : isPaid ? "Paid" : paymentStatus}
                                   </span>
-                                  {!isContributor && isPending && Number(order.total_amount) > 0 && (
+                                  {!isContributor && isPending && !isSubmitted && Number(order.total_amount) > 0 && (
                                     <button
                                       type="button"
                                       onClick={() => openPaymentRetry(order)}
@@ -606,8 +610,17 @@ export default function OrderHistoryPage({ darkMode = false }) {
         </div>
       )}
       {retryPaymentOrder && (
-        <div role="dialog" aria-modal="true" aria-labelledby="retry-payment-title" style={{ position: "fixed", inset: 0, zIndex: 50, display: "grid", placeItems: "center", padding: 20, background: "rgba(15, 23, 42, 0.65)" }}>
-          <section style={{ width: "min(440px, 100%)", padding: 24, borderRadius: 18, background: isDarkMode ? "#0f172a" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", textAlign: "center", boxShadow: "0 20px 60px rgba(15, 23, 42, 0.3)" }}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="retry-payment-title"
+          onClick={() => setRetryPaymentOrder(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 50, display: "grid", placeItems: "center", padding: 20, background: "rgba(15, 23, 42, 0.65)" }}
+        >
+          <section
+            onClick={(event) => event.stopPropagation()}
+            style={{ width: "min(440px, 100%)", maxHeight: "calc(100vh - 40px)", overflowY: "auto", boxSizing: "border-box", padding: 24, borderRadius: 18, background: isDarkMode ? "#0f172a" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", textAlign: "center", boxShadow: "0 20px 60px rgba(15, 23, 42, 0.3)" }}
+          >
             <h2 id="retry-payment-title" style={{ marginTop: 0 }}>Retry payment</h2>
             <p>Order {retryPaymentOrder.order_number} · {formatCurrency(retryPaymentOrder.total_amount, retryPaymentOrder.currency)}</p>
             {retryPaymentCredits && (
@@ -630,15 +643,23 @@ export default function OrderHistoryPage({ darkMode = false }) {
             {retryPaymentOrder.paymentUri ? (
               <>
                 <hr style={{ border: 0, borderTop: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", margin: "16px 0" }} />
-                <strong>Or pay with Google Pay</strong>
-                <p style={{ wordBreak: "break-word", color: isDarkMode ? "#cbd5e1" : "#475569" }}>Google Pay ID: {retryPaymentOrder.googlePayId}</p>
+                <strong>Google Pay / UPI</strong>
+                <p>Amount: {formatCurrency(retryPaymentOrder.total_amount, retryPaymentOrder.currency)}</p>
+                <img
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(retryPaymentOrder.paymentUri)}`}
+                  alt="Google Pay payment QR code"
+                  width="220"
+                  height="220"
+                  style={{ maxWidth: "100%" }}
+                />
                 <a href={retryPaymentOrder.paymentUri} style={{ display: "inline-block", marginBottom: 12, borderRadius: 10, padding: "10px 14px", background: "#1d4ed8", color: "#fff", textDecoration: "none", fontWeight: 700 }}>Open payment app</a>
+                <p style={{ color: isDarkMode ? "#cbd5e1" : "#475569" }}>Scan the payment QR from checkout using Google Pay or another supported UPI app.</p>
                 <label style={{ display: "grid", gap: 6, textAlign: "left", fontWeight: 700 }}>
-                  Your UPI ID
-                  <input value={retryPaymentUpiId} onChange={(event) => setRetryPaymentUpiId(event.target.value)} placeholder="example@upi" style={inputStyle} />
+                  UTR / Transaction ID
+                  <input value={retryPaymentUtr} onChange={(event) => setRetryPaymentUtr(event.target.value)} placeholder="Enter UTR / Transaction ID" inputMode="numeric" maxLength={64} required style={inputStyle} />
                 </label>
                 <button type="button" onClick={submitPaymentRetry} disabled={retryPaymentSubmitting} style={{ border: "none", borderRadius: 12, padding: "12px 18px", marginTop: 12, background: "#16a34a", color: "#fff", fontWeight: 700, cursor: retryPaymentSubmitting ? "not-allowed" : "pointer" }}>
-                  {retryPaymentSubmitting ? "Submitting…" : "Submit UPI ID"}
+                  {retryPaymentSubmitting ? "Submitting…" : "Submit Payment"}
                 </button>
               </>
             ) : (

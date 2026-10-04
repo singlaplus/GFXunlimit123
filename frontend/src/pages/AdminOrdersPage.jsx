@@ -51,7 +51,7 @@ const DARK_THEME = {
 };
 
 const STATUS_OPTIONS = ["pending", "awaiting_payment", "payment_processing", "payment_authorized", "completed", "download_available", "partially_downloaded", "fully_downloaded", "refund_requested", "refund_approved", "refunded", "partially_refunded", "cancelled", "failed", "chargeback", "expired", "archived"];
-const PAYMENT_STATUS_OPTIONS = ["pending", "completed", "failed", "authorized", "refunded", "cancelled"];
+const PAYMENT_STATUS_OPTIONS = ["pending", "completed", "rejected", "failed", "authorized", "refunded", "cancelled"];
 const REFUND_STATUS_OPTIONS = ["none", "requested", "approved", "refunded", "partially_refunded"];
 const ORDER_TYPES = ["purchase", "subscription", "credit_purchase"];
 const PAYMENT_GATEWAYS = ["Credit Card", "PayPal", "Google Pay", "Paytm", "Stripe", "Bank Transfer"];
@@ -83,6 +83,16 @@ const toDateTimeString = (value) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleString();
+};
+
+const readPaymentResponse = (payment) => {
+  if (!payment?.response) return {};
+  if (typeof payment.response === "object") return payment.response;
+  try {
+    return JSON.parse(payment.response);
+  } catch {
+    return {};
+  }
 };
 
 const formatActivityDetails = (details) => {
@@ -126,6 +136,8 @@ export default function AdminOrdersPage() {
   const [analytics, setAnalytics] = useState({});
   const [loading, setLoading] = useState(true);
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [paymentReviewing, setPaymentReviewing] = useState(false);
+  const [paymentReviewMessage, setPaymentReviewMessage] = useState("");
   const [details, setDetails] = useState(null);
   const [selectedOrders, setSelectedOrders] = useState(new Set());
   const [showDetails, setShowDetails] = useState(false);
@@ -211,6 +223,12 @@ export default function AdminOrdersPage() {
   }, [page, limit, filters]);
 
   const theme = isDarkMode ? DARK_THEME : LIGHT_THEME;
+  const selectedPayment = details?.payments?.find((payment) => String(payment.gateway || "").trim().toLowerCase() === "google pay")
+    || details?.payments?.[0];
+  const selectedPaymentResponse = readPaymentResponse(selectedPayment);
+  const canReviewGooglePayPayment = String(details?.order?.payment_method || selectedPayment?.gateway || "").trim().toLowerCase() === "google pay"
+    && String(selectedPayment?.status || "").trim().toLowerCase() === "pending"
+    && Boolean(String(selectedPaymentResponse.utr || "").trim());
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
@@ -437,6 +455,46 @@ export default function AdminOrdersPage() {
   const closeDetails = () => {
     setShowDetails(false);
     setDetails(null);
+    setPaymentReviewMessage("");
+  };
+
+  const reviewGooglePayPayment = async (decision) => {
+    const payment = details?.payments?.find((item) => String(item.gateway || "").trim().toLowerCase() === "google pay");
+    const response = readPaymentResponse(payment);
+    if (!details || !payment || !response.utr) return;
+    const prompt = decision === "approved"
+      ? `Approve this payment?\n\nAmount: ${formatCurrency(details.order.total_amount, details.order.currency)}\nUTR: ${response.utr}\n\nOnly approve after confirming that the payment has been received.`
+      : `Reject this payment?\n\nAmount: ${formatCurrency(details.order.total_amount, details.order.currency)}\nUTR: ${response.utr}`;
+    if (!window.confirm(prompt)) return;
+
+    setPaymentReviewing(true);
+    setPaymentReviewMessage("");
+    setError("");
+    try {
+      const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+      const result = await axios.put(
+        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/${details.order.id}/payment-status`,
+        { decision },
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      );
+      const status = result.data?.paymentStatus || (decision === "approved" ? "completed" : "rejected");
+      const orderStatus = decision === "approved" ? "completed" : "failed";
+      const downloadStatus = decision === "approved" ? "available" : "blocked";
+      setOrders((current) => current.map((order) => Number(order.id) === Number(details.order.id)
+        ? { ...order, payment_status: status, order_status: orderStatus, download_status: downloadStatus }
+        : order));
+      setPaymentReviewMessage(result.data?.message || `Payment ${decision}.`);
+      const refreshed = await axios.get(
+        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/${details.order.id}`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      );
+      setDetails(refreshed.data || null);
+    } catch (err) {
+      console.error("Failed to review payment", err);
+      setError(err.response?.data?.error || "Unable to update payment status.");
+    } finally {
+      setPaymentReviewing(false);
+    }
   };
 
   const performBulkAction = async (action) => {
@@ -821,11 +879,36 @@ export default function AdminOrdersPage() {
                 <section style={{ display: "grid", gap: "18px", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
                   <div style={{ padding: "20px", borderRadius: "20px", background: theme.surfaceAlt, border: `1px solid ${theme.border}` }}>
                     <h3 style={{ margin: "0 0 12px" }}>Payment</h3>
-                    <div><strong>Gateway:</strong> {details.order.payment_gateway || "-"}</div>
+                    <div><strong>Gateway:</strong> {String(details.order.payment_method || selectedPayment?.gateway || "").trim().toLowerCase() === "google pay" ? "Google Pay / UPI" : details.order.payment_gateway || "-"}</div>
+                    <div><strong>Amount:</strong> {formatCurrency(details.order.total_amount, details.order.currency)}</div>
                     <div><strong>Method:</strong> {details.order.payment_method || "-"}</div>
-                    <div><strong>UPI ID:</strong> {details.order.payer_upi_id || "-"}</div>
+                    <div><strong>Payment Status:</strong> {canReviewGooglePayPayment ? "Pending Verification" : details.order.payment_status || "-"}</div>
+                    <div><strong>Customer UTR:</strong> {selectedPaymentResponse.utr || "-"}</div>
+                    <div><strong>Payment Submitted At:</strong> {toDateTimeString(selectedPaymentResponse.submittedAt)}</div>
+                    <div><strong>Payment Screenshot:</strong> Not provided</div>
                     <div><strong>Transaction ID:</strong> {details.order.transaction_id || details.payments?.[0]?.transaction_id || "-"}</div>
-                    <div><strong>Status:</strong> {details.order.payment_status || "-"}</div>
+                    {canReviewGooglePayPayment ? (
+                      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "14px" }}>
+                        <button
+                          type="button"
+                          onClick={() => reviewGooglePayPayment("approved")}
+                          disabled={paymentReviewing}
+                          style={{ border: "none", borderRadius: "12px", background: "#16a34a", color: "#fff", padding: "10px 14px", fontWeight: 700, cursor: paymentReviewing ? "not-allowed" : "pointer" }}
+                        >
+                          {paymentReviewing ? "Updating…" : "Approve Payment"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => reviewGooglePayPayment("rejected")}
+                          disabled={paymentReviewing}
+                          style={{ border: `1px solid ${theme.error}`, borderRadius: "12px", background: theme.surface, color: theme.error, padding: "10px 14px", fontWeight: 700, cursor: paymentReviewing ? "not-allowed" : "pointer" }}
+                        >
+                          Reject Payment
+                        </button>
+                      </div>
+                    ) : null}
+                    {paymentReviewMessage ? <p role="status" style={{ margin: "12px 0 0", color: theme.muted }}>{paymentReviewMessage}</p> : null}
+                    {error ? <p role="alert" style={{ margin: "12px 0 0", color: theme.error }}>{error}</p> : null}
                   </div>
                   <div style={{ padding: "20px", borderRadius: "20px", background: theme.surfaceAlt, border: `1px solid ${theme.border}` }}>
                     <h3 style={{ margin: "0 0 12px" }}>Fulfillment</h3>

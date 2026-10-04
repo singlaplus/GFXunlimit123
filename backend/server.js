@@ -10320,6 +10320,14 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
     const isCreditsPayment = normalizedPaymentMethod === "gfx's credits";
     const isGooglePayPayment = normalizedPaymentMethod === 'google pay';
     const isAdminCreditRequest = normalizedPaymentMethod === 'request to admin';
+    if (isGooglePayPayment) {
+      const googlePayConfigured = Boolean(String(paymentSettings["google pay"]?.identifier || "").trim());
+      const googlePayEnabled = (paymentSettings.enabledGateways || [])
+        .some((gateway) => String(gateway).trim().toLowerCase() === "google pay");
+      if (!googlePayEnabled || !googlePayConfigured) {
+        return res.status(400).json({ error: "Google Pay / UPI is not currently configured or enabled." });
+      }
+    }
     if (isCreditPurchase && !isAdminCreditRequest) {
       return res.status(400).json({ error: 'Credit packages must be requested from an admin' });
     }
@@ -10690,76 +10698,166 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/checkout/confirm-google-pay', authenticateToken, async (req, res) => {
+const submitGooglePayPayment = async (req, res) => {
   const orderId = Number(req.body?.orderId);
   const upiId = String(req.body?.upiId || '').trim();
-
-  if (!orderId || Number.isNaN(orderId)) {
-    return res.status(400).json({ error: 'Invalid order id' });
+  const utr = String(req.body?.utr || '').trim();
+  if (!Number.isInteger(orderId) || orderId <= 0) return res.status(400).json({ error: 'Invalid order id.' });
+  if (!utr) return res.status(400).json({ error: 'UTR / transaction ID is required.' });
+  if (!/^\d{7,64}$/.test(utr)) {
+    return res.status(400).json({ error: 'Enter UTR / Transaction ID.' });
   }
+  if (upiId.length > 100) return res.status(400).json({ error: 'UPI ID must be 100 characters or fewer.' });
 
+  let client;
+  let transactionStarted = false;
   try {
-    const orderResult = await pool.query(
-      `SELECT id, order_number, customer_id, payment_method, payment_status
-       FROM orders WHERE id = $1 AND customer_id = $2 LIMIT 1`,
+    client = await pool.connect();
+    await client.query('BEGIN');
+    transactionStarted = true;
+    const orderResult = await client.query(
+      `SELECT id, order_number, payment_method, payment_status
+       FROM orders WHERE id = $1 AND customer_id = $2 FOR UPDATE`,
       [orderId, req.user.id]
     );
-    if (orderResult.rows.length === 0) return res.status(404).json({ error: 'Order not found' });
-
-    if (!upiId) {
-      await pool.query(
-        `UPDATE orders SET payment_status = 'failed', order_status = 'failed', download_status = 'failed', updated_at = NOW() WHERE id = $1`,
-        [orderId]
-      );
-      await pool.query(`UPDATE order_items SET download_status = 'failed' WHERE order_id = $1`, [orderId]);
-      await pool.query(`UPDATE customer_downloads SET is_active = FALSE WHERE order_id = $1`, [orderId]);
-      await pool.query(`UPDATE payments SET status = 'failed', response = COALESCE(response, '{}'::jsonb) || $1::jsonb WHERE order_id = $2`, [JSON.stringify({ failure: 'UPI ID not provided' }), orderId]);
-      await recordBusinessEvent(pool, 'PAYMENT_FAILED', {
-        userId: req.user.id,
-        userRole: 'customer',
-        orderId,
-        description: `Payment failed for order ${orderResult.rows[0].order_number}: UPI ID was not provided`,
-        metadata: { failure: 'UPI ID not provided', gateway: 'google pay', payment_method: 'Google Pay' }
-      });
-      return res.status(400).json({ error: 'UPI ID is required. The order has been marked as failed.' });
+    const order = orderResult.rows[0];
+    if (!order) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+    if (String(order.payment_method || '').trim().toLowerCase() !== 'google pay') {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ error: 'This order is not payable through Google Pay / UPI.' });
+    }
+    const orderPaymentStatus = String(order.payment_status || '').trim().toLowerCase();
+    if (['completed', 'paid'].includes(orderPaymentStatus)) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ error: 'This order has already been paid.' });
+    }
+    if (orderPaymentStatus === 'rejected') {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ error: 'This payment was rejected. Contact support before submitting again.' });
+    }
+    if (orderPaymentStatus !== 'pending') {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ error: 'Only pending Google Pay orders can accept payment submissions.' });
     }
 
-    await pool.query('BEGIN');
-    try {
-      await pool.query(
-        `UPDATE orders SET payment_status = 'completed', order_status = 'completed', download_status = 'available', updated_at = NOW() WHERE id = $1`,
-        [orderId]
-      );
-      await pool.query(`UPDATE order_items SET download_status = 'available' WHERE order_id = $1`, [orderId]);
-      await pool.query(`UPDATE customer_downloads SET is_active = TRUE WHERE order_id = $1`, [orderId]);
-      await pool.query(
-        `INSERT INTO downloads (user_id, image_id, downloaded_at, order_id)
-         SELECT cd.user_id, cd.image_id, NOW(), cd.order_id
-         FROM customer_downloads cd
-         WHERE cd.order_id = $1 AND cd.is_active IS NOT FALSE
-         ON CONFLICT DO NOTHING`,
-        [orderId]
-      );
-      await pool.query(
-        `UPDATE payments SET status = 'paid', response = COALESCE(response, '{}'::jsonb) || $1::jsonb WHERE order_id = $2`,
-        [JSON.stringify({ upiId }), orderId]
-      );
-      await pool.query(
-        `INSERT INTO order_activity_logs (order_id, event, actor_role, details, ip_address, created_at) VALUES ($1,$2,$3,$4,$5,NOW())`,
-        [orderId, 'Google Pay UPI ID submitted', 'customer', JSON.stringify({ upiId }), req.ip || req.headers['x-forwarded-for'] || null]
-      );
-      await pool.query('COMMIT');
-    } catch (error) {
-      await pool.query('ROLLBACK');
-      throw error;
+    const paymentResult = await client.query(
+      `SELECT id, status, response
+       FROM payments
+       WHERE order_id = $1 AND LOWER(COALESCE(gateway, '')) = 'google pay'
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1
+       FOR UPDATE`,
+      [orderId]
+    );
+    const payment = paymentResult.rows[0];
+    if (!payment) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ error: 'Google Pay payment record was not found for this order.' });
+    }
+    const paymentStatus = String(payment.status || '').trim().toLowerCase();
+    if (paymentStatus === 'paid') {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ error: 'This payment has already been approved.' });
+    }
+    if (paymentStatus === 'rejected') {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ error: 'This payment was rejected. Contact support before submitting again.' });
     }
 
-    res.json({ success: true, orderId, orderNumber: orderResult.rows[0].order_number, message: 'Payment confirmed and downloads are available.' });
+    const existingResponse = payment.response && typeof payment.response === 'object' ? payment.response : {};
+    if (existingResponse.utr || existingResponse.submittedAt) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ error: 'Payment information has already been submitted for this order.' });
+    }
+
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [utr.toLowerCase()]);
+    const duplicateResult = await client.query(
+      `SELECT id FROM payments
+       WHERE id <> $1 AND LOWER(BTRIM(COALESCE(response->>'utr', ''))) = $2
+       LIMIT 1`,
+      [payment.id, utr.toLowerCase()]
+    );
+    if (duplicateResult.rows.length) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ error: 'This UTR / transaction ID has already been submitted for another order.' });
+    }
+
+    const submittedAt = new Date().toISOString();
+    const submission = { utr, upiId, submittedAt, completionBasis: 'customer_submitted_utr' };
+    await client.query(
+      `UPDATE payments
+       SET status = 'paid', response = COALESCE(response, '{}'::jsonb) || $1::jsonb
+       WHERE id = $2`,
+      [JSON.stringify(submission), payment.id]
+    );
+    await client.query(
+      `UPDATE orders
+       SET payment_status = 'completed', order_status = 'completed', download_status = 'available', updated_at = NOW()
+       WHERE id = $1`,
+      [orderId]
+    );
+    await client.query(`UPDATE order_items SET download_status = 'available' WHERE order_id = $1`, [orderId]);
+    await client.query(
+      `UPDATE customer_downloads SET is_active = TRUE WHERE order_id = $1 AND user_id = $2`,
+      [orderId, req.user.id]
+    );
+    await client.query(
+      `INSERT INTO downloads (user_id, image_id, downloaded_at, order_id)
+       SELECT cd.user_id, cd.image_id, NOW(), cd.order_id
+       FROM customer_downloads cd
+       WHERE cd.order_id = $1 AND cd.user_id = $2 AND cd.is_active = TRUE
+       ON CONFLICT DO NOTHING`,
+      [orderId, req.user.id]
+    );
+    await client.query(
+      `INSERT INTO order_activity_logs (order_id, event, actor_role, details, ip_address, created_at)
+       VALUES ($1, $2, 'customer', $3::jsonb, $4, NOW())`,
+      [orderId, 'Google Pay payment submitted and order completed', JSON.stringify(submission), req.ip || req.headers['x-forwarded-for'] || null]
+    );
+    await client.query(
+      `INSERT INTO payment_logs (order_id, gateway, event, payload, created_at)
+       VALUES ($1, 'Google Pay', $2, $3::jsonb, NOW())`,
+      [orderId, 'payment_submitted_and_order_completed', JSON.stringify({ utr, submittedAt, completionBasis: 'customer_submitted_utr' })]
+    );
+    await client.query('COMMIT');
+    transactionStarted = false;
+    return res.json({
+      success: true,
+      orderId,
+      orderNumber: order.order_number,
+      paymentStatus: 'completed',
+      message: 'Payment details submitted. Your order is complete and downloads are available.',
+    });
   } catch (error) {
-    console.error('Google Pay confirmation failed', error);
-    res.status(500).json({ error: error.message || 'Unable to confirm Google Pay payment' });
+    if (transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Failed to roll back Google Pay payment submission', rollbackError);
+      }
+    }
+    console.error('Google Pay payment submission failed', error);
+    return res.status(500).json({ error: 'Unable to submit payment for verification.' });
+  } finally {
+    client?.release();
   }
-});
+};
+
+app.post('/checkout/submit-google-pay-payment', authenticateToken, submitGooglePayPayment);
+app.post('/checkout/confirm-google-pay', authenticateToken, submitGooglePayPayment);
 
 app.post('/checkout/retry-with-credits', authenticateToken, async (req, res) => {
   const orderId = Number(req.body?.orderId);

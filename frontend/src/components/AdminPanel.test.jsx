@@ -1624,7 +1624,7 @@ describe("AdminPanel collection controls", () => {
     fireEvent.click(screen.getByText(/google pay/i));
 
     expect(await screen.findByRole("heading", { name: /google pay/i })).toBeInTheDocument();
-    expect(screen.getByText(/currently active/i)).toBeInTheDocument();
+    expect(screen.getByText(/status:\s*disabled/i)).toBeInTheDocument();
   });
 
   it("saves a Google Pay ID from the popup", async () => {
@@ -1633,7 +1633,7 @@ describe("AdminPanel collection controls", () => {
     fireEvent.click(await screen.findByText(/google pay/i));
 
     fireEvent.change(screen.getByPlaceholderText(/enter google pay id/i), { target: { value: "gpay-123" } });
-    fireEvent.click(screen.getByRole("button", { name: /save google pay id/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
     await waitFor(() => {
       expect(axios.post).toHaveBeenCalledWith(

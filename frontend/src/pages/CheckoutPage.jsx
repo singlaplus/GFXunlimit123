@@ -39,7 +39,8 @@ export default function CheckoutPage({ darkMode = false }) {
   const [message, setMessage] = useState('');
   const [googlePayId, setGooglePayId] = useState('');
   const [googlePayQr, setGooglePayQr] = useState(null);
-  const [googlePayUpiId, setGooglePayUpiId] = useState('');
+  const [googlePayUtr, setGooglePayUtr] = useState('');
+  const [googlePaySubmitted, setGooglePaySubmitted] = useState(false);
   const [taxSettings, setTaxSettings] = useState([{ enabled: true, rate: 18, label: 'GST', id: 1 }]);
   const [subscriptionRestricted, setSubscriptionRestricted] = useState(false);
   const [availableCredits, setAvailableCredits] = useState(null);
@@ -49,10 +50,12 @@ export default function CheckoutPage({ darkMode = false }) {
       ? normalizedSettings.enabledGateways
       : [];
 
-    const inferredGateways = Object.values(normalizedSettings)
-      .filter((value) => value && typeof value === 'object' && value.gateway)
-      .map((value) => String(value.gateway).trim())
-      .filter(Boolean);
+    const inferredGateways = Array.isArray(normalizedSettings.enabledGateways)
+      ? []
+      : Object.values(normalizedSettings)
+        .filter((value) => value && typeof value === 'object' && value.gateway)
+        .map((value) => String(value.gateway).trim())
+        .filter(Boolean);
 
     return [...new Set([...explicitGateways, ...inferredGateways].map((gateway) => String(gateway).trim()).filter(Boolean))];
   };
@@ -279,10 +282,12 @@ export default function CheckoutPage({ darkMode = false }) {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (totals.total > 0 && paymentMethod === 'Google Pay') {
-        const paymentUri = `upi://pay?pa=${encodeURIComponent(googlePayId)}&pn=${encodeURIComponent('GFXunlimit')}&am=${encodeURIComponent(totals.total.toFixed(2))}&cu=INR`;
-        setGooglePayUpiId('');
-        setGooglePayQr({ paymentUri, amount: totals.total, orderId: res.data.orderId, orderNumber: res.data.orderNumber || '' });
-        setMessage('Scan the QR code to complete your payment.');
+        const paymentReference = res.data.orderNumber || `Order ${res.data.orderId}`;
+        const paymentUri = `upi://pay?pa=${encodeURIComponent(googlePayId)}&pn=${encodeURIComponent('GFXunlimit')}&am=${encodeURIComponent(totals.total.toFixed(2))}&cu=INR&tn=${encodeURIComponent(paymentReference)}`;
+        setGooglePayUtr('');
+        setGooglePaySubmitted(false);
+        setGooglePayQr({ paymentUri, amount: totals.total, orderId: res.data.orderId, orderNumber: res.data.orderNumber || '', merchantUpiId: googlePayId });
+        setMessage('');
         return;
       }
       await clearCartItems();
@@ -297,22 +302,32 @@ export default function CheckoutPage({ darkMode = false }) {
     }
   };
 
-  const confirmGooglePayPayment = async () => {
+  const submitGooglePayPayment = async () => {
+    const utr = googlePayUtr.trim();
+    if (!utr) {
+      setMessage('Enter UTR / Transaction ID.');
+      return;
+    }
+    if (!/^\d{7,64}$/.test(utr)) {
+      setMessage('Enter UTR / Transaction ID.');
+      return;
+    }
+
     setSubmitting(true);
+    setMessage('');
     try {
       const token = localStorage.getItem('token');
-      const res = await axios.post(`${API_BASE_URL}/checkout/confirm-google-pay`, {
+      const response = await axios.post(`${API_BASE_URL}/checkout/submit-google-pay-payment`, {
         orderId: googlePayQr?.orderId,
-        upiId: googlePayUpiId.trim(),
+        utr,
       }, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       await clearCartItems();
       clearAppliedCoupon();
       window.dispatchEvent(new Event('cartUpdated'));
-      setGooglePayQr(null);
-      navigate(`/orders/${res.data.orderId}`);
+      setGooglePaySubmitted(true);
+      setMessage(response.data?.message || 'Payment details submitted. Your order is complete and downloads are available.');
     } catch (error) {
-      setGooglePayQr(null);
-      setMessage(error.response?.data?.error || 'Payment failed. The order cannot be downloaded.');
+      setMessage(error.response?.data?.error || 'Unable to submit payment for verification.');
     } finally {
       setSubmitting(false);
     }
@@ -413,16 +428,28 @@ export default function CheckoutPage({ darkMode = false }) {
       </div>
       {googlePayQr ? (
         <div role="dialog" aria-modal="true" aria-labelledby="google-pay-qr-title" style={{ position: 'fixed', inset: 0, zIndex: 20, display: 'grid', placeItems: 'center', padding: 20, background: 'rgba(15, 23, 42, 0.65)' }}>
-          <div style={{ width: 'min(390px, 100%)', padding: 24, borderRadius: 20, background: darkMode ? '#0f172a' : '#fff', color: darkMode ? '#f8fafc' : '#0f172a', textAlign: 'center', boxShadow: '0 20px 60px rgba(15, 23, 42, 0.3)' }}>
-            <h2 id="google-pay-qr-title" style={{ marginTop: 0 }}>Pay with Google Pay</h2>
-            <p>Scan this QR code to pay {formatCurrency(googlePayQr.amount, cartCurrency)}.</p>
+          <div style={{ width: 'min(420px, 100%)', maxHeight: '90vh', overflowY: 'auto', padding: 24, borderRadius: 20, background: darkMode ? '#0f172a' : '#fff', color: darkMode ? '#f8fafc' : '#0f172a', textAlign: 'center', boxShadow: '0 20px 60px rgba(15, 23, 42, 0.3)' }}>
+            <h2 id="google-pay-qr-title" style={{ marginTop: 0, fontSize: '1.35rem' }}>Google Pay / UPI</h2>
+            <p>Amount: {formatCurrency(googlePayQr.amount, 'INR')}</p>
             <img src={`https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(googlePayQr.paymentUri)}`} alt="Google Pay payment QR code" width="260" height="260" />
-            <p style={{ wordBreak: 'break-word', color: darkMode ? '#cbd5e1' : '#475569' }}>Google Pay ID: {googlePayId}</p>
-            <label style={{ display: 'grid', gap: 6, textAlign: 'left', fontWeight: 700 }}>
-              Your UPI ID
-              <input value={googlePayUpiId} onChange={(event) => setGooglePayUpiId(event.target.value)} placeholder="example@upi" style={inputStyle} />
-            </label>
-            <button type="button" onClick={confirmGooglePayPayment} disabled={submitting} style={{ border: 'none', borderRadius: 12, padding: '12px 18px', marginTop: 12, background: '#16a34a', color: '#fff', fontWeight: 700, cursor: submitting ? 'not-allowed' : 'pointer' }}>Submit UPI ID</button>
+            <p style={{ color: darkMode ? '#cbd5e1' : '#475569' }}>Scan the QR code using Google Pay or another supported UPI app.</p>
+            {googlePaySubmitted ? (
+              <div role="status" style={{ padding: 14, borderRadius: 12, background: darkMode ? '#1e293b' : '#f1f5f9' }}>
+                <strong>Order complete</strong>
+                <p style={{ margin: '6px 0 12px' }}>{message || 'Payment details submitted. Your downloads are available.'}</p>
+                <button type="button" onClick={() => navigate('/orders')} style={{ border: 'none', borderRadius: 12, padding: '10px 16px', background: '#1976d2', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>View orders</button>
+              </div>
+            ) : (
+              <>
+                <p style={{ margin: '12px 0 8px', fontWeight: 700 }}>Payment completed?</p>
+                <label style={{ display: 'grid', gap: 6, marginBottom: 10, textAlign: 'left', fontWeight: 700 }}>
+                  UTR / Transaction ID
+                  <input value={googlePayUtr} onChange={(event) => setGooglePayUtr(event.target.value)} placeholder="Enter UTR / Transaction ID" inputMode="numeric" maxLength={64} required style={inputStyle} />
+                </label>
+                {message ? <p role="alert" style={{ color: '#dc2626', fontWeight: 600 }}>{message}</p> : null}
+                <button type="button" onClick={submitGooglePayPayment} disabled={submitting} style={{ width: '100%', border: 'none', borderRadius: 12, padding: '12px 18px', marginTop: 12, background: '#16a34a', color: '#fff', fontWeight: 700, cursor: submitting ? 'not-allowed' : 'pointer' }}>{submitting ? 'Submitting…' : 'Submit Payment'}</button>
+              </>
+            )}
           </div>
         </div>
       ) : null}

@@ -469,6 +469,11 @@ async function registerOrderRoutes(app, pool, verifyAdmin, authenticateToken) {
            WHERE oi.order_id = orders.id) AS asset_upload_dates,
           order_status,
           payment_status,
+          EXISTS (
+            SELECT 1 FROM payments p
+            WHERE p.order_id = orders.id
+              AND NULLIF(BTRIM(p.response->>'utr'), '') IS NOT NULL
+          ) AS payment_submitted,
           refund_status,
           total_amount,
           currency,
@@ -630,6 +635,155 @@ async function registerOrderRoutes(app, pool, verifyAdmin, authenticateToken) {
     }
   });
 
+  app.put("/admin/orders/:id/payment-status", verifyAdmin, async (req, res) => {
+    const orderId = Number(req.params.id);
+    const decision = String(req.body?.decision || "").trim().toLowerCase();
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({ error: "Invalid order id." });
+    }
+    if (!["approved", "rejected"].includes(decision)) {
+      return res.status(400).json({ error: "Payment decision must be approved or rejected." });
+    }
+
+    let client;
+    let transactionStarted = false;
+    try {
+      client = await pool.connect();
+      await client.query("BEGIN");
+      transactionStarted = true;
+      const orderResult = await client.query(
+        `SELECT id, order_number, customer_id, payment_method, payment_status, total_amount, currency
+         FROM orders WHERE id = $1 FOR UPDATE`,
+        [orderId]
+      );
+      const order = orderResult.rows[0];
+      if (!order) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+        return res.status(404).json({ error: "Order not found." });
+      }
+      if (String(order.payment_method || "").trim().toLowerCase() !== "google pay") {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+        return res.status(409).json({ error: "Only Google Pay / UPI payments can be reviewed here." });
+      }
+
+      const paymentResult = await client.query(
+        `SELECT id, status, response
+         FROM payments
+         WHERE order_id = $1 AND LOWER(COALESCE(gateway, '')) = 'google pay'
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+         FOR UPDATE`,
+        [orderId]
+      );
+      const payment = paymentResult.rows[0];
+      if (!payment) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+        return res.status(409).json({ error: "Google Pay payment record was not found for this order." });
+      }
+      const orderPaymentStatus = String(order.payment_status || "").trim().toLowerCase();
+      const paymentStatus = String(payment.status || "").trim().toLowerCase();
+      if (["completed", "paid", "approved"].includes(orderPaymentStatus) || paymentStatus === "paid") {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+        return res.status(409).json({ error: "This payment has already been approved." });
+      }
+      if (orderPaymentStatus === "rejected" || paymentStatus === "rejected") {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+        return res.status(409).json({ error: "This payment has already been rejected." });
+      }
+      if (orderPaymentStatus !== "pending" || paymentStatus !== "pending") {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+        return res.status(409).json({ error: "Only pending payments can be reviewed." });
+      }
+
+      const response = payment.response && typeof payment.response === "object" ? payment.response : {};
+      if (!String(response.utr || "").trim() || !response.submittedAt) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+        return res.status(409).json({ error: "The customer has not submitted payment details for verification." });
+      }
+
+      if (decision === "approved") {
+        await client.query(
+          `UPDATE orders
+           SET payment_status = 'completed', order_status = 'completed', download_status = 'available', updated_at = NOW()
+           WHERE id = $1`,
+          [orderId]
+        );
+        await client.query(`UPDATE payments SET status = 'paid' WHERE id = $1`, [payment.id]);
+        await client.query(`UPDATE order_items SET download_status = 'available' WHERE order_id = $1`, [orderId]);
+        await client.query(
+          `UPDATE customer_downloads SET is_active = TRUE WHERE order_id = $1 AND user_id = $2`,
+          [orderId, order.customer_id]
+        );
+        await client.query(
+          `INSERT INTO downloads (user_id, image_id, downloaded_at, order_id)
+           SELECT cd.user_id, cd.image_id, NOW(), cd.order_id
+           FROM customer_downloads cd
+           WHERE cd.order_id = $1 AND cd.user_id = $2 AND cd.is_active = TRUE
+           ON CONFLICT DO NOTHING`,
+          [orderId, order.customer_id]
+        );
+      } else {
+        await client.query(
+          `UPDATE orders
+           SET payment_status = 'rejected', order_status = 'failed', download_status = 'blocked', updated_at = NOW()
+           WHERE id = $1`,
+          [orderId]
+        );
+        await client.query(`UPDATE payments SET status = 'rejected' WHERE id = $1`, [payment.id]);
+        await client.query(`UPDATE order_items SET download_status = 'failed' WHERE order_id = $1`, [orderId]);
+        await client.query(
+          `UPDATE customer_downloads SET is_active = FALSE WHERE order_id = $1 AND user_id = $2`,
+          [orderId, order.customer_id]
+        );
+      }
+
+      const details = {
+        decision,
+        paymentId: payment.id,
+        amount: Number(order.total_amount || 0),
+        currency: order.currency || "INR",
+        note: decision === "rejected" ? "Rejected by admin during manual payment review." : "Payment approved by admin after verification.",
+      };
+      await client.query(
+        `INSERT INTO order_activity_logs (order_id, event, actor_role, details, ip_address, created_at)
+         VALUES ($1, $2, 'admin', $3::jsonb, $4, NOW())`,
+        [orderId, `Google Pay payment ${decision}`, JSON.stringify(details), req.ip || req.headers["x-forwarded-for"] || null]
+      );
+      await client.query(
+        `INSERT INTO payment_logs (order_id, gateway, event, payload, created_at)
+         VALUES ($1, 'Google Pay', $2, $3::jsonb, NOW())`,
+        [orderId, `payment_${decision}`, JSON.stringify({ paymentId: payment.id, amount: order.total_amount, currency: order.currency })]
+      );
+      await client.query("COMMIT");
+      transactionStarted = false;
+      return res.json({
+        success: true,
+        orderId,
+        paymentStatus: decision === "approved" ? "completed" : "rejected",
+        message: decision === "approved" ? "Payment approved and downloads are available." : "Payment rejected.",
+      });
+    } catch (err) {
+      if (transactionStarted) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackError) {
+          console.error("Failed to roll back payment review", rollbackError);
+        }
+      }
+      console.error("Failed to review Google Pay payment", err);
+      return res.status(500).json({ error: "Failed to update payment status." });
+    } finally {
+      client?.release();
+    }
+  });
+
   app.put("/admin/orders/:id/status", verifyAdmin, async (req, res) => {
     try {
       const orderId = Number(req.params.id);
@@ -637,6 +791,22 @@ async function registerOrderRoutes(app, pool, verifyAdmin, authenticateToken) {
 
       if (!orderId || Number.isNaN(orderId)) {
         return res.status(400).json({ error: "Invalid order id" });
+      }
+      if (paymentStatus || String(status || "").trim().toLowerCase() === "completed") {
+        const orderResult = await pool.query(
+          "SELECT payment_method, payment_status FROM orders WHERE id = $1",
+          [orderId]
+        );
+        const order = orderResult.rows[0];
+        if (
+          String(order?.payment_method || "").trim().toLowerCase() === "google pay"
+          && (
+            Boolean(paymentStatus)
+            || !["completed", "paid"].includes(String(order.payment_status || "").trim().toLowerCase())
+          )
+        ) {
+          return res.status(409).json({ error: "Use the payment review actions to change a Google Pay payment status." });
+        }
       }
 
       const fields = [];
