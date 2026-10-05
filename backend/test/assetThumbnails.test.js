@@ -17,6 +17,7 @@ const {
   getProcessorVersion,
   getThumbnailStorageRoot,
   isValidThumbnailFile,
+  finalizeThumbnailFile,
   normalizeThumbnailRelativePath,
   normalizeStoredFilename,
   sanitizeFilenamePart,
@@ -27,6 +28,7 @@ const {
   removeStagedOptionalThumbnail,
   stageOptionalThumbnail,
 } = require('../utils/assetThumbnails');
+const fsp = require('node:fs/promises');
 const { planOrphanThumbnailFiles } = require('../scripts/thumbnail-cli-utils');
 const pool = require('../db');
 const ProcessorDetector = require('../thumbnail-engine/processor-detector');
@@ -170,6 +172,75 @@ test('uses the stored asset date for its directory and falls back for invalid da
     }),
     '2026/10/02/summer-flowers-final_Beautiful-Summer-Flowers_12345.webp'
   );
+});
+
+test('finalizes a thumbnail when the destination does not exist', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-finalize-new-'));
+  const temporaryPath = path.join(temporaryDirectory, 'output.webp.tmp');
+  const finalPath = path.join(temporaryDirectory, 'output.webp');
+  fs.writeFileSync(temporaryPath, 'new thumbnail');
+
+  try {
+    await finalizeThumbnailFile(temporaryPath, finalPath);
+    assert.equal(fs.readFileSync(finalPath, 'utf8'), 'new thumbnail');
+    assert.equal(fs.existsSync(temporaryPath), false);
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('replaces an existing destination without renaming over it', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-finalize-replace-'));
+  const temporaryPath = path.join(temporaryDirectory, 'output.webp.tmp');
+  const finalPath = path.join(temporaryDirectory, 'output.webp');
+  const renameCalls = [];
+  fs.writeFileSync(temporaryPath, 'new thumbnail');
+  fs.writeFileSync(finalPath, 'existing thumbnail');
+  const fileSystem = Object.create(fsp);
+  fileSystem.rename = async (source, destination) => {
+    renameCalls.push([source, destination]);
+    return fsp.rename(source, destination);
+  };
+
+  try {
+    await finalizeThumbnailFile(temporaryPath, finalPath, fileSystem);
+    assert.equal(fs.readFileSync(finalPath, 'utf8'), 'new thumbnail');
+    assert.equal(fs.existsSync(temporaryPath), false);
+    assert.equal(renameCalls.length, 2);
+    assert.equal(renameCalls[0][0], finalPath);
+    assert.match(renameCalls[0][1], /\.bak$/);
+    assert.equal(renameCalls[1][0], temporaryPath);
+    assert.equal(renameCalls[1][1], finalPath);
+    assert.deepEqual(fs.readdirSync(temporaryDirectory), ['output.webp']);
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('restores the existing destination when replacement fails', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-finalize-rollback-'));
+  const temporaryPath = path.join(temporaryDirectory, 'output.webp.tmp');
+  const finalPath = path.join(temporaryDirectory, 'output.webp');
+  fs.writeFileSync(temporaryPath, 'new thumbnail');
+  fs.writeFileSync(finalPath, 'existing thumbnail');
+  const fileSystem = Object.create(fsp);
+  fileSystem.rename = async (source, destination) => {
+    if (source === temporaryPath && destination === finalPath) {
+      const error = new Error('operation not permitted');
+      error.code = 'EPERM';
+      throw error;
+    }
+    return fsp.rename(source, destination);
+  };
+
+  try {
+    await assert.rejects(finalizeThumbnailFile(temporaryPath, finalPath, fileSystem), /operation not permitted/);
+    assert.equal(fs.readFileSync(finalPath, 'utf8'), 'existing thumbnail');
+    assert.equal(fs.readFileSync(temporaryPath, 'utf8'), 'new thumbnail');
+    assert.deepEqual(fs.readdirSync(temporaryDirectory).sort(), ['output.webp', 'output.webp.tmp']);
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test('detects Sharp by encoding a real test image', async () => {

@@ -145,6 +145,47 @@ function getThumbnailCacheControl(isPublicAsset, immutable) {
     : 'public, max-age=300, must-revalidate';
 }
 
+async function finalizeThumbnailFile(temporaryPath, finalPath, fileSystem = fsp) {
+  let destinationExists = false;
+  try {
+    await fileSystem.lstat(finalPath);
+    destinationExists = true;
+  } catch (error) {
+    if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+  }
+
+  if (!destinationExists) {
+    await fileSystem.rename(temporaryPath, finalPath);
+    return;
+  }
+
+  const backupPath = `${finalPath}.${crypto.randomUUID()}.bak`;
+  await fileSystem.rename(finalPath, backupPath);
+  try {
+    await fileSystem.rename(temporaryPath, finalPath);
+  } catch (error) {
+    try {
+      let destinationWasCreated = false;
+      try {
+        await fileSystem.lstat(finalPath);
+        destinationWasCreated = true;
+      } catch (destinationError) {
+        if (!['ENOENT', 'ENOTDIR'].includes(destinationError.code)) throw destinationError;
+      }
+      if (!destinationWasCreated) {
+        await fileSystem.rename(backupPath, finalPath);
+      }
+    } catch (restoreError) {
+      error.message = `${error.message}; failed to restore existing thumbnail from ${backupPath}: ${restoreError.message}`;
+    }
+    throw error;
+  }
+
+  await fileSystem.unlink(backupPath).catch((error) => {
+    console.warn(`Failed to remove replaced thumbnail backup ${backupPath}: ${error.message}`);
+  });
+}
+
 function normalizeStoredFilename(value) {
   const normalized = String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^uploads\//i, '');
   const segments = normalized.split('/');
@@ -787,7 +828,7 @@ async function generateAssetThumbnail(assetId, options = {}) {
     if (temporaryStats.size > MAX_THUMBNAIL_BYTES) {
       throw new Error(`Generated thumbnail exceeds the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
     }
-    await fsp.rename(temporaryOutput, outputPath);
+    await finalizeThumbnailFile(temporaryOutput, outputPath);
     temporaryOutput = null;
     if (!(await isThumbnailPathInsideRoot(outputPath))) {
       throw new Error('Generated thumbnail resolved outside the configured thumbnail root');
@@ -1080,6 +1121,7 @@ module.exports = {
   getThumbnailStorageRoot,
   getOriginalAssetStorageRoot,
   getThumbnailCacheControl,
+  finalizeThumbnailFile,
   isValidThumbnailFile,
   normalizeStoredFilename,
   deleteAssetThumbnail,
