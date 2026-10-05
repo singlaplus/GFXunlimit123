@@ -1542,6 +1542,13 @@ if (process.env.NODE_ENV === "production") {
 }
 
 const SUPPORTED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"];
+const SHARP_RASTER_PREVIEW_EXTENSIONS = new Set([
+  ...SUPPORTED_IMAGE_EXTENSIONS,
+  ".tif",
+  ".tiff",
+  ".heif",
+  ".heic",
+]);
 const IMAGE_CONTENT_TYPES = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -1549,6 +1556,20 @@ const IMAGE_CONTENT_TYPES = {
   ".webp": "image/webp",
   ".gif": "image/gif",
   ".svg": "image/svg+xml",
+};
+
+const UNSUPPORTED_PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
+const UNSUPPORTED_PREVIEW_CACHE_LIMIT = 256;
+const unsupportedPreviewSources = new Map();
+
+const isUnsupportedPreviewError = (error) =>
+  /unsupported image format|premature end|truncated|corrupt|unable to decode/i.test(String(error?.message || ""));
+
+const cacheUnsupportedPreviewSource = (sourcePath) => {
+  if (unsupportedPreviewSources.size >= UNSUPPORTED_PREVIEW_CACHE_LIMIT) {
+    unsupportedPreviewSources.delete(unsupportedPreviewSources.keys().next().value);
+  }
+  unsupportedPreviewSources.set(sourcePath, Date.now() + UNSUPPORTED_PREVIEW_CACHE_TTL_MS);
 };
 
 /* Thumbnail processing support */
@@ -1607,6 +1628,13 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
 
   try {
     const processImage = Boolean(options.processImage && req.method === "GET");
+    if (processImage) {
+      const unsupportedUntil = unsupportedPreviewSources.get(upstreamPath);
+      if (unsupportedUntil > Date.now()) {
+        return res.status(415).json({ error: "Image preview unavailable" });
+      }
+      if (unsupportedUntil) unsupportedPreviewSources.delete(upstreamPath);
+    }
     const pc2Url = new URL(process.env.PC2_ASSET_SERVER_URL || "");
     if (
       pc2Url.protocol !== "http:" ||
@@ -1697,6 +1725,10 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
           res.set("Cache-Control", "public, max-age=300");
           return res.send(previewBuffer);
         } catch (error) {
+          if (isUnsupportedPreviewError(error)) {
+            cacheUnsupportedPreviewSource(upstreamPath);
+            return res.status(415).json({ error: "Image preview unavailable" });
+          }
           console.warn("PC2 image preview optimization failed", error.message);
           res.set("Content-Type", contentType);
           return res.send(imageBuffer);
@@ -2078,10 +2110,14 @@ app.get("/api/images/:imageId", async (req, res) => {
 
   try {
     const imageResult = await pool.query(
-      "SELECT filename FROM images WHERE id = $1",
+      `SELECT i.filename, t.status AS generated_thumbnail_status, t.format
+       FROM images i
+       LEFT JOIN asset_thumbnail_metadata t ON t.asset_id = i.id
+       WHERE i.id = $1`,
       [imageId]
     );
-    const storedFilename = String(imageResult.rows[0]?.filename || "")
+    const image = imageResult.rows[0];
+    const storedFilename = String(image?.filename || "")
       .trim()
       .replace(/\\/g, "/");
 
@@ -2089,16 +2125,28 @@ app.get("/api/images/:imageId", async (req, res) => {
       return res.status(404).json({ error: "Image not found" });
     }
 
+    if (
+      !req.headers.range &&
+      image.generated_thumbnail_status === "READY" &&
+      image.format === "webp"
+    ) {
+      return res.redirect(302, `/api/assets/${encodeURIComponent(imageId)}/thumbnail`);
+    }
+
     const assetPath = storedFilename
       .replace(/^\/+/, "")
       .replace(/^uploads\//, "")
       .replace(/^api\/files\//, "");
 
+    const extension = path.extname(storedFilename).toLowerCase();
+    const canOptimizeImage =
+      !req.headers.range && SHARP_RASTER_PREVIEW_EXTENSIONS.has(extension);
+
     return proxyPc2AssetRequest(
       req,
       res,
       `/api/files/${encodeAssetPath(assetPath)}`,
-      { processImage: true, watermark: req.query.watermark === "true" }
+      { processImage: canOptimizeImage, watermark: req.query.watermark === "true" }
     );
   } catch (error) {
     console.error("Failed to resolve image file", error.message || error);
