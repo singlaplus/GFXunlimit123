@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -9,6 +10,28 @@ const pool = require('../db');
 const EpsProcessor = require('../thumbnail-engine/eps-processor');
 
 const ghostscriptAvailable = spawnSync('gs', ['--version'], { stdio: 'ignore' }).status === 0;
+
+test('reports Ghostscript timeout termination and renders the intermediate at the diagnostic DPI', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [{ executable_path: 'gswin64c.exe' }] }));
+  let invocation;
+  const spawnProcess = (command, args, options) => {
+    invocation = { command, args, options };
+    const child = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdout = new EventEmitter();
+    process.nextTick(() => child.emit('close', null, 'SIGTERM'));
+    return child;
+  };
+  const processor = new EpsProcessor({ spawnProcess });
+
+  await assert.rejects(
+    processor.extractPreview('C:\\assets\\complex artwork.eps'),
+    /Ghostscript failed with code null \(terminated by SIGTERM\)/
+  );
+  assert.equal(invocation.command, 'gswin64c.exe');
+  assert.ok(invocation.args.includes('-r72'));
+  assert.equal(invocation.options.timeout, 60000);
+});
 
 test('EPS previews preserve the portrait BoundingBox aspect ratio', {
   skip: !ghostscriptAvailable && 'Ghostscript is required to render EPS previews',

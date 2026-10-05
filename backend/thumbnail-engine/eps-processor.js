@@ -16,6 +16,7 @@ class EpsProcessor extends BaseProcessor {
     this.name = 'EpsProcessor';
     this.supportedExtensions = ['.eps'];
     this.supportedMimes = ['application/postscript', 'application/eps', 'image/eps'];
+    this.spawnProcess = options.spawnProcess || spawn;
   }
 
   /**
@@ -110,7 +111,7 @@ class EpsProcessor extends BaseProcessor {
           '-dBATCH',
           '-dSAFER',
           '-sDEVICE=pngalpha',
-          '-r200',
+          '-r72',
           '-dTextAlphaBits=4',
           '-dGraphicsAlphaBits=4',
           '-dEPSCrop',
@@ -120,7 +121,7 @@ class EpsProcessor extends BaseProcessor {
 
         console.log(`[EpsProcessor] Rendering EPS with Ghostscript: ${gsPath}`);
 
-        const gs = spawn(gsPath, gsArgs, {
+        const gs = this.spawnProcess(gsPath, gsArgs, {
           windowsHide: true,
           timeout: 60000, // 60 second timeout
         });
@@ -136,7 +137,7 @@ class EpsProcessor extends BaseProcessor {
           outputData += data.toString();
         });
 
-        gs.on('close', (code) => {
+        gs.on('close', (code, signal) => {
           if (code === 0 && fs.existsSync(tempOutput)) {
             try {
               const previewBuffer = fs.readFileSync(tempOutput);
@@ -149,7 +150,16 @@ class EpsProcessor extends BaseProcessor {
               reject(new Error(`Failed to read rendered output: ${err.message}`));
             }
           } else {
-            reject(new Error(`Ghostscript failed with code ${code}: ${errorOutput}`));
+            const termination = signal ? ` (terminated by ${signal})` : '';
+            const diagnostics = errorOutput.trim();
+            reject(new Error(
+              `Ghostscript failed with code ${code}${termination}${diagnostics ? `: ${diagnostics}` : ''}`
+            ));
+            fs.promises.unlink(tempOutput).catch((err) => {
+              if (err.code !== 'ENOENT') {
+                console.warn(`Failed to clean Ghostscript output ${tempOutput}: ${err.message}`);
+              }
+            });
           }
         });
 
