@@ -5,6 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const sharp = require('sharp');
 const {
+  MAX_THUMBNAIL_BYTES,
+  PROCESSOR_VERSION,
   encodeThumbnail,
   getThumbnailFilename,
   getThumbnailFilePath,
@@ -30,7 +32,7 @@ const pool = require('../db');
 const ProcessorDetector = require('../thumbnail-engine/processor-detector');
 const { getAssetSourceDimensions } = require('../utils/assetDimensions');
 
-test('encodes a proportional WebP thumbnail at 20% dimensions and quality 63', async () => {
+test('encodes a proportional WebP thumbnail at 20% dimensions with quality 37', async () => {
   for (const [width, height, expectedWidth, expectedHeight] of [
     [1000, 2000, 200, 400],
     [2000, 1000, 400, 200],
@@ -46,7 +48,8 @@ test('encodes a proportional WebP thumbnail at 20% dimensions and quality 63', a
     assert.equal(metadata.format, 'webp');
     assert.equal(metadata.width, expectedWidth);
     assert.equal(metadata.height, expectedHeight);
-    assert.equal(result.quality, 63);
+    assert.equal(result.quality, 37);
+    assert.ok(result.buffer.length <= MAX_THUMBNAIL_BYTES);
     assert.equal(result.width / result.height, width / height);
   }
 });
@@ -61,7 +64,41 @@ test('does not upscale tiny originals and keeps both output dimensions nonzero',
   assert.equal(metadata.width, 3);
   assert.equal(metadata.height, 2);
   assert.equal(metadata.width / metadata.height, 3 / 2);
-  assert.equal(result.quality, 63);
+  assert.equal(result.quality, 37);
+});
+
+test('reduces WebP quality below 37 when needed while keeping the target dimensions', async () => {
+  const randomPixels = require('node:crypto').randomBytes(400 * 400 * 3);
+  const source = await sharp(randomPixels, {
+    raw: { width: 400, height: 400, channels: 3 },
+  }).png().toBuffer();
+  const result = await encodeThumbnail(source, {
+    sourceDimensions: { width: 2000, height: 2000 },
+  });
+  const metadata = await sharp(result.buffer).metadata();
+
+  assert.equal(metadata.width, 400);
+  assert.equal(metadata.height, 400);
+  assert.ok(result.quality < 37);
+  assert.ok(result.quality >= 1);
+  assert.ok(result.buffer.length <= MAX_THUMBNAIL_BYTES);
+});
+
+test('proportionally reduces dimensions if quality 1 still exceeds the byte cap', async () => {
+  const randomPixels = require('node:crypto').randomBytes(800 * 800 * 3);
+  const source = await sharp(randomPixels, {
+    raw: { width: 800, height: 800, channels: 3 },
+  }).png().toBuffer();
+  const result = await encodeThumbnail(source, {
+    sourceDimensions: { width: 4000, height: 4000 },
+  });
+  const metadata = await sharp(result.buffer).metadata();
+
+  assert.ok(metadata.width < 800);
+  assert.ok(metadata.height < 800);
+  assert.equal(metadata.width, metadata.height);
+  assert.ok(result.quality <= 37);
+  assert.ok(result.buffer.length <= MAX_THUMBNAIL_BYTES);
 });
 
 test('uses source-document dimensions when processors return a higher-DPI raster preview', async () => {
@@ -285,7 +322,7 @@ test('generation skips valid thumbnails and repairs missing files', async () => 
         asset_id: asset.id,
         thumbnail_path: values[1],
         status: 'PROCESSING',
-        processor_version: 'webp-16x9-v1',
+        processor_version: 'webp-proportional-20pct-q37-max50kb-v2',
       };
       return { rows: [] };
     }
@@ -298,6 +335,8 @@ test('generation skips valid thumbnails and repairs missing files', async () => 
         width: values[2],
         height: values[3],
         file_size: values[4],
+        quality: values[5],
+        processor: values[7],
         generated_at: values[6],
         source_size: values[8],
         source_modified_at: values[9],
@@ -346,6 +385,16 @@ test('generation skips valid thumbnails and repairs missing files', async () => 
     assert.equal(metadata.width, 20);
     assert.equal(metadata.height, 12);
     assert.equal(metadata.width / metadata.height, 100 / 60);
+    assert.equal(record.width, metadata.width);
+    assert.equal(record.height, metadata.height);
+    assert.equal(record.quality, 37);
+    assert.equal(record.file_size, fs.statSync(outputPath).size);
+    assert.ok(record.file_size <= MAX_THUMBNAIL_BYTES);
+    assert.equal(record.processor, 'sharp');
+    assert.equal(record.processor_version, PROCESSOR_VERSION);
+
+    const center = await sharp(outputPath).extract({ left: 10, top: 6, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
+    assert.ok(center[2] > center[0], 'generated thumbnail remains unwatermarked source imagery');
   } finally {
     pool.query = originalQuery;
     if (previousAssetsRoot === undefined) delete process.env.ASSETS_ROOT;

@@ -11,10 +11,12 @@ const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
 const { getAssetSourceDimensions } = require('./assetDimensions');
 
-const PROCESSOR_VERSION = 'webp-proportional-20pct-v1';
+const PROCESSOR_VERSION = 'webp-proportional-20pct-q37-max50kb-v2';
 const PROPORTIONAL_PROCESSOR_VERSION = PROCESSOR_VERSION;
 const THUMBNAIL_SCALE = 0.2;
-const THUMBNAIL_QUALITY = 63;
+const THUMBNAIL_INITIAL_QUALITY = 37;
+const THUMBNAIL_MIN_QUALITY = 1;
+const MAX_THUMBNAIL_BYTES = 50 * 1024;
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_THUMBNAIL_CONCURRENCY = 8;
 const BACKGROUND = { r: 232, g: 234, b: 237, alpha: 1 };
@@ -528,37 +530,81 @@ async function encodeThumbnail(previewBuffer, { sourceDimensions = null } = {}) 
   const scaledWidth = Math.round(sourceWidth * THUMBNAIL_SCALE);
   const scaledHeight = Math.round(sourceHeight * THUMBNAIL_SCALE);
   // If either scaled axis would be under 2px, retain source dimensions to avoid distorting tiny assets.
-  const targetWidth = scaledWidth < 2 || scaledHeight < 2
+  let targetWidth = scaledWidth < 2 || scaledHeight < 2
     ? Math.max(1, Math.round(sourceWidth))
     : scaledWidth;
-  const targetHeight = scaledWidth < 2 || scaledHeight < 2
+  let targetHeight = scaledWidth < 2 || scaledHeight < 2
     ? Math.max(1, Math.round(sourceHeight))
     : scaledHeight;
-  const thumbnail = await sharp(previewBuffer, { failOn: 'none' })
-    .rotate()
-    .flatten({ background: BACKGROUND })
-    .resize({
-      width: targetWidth,
-      height: targetHeight,
-      fit: 'inside',
-      withoutEnlargement: true,
-    })
-    .webp({ quality: THUMBNAIL_QUALITY, effort: 6, smartSubsample: true })
-    .toBuffer({ resolveWithObject: true });
-
-  return {
-    buffer: thumbnail.data,
-    width: thumbnail.info.width,
-    height: thumbnail.info.height,
-    quality: THUMBNAIL_QUALITY,
-    format: 'webp',
+  const encodeAt = async (width, height, quality) => {
+    const thumbnail = await sharp(previewBuffer, { failOn: 'none' })
+      .rotate()
+      .flatten({ background: BACKGROUND })
+      .resize({
+        width,
+        height,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .webp({ quality, effort: 6, smartSubsample: true })
+      .toBuffer({ resolveWithObject: true });
+    return {
+      buffer: thumbnail.data,
+      width: thumbnail.info.width,
+      height: thumbnail.info.height,
+      quality,
+      format: 'webp',
+    };
   };
+
+  while (targetWidth > 0 && targetHeight > 0) {
+    const initial = await encodeAt(targetWidth, targetHeight, THUMBNAIL_INITIAL_QUALITY);
+    if (initial.buffer.length <= MAX_THUMBNAIL_BYTES) return initial;
+
+    const lowestQuality = await encodeAt(targetWidth, targetHeight, THUMBNAIL_MIN_QUALITY);
+    if (lowestQuality.buffer.length <= MAX_THUMBNAIL_BYTES) {
+      let best = lowestQuality;
+      let low = THUMBNAIL_MIN_QUALITY + 1;
+      let high = THUMBNAIL_INITIAL_QUALITY - 1;
+      while (low <= high) {
+        const quality = Math.floor((low + high) / 2);
+        const candidate = await encodeAt(targetWidth, targetHeight, quality);
+        if (candidate.buffer.length <= MAX_THUMBNAIL_BYTES) {
+          best = candidate;
+          low = quality + 1;
+        } else {
+          high = quality - 1;
+        }
+      }
+      return best;
+    }
+
+    if (targetWidth === 1 && targetHeight === 1) {
+      throw new Error(`Unable to encode thumbnail below the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
+    }
+
+    const reduction = Math.min(
+      0.9,
+      Math.sqrt(MAX_THUMBNAIL_BYTES / lowestQuality.buffer.length) * 0.9
+    );
+    let nextWidth = Math.max(1, Math.floor(targetWidth * reduction));
+    let nextHeight = Math.max(1, Math.floor(targetHeight * reduction));
+    if (nextWidth === targetWidth && nextHeight === targetHeight) {
+      if (targetWidth >= targetHeight && targetWidth > 1) nextWidth -= 1;
+      else if (targetHeight > 1) nextHeight -= 1;
+      else nextWidth -= 1;
+    }
+    targetWidth = nextWidth;
+    targetHeight = nextHeight;
+  }
+
+  throw new Error(`Unable to encode thumbnail below the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
 }
 
 async function isValidThumbnailFile(filePath) {
   try {
     const stats = await fsp.lstat(filePath);
-    if (!stats.isFile() || stats.isSymbolicLink() || stats.size <= 0) return false;
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size <= 0 || stats.size > MAX_THUMBNAIL_BYTES) return false;
     const metadata = await sharp(filePath).metadata();
     if (
       metadata.format !== 'webp' ||
@@ -731,15 +777,26 @@ async function generateAssetThumbnail(assetId, options = {}) {
       ? null
       : await getAssetSourceDimensions(sourcePath, extension);
     const thumbnail = await encodeThumbnail(previewBuffer, { sourceDimensions });
+    if (thumbnail.buffer.length > MAX_THUMBNAIL_BYTES) {
+      throw new Error(`Generated thumbnail exceeds the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
+    }
 
     temporaryOutput = `${outputPath}.${crypto.randomUUID()}.tmp`;
     await fsp.writeFile(temporaryOutput, thumbnail.buffer, { flag: 'wx' });
+    const temporaryStats = await fsp.stat(temporaryOutput);
+    if (temporaryStats.size > MAX_THUMBNAIL_BYTES) {
+      throw new Error(`Generated thumbnail exceeds the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
+    }
     await fsp.rename(temporaryOutput, outputPath);
     temporaryOutput = null;
     if (!(await isThumbnailPathInsideRoot(outputPath))) {
       throw new Error('Generated thumbnail resolved outside the configured thumbnail root');
     }
     const finalStats = await fsp.stat(outputPath);
+    if (finalStats.size > MAX_THUMBNAIL_BYTES) {
+      await fsp.unlink(outputPath);
+      throw new Error(`Generated thumbnail exceeds the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
+    }
     const updatedAt = new Date();
     await pool.query(`
       INSERT INTO asset_thumbnail_metadata
@@ -1003,6 +1060,7 @@ async function deleteContributorUploadFolderIfUnusedLocked(contributorId) {
 
 module.exports = {
   BACKGROUND,
+  MAX_THUMBNAIL_BYTES,
   MAX_THUMBNAIL_CONCURRENCY,
   PROCESSOR_VERSION,
   PROPORTIONAL_PROCESSOR_VERSION,
