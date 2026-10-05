@@ -85,7 +85,7 @@ export default function AssetPage(props) {
     const status = String(image.status || "").trim().toLowerCase();
     const isPublicAsset = ["approved", "published", "live"].includes(status);
     const usesGeneratedThumbnail = /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
-    if (!usesGeneratedThumbnail) {
+    if (!usesGeneratedThumbnail || isPublicAsset) {
       setPrivatePreview({ url: "", loading: false, error: "" });
       return undefined;
     }
@@ -100,7 +100,11 @@ export default function AssetPage(props) {
         if (!isPublicAsset && !token) {
           throw new Error("Admin authentication is required to preview this asset.");
         }
-        const url = getAssetPreviewUrl(image, { thumbnailOnly: true });
+        const url = getAssetPreviewUrl(image, {
+          thumbnailOnly: true,
+          watermark: true,
+          quality: 63,
+        });
         const response = await axios.get(url, {
           responseType: "blob",
           headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -328,15 +332,35 @@ export default function AssetPage(props) {
     return null;
   }
 
-  const getDetailPreview = (asset, quality) => getAssetPreviewUrl(asset, {
-    quality,
-    watermark: false,
-    renderNonRasterPreview: true,
-    useThumbnail: false,
-  });
-  const usesGeneratedThumbnail = /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
-  const previewUrl = usesGeneratedThumbnail ? privatePreview.url : getDetailPreview(image, 50);
-  const fullSizeUrl = usesGeneratedThumbnail ? privatePreview.url : getDetailPreview(image, 100);
+  const isPublicAsset = ["approved", "published", "live"].includes(
+    String(image.status || "").trim().toLowerCase()
+  );
+  const supportsCatalogPreview = /\.(?:jpe?g|png|webp|gif|tif|tiff|ai|eps|psd|psb)$/i.test(
+    String(image.filename || "")
+  );
+  const getDetailPreview = (asset) => {
+    if (!supportsCatalogPreview) {
+      return getAssetPreviewUrl(asset, { quality: 63, watermark: false, useThumbnail: false });
+    }
+    return isPublicAsset
+      ? getAssetPreviewUrl(asset, {
+      quality: 63,
+      watermark: true,
+      renderCatalogPreview: true,
+      useThumbnail: false,
+    })
+      : getAssetPreviewUrl(asset, {
+        quality: 63,
+        watermark: true,
+        previewScale: 0.2,
+        useThumbnail: false,
+      });
+  };
+  const usesGeneratedThumbnail = !isPublicAsset &&
+    /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
+  const usesBackendWatermark = supportsCatalogPreview || usesGeneratedThumbnail;
+  const previewUrl = usesGeneratedThumbnail ? privatePreview.url : getDetailPreview(image);
+  const fullSizeUrl = usesGeneratedThumbnail ? privatePreview.url : getDetailPreview(image);
   const displayDimensions = sourceDimensions || previewDimensions;
   const previewAspectRatio = displayDimensions
     ? displayDimensions.width / displayDimensions.height
@@ -411,16 +435,18 @@ export default function AssetPage(props) {
                   style={{
                     width: "100%",
                     height: "100%",
-                    objectFit: sourceDimensions ? "cover" : "contain",
+                    objectFit: "contain",
                     display: "block",
                     cursor: "zoom-in",
                     borderRadius: 18,
                   }}
                 />
-                <AssetWatermark
-                  width={displayDimensions?.width || 640}
-                  height={displayDimensions?.height || 360}
-                />
+                {!usesBackendWatermark && (
+                  <AssetWatermark
+                    width={displayDimensions?.width || 640}
+                    height={displayDimensions?.height || 360}
+                  />
+                )}
               </>
             ) : usesGeneratedThumbnail ? (
               <div role="status" style={{ padding: 20, textAlign: "center" }}>
@@ -487,7 +513,7 @@ export default function AssetPage(props) {
                       }}
                     />
                   ) : null}
-                  {fullSizeUrl && (
+                  {fullSizeUrl && !usesBackendWatermark && (
                     <AssetWatermark
                       width={zoomPreviewDimensions?.width || displayDimensions?.width || 640}
                       height={zoomPreviewDimensions?.height || displayDimensions?.height || 360}

@@ -1,5 +1,28 @@
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const EMPTY_THUMBNAIL = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
+const BLOCKED_THUMBNAIL_STATUSES = new Set(['pending', 'processing', 'retrying', 'failed', 'error']);
+
+export const hasReadyThumbnail = (image) => {
+  const status = String(
+    image?.generated_thumbnail_status ?? image?.thumbnail_status ?? ''
+  ).trim().toLowerCase();
+  if (BLOCKED_THUMBNAIL_STATUSES.has(status)) return false;
+  if (status === 'ready' || status === 'completed') return true;
+  return !status && Boolean(image?.thumbnail_url);
+};
+
+export const getAssetThumbnailUrl = (image, options = {}) => {
+  if (!image?.id) return EMPTY_THUMBNAIL;
+  const baseUrl = `${API_BASE_URL.replace(/\/+$/, "")}/api/assets/${encodeURIComponent(String(image.id))}/thumbnail`;
+  const params = new URLSearchParams();
+  if (image.thumbnail_generated_at) params.set('v', String(image.thumbnail_generated_at));
+  if (options.watermark) {
+    params.set('watermark', 'true');
+    params.set('quality', String(Number.isFinite(options.quality) ? options.quality : 63));
+  }
+  const query = params.toString();
+  return `${baseUrl}${query ? `?${query}` : ''}`;
+};
 
 export const resolveThumbnailDownloadFile = (value) => {
   if (value === null || value === undefined) return "";
@@ -43,48 +66,22 @@ export const getAssetPreviewUrl = (image, options = {}) => {
     useThumbnail = true,
     preferThumbnail = false,
     thumbnailOnly = false,
+    previewScale = null,
     renderNonRasterPreview = false,
     renderCatalogPreview = false,
   } = options;
 
-  const buildThumbnailUrl = (baseUrl, thumbnailQuality) => {
-    if (!baseUrl) return "";
-
-    const url = new URL(baseUrl, API_BASE_URL);
-    if (Number.isFinite(thumbnailQuality)) {
-      url.searchParams.set('quality', String(thumbnailQuality));
-    }
-    if (watermark) {
-      url.searchParams.set('watermark', 'true');
-    }
-    if (image?.thumbnail_generated_at) {
-      url.searchParams.set('v', String(image.thumbnail_generated_at));
-    }
-    return url.toString();
-  };
-
-  const hasReadyThumbnail = (img) => {
-    if (!img || !img.thumbnail_url) return false;
-    const status = String(img.thumbnail_status ?? '').trim().toLowerCase();
-    const blockedStatuses = new Set(['pending', 'processing', 'retrying', 'failed', 'error']);
-    return !blockedStatuses.has(status);
-  };
-
   const isNonRasterPreview = /\.(?:ai|eps|psd|psb)$/i.test(String(image?.filename || ""));
-  const isRasterPreview = /\.(?:jpe?g|png|webp)$/i.test(String(image?.filename || ""));
+  const isSupportedPreview = /\.(?:jpe?g|png|webp|gif|tif|tiff|ai|eps|psd|psb)$/i.test(String(image?.filename || ""));
 
   if (thumbnailOnly) {
-    if (!image?.id) return EMPTY_THUMBNAIL;
-    const version = image.thumbnail_generated_at
-      ? `?v=${encodeURIComponent(String(image.thumbnail_generated_at))}`
-      : "";
-    return `${API_BASE_URL.replace(/\/+$/, "")}/api/assets/${encodeURIComponent(String(image.id))}/thumbnail${version}`;
+    return getAssetThumbnailUrl(image, { watermark, quality });
   }
 
   if (
     image?.id &&
     ((renderNonRasterPreview && isNonRasterPreview) ||
-      (renderCatalogPreview && (isNonRasterPreview || isRasterPreview)))
+      (renderCatalogPreview && isSupportedPreview))
   ) {
     const params = new URLSearchParams();
     if (Number.isFinite(quality)) params.set("quality", String(quality));
@@ -93,9 +90,8 @@ export const getAssetPreviewUrl = (image, options = {}) => {
     return `${API_BASE_URL}/api/catalog-preview/${image.id}?${params.toString()}`;
   }
 
-  if (useThumbnail && !watermark && preferThumbnail && image && hasReadyThumbnail(image)) {
-    const thumbnailUrl = buildThumbnailUrl(image.thumbnail_url, 50);
-    if (thumbnailUrl) return thumbnailUrl;
+  if (useThumbnail && !watermark && preferThumbnail && hasReadyThumbnail(image)) {
+    return getAssetThumbnailUrl(image);
   }
 
   if (!image || !image.id) {
@@ -105,6 +101,7 @@ export const getAssetPreviewUrl = (image, options = {}) => {
   const params = new URLSearchParams();
   if (Number.isFinite(quality)) params.set('quality', String(quality));
   if (watermark) params.set('watermark', 'true');
+  if (previewScale === 0.2) params.set('previewScale', '0.2');
 
   const qs = params.toString();
   return `${API_BASE_URL}/api/images/${image.id}${qs ? `?${qs}` : ''}`;

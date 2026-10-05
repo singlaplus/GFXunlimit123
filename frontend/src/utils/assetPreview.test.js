@@ -2,10 +2,33 @@ import {
   getAssetPreviewUrl,
   getAssetSourceUrl,
   getAssetOriginalDownloadUrl,
+  hasReadyThumbnail,
   resolveThumbnailDownloadFile,
 } from './assetPreview';
 
 describe('assetPreview', () => {
+  test('treats READY and COMPLETED central metadata as ready without requiring legacy URLs', () => {
+    expect(hasReadyThumbnail({ thumbnail_url: '/thumbnail.webp', thumbnail_status: 'READY' })).toBe(true);
+    expect(hasReadyThumbnail({ thumbnail_url: '/thumbnail.webp', thumbnail_status: 'COMPLETED' })).toBe(true);
+    expect(hasReadyThumbnail({ thumbnail_status: 'READY' })).toBe(true);
+    expect(hasReadyThumbnail({
+      generated_thumbnail_status: 'READY',
+      thumbnail_path: '2026/10/04/asset.webp',
+      format: 'webp',
+      thumbnail_url: null,
+    })).toBe(true);
+    expect(hasReadyThumbnail({ thumbnail_status: 'COMPLETED', thumbnail_url: null })).toBe(true);
+    for (const thumbnail_status of ['pending', 'processing', 'retrying', 'failed', 'error']) {
+      expect(hasReadyThumbnail({ thumbnail_url: '/thumbnail.webp', thumbnail_status })).toBe(false);
+    }
+    expect(hasReadyThumbnail({
+      generated_thumbnail_status: 'READY',
+      thumbnail_path: '2026/10/04/asset.jpg',
+      format: 'jpeg',
+      thumbnail_url: null,
+    })).toBe(true);
+  });
+
   test('uses an available thumbnail for listing previews', () => {
     const image = {
       id: 42,
@@ -52,7 +75,55 @@ describe('assetPreview', () => {
     };
 
     expect(getAssetPreviewUrl(image, { quality: 50, watermark: false, preferThumbnail: true })).toBe(
-      'http://localhost:5000/api/thumbnail?file=psd%2Fthumbnail.jpg&quality=50'
+      'http://localhost:5000/api/assets/166/thumbnail'
+    );
+  });
+
+  test.each(['jpg', 'jpeg', 'eps', 'ai', 'psd', 'psb'])(
+    'uses the same central thumbnail route for READY %s assets',
+    (extension) => {
+      const image = {
+        id: 405,
+        filename: `design.${extension}`,
+        thumbnail_status: 'READY',
+        thumbnail_generated_at: '2026-10-05T10:20:00.000Z',
+      };
+
+      expect(getAssetPreviewUrl(image, { thumbnailOnly: true })).toBe(
+        'http://localhost:5000/api/assets/405/thumbnail?v=2026-10-05T10%3A20%3A00.000Z'
+      );
+    }
+  );
+
+  test('requests a versioned, watermarked 63-quality preview for Asset Detail', () => {
+    const image = {
+      id: 406,
+      filename: 'design.psd',
+      thumbnail_generated_at: '2026-10-05T10:20:00.000Z',
+    };
+
+    expect(getAssetPreviewUrl(image, {
+      quality: 63,
+      watermark: true,
+      renderCatalogPreview: true,
+    })).toBe(
+      'http://localhost:5000/api/catalog-preview/406?quality=63&watermark=true&v=2026-10-05T10%3A20%3A00.000Z'
+    );
+  });
+
+  test('can watermark a generated detail thumbnail without changing its stored file', () => {
+    const image = {
+      id: 407,
+      filename: 'design.eps',
+      thumbnail_generated_at: '2026-10-05T10:20:00.000Z',
+    };
+
+    expect(getAssetPreviewUrl(image, {
+      thumbnailOnly: true,
+      quality: 63,
+      watermark: true,
+    })).toBe(
+      'http://localhost:5000/api/assets/407/thumbnail?v=2026-10-05T10%3A20%3A00.000Z&watermark=true&quality=63'
     );
   });
 
@@ -125,6 +196,17 @@ describe('assetPreview', () => {
     const image = { id: 7 };
 
     expect(getAssetPreviewUrl(image, { quality: 60 })).toBe('http://localhost:5000/api/images/7?quality=60');
+  });
+
+  test('uses bounded proportional watermarked previews without changing the original route permissions', () => {
+    const image = { id: 8, filename: 'private.jpg' };
+
+    expect(getAssetPreviewUrl(image, {
+      quality: 63,
+      watermark: true,
+      previewScale: 0.2,
+      useThumbnail: false,
+    })).toBe('http://localhost:5000/api/images/8?quality=63&watermark=true&previewScale=0.2');
   });
 
   test('builds a source URL for reading bounded asset metadata', () => {

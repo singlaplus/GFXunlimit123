@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getAssetPreviewUrl, getAssetSourceUrl } from "../utils/assetPreview";
+import { getAssetPreviewUrl, getAssetSourceUrl, hasReadyThumbnail } from "../utils/assetPreview";
 import { getAssetSourceDimensions } from "../utils/assetDimensions";
 
 let deferredPreviewObserver;
@@ -81,10 +81,16 @@ function getMasonryRowSpan(card, aspectRatio) {
 function MasonryAssetCard({ image, darkMode, onClick }) {
   const cardRef = useRef(null);
   const imageRef = useRef(null);
-  const [aspectRatio, setAspectRatio] = useState("16 / 9");
+  const [aspectRatio, setAspectRatio] = useState("");
   const [rowSpan, setRowSpan] = useState(1);
-  const [sourceDimensions, setSourceDimensions] = useState(null);
-  const hasSourceDimensions = /\.(?:eps|psd|psb)$/i.test(String(image.filename || ""));
+  const [sourceDimensions, setSourceDimensions] = useState(() => {
+    const width = Number(image.original_width || image.source_width);
+    const height = Number(image.original_height || image.source_height);
+    return width > 0 && height > 0 ? { width, height } : null;
+  });
+  const thumbnailFailureKey = `${image.id}:${image.thumbnail_generated_at || ""}`;
+  const [failedThumbnailKey, setFailedThumbnailKey] = useState("");
+  const hasSourceDimensions = /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
 
   useEffect(() => {
     if (!hasSourceDimensions) return undefined;
@@ -173,10 +179,15 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  const supportsProportionalPreview = /\.(?:jpe?g|png|webp|ai|eps|psd|psb)$/i.test(
+  const supportsCatalogPreview = /\.(?:jpe?g|png|webp|gif|tif|tiff|ai|eps|psd|psb)$/i.test(
     String(image.filename || "")
   );
-  const usesGeneratedThumbnail = /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
+  const thumbnailIsPrimary = hasReadyThumbnail(image);
+  const previewUrl = thumbnailIsPrimary && failedThumbnailKey !== thumbnailFailureKey
+    ? getAssetPreviewUrl(image, { thumbnailOnly: true })
+    : supportsCatalogPreview
+      ? getAssetPreviewUrl(image, { quality: 63, watermark: false, renderCatalogPreview: true })
+      : getAssetPreviewUrl(image, { quality: 50 });
 
   return (
     <div
@@ -206,16 +217,19 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
     >
       <DeferredPreviewImage
         ref={imageRef}
-        src={usesGeneratedThumbnail
-          ? getAssetPreviewUrl(image, { thumbnailOnly: true })
-          : supportsProportionalPreview
-          ? getAssetPreviewUrl(image, { quality: 50, renderCatalogPreview: true })
-          : getAssetPreviewUrl(image, { thumbnailOnly: true })}
+        src={previewUrl}
         alt={image.title}
         width="100%"
         loading="lazy"
         decoding="async"
         onLoad={handleImageLoad}
+        onError={(event) => {
+          if (thumbnailIsPrimary && failedThumbnailKey !== thumbnailFailureKey) {
+            setFailedThumbnailKey(thumbnailFailureKey);
+            return;
+          }
+          event.currentTarget.style.visibility = "hidden";
+        }}
         onMouseEnter={(event) => {
           event.currentTarget.style.transform = "scale(1.04)";
         }}
@@ -225,8 +239,8 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
         style={{
           width: "100%",
           height: "auto",
-          aspectRatio: sourceDimensions ? `${sourceDimensions.width} / ${sourceDimensions.height}` : aspectRatio,
-          objectFit: sourceDimensions ? "cover" : "contain",
+          aspectRatio: sourceDimensions ? `${sourceDimensions.width} / ${sourceDimensions.height}` : aspectRatio || undefined,
+          objectFit: "contain",
           transition: "0.4s",
           display: "block",
         }}

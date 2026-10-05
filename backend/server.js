@@ -23,6 +23,7 @@ const { registerOrderRoutes } = require("./orders");
 const { summarizeContributorDownloadWindowCounts, summarizeContributorUploadWindowCounts } = require("./dashboardStats");
 const { createAssetServingHandler, encodeAssetPath, resolveAssetFile } = require("./utils/assetServing");
 const { applyWatermarkToBuffer, generateWatermarkSvg } = require("./utils/watermarkEngine");
+const { getAssetSourceDimensions } = require("./utils/assetDimensions");
 const thumbnailQueue = require("./thumbnail-queue-worker");
 const assetThumbnails = require("./utils/assetThumbnails");
 const ProcessorDetector = require("./thumbnail-engine/processor-detector");
@@ -1541,7 +1542,7 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-const SUPPORTED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"];
+const SUPPORTED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".tif", ".tiff"];
 const SHARP_RASTER_PREVIEW_EXTENSIONS = new Set([
   ...SUPPORTED_IMAGE_EXTENSIONS,
   ".tif",
@@ -1565,6 +1566,22 @@ const unsupportedPreviewSources = new Map();
 const isUnsupportedPreviewError = (error) =>
   /unsupported image format|premature end|truncated|corrupt|unable to decode/i.test(String(error?.message || ""));
 
+const getProportionalPreviewDimensions = (metadata, scale = 0.2) => {
+  const swapsOrientation = [5, 6, 7, 8].includes(metadata.orientation);
+  const width = metadata.autoOrient?.width || (swapsOrientation ? metadata.height : metadata.width);
+  const height = metadata.autoOrient?.height || (swapsOrientation ? metadata.width : metadata.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw new Error("Preview source has invalid dimensions");
+  }
+  const scaledWidth = Math.round(width * scale);
+  const scaledHeight = Math.round(height * scale);
+  // Retain tiny originals when either 20% axis would be under 2px, avoiding a distorted 1px image.
+  if (scaledWidth < 2 || scaledHeight < 2) {
+    return { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) };
+  }
+  return { width: scaledWidth, height: scaledHeight };
+};
+
 const cacheUnsupportedPreviewSource = (sourcePath) => {
   if (unsupportedPreviewSources.size >= UNSUPPORTED_PREVIEW_CACHE_LIMIT) {
     unsupportedPreviewSources.delete(unsupportedPreviewSources.keys().next().value);
@@ -1574,7 +1591,7 @@ const cacheUnsupportedPreviewSource = (sourcePath) => {
 
 /* Thumbnail processing support */
 const THUMBNAIL_SUPPORTED_EXTENSIONS = [
-  ".ai", ".eps", ".psd", ".psb", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg",
+  ".ai", ".eps", ".psd", ".psb", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".tif", ".tiff",
   ".pdf", ".zip", ".mp4", ".avi", ".mkv", ".mov", ".webm", ".aep", ".prproj",
 ];
 const THUMBNAIL_SUPPORTED_MIMES = [
@@ -1699,6 +1716,10 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
       const contentType = String(response.headers["content-type"] || "");
       const imageBuffer = Buffer.from(response.data);
 
+      if (options.strictImageProcessing && !contentType.startsWith("image/")) {
+        return res.status(415).json({ error: "Image preview unavailable" });
+      }
+
       if (contentType.startsWith("image/")) {
         const requestedQuality = Number(req.query.quality ?? 50);
         const quality = Number.isFinite(requestedQuality)
@@ -1706,9 +1727,13 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
           : 50;
 
         try {
+          const sourceMetadata = await sharp(imageBuffer).metadata();
+          const resizeOptions = options.scaleFactor
+            ? getProportionalPreviewDimensions(sourceMetadata, options.scaleFactor)
+            : { width: 1920, height: 1920 };
           const resizedBuffer = await sharp(imageBuffer)
             .rotate()
-            .resize({ width: 1920, height: 1920, fit: "inside", withoutEnlargement: true })
+            .resize({ ...resizeOptions, fit: "inside", withoutEnlargement: true })
             .toBuffer();
           let preview = sharp(resizedBuffer);
 
@@ -1718,16 +1743,24 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
             preview = preview.composite([{ input: watermarkSvg, blend: "over" }]);
           }
 
-          const previewBuffer = await preview.jpeg({ quality }).toBuffer();
+          const previewBuffer = options.outputFormat === "webp"
+            ? await preview.webp({ quality }).toBuffer()
+            : await preview.jpeg({ quality }).toBuffer();
           res.status(200);
-          res.set("Content-Type", "image/jpeg");
+          res.set("Content-Type", options.outputFormat === "webp" ? "image/webp" : "image/jpeg");
           res.set("Content-Length", String(previewBuffer.length));
-          res.set("Cache-Control", "public, max-age=300");
+          if (!String(res.getHeader("Cache-Control") || "").includes("no-store")) {
+            res.set("Cache-Control", "public, max-age=300");
+          }
           return res.send(previewBuffer);
         } catch (error) {
           if (isUnsupportedPreviewError(error)) {
             cacheUnsupportedPreviewSource(upstreamPath);
             return res.status(415).json({ error: "Image preview unavailable" });
+          }
+          if (options.strictImageProcessing) {
+            console.error("Catalog image preview processing failed", error.message || error);
+            return res.status(422).json({ error: "Image preview could not be processed" });
           }
           console.warn("PC2 image preview optimization failed", error.message);
           res.set("Content-Type", contentType);
@@ -2141,12 +2174,19 @@ app.get("/api/images/:imageId", async (req, res) => {
     const extension = path.extname(storedFilename).toLowerCase();
     const canOptimizeImage =
       !req.headers.range && SHARP_RASTER_PREVIEW_EXTENSIONS.has(extension);
+    const proportionalDetailPreview = req.query.previewScale === "0.2" && canOptimizeImage;
 
     return proxyPc2AssetRequest(
       req,
       res,
       `/api/files/${encodeAssetPath(assetPath)}`,
-      { processImage: canOptimizeImage, watermark: req.query.watermark === "true" }
+      {
+        processImage: canOptimizeImage,
+        watermark: req.query.watermark === "true",
+        scaleFactor: proportionalDetailPreview ? 0.2 : undefined,
+        outputFormat: proportionalDetailPreview ? "jpeg" : undefined,
+        strictImageProcessing: proportionalDetailPreview,
+      }
     );
   } catch (error) {
     console.error("Failed to resolve image file", error.message || error);
@@ -2229,18 +2269,23 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
         }
 
         const extractedPreview = await processor.extractPreview(previewSourcePath || temporarySourcePath);
-        const generatedPreview = await processor.generateThumbnail(extractedPreview, {
-          quality: 70,
-          maxWidth: 1200,
-          maxHeight: 1200,
-          autoTrim: false,
-        });
+        const sourceMetadata = await sharp(extractedPreview).metadata();
+        const sourceDimensions = await getAssetSourceDimensions(
+          previewSourcePath || temporarySourcePath,
+          extension
+        );
+        const dimensions = getProportionalPreviewDimensions(sourceDimensions || sourceMetadata, 0.2);
+        const generatedPreview = await sharp(extractedPreview, { failOn: "none" })
+          .rotate()
+          .resize({ ...dimensions, fit: "inside", withoutEnlargement: true })
+          .webp({ quality: 63 })
+          .toBuffer();
         await fs.promises.mkdir(path.dirname(cacheFilePath), { recursive: true });
         temporaryCachePath = `${cacheFilePath}.${crypto.randomUUID()}.tmp`;
-        await fs.promises.writeFile(temporaryCachePath, generatedPreview.buffer);
+        await fs.promises.writeFile(temporaryCachePath, generatedPreview);
         await fs.promises.rename(temporaryCachePath, cacheFilePath);
         temporaryCachePath = null;
-        return generatedPreview.buffer;
+        return generatedPreview;
       } finally {
         if (temporarySourcePath) {
           await fs.promises.unlink(temporarySourcePath).catch(() => {});
@@ -2287,7 +2332,7 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
         const image = req.catalogPreviewImage;
         const filename = String(image.filename).replace(/\\/g, "/");
         const extension = path.extname(filename).toLowerCase();
-        if ([".jpg", ".jpeg", ".png", ".webp"].includes(extension)) {
+        if ([".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".tif", ".tiff"].includes(extension)) {
           const sourcePath = filename
             .replace(/^\/+/, "")
             .replace(/^uploads[\\/]+/i, "")
@@ -2296,7 +2341,13 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
             req,
             res,
             `/api/files/${encodeAssetPath(sourcePath)}`,
-            { processImage: true, watermark: req.query.watermark === "true" }
+            {
+              processImage: true,
+              watermark: req.query.watermark === "true",
+              scaleFactor: 0.2,
+              outputFormat: req.query.watermark === "true" ? "jpeg" : "webp",
+              strictImageProcessing: true,
+            }
           );
         }
 
@@ -2305,8 +2356,9 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
           return res.status(415).json({ error: "Unsupported preview format" });
         }
 
+        const imageId = req.params.imageId;
         const cacheKey = `${imageId}:${filename}:${image.thumbnail_generated_at || ""}`;
-        const diskCacheName = `${crypto.createHash("sha256").update(cacheKey).digest("hex")}.jpg`;
+        const diskCacheName = `${crypto.createHash("sha256").update(cacheKey).digest("hex")}.webp`;
         const cacheFilePath = path.join(CLEAN_CATALOG_PREVIEW_CACHE_DIR, diskCacheName);
         let cleanPreview = cleanCatalogPreviewCache.get(cacheKey);
         if (cleanPreview) {
@@ -2347,13 +2399,14 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
           : 50;
         const outputBuffer = req.query.watermark === "true"
           ? await applyWatermarkToBuffer(cleanPreview, { quality })
-          : await sharp(cleanPreview).jpeg({ quality, progressive: true }).toBuffer();
+          : await sharp(cleanPreview).webp({ quality }).toBuffer();
 
-        res.set("Content-Type", "image/jpeg");
+        res.set("Content-Type", req.query.watermark === "true" ? "image/jpeg" : "image/webp");
         return res.send(outputBuffer);
       } catch (error) {
         console.error("Failed to generate catalog preview", error.message || error);
-        return res.status(error.statusCode || 500).json({ error: "Unable to generate asset preview" });
+        return res.status(error.statusCode || (isUnsupportedPreviewError(error) ? 415 : 422))
+          .json({ error: "Unable to generate asset preview" });
       }
     });
 app.get("/uploads/processed", async (req, res) => {
@@ -8147,10 +8200,23 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
         asset.format === "webp" &&
         await assetThumbnails.isThumbnailPathInsideRoot(filePath) &&
         await assetThumbnails.isValidThumbnailFile(filePath);
-      const sendThumbnail = (filePath, fileStats) => {
+      const sendThumbnail = async (filePath, fileStats) => {
         const version = String(req.query.v || "");
         const currentVersion = asset.generated_at ? new Date(asset.generated_at).toISOString() : "";
         const immutable = Boolean(version && version === currentVersion);
+        if (req.query.watermark === "true") {
+          const requestedQuality = Number(req.query.quality ?? 63);
+          const quality = Number.isFinite(requestedQuality)
+            ? Math.min(100, Math.max(10, requestedQuality))
+            : 63;
+          const watermarkedPreview = await applyWatermarkToBuffer(
+            await fs.promises.readFile(filePath),
+            { quality }
+          );
+          res.setHeader("Content-Type", "image/jpeg");
+          res.setHeader("Cache-Control", assetThumbnails.getThumbnailCacheControl(isPublicAsset, false));
+          return res.send(watermarkedPreview);
+        }
         res.setHeader("Content-Type", "image/webp");
         res.setHeader("Cache-Control", assetThumbnails.getThumbnailCacheControl(
           isPublicAsset,
@@ -8162,7 +8228,7 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
       };
 
       if (await validThumbnail(thumbnailPath, stats)) {
-        return sendThumbnail(thumbnailPath, stats);
+        return await sendThumbnail(thumbnailPath, stats);
       }
 
       console.error(`Stored thumbnail is missing or invalid for asset ${assetId}`);
@@ -8190,6 +8256,18 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
         res.setHeader("Cache-Control", "private, no-store");
         res.setHeader("Last-Modified", regeneratedStats.mtime.toUTCString());
         res.setHeader("ETag", `W/"${regeneratedStats.size.toString(16)}-${Math.trunc(regeneratedStats.mtimeMs).toString(16)}"`);
+        if (req.query.watermark === "true") {
+          const requestedQuality = Number(req.query.quality ?? 63);
+          const quality = Number.isFinite(requestedQuality)
+            ? Math.min(100, Math.max(10, requestedQuality))
+            : 63;
+          const watermarkedPreview = await applyWatermarkToBuffer(
+            await fs.promises.readFile(regeneratedPath),
+            { quality }
+          );
+          res.setHeader("Content-Type", "image/jpeg");
+          return res.send(watermarkedPreview);
+        }
         return res.sendFile(regeneratedPath, { lastModified: true, etag: true, cacheControl: false });
       } finally {
         if (thumbnailRegenerationJobs.get(numericAssetId) === regeneration) {
@@ -8198,20 +8276,10 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
       }
     }
 
-    // Keep existing pages populated while the new backfill is in progress.
-    if (isPublicAsset) {
-      const legacyThumbnailUrl = String(asset.thumbnail_url || "");
-      if (legacyThumbnailUrl.startsWith("/api/thumbnail?file=")) {
-        const legacyUrl = new URL(legacyThumbnailUrl, "http://localhost");
-        if (legacyUrl.pathname === "/api/thumbnail" && legacyUrl.searchParams.has("file")) {
-          return res.redirect(302, `${legacyUrl.pathname}${legacyUrl.search}`);
-        }
-      }
-    }
     return res.status(404).json({ error: "Thumbnail not generated" });
   } catch (error) {
     console.error(`Failed to serve thumbnail for asset ${assetId}:`, error.message || error);
-    return res.status(500).json({ error: "Unable to load asset thumbnail" });
+    return res.status(503).json({ error: "Asset thumbnail is temporarily unavailable" });
   }
 });
 

@@ -61,9 +61,9 @@ describe('ImageGrid dark mode', () => {
 
     const image = screen.getByRole('img', { name: /sample title/i });
     expect(image.style.height).toBe('auto');
-    expect(image.style.aspectRatio).toBe('16 / 9');
+    expect(image.style.aspectRatio).toBe('');
     expect(image.style.objectFit).toBe('contain');
-    expect(image.getAttribute('src')).toContain('/api/catalog-preview/1?quality=50');
+    expect(image.getAttribute('src')).toContain('/api/catalog-preview/1?quality=63');
 
     const grid = image.parentElement.parentElement;
     expect(grid).toHaveClass('explore-asset-grid');
@@ -82,8 +82,8 @@ describe('ImageGrid dark mode', () => {
     render(
       <ImageGrid
         filteredImages={[
-          { id: 218, filename: 'new-year.eps', title: 'New Year' },
-          { id: 197, filename: 'layered.psd', title: 'Layered asset' },
+          { id: 218, filename: 'new-year.eps', title: 'New Year', thumbnail_url: '/api/thumbnail?file=eps.webp', thumbnail_status: 'READY' },
+          { id: 197, filename: 'layered.psd', title: 'Layered asset', thumbnail_url: '/api/thumbnail?file=psd.webp', thumbnail_status: 'READY' },
         ]}
         darkMode={false}
       />
@@ -93,6 +93,7 @@ describe('ImageGrid dark mode', () => {
     expect(vectorImage.getAttribute('src')).toContain('/api/assets/218/thumbnail');
     expect(screen.getByRole('img', { name: 'Layered asset' }).getAttribute('src'))
       .toContain('/api/assets/197/thumbnail');
+    expect(vectorImage.getAttribute('src')).not.toContain('watermark=true');
     expect(screen.queryByTestId('asset-watermark')).not.toBeInTheDocument();
 
     Object.defineProperty(vectorImage, 'naturalWidth', { configurable: true, value: 144 });
@@ -101,6 +102,157 @@ describe('ImageGrid dark mode', () => {
 
     expect(vectorImage.style.aspectRatio).toBe('144 / 360');
   });
+
+  it.each(['jpg', 'jpeg', 'eps', 'ai', 'psd', 'psb'])(
+    'uses the central generated thumbnail for READY %s assets',
+    (extension) => {
+      render(
+        <ImageGrid
+          filteredImages={[
+            {
+              id: 21,
+              filename: `asset.${extension}`,
+              title: `Ready ${extension}`,
+              thumbnail_url: '/api/thumbnail?file=asset.webp',
+              thumbnail_status: 'READY',
+            },
+          ]}
+          darkMode={false}
+        />
+      );
+
+      const image = screen.getByRole('img', { name: `Ready ${extension}` });
+      expect(image.getAttribute('src')).toContain('/api/assets/21/thumbnail');
+      expect(image.getAttribute('src')).not.toContain('/api/catalog-preview/21');
+      expect(image.getAttribute('src')).not.toContain('watermark=true');
+    }
+  );
+
+  it.each([
+    [1000, 2000, '1000 / 2000'],
+    [2000, 1000, '2000 / 1000'],
+    [1000, 1000, '1000 / 1000'],
+    [3000, 3000, '3000 / 3000'],
+  ])('uses original %s×%s dimensions for Masonry aspect ratio', (width, height, expected) => {
+    render(
+      <ImageGrid
+        filteredImages={[
+          {
+            id: 500,
+            filename: 'proportional.jpg',
+            title: 'Proportional source',
+            original_width: width,
+            original_height: height,
+          },
+        ]}
+        darkMode={false}
+      />
+    );
+
+    const aspectRatio = screen.getByRole('img', { name: 'Proportional source' }).style.aspectRatio;
+    const [renderedWidth, renderedHeight] = aspectRatio.split('/').map(Number);
+    expect(aspectRatio).toBe(expected);
+    expect(renderedWidth / renderedHeight).toBe(width / height);
+  });
+
+  it('falls back to the preview processor if a READY central thumbnail is missing', () => {
+    render(
+      <ImageGrid
+        filteredImages={[
+          {
+            id: 501,
+            filename: 'missing.jpg',
+            title: 'Missing central thumbnail',
+            thumbnail_status: 'READY',
+          },
+        ]}
+        darkMode={false}
+      />
+    );
+
+    const image = screen.getByRole('img', { name: 'Missing central thumbnail' });
+    expect(image.getAttribute('src')).toContain('/api/assets/501/thumbnail');
+    fireEvent.error(image);
+    expect(image.getAttribute('src')).toContain('/api/catalog-preview/501?quality=63');
+    expect(image.getAttribute('src')).not.toContain('watermark=true');
+  });
+
+  it('uses the central thumbnail for READY metadata without a legacy thumbnail URL', () => {
+    render(
+      <ImageGrid
+        filteredImages={[
+          {
+            id: 218,
+            filename: 'asset.jpg',
+            title: 'Central thumbnail',
+            thumbnail_url: null,
+            generated_thumbnail_status: 'READY',
+            thumbnail_path: '2026/10/04/asset-218.webp',
+            format: 'webp',
+          },
+        ]}
+        darkMode={false}
+      />
+    );
+
+    const image = screen.getByRole('img', { name: 'Central thumbnail' });
+    expect(image.getAttribute('src')).toContain('/api/assets/218/thumbnail');
+    expect(image.getAttribute('src')).not.toContain('/api/catalog-preview/218');
+  });
+
+  it('uses the API COMPLETED status when a central thumbnail has no legacy URL', () => {
+    render(
+      <ImageGrid
+        filteredImages={[
+          {
+            id: 219,
+            filename: 'asset.png',
+            title: 'Completed thumbnail',
+            thumbnail_url: null,
+            thumbnail_status: 'COMPLETED',
+          },
+        ]}
+        darkMode={false}
+      />
+    );
+
+    expect(screen.getByRole('img', { name: 'Completed thumbnail' }).getAttribute('src'))
+      .toContain('/api/assets/219/thumbnail');
+  });
+
+  it.each(['pending', 'processing', 'retrying', 'failed'])(
+    'uses preview fallback instead of a generated-thumbnail request for %s assets',
+    (thumbnailStatus) => {
+      render(
+        <ImageGrid
+          filteredImages={[
+            {
+              id: 21,
+              filename: 'asset.jpg',
+              title: `Asset ${thumbnailStatus}`,
+              thumbnail_url: '/api/thumbnail?file=asset.webp',
+              thumbnail_status: thumbnailStatus,
+            },
+            {
+              id: 22,
+              filename: 'asset.eps',
+              title: `Vector ${thumbnailStatus}`,
+              thumbnail_url: '/api/thumbnail?file=vector.webp',
+              thumbnail_status: thumbnailStatus,
+            },
+          ]}
+          darkMode={false}
+        />
+      );
+
+      const rasterPreview = screen.getByRole('img', { name: `Asset ${thumbnailStatus}` });
+      const vectorPreview = screen.getByRole('img', { name: `Vector ${thumbnailStatus}` });
+      expect(rasterPreview.getAttribute('src')).toContain('/api/catalog-preview/21?quality=63');
+      expect(vectorPreview.getAttribute('src')).toContain('/api/catalog-preview/22?quality=63');
+      expect(rasterPreview.getAttribute('src')).not.toContain('/api/assets/21/thumbnail');
+      expect(vectorPreview.getAttribute('src')).not.toContain('/api/assets/22/thumbnail');
+    }
+  );
 
   it('uses the EPS source bounding box when cached thumbnails still have a 16:9 canvas', async () => {
     const originalFetch = global.fetch;
@@ -132,7 +284,7 @@ describe('ImageGrid dark mode', () => {
       await waitFor(() => {
         expect(image.style.aspectRatio).toBe('595.2756 / 841.8898');
       });
-      expect(image.style.objectFit).toBe('cover');
+      expect(image.style.objectFit).toBe('contain');
       expect(image.parentElement.style.gridRowEnd).toBe('span 14');
       expect(global.fetch).toHaveBeenCalledWith(
         'http://localhost:5000/api/images/218',
@@ -184,7 +336,7 @@ describe('ImageGrid dark mode', () => {
       await waitFor(() => {
         expect(image.style.aspectRatio).toBe('1600 / 2400');
       });
-      expect(image.style.objectFit).toBe('cover');
+      expect(image.style.objectFit).toBe('contain');
       expect(image.parentElement.style.gridRowEnd).toBe('span 15');
       expect(global.fetch).toHaveBeenCalledWith(
         'http://localhost:5000/api/images/197',
@@ -260,7 +412,7 @@ describe('ImageGrid dark mode', () => {
         observers[0].callback([{ target: firstImage, isIntersecting: true }]);
       });
 
-      expect(firstImage.getAttribute('src')).toContain('/api/catalog-preview/1?quality=50');
+      expect(firstImage.getAttribute('src')).toContain('/api/catalog-preview/1?quality=63');
       expect(secondImage).not.toHaveAttribute('src');
     } finally {
       global.IntersectionObserver = OriginalIntersectionObserver;

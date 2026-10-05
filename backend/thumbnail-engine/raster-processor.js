@@ -8,7 +8,7 @@ class RasterProcessor extends BaseProcessor {
   constructor(options = {}) {
     super(options);
     this.name = 'RasterProcessor';
-    this.supportedExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg'];
+    this.supportedExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.tif', '.tiff'];
   }
 
   async detect(filePath) {
@@ -16,7 +16,7 @@ class RasterProcessor extends BaseProcessor {
 
     try {
       const metadata = await sharp(filePath).metadata();
-      return ['jpeg', 'png', 'webp', 'gif', 'svg'].includes(metadata.format);
+      return ['jpeg', 'png', 'webp', 'gif', 'svg', 'tiff'].includes(metadata.format);
     } catch (error) {
       return false;
     }

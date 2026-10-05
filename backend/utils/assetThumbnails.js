@@ -9,15 +9,14 @@ const sharp = require('sharp');
 const pool = require('../db');
 const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
+const { getAssetSourceDimensions } = require('./assetDimensions');
 
-const PROCESSOR_VERSION = 'webp-16x9-v2';
-const PROPORTIONAL_PROCESSOR_VERSION = 'webp-proportional-v3';
+const PROCESSOR_VERSION = 'webp-proportional-20pct-v1';
+const PROPORTIONAL_PROCESSOR_VERSION = PROCESSOR_VERSION;
+const THUMBNAIL_SCALE = 0.2;
+const THUMBNAIL_QUALITY = 63;
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024;
-const HARD_TARGET_BYTES = 75 * 1024;
-const PREFERRED_TARGET_BYTES = 50 * 1024;
 const MAX_THUMBNAIL_CONCURRENCY = 8;
-const MAX_DIMENSIONS = { width: 640, height: 360 };
-const QUALITY_STEPS = [60, 54, 48, 42, 36, 30];
 const BACKGROUND = { r: 232, g: 234, b: 237, alpha: 1 };
 const OPTIONAL_PREVIEW_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg']);
 const NON_CONTRIBUTOR_UPLOAD_DIRECTORIES = new Set([
@@ -37,9 +36,7 @@ const NON_CONTRIBUTOR_UPLOAD_DIRECTORIES = new Set([
 const contributorUploadLocks = new Map();
 
 function getProcessorVersion(filename) {
-  return ['.ai', '.eps', '.psd', '.psb'].includes(path.extname(String(filename || '')).toLowerCase())
-    ? PROPORTIONAL_PROCESSOR_VERSION
-    : PROCESSOR_VERSION;
+  return PROCESSOR_VERSION;
 }
 
 function getStagedSourceDirectory() {
@@ -449,7 +446,7 @@ function runCommand(command, args, timeoutMs = 120000) {
 
 async function extractPreview(sourcePath, extension) {
   const ext = extension.toLowerCase();
-  if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg'].includes(ext)) {
+  if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.tif', '.tiff'].includes(ext)) {
     return sharp(sourcePath, { animated: false, page: 0, failOn: 'none' }).rotate().toBuffer();
   }
 
@@ -515,65 +512,56 @@ async function extractPreview(sourcePath, extension) {
   throw error;
 }
 
-async function encodeThumbnail(previewBuffer, { preserveAspectRatio = false } = {}) {
-  let lastResult;
-  for (const bounds of [
-    MAX_DIMENSIONS,
-    { width: 576, height: 324 },
-    { width: 512, height: 288 },
-    { width: 448, height: 252 },
-    { width: 384, height: 216 },
-    { width: 320, height: 180 },
-    { width: 256, height: 144 },
-    { width: 192, height: 108 },
-    { width: 128, height: 72 },
-    { width: 64, height: 36 },
-    { width: 32, height: 18 },
-  ]) {
-    const fitted = await sharp(previewBuffer, { failOn: 'none' })
-      .rotate()
-      .flatten({ background: BACKGROUND })
-      .resize(bounds.width, bounds.height, { fit: 'inside', withoutEnlargement: true })
-      .png()
-      .toBuffer({ resolveWithObject: true });
-    const canvas = preserveAspectRatio
-      ? fitted.data
-      : await sharp(fitted.data)
-        .extend({
-          top: Math.floor((bounds.height - fitted.info.height) / 2),
-          bottom: bounds.height - fitted.info.height - Math.floor((bounds.height - fitted.info.height) / 2),
-          left: Math.floor((bounds.width - fitted.info.width) / 2),
-          right: bounds.width - fitted.info.width - Math.floor((bounds.width - fitted.info.width) / 2),
-          background: BACKGROUND,
-        })
-        .png()
-        .toBuffer();
-    const outputWidth = preserveAspectRatio ? fitted.info.width : bounds.width;
-    const outputHeight = preserveAspectRatio ? fitted.info.height : bounds.height;
-    let acceptableResult = null;
-    for (const quality of QUALITY_STEPS) {
-      const buffer = await sharp(canvas).webp({ quality, effort: 6, smartSubsample: true }).toBuffer();
-      lastResult = { buffer, width: outputWidth, height: outputHeight, quality };
-      if (buffer.length <= PREFERRED_TARGET_BYTES) return lastResult;
-      if (!acceptableResult && buffer.length <= HARD_TARGET_BYTES) acceptableResult = lastResult;
-    }
-    if (acceptableResult) return acceptableResult;
+async function encodeThumbnail(previewBuffer, { sourceDimensions = null } = {}) {
+  const metadata = await sharp(previewBuffer, { failOn: 'none' }).metadata();
+  const swapsOrientation = [5, 6, 7, 8].includes(metadata.orientation);
+  const sourceWidth = sourceDimensions?.width ||
+    metadata.autoOrient?.width ||
+    (swapsOrientation ? metadata.height : metadata.width);
+  const sourceHeight = sourceDimensions?.height ||
+    metadata.autoOrient?.height ||
+    (swapsOrientation ? metadata.width : metadata.height);
+  if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) {
+    throw new Error('Thumbnail source has invalid dimensions');
   }
-  if (!lastResult || lastResult.buffer.length > HARD_TARGET_BYTES) {
-    throw new Error(`Unable to encode thumbnail below the ${HARD_TARGET_BYTES} byte hard limit`);
-  }
-  return lastResult;
+
+  const scaledWidth = Math.round(sourceWidth * THUMBNAIL_SCALE);
+  const scaledHeight = Math.round(sourceHeight * THUMBNAIL_SCALE);
+  // If either scaled axis would be under 2px, retain source dimensions to avoid distorting tiny assets.
+  const targetWidth = scaledWidth < 2 || scaledHeight < 2
+    ? Math.max(1, Math.round(sourceWidth))
+    : scaledWidth;
+  const targetHeight = scaledWidth < 2 || scaledHeight < 2
+    ? Math.max(1, Math.round(sourceHeight))
+    : scaledHeight;
+  const thumbnail = await sharp(previewBuffer, { failOn: 'none' })
+    .rotate()
+    .flatten({ background: BACKGROUND })
+    .resize({
+      width: targetWidth,
+      height: targetHeight,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .webp({ quality: THUMBNAIL_QUALITY, effort: 6, smartSubsample: true })
+    .toBuffer({ resolveWithObject: true });
+
+  return {
+    buffer: thumbnail.data,
+    width: thumbnail.info.width,
+    height: thumbnail.info.height,
+    quality: THUMBNAIL_QUALITY,
+    format: 'webp',
+  };
 }
 
 async function isValidThumbnailFile(filePath) {
   try {
     const stats = await fsp.lstat(filePath);
-    if (!stats.isFile() || stats.isSymbolicLink() || stats.size <= 0 || stats.size > HARD_TARGET_BYTES) return false;
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size <= 0) return false;
     const metadata = await sharp(filePath).metadata();
     if (
       metadata.format !== 'webp' ||
-      metadata.width > MAX_DIMENSIONS.width ||
-      metadata.height > MAX_DIMENSIONS.height ||
       !metadata.width ||
       !metadata.height
     ) return false;
@@ -722,7 +710,7 @@ async function generateAssetThumbnail(assetId, options = {}) {
     }
     const extension = path.extname(storedFilename).toLowerCase();
     let previewBuffer;
-    let processorName = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg'].includes(extension)
+    let processorName = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.tif', '.tiff'].includes(extension)
       ? 'sharp'
       : ['.mp4', '.avi', '.mkv', '.mov', '.webm'].includes(extension)
         ? (process.env.FFMPEG_PATH || 'ffmpeg')
@@ -739,12 +727,10 @@ async function generateAssetThumbnail(assetId, options = {}) {
       previewBuffer = await extractPreview(sourcePath, extension);
     }
     if (!Buffer.isBuffer(previewBuffer) || previewBuffer.length === 0) throw new Error('Processor returned an empty preview');
-    const thumbnail = await encodeThumbnail(previewBuffer, {
-      preserveAspectRatio: ['.ai', '.eps', '.psd', '.psb'].includes(extension),
-    });
-    if (thumbnail.width > MAX_DIMENSIONS.width || thumbnail.height > MAX_DIMENSIONS.height) {
-      throw new Error('Generated thumbnail exceeds maximum dimensions');
-    }
+    const sourceDimensions = options.previewPath
+      ? null
+      : await getAssetSourceDimensions(sourcePath, extension);
+    const thumbnail = await encodeThumbnail(previewBuffer, { sourceDimensions });
 
     temporaryOutput = `${outputPath}.${crypto.randomUUID()}.tmp`;
     await fsp.writeFile(temporaryOutput, thumbnail.buffer, { flag: 'wx' });
@@ -1017,10 +1003,7 @@ async function deleteContributorUploadFolderIfUnusedLocked(contributorId) {
 
 module.exports = {
   BACKGROUND,
-  HARD_TARGET_BYTES,
   MAX_THUMBNAIL_CONCURRENCY,
-  MAX_DIMENSIONS,
-  PREFERRED_TARGET_BYTES,
   PROCESSOR_VERSION,
   PROPORTIONAL_PROCESSOR_VERSION,
   encodeThumbnail,

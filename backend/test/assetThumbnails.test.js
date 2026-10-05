@@ -1,12 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const sharp = require('sharp');
 const {
-  HARD_TARGET_BYTES,
   encodeThumbnail,
   getThumbnailFilename,
   getThumbnailFilePath,
@@ -30,97 +28,67 @@ const {
 const { planOrphanThumbnailFiles } = require('../scripts/thumbnail-cli-utils');
 const pool = require('../db');
 const ProcessorDetector = require('../thumbnail-engine/processor-detector');
+const { getAssetSourceDimensions } = require('../utils/assetDimensions');
 
-test('encodes a square source into a 16:9 WebP canvas with neutral padding', async () => {
-  const source = Buffer.from(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#ff0000"/></svg>'
-  );
-  const result = await encodeThumbnail(source);
-  const metadata = await sharp(result.buffer).metadata();
-  const corner = await sharp(result.buffer).extract({ left: 2, top: 2, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
-  const center = await sharp(result.buffer).extract({ left: 320, top: 180, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
+test('encodes a proportional WebP thumbnail at 20% dimensions and quality 63', async () => {
+  for (const [width, height, expectedWidth, expectedHeight] of [
+    [1000, 2000, 200, 400],
+    [2000, 1000, 400, 200],
+    [1000, 1000, 200, 200],
+    [4000, 1000, 800, 200],
+  ]) {
+    const source = Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="#ff0000"/></svg>`
+    );
+    const result = await encodeThumbnail(source);
+    const metadata = await sharp(result.buffer).metadata();
 
-  assert.equal(metadata.format, 'webp');
-  assert.equal(metadata.width, 640);
-  assert.equal(metadata.height, 360);
-  assert.equal(result.quality, 60);
-  assert.ok(Math.abs(corner[0] - 232) <= 10);
-  assert.ok(Math.abs(corner[1] - 234) <= 10);
-  assert.ok(Math.abs(corner[2] - 237) <= 10);
-  assert.ok(center[0] > 200 && center[1] < 40 && center[2] < 40);
-  assert.ok(result.buffer.length <= 75 * 1024);
+    assert.equal(metadata.format, 'webp');
+    assert.equal(metadata.width, expectedWidth);
+    assert.equal(metadata.height, expectedHeight);
+    assert.equal(result.quality, 63);
+    assert.equal(result.width / result.height, width / height);
+  }
 });
 
-test('does not enlarge a small portrait source and preserves its proportions', async () => {
-  const source = Buffer.from(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="160"><rect width="80" height="160" fill="#0000ff"/></svg>'
-  );
-  const result = await encodeThumbnail(source);
-  const metadata = await sharp(result.buffer).metadata();
-  const top = await sharp(result.buffer).extract({ left: 320, top: 120, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
-  const outside = await sharp(result.buffer).extract({ left: 200, top: 180, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
-
-  assert.equal(metadata.width, 640);
-  assert.equal(metadata.height, 360);
-  assert.ok(top[2] > 180);
-  assert.ok(outside[0] > 200 && outside[2] > 200);
-});
-
-test('preserves original dimensions for proportional vector previews', async () => {
-  const source = Buffer.from(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="500"><rect width="200" height="500" fill="#0000ff"/></svg>'
-  );
-  const result = await encodeThumbnail(source, { preserveAspectRatio: true });
-  const metadata = await sharp(result.buffer).metadata();
-
-  assert.equal(metadata.width, 144);
-  assert.equal(metadata.height, 360);
-  assert.equal(result.width, 144);
-  assert.equal(result.height, 360);
-  assert.ok(result.buffer.length <= HARD_TARGET_BYTES);
-});
-
-test('uses proportional thumbnail versioning only for vector and layered assets', () => {
-  assert.equal(getProcessorVersion('asset.eps'), 'webp-proportional-v3');
-  assert.equal(getProcessorVersion('asset.psb'), 'webp-proportional-v3');
-  assert.equal(getProcessorVersion('asset.jpg'), 'webp-16x9-v2');
-});
-
-test('fits 4:3 and extremely wide sources without cropping into a 16:9 presentation', async () => {
-  const landscapeSource = Buffer.from(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="90"><rect width="120" height="90" fill="#ff0000"/></svg>'
-  );
-  const wideSource = Buffer.from(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="40"><rect width="400" height="40" fill="#0000ff"/></svg>'
-  );
-  const landscape = await encodeThumbnail(landscapeSource);
-  const wide = await encodeThumbnail(wideSource);
-  const landscapeMetadata = await sharp(landscape.buffer).metadata();
-  const wideMetadata = await sharp(wide.buffer).metadata();
-  const landscapeEdge = await sharp(landscape.buffer).extract({ left: 2, top: 180, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
-  const landscapeCenter = await sharp(landscape.buffer).extract({ left: 320, top: 180, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
-  const wideCenter = await sharp(wide.buffer).extract({ left: 320, top: 180, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
-
-  assert.equal(landscapeMetadata.width / landscapeMetadata.height, 16 / 9);
-  assert.equal(wideMetadata.width / wideMetadata.height, 16 / 9);
-  assert.ok(landscapeEdge[0] > 210 && landscapeEdge[1] > 210, '4:3 source has neutral side padding rather than a crop');
-  assert.ok(landscapeCenter[0] > 200 && landscapeCenter[1] < 40, '4:3 source content remains centered');
-  assert.ok(wideCenter[0] < 40 && wideCenter[1] < 40, 'extremely wide source content remains centered in the canvas');
-});
-
-test('adapts quality and dimensions for high-entropy images within the hard size target', async () => {
-  const randomPixels = crypto.randomBytes(640 * 360 * 3);
-  const source = await sharp(randomPixels, {
-    raw: { width: 640, height: 360, channels: 3 },
+test('does not upscale tiny originals and keeps both output dimensions nonzero', async () => {
+  const source = await sharp({
+    create: { width: 3, height: 2, channels: 3, background: '#0000ff' },
   }).png().toBuffer();
   const result = await encodeThumbnail(source);
   const metadata = await sharp(result.buffer).metadata();
 
-  assert.ok(result.quality <= 60);
-  assert.ok(result.width < 640 || result.quality < 60, 'compression adapts instead of blindly keeping quality 60');
-  assert.ok(result.buffer.length <= HARD_TARGET_BYTES);
-  assert.equal(metadata.format, 'webp');
-  assert.equal(metadata.width / metadata.height, 16 / 9);
+  assert.equal(metadata.width, 3);
+  assert.equal(metadata.height, 2);
+  assert.equal(metadata.width / metadata.height, 3 / 2);
+  assert.equal(result.quality, 63);
+});
+
+test('uses source-document dimensions when processors return a higher-DPI raster preview', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-vector-dimensions-'));
+  const epsPath = path.join(temporaryDirectory, 'artwork.eps');
+  const rasterPreview = Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="4000"><rect width="2000" height="4000" fill="#ff0000"/></svg>'
+  );
+  fs.writeFileSync(epsPath, '%!PS-Adobe-3.0 EPSF-3.0\n%%HiResBoundingBox: 0 0 1000 2000\n');
+
+  try {
+    const sourceDimensions = await getAssetSourceDimensions(epsPath, '.eps');
+    const result = await encodeThumbnail(rasterPreview, { sourceDimensions });
+    const metadata = await sharp(result.buffer).metadata();
+    assert.deepEqual(sourceDimensions, { width: 1000, height: 2000 });
+    assert.equal(metadata.width, 200);
+    assert.equal(metadata.height, 400);
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('uses the unified proportional thumbnail processor version for every format', () => {
+  const version = getProcessorVersion('asset.jpg');
+  for (const filename of ['asset.jpg', 'asset.eps', 'asset.ai', 'asset.psd', 'asset.psb']) {
+    assert.equal(getProcessorVersion(filename), version);
+  }
 });
 
 test('uses readable unique ID filenames and rejects unsafe stored source paths', () => {
@@ -375,8 +343,9 @@ test('generation skips valid thumbnails and repairs missing files', async () => 
     assert.deepEqual(generatedFiles, [outputPath]);
     const metadata = await sharp(outputPath).metadata();
     assert.equal(metadata.format, 'webp');
-    assert.ok(metadata.width <= 640 && metadata.height <= 360);
-    assert.ok(fs.statSync(outputPath).size <= HARD_TARGET_BYTES);
+    assert.equal(metadata.width, 20);
+    assert.equal(metadata.height, 12);
+    assert.equal(metadata.width / metadata.height, 100 / 60);
   } finally {
     pool.query = originalQuery;
     if (previousAssetsRoot === undefined) delete process.env.ASSETS_ROOT;

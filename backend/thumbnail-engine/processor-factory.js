@@ -37,6 +37,10 @@ class ProcessorFactory {
       case '.jpeg':
       case '.png':
       case '.webp':
+      case '.gif':
+      case '.svg':
+      case '.tif':
+      case '.tiff':
         return this.processors.raster;
       default:
         return null;
