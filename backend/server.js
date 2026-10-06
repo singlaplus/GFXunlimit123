@@ -2133,6 +2133,24 @@ const streamImageFile = async (req, res, absolutePath, { bypassProcessing = fals
 };
 
 app.use("/api/files/branding", brandingAssetHandler);
+app.use("/api/files", async (req, res, next) => {
+  try {
+    const relativePath = decodeURIComponent(String(req.path || "").replace(/^\/+/, "")).replace(/\\/g, "/");
+    const imageResult = await pool.query(
+      `SELECT uploaded_by, status FROM images WHERE filename = $1 LIMIT 1`,
+      [relativePath]
+    );
+    const image = imageResult.rows[0];
+    if (!image || await authorizeAssetOwnerOrAdmin(req, res, image)) {
+      return next();
+    }
+    if (!res.headersSent) return res.status(404).json({ error: "Asset not found" });
+    return undefined;
+  } catch (error) {
+    console.error("Asset file authorization failed", error);
+    return res.status(500).json({ error: "Unable to authorize asset file access" });
+  }
+});
 app.use("/api/files", filesAssetHandler);
 
 app.get("/api/images/:imageId", async (req, res) => {
@@ -2143,7 +2161,7 @@ app.get("/api/images/:imageId", async (req, res) => {
 
   try {
     const imageResult = await pool.query(
-      `SELECT i.filename, t.status AS generated_thumbnail_status, t.format
+      `SELECT i.filename, i.uploaded_by, i.status, t.status AS generated_thumbnail_status, t.format
        FROM images i
        LEFT JOIN asset_thumbnail_metadata t ON t.asset_id = i.id
        WHERE i.id = $1`,
@@ -2156,6 +2174,10 @@ app.get("/api/images/:imageId", async (req, res) => {
 
     if (!storedFilename) {
       return res.status(404).json({ error: "Image not found" });
+    }
+    if (!(await authorizeAssetOwnerOrAdmin(req, res, image))) {
+      if (!res.headersSent) return res.status(404).json({ error: "Image not found" });
+      return undefined;
     }
 
     if (
@@ -2304,7 +2326,7 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
         }
 
         const imageResult = await pool.query(
-          `SELECT filename, thumbnail_generated_at, status
+          `SELECT filename, thumbnail_generated_at, status, uploaded_by
            FROM images
            WHERE id = $1`,
           [imageId]
@@ -2320,7 +2342,34 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
         );
         res.set("Cache-Control", isPublicAsset ? "public, max-age=300" : "private, no-store");
         if (!isPublicAsset) {
-          return verifyAdmin(req, res, next);
+          try {
+            const authHeader = req.headers.authorization || "";
+            const token = authHeader.startsWith("Bearer ")
+              ? authHeader.slice(7)
+              : String(req.cookies?.authToken || "");
+            if (!token) return res.status(401).json("Access denied");
+
+            const decoded = verifyJwtToken(token);
+            const userResult = await pool.query(
+              `SELECT role, status FROM users WHERE id = $1`,
+              [decoded.user]
+            );
+            const user = userResult.rows[0];
+            if (!user || ["inactive", "disabled", "blocked"].includes(String(user.status || "").toLowerCase())) {
+              return res.status(403).json("Invalid user");
+            }
+            if (
+              String(user.role || "").toLowerCase() !== "admin" &&
+              String(decoded.user) !== String(image.uploaded_by)
+            ) {
+              return res.status(403).json("You can only preview your own assets");
+            }
+
+            req.user = { id: decoded.user, role: user.role };
+            return next();
+          } catch (error) {
+            return res.status(401).json("Invalid token");
+          }
         }
         return next();
       } catch (error) {
@@ -8352,12 +8401,13 @@ app.post(
         description,
         type
       } = req.body;
+      const isPreSubmissionUpload = String(req.body.preSubmission || "").toLowerCase() === "true";
 
       if (!originalFile) {
         return res.status(400).json("No image uploaded");
       }
 
-      if (!title || !category || !collection || !keywords) {
+      if (!isPreSubmissionUpload && (!title || !category || !collection || !keywords)) {
         return res.status(400).json("All fields are required");
       }
 
@@ -8374,6 +8424,9 @@ app.post(
 
       if (user.role !== "contributor" && user.role !== "admin") {
         return res.status(403).json("Only contributors can upload assets.");
+      }
+      if (isPreSubmissionUpload && user.role !== "contributor") {
+        return res.status(403).json("Only contributors can create pre-submission uploads.");
       }
 
       if (user.role === "contributor" && user.status === "pending" && user.contributor_cooling_until && new Date(user.contributor_cooling_until) <= new Date()) {
@@ -8395,9 +8448,16 @@ app.post(
         uploadRelativeDir === "." ? "" : uploadRelativeDir,
         originalFile.filename
       );
+      const originalFilename = path.basename(originalFile.originalname || originalFile.filename);
+      const extension = path.extname(originalFilename).replace(/^\./, "").toLowerCase();
+      const assetTitle = String(title || path.basename(originalFilename, path.extname(originalFilename))).trim();
+      const assetCategory = String(category || "").trim();
+      const assetCollection = String(collection || "").trim();
+      const assetKeywords = String(keywords || "").trim();
 
       const thumbnailUrl = null;
       const thumbnailStatus = "pending";
+      const initialAssetStatus = isPreSubmissionUpload ? "not_submitted" : "pending";
 
       const newImage = await pool.query(
         `
@@ -8410,6 +8470,10 @@ app.post(
           keywords,
           description,
           type,
+          file_size,
+          extension,
+          mime_type,
+          original_filename,
           uploaded_by,
           created_at,
           downloads,
@@ -8430,26 +8494,35 @@ app.post(
           $6,
           $7,
           $8,
+          $9,
+          $10,
+          $11,
+          $12,
           NOW(),
           0,
           0,
           0,
-          'pending',
-          $9,
-          $10,
-          CASE WHEN $9::text IS NOT NULL THEN NOW() ELSE NULL END
+          $13,
+          $14,
+          $15,
+          CASE WHEN $14::text IS NOT NULL THEN NOW() ELSE NULL END
         )
         RETURNING *
         `,
         [
-          title,
+          assetTitle,
           storedFilename,
-          category,
-          collection,
-          keywords,
-          description,
-          type,
+          assetCategory,
+          assetCollection,
+          assetKeywords,
+          String(description || "").trim(),
+          String(type || "").trim(),
+          Number(originalFile.size) || null,
+          extension || null,
+          originalFile.mimetype || null,
+          originalFilename,
           uploaded_by,
+          initialAssetStatus,
           thumbnailUrl,
           thumbnailStatus
         ]
@@ -8490,13 +8563,15 @@ app.post(
         }
       }
 
-      await recordBusinessEvent(pool, "ASSET_UPLOADED", {
+      await recordBusinessEvent(pool, isPreSubmissionUpload ? "ASSET_DRAFT_UPLOADED" : "ASSET_UPLOADED", {
         userId: decoded.user,
         userRole: user.role,
         assetId: newImage.rows[0].id,
-        assetTitle: title,
+        assetTitle,
         actorId: decoded.user,
-        description: `Asset uploaded: ${title}`,
+        description: isPreSubmissionUpload
+          ? `Pre-submission asset uploaded: ${assetTitle}`
+          : `Asset uploaded: ${assetTitle}`,
         metadata: { filename: storedFilename, thumbnailStatus }
       });
 
@@ -8509,6 +8584,134 @@ app.post(
       releaseContributorUploadLock(req);
     }
 
+  }
+);
+
+app.post(
+  "/images/:id/thumbnail/retry",
+  (req, res, next) => authenticateToken(req, res, next),
+  async (req, res) => {
+    try {
+      const assetId = Number(req.params.id);
+      if (!Number.isSafeInteger(assetId) || assetId <= 0) {
+        return res.status(400).json({ error: "Invalid asset ID" });
+      }
+
+      const imageResult = await pool.query(
+        `SELECT id, uploaded_by, status FROM images WHERE id = $1`,
+        [assetId]
+      );
+      const image = imageResult.rows[0];
+      if (!image) return res.status(404).json({ error: "Asset not found" });
+
+      const requesterResult = await pool.query(
+        `SELECT role FROM users WHERE id = $1`,
+        [req.user.id]
+      );
+      const requesterIsOwner = Number(image.uploaded_by) === Number(req.user.id);
+      const requesterIsAdmin = String(requesterResult.rows[0]?.role || "").toLowerCase() === "admin";
+      if (!requesterIsOwner && !requesterIsAdmin) {
+        return res.status(404).json({ error: "Asset not found" });
+      }
+      if (!requesterIsAdmin && !["not_submitted", "draft"].includes(String(image.status || "").toLowerCase())) {
+        return res.status(403).json({ error: "Only not-submitted assets can retry thumbnail processing." });
+      }
+
+      await pool.query(
+        `UPDATE images SET thumbnail_status = 'PROCESSING', thumbnail_error = NULL WHERE id = $1`,
+        [assetId]
+      );
+      await pool.query(
+        `UPDATE asset_thumbnail_metadata
+         SET status = 'PROCESSING', error_message = NULL, updated_at = NOW()
+         WHERE asset_id = $1`,
+        [assetId]
+      );
+
+      try {
+        const jobId = await thumbnailQueue.queueAssetThumbnailJob(
+          assetId,
+          image.uploaded_by,
+          { force: true }
+        );
+        return res.status(202).json({
+          id: assetId,
+          thumbnail_status: "PROCESSING",
+          thumbnail_job_id: jobId
+        });
+      } catch (error) {
+        await assetThumbnails.recordThumbnailQueueFailure(assetId, error);
+        return res.status(503).json({ error: "Thumbnail retry could not be queued." });
+      }
+    } catch (error) {
+      console.error("Thumbnail retry request failed", error);
+      return res.status(500).json({ error: "Unable to retry thumbnail processing." });
+    }
+  }
+);
+
+app.post(
+  "/my-uploads/:id/submit",
+  (req, res, next) => authenticateToken(req, res, next),
+  async (req, res) => {
+    try {
+      const assetId = Number(req.params.id);
+      if (!Number.isSafeInteger(assetId) || assetId <= 0) {
+        return res.status(400).json({ error: "Invalid asset ID" });
+      }
+      const requesterResult = await pool.query(
+        `SELECT role FROM users WHERE id = $1`,
+        [req.user.id]
+      );
+      if (String(requesterResult.rows[0]?.role || "").toLowerCase() !== "contributor") {
+        return res.status(403).json({ error: "Only contributors can submit assets for review." });
+      }
+
+      const assetResult = await pool.query(
+        `SELECT id, uploaded_by, status, title, category, collection, keywords
+         FROM images WHERE id = $1`,
+        [assetId]
+      );
+      const asset = assetResult.rows[0];
+      if (!asset || Number(asset.uploaded_by) !== Number(req.user.id)) {
+        return res.status(404).json({ error: "Asset not found" });
+      }
+      if (!["not_submitted", "draft"].includes(String(asset.status || "").toLowerCase())) {
+        return res.status(409).json({ error: "Only not-submitted assets can be submitted." });
+      }
+      if (!asset.title?.trim() || !asset.category?.trim() || !asset.collection?.trim() || !asset.keywords?.trim()) {
+        return res.status(400).json({ error: "Complete the required metadata before submitting this asset." });
+      }
+
+      const submitted = await pool.query(
+        `UPDATE images
+         SET status = 'pending'
+         WHERE id = $1 AND uploaded_by = $2
+           AND LOWER(COALESCE(status, '')) IN ('not_submitted', 'draft')
+           AND EXISTS (
+             SELECT 1 FROM asset_thumbnail_metadata
+             WHERE asset_id = $1 AND status = 'READY' AND thumbnail_path IS NOT NULL
+           )
+         RETURNING *`,
+        [assetId, req.user.id]
+      );
+      if (submitted.rows.length === 0) {
+        return res.status(409).json({ error: "This asset cannot be submitted until its thumbnail is ready." });
+      }
+
+      await recordBusinessEvent(pool, "ASSET_SUBMITTED", {
+        userId: req.user.id,
+        userRole: "contributor",
+        assetId,
+        assetTitle: submitted.rows[0].title,
+        actorId: req.user.id,
+        description: `Asset submitted for review: ${submitted.rows[0].title}`
+      });
+      return res.json(submitted.rows[0]);
+    } catch (error) {
+      console.error("Asset submission failed", error);
+      return res.status(500).json({ error: "Unable to submit asset for review." });
+    }
   }
 );
 /* ---------------- CREDITS HISTORY ---------------- */
@@ -9152,6 +9355,7 @@ app.get(
 
           `
           SELECT id, title, filename, category, keywords, created_at, downloads, views, likes,
+            uploaded_by,
             status, collection, description, type, file_size, extension, mime_type, original_filename,
             thumbnail_url, thumbnail_generated_at, thumbnail_status
           FROM images
@@ -9178,6 +9382,10 @@ app.get(
       if (!isApproved || hasCredentials) {
         await authenticateToken(req, res, () => {});
         if (res.headersSent) return;
+        if (!isApproved && !(await authorizeAssetOwnerOrAdmin(req, res, image.rows[0]))) {
+          if (!res.headersSent) return res.status(404).json("Image not found");
+          return;
+        }
 
         const authenticatedImage = await pool.query(
           `
@@ -9195,7 +9403,9 @@ app.get(
         return res.json(authenticatedImage.rows[0]);
       }
 
-      res.json(image.rows[0]);
+      const publicImage = { ...image.rows[0] };
+      delete publicImage.uploaded_by;
+      res.json(publicImage);
 
     } catch (err) {
 
@@ -9904,7 +10114,7 @@ app.delete(
       const image =
         await pool.query(
           `
-          SELECT filename, uploaded_by, title
+          SELECT filename, uploaded_by, title, status
           FROM images
           WHERE id = $1
           `,
@@ -9928,7 +10138,14 @@ app.delete(
       const requesterIsOwner = Number(image.rows[0].uploaded_by) === Number(req.user.id);
       const requesterIsAdmin = String(requesterResult.rows[0]?.role || "").toLowerCase() === "admin";
       if (!requesterIsOwner && !requesterIsAdmin) {
-        return res.status(403).json("Access denied");
+        return res.status(404).json("Image not found");
+      }
+      if (
+        requesterIsOwner &&
+        !requesterIsAdmin &&
+        !["not_submitted", "draft"].includes(String(image.rows[0].status || "").toLowerCase())
+      ) {
+        return res.status(403).json("Contributors can delete only not-submitted assets.");
       }
 
       const filename =
@@ -9949,7 +10166,7 @@ app.delete(
         thumbnailRecord.rows[0]?.thumbnail_path || null
       );
       if (!thumbnailDeleted) {
-        return res.status(500).json({ error: "Unable to delete asset thumbnail" });
+        console.warn(`Thumbnail cleanup deferred for deleted asset ${id}; retry record was saved.`);
       }
 
       // Delete favorites
@@ -10027,6 +10244,7 @@ app.delete(
 
 app.put(
   "/images/:id",
+  (req, res, next) => authenticateToken(req, res, next),
   async (req, res) => {
 
     try {
@@ -10045,35 +10263,63 @@ app.put(
 
       const nextStatus = status && String(status).trim() ? String(status).trim().toLowerCase() : null;
 
-      const updatedImage =
-        await pool.query(
+      const imageResult = await pool.query(
+        `SELECT id, uploaded_by, status FROM images WHERE id = $1`,
+        [id]
+      );
+      const image = imageResult.rows[0];
+      if (!image) return res.status(404).json("Image not found");
 
-          `
-          UPDATE images
-          SET
-            title = $1,
+      const requesterResult = await pool.query(
+        `SELECT role FROM users WHERE id = $1`,
+        [req.user.id]
+      );
+      const requesterRole = String(requesterResult.rows[0]?.role || "").toLowerCase();
+      const requesterIsAdmin = requesterRole === "admin";
+      const requesterIsOwner = Number(image.uploaded_by) === Number(req.user.id);
+      if (!requesterIsAdmin && !requesterIsOwner) {
+        return res.status(404).json("Image not found");
+      }
+
+      if (!requesterIsAdmin) {
+        const currentStatus = String(image.status || "").toLowerCase();
+        const isDraft = ["not_submitted", "draft"].includes(currentStatus);
+        const isExistingPortfolioEdit = currentStatus === "approved" && nextStatus === "pending";
+        if (!isDraft && !isExistingPortfolioEdit) {
+          return res.status(403).json("Contributors can edit only not-submitted assets.");
+        }
+        if (isDraft && nextStatus) {
+          return res.status(403).json("Use the submit action to change an asset's review status.");
+        }
+        if (isDraft && (!title?.trim() || !category?.trim() || !collection?.trim() || !keywords?.trim())) {
+          return res.status(400).json("Title, category, collection, and keywords are required.");
+        }
+      }
+
+      const updatedImage = await pool.query(
+        `
+        UPDATE images
+        SET title = $1,
             category = $2,
             collection = $3,
             keywords = $4,
             description = $5,
             type = $6,
             status = COALESCE($8::text, status)
-          WHERE id = $7
-          RETURNING *
-          `,
-
-          [
-            title,
-            category,
-            collection,
-            keywords,
-            description,
-            type,
-            id,
-            nextStatus
-          ]
-
-        );
+        WHERE id = $7
+        RETURNING *
+        `,
+        [
+          title,
+          category,
+          collection,
+          keywords,
+          description,
+          type,
+          id,
+          requesterIsAdmin ? nextStatus : (nextStatus === "pending" ? nextStatus : null)
+        ]
+      );
 
       if (updatedImage.rows[0]) {
         await createAssetNotifications(pool, {
@@ -10280,6 +10526,25 @@ const authenticateToken = async (
 
   }
 
+};
+
+const authorizeAssetOwnerOrAdmin = async (req, res, image) => {
+  if (!image) return false;
+  const status = String(image.status || "").trim().toLowerCase();
+  if (["approved", "published", "live"].includes(status)) return true;
+
+  if (!req.user?.id) {
+    await authenticateToken(req, res, () => {});
+    if (res.headersSent) return false;
+  }
+
+  const userResult = await pool.query(
+    `SELECT role FROM users WHERE id = $1`,
+    [req.user.id]
+  );
+  const isOwner = Number(image.uploaded_by) === Number(req.user.id);
+  const isAdmin = String(userResult.rows[0]?.role || "").toLowerCase() === "admin";
+  return isOwner || isAdmin;
 };
 
 // GET /me - Check auth status and return current user info

@@ -160,15 +160,69 @@ test('single-image endpoint returns the existing 404 response before authenticat
   assert.equal(JSON.parse(response.body), 'Image not found');
 });
 
-test('catalog preview requires admin access for pending assets', async (t) => {
+test('private pre-submission assets are available only to their owner through image and file preview routes', async (t) => {
+  const originalQuery = pool.query;
+  const privateImage = {
+    id: 198,
+    title: 'Private draft',
+    filename: 'contributor/2026/10/Pending/private.jpg',
+    uploaded_by: 7,
+    status: 'not_submitted',
+    thumbnail_status: 'COMPLETED',
+    extension: 'jpg',
+  };
+  pool.query = async (sql, values) => {
+    if (/SELECT i\.filename, i\.uploaded_by, i\.status, t\.status AS generated_thumbnail_status/i.test(sql)) {
+      return { rows: [{ ...privateImage, generated_thumbnail_status: 'READY', format: 'webp' }] };
+    }
+    if (/SELECT uploaded_by, status FROM images WHERE filename = \$1/i.test(sql)) {
+      return { rows: [{ uploaded_by: 7, status: 'not_submitted' }] };
+    }
+    if (/SELECT last_activity_at FROM auth_sessions/i.test(sql)) {
+      return { rows: [{ last_activity_at: new Date() }] };
+    }
+    if (/SELECT status\s+FROM users\s+WHERE id = \$1/i.test(sql)) {
+      return { rows: [{ status: 'active' }] };
+    }
+    if (/SELECT role FROM users WHERE id = \$1/i.test(sql)) {
+      return { rows: [{ role: 'contributor' }] };
+    }
+    return originalQuery(sql, values);
+  };
+
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(async () => {
+    pool.query = originalQuery;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  const ownerToken = jwt.sign({ user: 7, sid: 'owner-session' }, process.env.JWT_SECRET || 'secretkey', { expiresIn: '1h' });
+  const otherContributorToken = jwt.sign({ user: 9, sid: 'other-session' }, process.env.JWT_SECRET || 'secretkey', { expiresIn: '1h' });
+  const ownerPreview = await request(server.address().port, '/api/images/198', { Authorization: 'Bearer ' + ownerToken });
+  assert.equal(ownerPreview.status, 302);
+  const otherPreview = await request(server.address().port, '/api/images/198', { Authorization: 'Bearer ' + otherContributorToken });
+  assert.equal(otherPreview.status, 404);
+  const otherOriginalFile = await request(
+    server.address().port,
+    '/api/files/contributor/2026/10/Pending/private.jpg',
+    { Authorization: 'Bearer ' + otherContributorToken }
+  );
+  assert.equal(otherOriginalFile.status, 404);
+});
+
+test('catalog preview allows asset owners and admins for pending assets only', async (t) => {
   const originalQuery = pool.query;
   let imageStatus = 'pending';
   pool.query = async (sql, values) => {
-    if (/SELECT filename, thumbnail_generated_at, status\s+FROM images\s+WHERE id = \$1/i.test(sql)) {
-      return { rows: [{ filename: 'pending.bmp', status: imageStatus }] };
+    if (/SELECT filename, thumbnail_generated_at, status, uploaded_by\s+FROM images\s+WHERE id = \$1/i.test(sql)) {
+      return { rows: [{ filename: 'pending.bmp', status: imageStatus, uploaded_by: 7 }] };
     }
     if (/SELECT role, status\s+FROM users\s+WHERE id = \$1/i.test(sql)) {
-      return { rows: [{ role: 'admin', status: 'active' }] };
+      const userId = Number(values[0]);
+      return { rows: [{ role: userId === 8 ? 'admin' : 'contributor', status: 'active' }] };
     }
     return originalQuery(sql, values);
   };
@@ -186,12 +240,24 @@ test('catalog preview requires admin access for pending assets', async (t) => {
   const anonymousResponse = await request(port, '/api/catalog-preview/218');
   assert.equal(anonymousResponse.status, 401);
 
-  const token = jwt.sign({ user: 7 }, process.env.JWT_SECRET || 'secretkey');
+  const ownerToken = jwt.sign({ user: 7 }, process.env.JWT_SECRET || 'secretkey');
+  const ownerResponse = await request(port, '/api/catalog-preview/218', {
+    Authorization: `Bearer ${ownerToken}`,
+  });
+  assert.equal(ownerResponse.status, 415);
+  assert.equal(ownerResponse.headers['cache-control'], 'private, no-store');
+
+  const adminToken = jwt.sign({ user: 8 }, process.env.JWT_SECRET || 'secretkey');
   const adminResponse = await request(port, '/api/catalog-preview/218', {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${adminToken}`,
   });
   assert.equal(adminResponse.status, 415);
-  assert.equal(adminResponse.headers['cache-control'], 'private, no-store');
+
+  const otherUserToken = jwt.sign({ user: 9 }, process.env.JWT_SECRET || 'secretkey');
+  const otherUserResponse = await request(port, '/api/catalog-preview/218', {
+    Authorization: `Bearer ${otherUserToken}`,
+  });
+  assert.equal(otherUserResponse.status, 403);
 
   imageStatus = 'approved';
   const publicResponse = await request(port, '/api/catalog-preview/218');

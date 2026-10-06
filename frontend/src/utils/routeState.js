@@ -3,7 +3,9 @@ const adminRoute = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n
 export function resolveActivePage(pathname) {
   if (!pathname || pathname === "/") return "home";
 
-  if (pathname === "/explore" || pathname === "/search" || pathname.startsWith("/asset/") || ["/photos", "/vectors", "/psd", "/psds", "/videos", "/templates"].includes(pathname)) {
+  const isExploreRoute = pathname === "/explore" || /^\/explore\/\d+$/.test(pathname);
+
+  if (isExploreRoute || pathname === "/search" || pathname.startsWith("/asset/") || ["/photos", "/vectors", "/psd", "/psds", "/videos", "/templates"].includes(pathname)) {
     return "explore";
   }
 

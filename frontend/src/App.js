@@ -288,6 +288,11 @@ const [showNotifications, setShowNotifications] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
+  const explorePageMatch = /^\/explore(?:\/(\d+))?$/.exec(location.pathname);
+  const explorePageNumber = explorePageMatch ? Number(explorePageMatch[1] || 1) : null;
+  const effectiveCurrentPage = explorePageNumber ?? currentPage;
+  const isExplorePage = Boolean(explorePageMatch);
+
   const [totalPages, setTotalPages] = useState(1);
   const [totalImages, setTotalImages] = useState(0);
   const [totalLikes, setTotalLikes] = useState(0);
@@ -296,7 +301,7 @@ const [showNotifications, setShowNotifications] = useState(false);
 
 const imagesPerPage = resultsPerPage;
 useLeaderboard(
-  location.pathname === "/explore" ? 1 : currentPage,
+  isExplorePage ? 1 : effectiveCurrentPage,
   setLeaderboard
 );
 const {
@@ -307,7 +312,7 @@ const {
   loadingMore: loadingMoreImages,
   loadMoreError: loadMoreImagesError,
 } = useImages({
-  currentPage,
+  currentPage: effectiveCurrentPage,
   totalPages,
   setCurrentPage,
   imagesPerPage,
@@ -325,7 +330,7 @@ const {
   selectedCollection,
   search,
   sortType,
-  isExplorePage: location.pathname === "/explore",
+  isExplorePage,
 });
   /* =========================================
    DASHBOARD
@@ -550,7 +555,7 @@ const galleryProps = {
 const containerProps = {
   loading,
   filteredImages,
-  currentPage,
+  currentPage: effectiveCurrentPage,
   totalPages,
   loadMoreImages,
   hasMoreImages,

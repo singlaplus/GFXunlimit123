@@ -2116,8 +2116,9 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByText(/rejected asset/i)).toBeInTheDocument();
   });
 
-  it("downloads the generated preview when no legacy thumbnail URL is present", async () => {
+  it("loads private thumbnails with authorization and downloads the centralized thumbnail", async () => {
     useLocation.mockReturnValue({ search: "?status=pending" });
+    localStorage.setItem("token", "admin-token");
     axios.get.mockImplementation((url) => {
       if (url.includes("/api/assets/1/thumbnail")) {
         return Promise.resolve({
@@ -2128,7 +2129,7 @@ describe("AdminPanel collection controls", () => {
       if (url.includes("/admin/images")) {
         return Promise.resolve({
           data: [
-            { id: 1, title: "Pending asset", status: "pending", filename: "pending.jpg", category: "Images", keywords: "", description: "", type: "commercial", thumbnail_generated_at: "2026-10-04T00:00:00.000Z" }
+            { id: 1, title: "Pending asset", status: "pending", filename: "pending.jpg", category: "Images", keywords: "", description: "", type: "commercial" }
           ]
         });
       }
@@ -2149,6 +2150,17 @@ describe("AdminPanel collection controls", () => {
     let unmount;
     try {
       ({ unmount } = render(<AdminPanel />));
+      expect(await screen.findByRole("img", { name: "Pending asset" })).toHaveAttribute(
+        "src",
+        "blob:download-thumbnail"
+      );
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringContaining("/api/assets/1/thumbnail"),
+        expect.objectContaining({
+          responseType: "blob",
+          headers: expect.objectContaining({ Authorization: "Bearer admin-token" })
+        })
+      );
       fireEvent.click(await screen.findByTitle("Download Thumbnail"));
 
       await waitFor(() => {

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { limitWords, formatKeywords } from "./utils/uploadInputLimits";
+import { buildAuthHeaders } from "./utils/authSession";
 import {
   DEFAULT_WATCH_CONFIG,
   WATCH_CONFIG_STORAGE_KEY,
@@ -19,15 +20,17 @@ const DEFAULT_CATEGORY_OPTIONS = [
   { id: "default-templates", name: "Templates" }
 ];
 
-function Upload({ fetchImages, darkMode }) {
-  const [title, setTitle] = useState("");
-  const [category, setCategory] = useState([]);
+function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
+  const [title, setTitle] = useState(editingAsset?.title || "");
+  const [category, setCategory] = useState(
+    String(editingAsset?.category || "").split(",").map((value) => value.trim()).filter(Boolean).slice(0, 2)
+  );
   const [availableCategories, setAvailableCategories] = useState([]);
-  const [collection, setCollection] = useState("");
+  const [collection, setCollection] = useState(editingAsset?.collection || "");
   const [availableCollections, setAvailableCollections] = useState([]);
-  const [keywords, setKeywords] = useState("");
-  const [description, setDescription] = useState("");
-  const [type, setType] = useState("");
+  const [keywords, setKeywords] = useState(editingAsset?.keywords || "");
+  const [description, setDescription] = useState(editingAsset?.description || "");
+  const [type, setType] = useState(editingAsset?.type || "");
   const [image, setImage] = useState(null);
   const [thumbnail, setThumbnail] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -68,8 +71,9 @@ function Upload({ fetchImages, darkMode }) {
     color: darkMode ? "#f5f5f5" : "#111",
   };
 
-  const isDisabled =
-    !title || category.length === 0 || !keywords || !image || loading;
+  const isDisabled = editingAsset
+    ? !title.trim() || category.length === 0 || !collection || !keywords.trim() || loading
+    : !title || category.length === 0 || !keywords || !image || loading;
 
   const buttonStyle = {
     padding: "10px 20px",
@@ -189,8 +193,35 @@ function Upload({ fetchImages, darkMode }) {
     const trimmedDescription = limitWords(description, 10);
     const trimmedKeywords = formatKeywords(keywords, 14);
 
-    if (!image || !trimmedTitle || category.length === 0 || !trimmedKeywords) {
+    if (!trimmedTitle || category.length === 0 || !trimmedKeywords || (!editingAsset && !image) ||
+        (editingAsset && !collection.trim())) {
       alert("All fields are required");
+      return;
+    }
+
+    if (editingAsset) {
+      try {
+        setLoading(true);
+        const response = await axios.put(
+          `${API_BASE_URL}/images/${editingAsset.id}`,
+          {
+            title: trimmedTitle,
+            category: category.join(","),
+            collection,
+            keywords: trimmedKeywords,
+            description: trimmedDescription,
+            type
+          },
+          { headers: buildAuthHeaders() }
+        );
+        toast.success("Asset metadata saved.");
+        onSaved?.(response.data);
+      } catch (err) {
+        console.error(err);
+        toast.error(err?.response?.data?.error || err?.response?.data || "Unable to save asset metadata.");
+      } finally {
+        setLoading(false);
+      }
       return;
     }
 
@@ -309,8 +340,27 @@ setUploadProgress(100);
 
   return (
     <>
-      <div style={surfaceStyle}>
-        <h2>Upload Image</h2>
+      <div style={editingAsset ? {
+        position: "fixed",
+        inset: 0,
+        zIndex: 10000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "20px",
+        overflowY: "auto",
+        background: "rgba(0,0,0,0.7)"
+      } : undefined}>
+      <div style={editingAsset ? {
+        ...surfaceStyle,
+        width: "min(760px, 100%)",
+        maxHeight: "90vh",
+        overflowY: "auto"
+      } : surfaceStyle}>
+        <h2>{editingAsset ? "Edit Not Submitted Asset" : "Upload Image"}</h2>
+        {editingAsset?.extension && (
+          <p>File type: {String(editingAsset.extension).replace(/^\./, "").toUpperCase()}</p>
+        )}
 
       <form onSubmit={handleUpload}>
 
@@ -438,7 +488,7 @@ setUploadProgress(100);
           </div>
         </div>
 
-        <div style={{ marginBottom: "10px" }}>
+        {!editingAsset && <div style={{ marginBottom: "10px" }}>
           <label style={{ display: "block", marginBottom: "6px", fontWeight: "600" }}>
             Asset file
           </label>
@@ -466,9 +516,9 @@ setUploadProgress(100);
               padding: "12px 10px",
             }}
           />
-        </div>
+        </div>}
 
-        <div style={{ marginBottom: "10px" }}>
+        {!editingAsset && <div style={{ marginBottom: "10px" }}>
           <label style={{ display: "block", marginBottom: "6px", fontWeight: "600" }}>
             Optional thumbnail (recommended)
           </label>
@@ -485,7 +535,7 @@ setUploadProgress(100);
           <p style={{ marginTop: "4px", fontSize: "12px", color: "#999", marginBottom: "0" }}>
             optional thumbnail
           </p>
-        </div>
+        </div>}
 
         {preview && (
           <div style={{ marginBottom: "20px" }}>
@@ -545,10 +595,16 @@ setUploadProgress(100);
           disabled={isDisabled}
           style={buttonStyle}
         >
-          {loading ? "Uploading..." : "Upload"}
+          {loading ? (editingAsset ? "Saving..." : "Uploading...") : (editingAsset ? "Save Metadata" : "Upload")}
         </button>
+        {editingAsset && (
+          <button type="button" onClick={() => onSaved?.(null)} style={{ marginLeft: "10px", marginTop: "20px" }}>
+            Cancel
+          </button>
+        )}
 
       </form>
+      </div>
       </div>
     </>
   );

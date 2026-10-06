@@ -175,4 +175,27 @@ describe('ImageGallery search suggestions', () => {
     expect(screen.queryByRole('button', { name: '10', exact: true })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '20', exact: true })).not.toBeInTheDocument();
   });
+
+  it('keeps the final page at the full page-size count for display purposes', () => {
+    render(
+      <ImageGallery
+        search=""
+        setSearch={jest.fn()}
+        setCurrentPage={jest.fn()}
+        sortType="newest"
+        setSortType={jest.fn()}
+        selectedCategory="All"
+        setSelectedCategory={jest.fn()}
+        selectedCollection="All"
+        setSelectedCollection={jest.fn()}
+        darkMode={false}
+        allImages={Array.from({ length: 48 }, (_, index) => ({ id: index + 1 }))}
+        totalImages={148}
+        resultsPerPage={50}
+        setResultsPerPage={jest.fn()}
+      />
+    );
+
+    expect(screen.getByText('Showing 50 of 148')).toBeInTheDocument();
+  });
 });

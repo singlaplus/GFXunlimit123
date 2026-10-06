@@ -1,3 +1,5 @@
+import { useLocation, useNavigate } from "react-router-dom";
+
 function Pagination(props) {
   const {
     currentPage,
@@ -6,12 +8,21 @@ function Pagination(props) {
     setCurrentPage,
     darkMode,
   } = props;
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const goToPage = (page) => {
     setCurrentPage(page);
+
     if (typeof window !== "undefined") {
       window.scrollTo(0, 0);
     }
+
+    const isExplorePagination = /^\/explore(?:\/\d+)?$/.test(location.pathname);
+    if (!isExplorePagination) return;
+
+    const targetPath = page <= 1 ? "/explore" : `/explore/${page}`;
+    navigate(targetPath, { replace: false });
   };
 
   const baseButtonStyle = {

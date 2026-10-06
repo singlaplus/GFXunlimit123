@@ -19,7 +19,8 @@ import RestorePage from "../pages/RestorePage";
 import TaxMailSMTPSettings from "./TaxMailSMTPSettings";
 import TaxMailTemplates from "./TaxMailTemplates";
 import { limitWords, formatKeywords } from "../utils/uploadInputLimits";
-import { getAssetPreviewUrl } from "../utils/assetPreview";
+import { getAssetPreviewUrl, getAssetThumbnailUrl } from "../utils/assetPreview";
+import AssetThumbnail from "./AssetThumbnail";
 
 const CATEGORY_STORAGE_KEY = "asset-categories";
 const COLLECTION_STORAGE_KEY = "asset-collections";
@@ -94,69 +95,18 @@ function AnimatedAssetCount({ value }) {
 }
 
 function AdminAssetThumbnail({ image, isDarkMode }) {
-  const [thumbnailUrl, setThumbnailUrl] = useState("");
-  const [thumbnailUnavailable, setThumbnailUnavailable] = useState(false);
-  const requestUrl = getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true });
-  const alt = image.title || "Asset thumbnail";
-
-  useEffect(() => {
-    let active = true;
-    let objectUrl = null;
-    setThumbnailUrl("");
-    setThumbnailUnavailable(false);
-
-    axios.get(requestUrl, { responseType: "blob", headers: getAuthHeaders() })
-      .then(({ data }) => {
-        if (!data.type?.startsWith("image/")) {
-          throw new Error("Thumbnail endpoint did not return an image");
-        }
-        objectUrl = URL.createObjectURL(data);
-        if (active) {
-          setThumbnailUrl(objectUrl);
-        } else {
-          URL.revokeObjectURL(objectUrl);
-        }
-      })
-      .catch((error) => {
-        if (!active) return;
-        console.error(`Failed to load thumbnail for asset ${image.id}:`, error.response?.status || error.message);
-        setThumbnailUnavailable(true);
-      });
-
-    return () => {
-      active = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [image.id, requestUrl]);
-
-  const style = {
-    width: "100%",
-    minHeight: "120px",
-    maxHeight: "150px",
-    objectFit: "cover",
-    borderRadius: "6px",
-  };
-
-  if (thumbnailUrl) {
-    return <img src={thumbnailUrl} alt={alt} loading="lazy" decoding="async" style={style} />;
-  }
-
   return (
-    <div
-      role="img"
-      aria-label={`${alt} thumbnail ${thumbnailUnavailable ? "unavailable" : "loading"}`}
+    <AssetThumbnail
+      image={image}
+      darkMode={isDarkMode}
       style={{
-        ...style,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: isDarkMode ? "#cbd5e1" : "#64748b",
-        background: isDarkMode ? "#111827" : "#f1f5f9",
-        fontSize: "0.85rem",
+        width: "100%",
+        minHeight: "120px",
+        maxHeight: "150px",
+        objectFit: "cover",
+        borderRadius: "6px",
       }}
-    >
-      {thumbnailUnavailable ? "Thumbnail unavailable" : "Loading thumbnail…"}
-    </div>
+    />
   );
 }
 
@@ -4367,7 +4317,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         status: image.status,
         created_at: image.created_at,
         filename: image.filename,
-        preview_url: getAssetPreviewUrl(image, { quality: 70, watermark: false, thumbnailOnly: true })
+        preview_url: getAssetThumbnailUrl(image)
       }));
   };
   const selectedMetricRows = selectedContributorMetric ? getContributorMetricRows(selectedContributorMetric.label) : [];
@@ -5399,11 +5349,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const downloadThumbnail = async (image) => {
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      const thumbnailUrl = getAssetPreviewUrl(image, {
-        quality: 50,
-        watermark: false,
-        thumbnailOnly: true
-      });
+      const thumbnailUrl = getAssetThumbnailUrl(image);
       const response = await axios.get(
         thumbnailUrl,
         {
@@ -11239,7 +11185,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 )}
                 <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Title: {image.title}</p>
                 <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Collection: {image.collection || "-"}</p>
-                <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Type: {image.type || "-"}</p>
+                <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>File Type: {image.extension ? String(image.extension).replace(/^\./, "").toUpperCase() : "-"}</p>
+                <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Asset Type: {image.type || "-"}</p>
                 <p style={{ margin: "0", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#555" }}>Contributor: {image.contributor_username || image.contributor || image.username || "-"}</p>
                 {String(image.status || "").toLowerCase() === "pending" && (image.estimated_total_remaining_seconds != null || image.queue_position != null) && (
                   <div style={{ marginTop: "10px", padding: "10px", borderRadius: "10px", background: isDarkMode ? "#45320b" : "#fff8e1", color: isDarkMode ? "#fcd34d" : "#5d4037" }}>
@@ -11688,7 +11635,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         <p><strong>Description:</strong> {selectedImage.description || "Not provided"}</p>
                         <p><strong>Category:</strong> {selectedImage.category || "-"}</p>
                         <p><strong>Collection:</strong> {selectedImage.collection || "-"}</p>
-                        <p><strong>Type:</strong> {selectedImage.type || "-"}</p>
+                        <p><strong>File Type:</strong> {selectedImage.extension ? String(selectedImage.extension).replace(/^\./, "").toUpperCase() : "-"}</p>
+                        <p><strong>Asset Type:</strong> {selectedImage.type || "-"}</p>
                         <p><strong>Keywords:</strong> {selectedImage.keywords || "-"}</p>
                         <p><strong>Status:</strong> {selectedImage.status}</p>
                       </>

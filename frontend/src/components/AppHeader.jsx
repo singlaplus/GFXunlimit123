@@ -110,7 +110,7 @@ export default function AppHeader({
       window.removeEventListener("messages-updated", loadMessageCount);
     };
   }, [token, isCustomerUser, isContributorUser, isAdminUser]);
-  const isExplorePage = location.pathname === "/explore";
+  const isExplorePage = /^\/explore(?:\/\d+)?$/.test(location.pathname);
   const shouldShowCustomerSearch = isCustomerUser && !isHomePage && !isExplorePage;
   const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
 

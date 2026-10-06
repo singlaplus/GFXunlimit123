@@ -238,6 +238,7 @@ export default function useImages({
     const queryChanged = previousQueryKeyRef.current !== queryKey;
     previousQueryKeyRef.current = queryKey;
     requestControllerRef.current?.abort();
+    const hasExplicitExplorePage = typeof window !== "undefined" && /^\/explore\/\d+$/.test(window.location.pathname);
 
     if (enteredExplorePage) {
       exploreCatalogCacheRef.current = null;
@@ -251,7 +252,7 @@ export default function useImages({
       setTotalImages(0);
       setTotalPages(1);
 
-      if (currentPage !== 1) {
+      if (!hasExplicitExplorePage && currentPage !== 1) {
         setCurrentPage(1);
         return undefined;
       }
@@ -269,7 +270,7 @@ export default function useImages({
       setTotalImages(0);
       setTotalPages(1);
 
-      if (currentPage !== 1) {
+      if (!hasExplicitExplorePage && currentPage !== 1) {
         setCurrentPage(1);
         return undefined;
       }

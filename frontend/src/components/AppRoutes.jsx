@@ -1419,6 +1419,7 @@ export default function AppRoutes(props) {
   }
 
   const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
+  const isExplorePath = pathname === "/explore" || /^\/explore\/\d+$/.test(pathname);
   const explorePaths = new Set(["/explore", "/search", "/photos", "/vectors", "/psd", "/psds", "/videos", "/templates"]);
 
   if (pathname === "/profile" && search.includes("tab=controls")) {
@@ -1428,7 +1429,7 @@ export default function AppRoutes(props) {
   const normalizedUserRole = (props.userRole || "").toString();
   const resolvedActivePage = resolveActivePage(pathname) || "home";
 
-  if (isContributorRole(normalizedUserRole) && explorePaths.has(pathname)) {
+  if (isContributorRole(normalizedUserRole) && (explorePaths.has(pathname) || isExplorePath)) {
     return <Navigate to="/myuploads" replace />;
   }
 

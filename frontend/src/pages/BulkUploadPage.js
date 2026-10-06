@@ -1,411 +1,388 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
-import { limitWords, formatKeywords } from "../utils/uploadInputLimits";
+import { buildAuthHeaders } from "../utils/authSession";
 
-const CATEGORY_STORAGE_KEY = "asset-categories";
-const COLLECTION_STORAGE_KEY = "asset-collections";
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
-const DEFAULT_CATEGORY_OPTIONS = [
-  { id: "default-images", name: "Images" },
-  { id: "default-vector", name: "Vector/illustrations" },
-  { id: "default-psd", name: "PSD" },
-  { id: "default-videos", name: "Videos" },
-  { id: "default-templates", name: "Templates" },
-];
+const MAX_BULK_UPLOAD_FILES = 10;
 
-const MAX_BULK_UPLOAD_ROWS = 10;
-
-const createEmptyRow = () => ({
-  title: "",
-  description: "",
-  keywords: "",
-  category: [],
-  optionalCategory: "",
-  collection: "",
-  type: "",
-  file: null,
-  thumbnail: null,
+const createQueueItem = (file) => ({
+  id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  file,
+  progress: 0,
+  status: "waiting",
+  assetId: null,
+  failureStage: null,
+  error: ""
 });
 
 export default function BulkUploadPage({ darkMode, fetchImages }) {
-  const [rows, setRows] = useState([createEmptyRow()]);
+  const [queue, setQueue] = useState([]);
   const [message, setMessage] = useState("");
-  const [availableCategories, setAvailableCategories] = useState([]);
-  const [availableCollections, setAvailableCollections] = useState([]);
-  const [loading, setLoading] = useState(false);
-
+  const isDarkMode = Boolean(darkMode);
+  const colors = isDarkMode
+    ? {
+        text: "#f8fafc",
+        muted: "#aab6c8",
+        panel: "#111827",
+        raised: "#182235",
+        border: "#2a3a52",
+        accent: "#a5b4fc",
+        accentStrong: "#818cf8",
+        track: "#26354a"
+      }
+    : {
+        text: "#101828",
+        muted: "#667085",
+        panel: "#ffffff",
+        raised: "#f8faff",
+        border: "#e4eaf3",
+        accent: "#4f46e5",
+        accentStrong: "#4338ca",
+        track: "#e8edf5"
+      };
   const surfaceStyle = {
-    background: darkMode ? "#111" : "#fff",
-    color: darkMode ? "#f5f5f5" : "#111",
-    border: `1px solid ${darkMode ? "#444" : "#ddd"}`,
-    borderRadius: "14px",
-    padding: "12px",
-    maxWidth: "100%",
-    margin: "0 auto",
+    maxWidth: "1120px",
+    margin: "32px auto 64px",
+    padding: "0 24px",
+    color: colors.text
+  };
+  const panelStyle = {
+    background: colors.panel,
+    border: `1px solid ${colors.border}`,
+    borderRadius: "22px",
+    boxShadow: isDarkMode ? "0 18px 45px rgba(0,0,0,.18)" : "0 18px 45px rgba(30,50,90,.07)"
   };
 
-  const fieldStyle = {
-    width: "100%",
-    padding: "8px",
-    borderRadius: "8px",
-    border: `1px solid ${darkMode ? "#4b5563" : "#ccc"}`,
-    background: darkMode ? "#2a2a2a" : "#fff",
-    color: darkMode ? "#f5f5f5" : "#111",
-    minHeight: "38px",
+  const updateItem = (id, update) => {
+    setQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
   };
 
-  const rowItemStyle = {
-    flex: "1 1 110px",
-    minWidth: "110px",
-  };
-
-  const fileItemStyle = {
-    flex: "1 1 120px",
-    minWidth: "120px",
-  };
-
-  const actionItemStyle = {
-    flex: "0 0 auto",
-  };
-
-  useEffect(() => {
-    const loadCategories = async () => {
-      try {
-        const cachedCategories = localStorage.getItem(CATEGORY_STORAGE_KEY);
-        const fallbackCategories = cachedCategories ? JSON.parse(cachedCategories) : DEFAULT_CATEGORY_OPTIONS;
-        setAvailableCategories(Array.isArray(fallbackCategories) && fallbackCategories.length > 0 ? fallbackCategories : DEFAULT_CATEGORY_OPTIONS);
-
-        const res = await axios.get(`${API_BASE_URL}/categories`);
-        const categories = Array.isArray(res.data) && res.data.length > 0 ? res.data : fallbackCategories;
-        setAvailableCategories(categories);
-        localStorage.setItem(CATEGORY_STORAGE_KEY, JSON.stringify(categories));
-      } catch (err) {
-        console.error("Failed to load categories", err);
+  const waitForThumbnail = async (assetId, queueItemId) => {
+    let failedChecks = 0;
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      const response = await axios.get(`${API_BASE_URL}/my-uploads?view=bulk-status`, {
+        headers: buildAuthHeaders()
+      });
+      const asset = (response.data || []).find((item) => Number(item.id) === Number(assetId));
+      if (!asset) {
+        throw new Error("Uploaded asset is not available to this contributor.");
       }
-    };
-
-    const loadCollections = async () => {
-      try {
-        const res = await axios.get(`${API_BASE_URL}/collections`);
-        const collections = Array.isArray(res.data) ? res.data : [];
-        setAvailableCollections(collections);
-        localStorage.setItem(COLLECTION_STORAGE_KEY, JSON.stringify(collections));
-      } catch (err) {
-        if (typeof window !== "undefined" && window.localStorage) {
-          const cachedCollections = window.localStorage.getItem(COLLECTION_STORAGE_KEY);
-          if (cachedCollections) {
-            try {
-              const parsed = JSON.parse(cachedCollections);
-              if (Array.isArray(parsed)) {
-                setAvailableCollections(parsed);
-              }
-            } catch (parseErr) {
-              console.error("Invalid cached collections", parseErr);
-            }
-          }
+      const thumbnailStatus = String(asset.generated_thumbnail_status || asset.thumbnail_status || "").toUpperCase();
+      if (thumbnailStatus === "READY") {
+        updateItem(queueItemId, { status: "completed", progress: 100, error: "" });
+        return;
+      }
+      if (thumbnailStatus === "FAILED") {
+        failedChecks += 1;
+        if (failedChecks >= 8) {
+          updateItem(queueItemId, {
+            status: "thumbnail-failed",
+            failureStage: "thumbnail",
+            error: asset.thumbnail_error || "Thumbnail generation failed."
+          });
+          return;
         }
+      } else {
+        failedChecks = 0;
       }
-    };
-
-    loadCategories();
-    loadCollections();
-  }, []);
-
-  const updateRow = (index, field, value) => {
-    setRows((prev) => prev.map((row, rowIndex) => (rowIndex === index ? { ...row, [field]: value } : row)));
-    setMessage("");
-  };
-
-  const handleAddRow = () => {
-    setRows((prev) => (prev.length < MAX_BULK_UPLOAD_ROWS ? [...prev, createEmptyRow()] : prev));
-  };
-
-  const handleRemoveRow = (index) => {
-    setRows((prev) => (prev.length > 1 ? prev.filter((_, rowIndex) => rowIndex !== index) : prev));
-  };
-
-  const uploadRow = async (row, index) => {
-    const token = localStorage.getItem("token");
-
-    if (!token) {
-      throw new Error("Please login first");
     }
-
-    const trimmedTitle = limitWords(row.title, 5);
-    const trimmedDescription = limitWords(row.description, 10);
-    const trimmedKeywords = formatKeywords(row.keywords, 14);
-
-    if (!row.file || !trimmedTitle || row.category.length === 0 || !trimmedKeywords) {
-      throw new Error(`Row ${index + 1}: all fields are required`);
-    }
-
-    const categories = [row.category[0], row.optionalCategory].filter(Boolean);
-
-    const formData = new FormData();
-    formData.append("title", trimmedTitle);
-    formData.append("category", categories.join(","));
-    formData.append("collection", row.collection);
-    formData.append("keywords", trimmedKeywords);
-    formData.append("description", trimmedDescription);
-    formData.append("type", row.type);
-    formData.append("image", row.file);
-    if (row.thumbnail) {
-      formData.append("thumbnail", row.thumbnail);
-    }
-
-    await axios.post(`${API_BASE_URL}/upload`, formData, {
-      headers: { Authorization: `Bearer ${token}` },
+    updateItem(queueItemId, {
+      status: "thumbnail-failed",
+      failureStage: "thumbnail",
+      error: "Thumbnail processing is taking longer than expected. Retry to check again."
     });
   };
 
-  const handleSubmit = async (event) => {
-    event.preventDefault();
+  const uploadItem = async (item) => {
+    updateItem(item.id, { status: "uploading", progress: 0, failureStage: null, error: "" });
+    let uploadedAssetId = item.assetId;
+    const formData = new FormData();
+    formData.append("image", item.file);
+    formData.append("preSubmission", "true");
 
-    const validRows = rows
-      .map((row, index) => ({ row, index }))
-      .filter(({ row }) => row.file);
-    if (validRows.length === 0) {
-      setMessage("Choose one or more files to start bulk upload.");
+    try {
+      const response = await axios.post(`${API_BASE_URL}/upload`, formData, {
+        headers: buildAuthHeaders(),
+        onUploadProgress: (event) => {
+          if (!event.total) return;
+          updateItem(item.id, { progress: Math.min(99, Math.round((event.loaded * 100) / event.total)) });
+        }
+      });
+      uploadedAssetId = response.data?.id;
+      if (!uploadedAssetId) throw new Error("Upload completed without an asset ID.");
+      updateItem(item.id, { assetId: uploadedAssetId, progress: 100, status: "processing" });
+      await waitForThumbnail(uploadedAssetId, item.id);
+      if (typeof fetchImages === "function") fetchImages();
+    } catch (error) {
+      const messageText = error.response?.data?.error || error.response?.data || error.message || "Upload failed.";
+      updateItem(item.id, {
+        status: uploadedAssetId ? "thumbnail-failed" : "failed",
+        failureStage: uploadedAssetId ? "thumbnail" : "upload",
+        error: typeof messageText === "string" ? messageText : "Upload failed."
+      });
+    }
+  };
+
+  const handleFilesSelected = (event) => {
+    const selectedFiles = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (selectedFiles.length === 0) return;
+
+    if (selectedFiles.length > MAX_BULK_UPLOAD_FILES || queue.length + selectedFiles.length > MAX_BULK_UPLOAD_FILES) {
+      const error = `You can upload a maximum of ${MAX_BULK_UPLOAD_FILES} assets per batch.`;
+      setMessage(error);
+      toast.error(error);
       return;
     }
 
-    setLoading(true);
     setMessage("");
+    const items = selectedFiles.map(createQueueItem);
+    setQueue((current) => [...current, ...items]);
+    items.forEach((item) => uploadItem(item));
+  };
 
-    try {
-      const results = await Promise.allSettled(
-        validRows.map(({ row, index }) => uploadRow(row, index))
-      );
-      const failures = results
-        .map((result, resultIndex) => ({ result, row: validRows[resultIndex] }))
-        .filter(({ result }) => result.status === "rejected")
-        .map(({ result, row }) => ({ index: row.index, error: result.reason }));
-
-      if (failures.length > 0) {
-        const firstFailure = failures[0];
-        throw new Error(
-          failures.length === 1
-            ? firstFailure.error?.message || `Row ${firstFailure.index + 1}: upload failed`
-            : `${failures.length} rows failed to upload. First error: ${firstFailure.error?.message || "Upload failed"}`
+  const retryItem = async (item) => {
+    setMessage("");
+    if (item.failureStage === "thumbnail" && item.assetId) {
+      updateItem(item.id, { status: "processing", error: "" });
+      try {
+        await axios.post(
+          `${API_BASE_URL}/images/${item.assetId}/thumbnail/retry`,
+          {},
+          { headers: buildAuthHeaders() }
         );
+        await waitForThumbnail(item.assetId, item.id);
+      } catch (error) {
+        const messageText = error.response?.data?.error || error.response?.data || error.message || "Thumbnail retry failed.";
+        updateItem(item.id, {
+          status: "thumbnail-failed",
+          error: typeof messageText === "string" ? messageText : "Thumbnail retry failed."
+        });
       }
-
-      toast.success("Images uploaded successfully!");
-      setRows([createEmptyRow()]);
-      if (typeof fetchImages === "function") {
-        fetchImages();
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error(err?.response?.data || err?.message || "Upload failed");
-      setMessage(err?.response?.data || err?.message || "Upload failed");
-    } finally {
-      setLoading(false);
+      return;
     }
+    await uploadItem(item);
+  };
+
+  const deleteItem = async (item) => {
+    const confirmed = window.confirm(`Delete "${item.file.name}" from your not-submitted uploads?`);
+    if (!confirmed) return;
+    try {
+      await axios.delete(`${API_BASE_URL}/images/${item.assetId}`, { headers: buildAuthHeaders() });
+      setQueue((current) => current.filter((entry) => entry.id !== item.id));
+      toast.success("Not-submitted asset deleted.");
+    } catch (error) {
+      const messageText = error.response?.data?.error || error.response?.data || error.message || "Unable to delete asset.";
+      toast.error(typeof messageText === "string" ? messageText : "Unable to delete asset.");
+    }
+  };
+
+  const uploadedCount = queue.filter((item) => item.assetId).length;
+  const overallProgress = queue.length
+    ? Math.round(queue.reduce((total, item) => total + item.progress, 0) / queue.length)
+    : 0;
+  const activeUploads = queue.some((item) => ["waiting", "uploading", "processing"].includes(item.status));
+  const progressBarColor = isDarkMode ? "#a5b4fc" : "#4f46e5";
+  const statusStyles = {
+    waiting: { background: isDarkMode ? "#29364a" : "#eef2f7", color: colors.muted },
+    uploading: { background: isDarkMode ? "#312e81" : "#eef2ff", color: isDarkMode ? "#c7d2fe" : "#4338ca" },
+    processing: { background: isDarkMode ? "#3b2f17" : "#fff7e6", color: isDarkMode ? "#fde68a" : "#a16207" },
+    completed: { background: isDarkMode ? "#12372b" : "#eaf8f0", color: isDarkMode ? "#86efac" : "#15803d" },
+    failed: { background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318" },
+    "thumbnail-failed": { background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318" }
   };
 
   return (
     <div style={surfaceStyle}>
-      <h1 style={{ marginTop: 0 }}>Bulk Upload</h1>
-      <p style={{ marginBottom: "20px", lineHeight: 1.6 }}>
-        This bulk upload view uses the same field validation and upload behavior as the single upload page, with a plus action to add rows and a minus action from the second row onward.
-      </p>
-      <form onSubmit={handleSubmit}>
-        <div style={{ display: "grid", gap: "12px" }}>
-          {rows.map((row, index) => (
-            <div
-              key={`bulk-row-${index}`}
-              style={{
-                display: "flex",
-                gap: "8px",
-                flexWrap: "wrap",
-                alignItems: "flex-end",
-                width: "100%",
-                padding: "12px",
-                borderRadius: "12px",
-                border: `1px solid ${darkMode ? "#374151" : "#e5e7eb"}`,
-                background: darkMode ? "#1f2937" : "#fafafa",
-              }}
-            >
-              <div style={rowItemStyle}>
-                <input
-                  type="text"
-                  placeholder="Title (max 5 words)"
-                  value={row.title}
-                  onChange={(event) => updateRow(index, "title", event.target.value)}
-                  style={fieldStyle}
-                />
-              </div>
-              <div style={{ ...rowItemStyle, flex: "1 1 140px", minWidth: "120px", display: "flex", alignItems: "center" }}>
-                <textarea
-                  placeholder="Description (max 10 words)"
-                  value={row.description}
-                  onChange={(event) => updateRow(index, "description", event.target.value)}
-                  rows={1}
-                  style={{
-                    ...fieldStyle,
-                    resize: "none",
-                    height: "42px",
-                    lineHeight: "1.2",
-                    display: "block",
-                    paddingTop: "8px",
-                    paddingBottom: "8px",
-                    boxSizing: "border-box",
-                  }}
-                />
-              </div>
-              <div style={{ ...rowItemStyle, flex: "1 1 120px", minWidth: "120px" }}>
-                <input
-                  type="text"
-                  placeholder="Keywords (max 14 words)"
-                  value={row.keywords}
-                  onChange={(event) => updateRow(index, "keywords", event.target.value)}
-                  style={fieldStyle}
-                />
-              </div>
-              <div style={{ ...rowItemStyle, flex: "1 1 120px", minWidth: "120px" }}>
-                <select
-                  value={row.category[0] || ""}
-                  onChange={(event) => updateRow(index, "category", [event.target.value])}
-                  style={fieldStyle}
-                >
-                  <option value="">Primary category</option>
-                  {availableCategories.map((categoryOption) => (
-                    <option key={categoryOption.id} value={categoryOption.name}>
-                      {categoryOption.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ ...rowItemStyle, flex: "1 1 120px", minWidth: "120px" }}>
-                <select
-                  value={row.optionalCategory}
-                  onChange={(event) => updateRow(index, "optionalCategory", event.target.value)}
-                  style={fieldStyle}
-                >
-                  <option value="">Optional category</option>
-                  {availableCategories.map((categoryOption) => (
-                    <option key={`${categoryOption.id}-optional`} value={categoryOption.name}>
-                      {categoryOption.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ ...rowItemStyle, flex: "1 1 120px", minWidth: "120px" }}>
-                <select
-                  value={row.collection}
-                  onChange={(event) => updateRow(index, "collection", event.target.value)}
-                  style={fieldStyle}
-                >
-                  <option value="">Collection</option>
-                  {availableCollections.map((collectionOption) => (
-                    <option key={collectionOption.id || collectionOption.name} value={collectionOption.name}>
-                      {collectionOption.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ ...rowItemStyle, flex: "1 1 110px", minWidth: "110px" }}>
-                <select
-                  value={row.type}
-                  onChange={(event) => updateRow(index, "type", event.target.value)}
-                  style={fieldStyle}
-                >
-                  <option value="">Type</option>
-                  <option value="commercial">Commercial</option>
-                  <option value="editorial">Editorial</option>
-                </select>
-              </div>
-              <div style={{ ...fileItemStyle, flex: "1 1 120px", minWidth: "120px" }}>
-                <input
-                  type="file"
-                  onChange={(event) => updateRow(index, "file", event.target.files?.[0] || null)}
-                  style={{ ...fieldStyle, padding: "8px" }}
-                />
-              </div>
-              <div style={{ ...fileItemStyle, flex: "1 1 120px", minWidth: "120px", display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => updateRow(index, "thumbnail", event.target.files?.[0] || null)}
-                  style={{ ...fieldStyle, padding: "8px" }}
-                />
-                <p style={{ marginTop: "4px", fontSize: "12px", color: "#999", marginBottom: "0" }}>
-                  optional thumbnail
-                </p>
-              </div>
-              <div style={{ ...actionItemStyle, display: "flex", gap: "8px" }}>
-                {index > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveRow(index)}
-                    aria-label="-"
-                    style={{
-                      width: "42px",
-                      height: "42px",
-                      borderRadius: "999px",
-                      border: `1px solid ${darkMode ? "#4b5563" : "#ccc"}`,
-                      background: darkMode ? "#1f2937" : "#fff",
-                      color: darkMode ? "#f5f5f5" : "#111",
-                      cursor: "pointer",
-                      fontSize: "1.25rem",
-                      lineHeight: 1,
-                    }}
-                  >
-                    −
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={handleAddRow}
-                  aria-label="+"
-                  disabled={rows.length >= MAX_BULK_UPLOAD_ROWS}
-                  style={{
-                    width: "42px",
-                    height: "42px",
-                    borderRadius: "999px",
-                    border: "none",
-                    background: rows.length >= MAX_BULK_UPLOAD_ROWS ? "#9ca3af" : darkMode ? "#22c55e" : "#111",
-                    color: darkMode ? "#111" : "#fff",
-                    cursor: rows.length >= MAX_BULK_UPLOAD_ROWS ? "not-allowed" : "pointer",
-                    opacity: rows.length >= MAX_BULK_UPLOAD_ROWS ? 0.65 : 1,
-                    fontSize: "1.25rem",
-                    lineHeight: 1,
-                  }}
-                >
-                  +
-                </button>
-                {rows.length >= MAX_BULK_UPLOAD_ROWS && (
-                  <div style={{ marginTop: "4px", color: darkMode ? "#93c5fd" : "#0f172a", fontSize: "0.85rem" }}>
-                    Max 10 rows
-                  </div>
-                )}
-              </div>
+      <section
+        style={{
+          ...panelStyle,
+          position: "relative",
+          overflow: "hidden",
+          padding: "clamp(24px, 5vw, 52px)",
+          background: isDarkMode
+            ? "radial-gradient(ellipse at 92% 5%, rgba(99,102,241,.2), transparent 38%), #111827"
+            : "radial-gradient(ellipse at 92% 5%, rgba(99,102,241,.12), transparent 38%), #fff"
+        }}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 310px), 1fr))", gap: "36px", alignItems: "center" }}>
+          <div>
+            <div style={{ color: colors.accent, fontSize: "12px", fontWeight: 800, letterSpacing: ".16em", textTransform: "uppercase" }}>
+              Contributor studio
             </div>
-          ))}
+            <h1 style={{ margin: "12px 0 14px", fontSize: "clamp(32px, 5vw, 48px)", letterSpacing: "-.04em", lineHeight: 1.08 }}>
+              Your next great work,<br />ready to upload.
+            </h1>
+            <p style={{ maxWidth: "610px", margin: 0, color: colors.muted, fontSize: "16px", lineHeight: 1.7 }}>
+              Upload a batch of assets in one go. We’ll prepare each thumbnail and keep your files private until you’re ready to submit them for review.
+            </p>
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "22px" }}>
+              {["Independent uploads", "Private until submitted", "Thumbnail-ready drafts"].map((item) => (
+                <span key={item} style={{ padding: "7px 11px", border: `1px solid ${colors.border}`, borderRadius: "999px", color: colors.muted, fontSize: "12px", fontWeight: 650 }}>
+                  {item}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div style={{ padding: "24px", border: `1px solid ${colors.border}`, borderRadius: "18px", background: isDarkMode ? "rgba(24,34,53,.88)" : "rgba(255,255,255,.82)" }}>
+            <div style={{ color: colors.muted, fontSize: "13px", fontWeight: 650 }}>Batch capacity</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: "8px", margin: "6px 0 16px" }}>
+              <strong style={{ fontSize: "48px", letterSpacing: "-.05em" }}>10</strong>
+              <span style={{ color: colors.muted }}>assets at a time</span>
+            </div>
+            {[
+              ["01", "Upload files", "Each file uploads separately"],
+              ["02", "Prepare previews", "Thumbnails are generated"],
+              ["03", "Submit for review", "Edit details in Not Submitted"]
+            ].map(([number, title, description]) => (
+              <div key={number} style={{ display: "flex", gap: "12px", alignItems: "flex-start", paddingTop: "13px", marginTop: "13px", borderTop: `1px solid ${colors.border}` }}>
+                <span style={{ color: colors.accent, fontSize: "12px", fontWeight: 800 }}>{number}</span>
+                <div>
+                  <strong style={{ display: "block", fontSize: "13px" }}>{title}</strong>
+                  <span style={{ display: "block", marginTop: "3px", color: colors.muted, fontSize: "12px" }}>{description}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section aria-label="Select assets to upload" style={{ ...panelStyle, marginTop: "22px", padding: "clamp(20px, 4vw, 34px)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "18px", flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: "21px", letterSpacing: "-.02em" }}>Start a new batch</h2>
+            <p style={{ margin: "7px 0 0", color: colors.muted, lineHeight: 1.55 }}>Choose up to 10 files. Every asset uploads independently, so one issue won’t stop the rest.</p>
+          </div>
+          <span style={{ padding: "8px 12px", borderRadius: "10px", background: isDarkMode ? "#252f45" : "#f1f3ff", color: colors.accent, fontSize: "13px", fontWeight: 750 }}>
+            {queue.length} / {MAX_BULK_UPLOAD_FILES} selected
+          </span>
         </div>
 
-        <button
-          type="submit"
-          disabled={loading}
+        <label
+          htmlFor="bulk-upload-files"
           style={{
-            marginTop: "16px",
-            padding: "12px 18px",
-            borderRadius: "10px",
-            border: "none",
-            background: loading ? "gray" : darkMode ? "#22c55e" : "#111",
-            color: darkMode ? "#111" : "#fff",
-            cursor: loading ? "not-allowed" : "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "18px",
+            flexWrap: "wrap",
+            minHeight: "146px",
+            marginTop: "22px",
+            padding: "22px",
+            border: `1.5px dashed ${isDarkMode ? "#53617a" : "#b7c3d7"}`,
+            borderRadius: "16px",
+            background: colors.raised,
+            cursor: activeUploads ? "not-allowed" : "pointer",
+            opacity: activeUploads ? 0.65 : 1,
+            textAlign: "left"
           }}
         >
-          {loading ? "Uploading..." : "Start Bulk Upload"}
-        </button>
-      </form>
-      {message && (
-        <div style={{ marginTop: "16px", color: darkMode ? "#a5f3fc" : "#0f172a" }}>
-          {message}
-        </div>
+          <span aria-hidden="true" style={{ display: "grid", placeItems: "center", width: "54px", height: "54px", flex: "0 0 54px", borderRadius: "15px", background: isDarkMode ? "#2b3155" : "#e9eaff", color: colors.accent, fontSize: "26px", fontWeight: 500 }}>↑</span>
+          <span>
+            <strong style={{ display: "block", fontSize: "16px" }}>Choose assets from your device</strong>
+            <span style={{ display: "block", marginTop: "6px", color: colors.muted, fontSize: "13px" }}>Select files to begin · Maximum 10 per batch</span>
+          </span>
+          <span style={{ marginLeft: "auto", padding: "11px 16px", borderRadius: "10px", background: colors.accentStrong, color: "#fff", fontSize: "13px", fontWeight: 750, whiteSpace: "nowrap" }}>
+            Browse files
+          </span>
+        </label>
+        <input
+          id="bulk-upload-files"
+          aria-label="Upload assets"
+          type="file"
+          multiple
+          onChange={handleFilesSelected}
+          disabled={activeUploads}
+          style={{ display: "none" }}
+        />
+        {message && <p role="alert" style={{ margin: "12px 0 0", padding: "11px 14px", borderRadius: "10px", background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318" }}>{message}</p>}
+      </section>
+
+      {queue.length > 0 && (
+        <section aria-label="Upload queue" style={{ ...panelStyle, marginTop: "22px", padding: "clamp(20px, 4vw, 34px)" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ color: colors.accent, fontSize: "11px", fontWeight: 800, letterSpacing: ".14em", textTransform: "uppercase" }}>Batch activity</div>
+              <h2 style={{ margin: "6px 0 0", fontSize: "22px", letterSpacing: "-.025em" }}>Upload queue</h2>
+            </div>
+            <span style={{ color: colors.muted, fontSize: "13px" }}>{uploadedCount} / {queue.length} uploaded</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", marginTop: "22px", fontSize: "13px" }}>
+            <strong>Overall progress</strong>
+            <span style={{ color: colors.muted }}>{overallProgress}%</span>
+          </div>
+          <div
+            role="progressbar"
+            aria-label="Overall upload progress"
+            aria-valuenow={overallProgress}
+            aria-valuemin="0"
+            aria-valuemax="100"
+            style={{ height: "9px", margin: "9px 0 20px", overflow: "hidden", borderRadius: "99px", background: colors.track }}
+          >
+            <div style={{ width: `${overallProgress}%`, height: "100%", borderRadius: "99px", background: progressBarColor, transition: "width 200ms ease" }} />
+          </div>
+
+          <ol style={{ display: "grid", gap: "10px", margin: 0, padding: 0, listStyle: "none" }}>
+            {queue.map((item) => {
+              const statusLabel = {
+                waiting: "Waiting",
+                uploading: `Uploading · ${item.progress}%`,
+                processing: "Preparing thumbnail",
+                completed: "Completed - ready to submit",
+                failed: "Upload failed",
+                "thumbnail-failed": "Thumbnail generation failed"
+              }[item.status];
+              const extension = item.file.name.split(".").pop()?.toUpperCase() || "FILE";
+              return (
+                <li key={item.id} style={{ padding: "14px 16px", border: `1px solid ${colors.border}`, borderRadius: "14px", background: colors.raised }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <span aria-hidden="true" style={{ display: "grid", placeItems: "center", width: "42px", height: "42px", flex: "0 0 42px", borderRadius: "11px", background: isDarkMode ? "#26354a" : "#edf1f8", color: colors.accent, fontSize: "10px", fontWeight: 800, overflow: "hidden" }}>
+                      {extension.slice(0, 5)}
+                    </span>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <strong title={item.file.name} style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "14px" }}>{item.file.name}</strong>
+                      <span style={{ display: "block", marginTop: "4px", color: colors.muted, fontSize: "12px" }}>
+                        {item.status === "processing" ? "Upload complete · Thumbnail processing" : item.status === "completed" ? "Private draft · Available in Not Submitted" : item.status === "failed" || item.status === "thumbnail-failed" ? "This file needs attention" : "Your original file stays private"}
+                      </span>
+                    </div>
+                    <span aria-live="polite" style={{ ...statusStyles[item.status], flex: "0 0 auto", padding: "7px 10px", borderRadius: "999px", fontSize: "11px", fontWeight: 750 }}>
+                      {statusLabel}
+                    </span>
+                  </div>
+                  {(item.status === "uploading" || item.status === "processing") && (
+                    <div style={{ height: "5px", marginTop: "13px", borderRadius: "99px", background: colors.track }}>
+                      <div style={{ width: `${item.progress}%`, height: "100%", borderRadius: "99px", background: progressBarColor, transition: "width 200ms ease" }} />
+                    </div>
+                  )}
+                  {item.error && <p style={{ margin: "11px 0 0", padding: "10px 12px", borderRadius: "9px", background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318", fontSize: "13px" }}>{item.error}</p>}
+                  {(item.status === "failed" || item.status === "thumbnail-failed" || item.assetId) && (
+                    <div style={{ display: "flex", gap: "8px", marginTop: "11px" }}>
+                      {(item.status === "failed" || item.status === "thumbnail-failed") && (
+                        <button type="button" onClick={() => retryItem(item)} style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, borderRadius: "8px", background: colors.panel, color: colors.text, cursor: "pointer", fontWeight: 650 }}>Retry</button>
+                      )}
+                      {item.assetId && (
+                        <button type="button" onClick={() => deleteItem(item)} style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, borderRadius: "8px", background: colors.panel, color: colors.muted, cursor: "pointer", fontWeight: 650 }}>
+                          Delete draft
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+          {queue.every((item) => ["completed", "failed", "thumbnail-failed"].includes(item.status)) && (
+            <button
+              type="button"
+              onClick={() => setQueue([])}
+              style={{ marginTop: "18px", padding: "10px 14px", border: `1px solid ${colors.border}`, borderRadius: "9px", background: colors.panel, color: colors.text, cursor: "pointer", fontWeight: 700 }}
+            >
+              Start a new batch
+            </button>
+          )}
+        </section>
       )}
     </div>
   );

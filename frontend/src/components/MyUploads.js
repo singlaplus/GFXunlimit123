@@ -1,76 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
-import { getAssetPreviewUrl } from "../utils/assetPreview";
+import AssetThumbnail from "./AssetThumbnail";
+import Upload from "../Upload";
+import { buildAuthHeaders } from "../utils/authSession";
 
 function MyUploads({ darkMode = false }) {
   const isDarkMode = Boolean(darkMode);
   const [images, setImages] = useState([]);
   const [editingImage, setEditingImage] = useState(null);
+  const [editingDraftAsset, setEditingDraftAsset] = useState(null);
   const [editTitle, setEditTitle] = useState("");
   const [editCategory, setEditCategory] = useState("");
   const [editKeywords, setEditKeywords] = useState("");
   const [thumbnailFile, setThumbnailFile] = useState(null);
   const [selectedView, setSelectedView] = useState("pending");
-  const [thumbnailUrls, setThumbnailUrls] = useState({});
+  const [deletingImageIds, setDeletingImageIds] = useState(() => new Set());
   const activeRequestIdRef = useRef(0);
 
 
   useEffect(() => {
     fetchMyUploads(selectedView);
   }, [selectedView]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const objectUrls = [];
-
-    setThumbnailUrls({});
-
-    const loadThumbnails = async () => {
-      const token = localStorage.getItem("token");
-      const thumbnails = await Promise.all(
-        images.map(async (image) => {
-          if (!image.thumbnail_url && !image.thumbnail_generated_at) {
-            return null;
-          }
-
-          try {
-            const response = await axios.get(
-              getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true }),
-              {
-                responseType: "blob",
-                headers: token ? { Authorization: `Bearer ${token}` } : {}
-              }
-            );
-
-            if (cancelled || !response.data) {
-              return null;
-            }
-
-            const url = URL.createObjectURL(response.data);
-            objectUrls.push(url);
-            return [image.id, url];
-          } catch (error) {
-            if (error.response?.status !== 404) {
-              console.error(error);
-            }
-            return null;
-          }
-        })
-      );
-
-      if (!cancelled) {
-        setThumbnailUrls(Object.fromEntries(thumbnails.filter(Boolean)));
-      }
-    };
-
-    loadThumbnails();
-
-    return () => {
-      cancelled = true;
-      objectUrls.forEach((url) => URL.revokeObjectURL(url));
-    };
-  }, [images]);
 
   const fetchMyUploads = async (view = selectedView) => {
     const requestId = Date.now();
@@ -97,6 +48,10 @@ function MyUploads({ darkMode = false }) {
         if (view === "pending") {
           return status === "pending";
         }
+        if (view === "not-submitted") {
+          return ["draft", "not submitted", "not_submitted", "not-submitted"].includes(status)
+            && String(image.generated_thumbnail_status || "").toUpperCase() === "READY";
+        }
         if (view === "approved") {
           return status === "approved";
         }
@@ -119,19 +74,52 @@ function MyUploads({ darkMode = false }) {
   };
 
   const deleteImage = async (id) => {
-    const confirmDelete = window.confirm("Delete this image?");
+    const image = images.find((item) => Number(item.id) === Number(id));
+    const confirmDelete = window.confirm(
+      `Permanently delete "${image?.title || "this asset"}", including its original file and thumbnail? This cannot be undone.`
+    );
 
     if (!confirmDelete) return;
 
+    setDeletingImageIds((prev) => new Set(prev).add(id));
     try {
       await axios.delete(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images/${id}`
+        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images/${id}`,
+        {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem("token")}`
+          }
+        }
       );
-      toast.success("Image deleted successfully 🗑");
+      toast.success("Asset deleted successfully.");
 
       setImages((prevImages) => prevImages.filter((img) => img.id !== id));
     } catch (err) {
       console.error(err);
+      const errorMessage = err.response?.data?.error || err.response?.data || err.message;
+      toast.error(typeof errorMessage === "string" ? errorMessage : "Failed to delete asset.");
+    } finally {
+      setDeletingImageIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const submitImage = async (image) => {
+    try {
+      await axios.post(
+        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/my-uploads/${image.id}/submit`,
+        {},
+        { headers: buildAuthHeaders() }
+      );
+      toast.success("Asset submitted for review.");
+      setImages((previous) => previous.filter((item) => Number(item.id) !== Number(image.id)));
+    } catch (error) {
+      console.error(error);
+      const message = error.response?.data?.error || error.response?.data || "Unable to submit asset.";
+      toast.error(typeof message === "string" ? message : "Unable to submit asset.");
     }
   };
 
@@ -149,9 +137,13 @@ function MyUploads({ darkMode = false }) {
         {
           title: editTitle,
           category: editCategory,
+          collection: editingImage.collection || "",
           keywords: editKeywords,
+          description: editingImage.description || "",
+          type: editingImage.type || "",
           status: selectedView === "portfolio" ? "pending" : undefined
-        }
+        },
+        { headers: buildAuthHeaders() }
       );
 
       fetchMyUploads(selectedView);
@@ -192,14 +184,14 @@ function MyUploads({ darkMode = false }) {
     }
   };
 
-  const readOnlyView = selectedView !== "pending" && selectedView !== "portfolio";
-
   const getViewHint = () => {
     switch (selectedView) {
       case "approved":
         return "Shows approved assets from the last 7 days only.";
       case "pending":
         return "Shows pending assets that are still awaiting review.";
+      case "not-submitted":
+        return "Shows uploads saved as drafts that have not been submitted for review.";
       case "reviewed":
         return "Shows reviewed assets (approved or rejected) from the last 14 days.";
       case "rejected":
@@ -273,6 +265,7 @@ function MyUploads({ darkMode = false }) {
             color: isDarkMode ? "white" : "#111827"
           }}
         >
+          <option value="not-submitted">Not Submitted</option>
           <option value="approved">Approved</option>
           <option value="pending">Pending</option>
           <option value="reviewed">Reviewed</option>
@@ -305,11 +298,9 @@ function MyUploads({ darkMode = false }) {
                 color: isDarkMode ? "#f5f5f5" : "#111827"
               }}
             >
-              <img
-                src={thumbnailUrls[image.id]}
-                alt={image.title}
-                loading="lazy"
-                decoding="async"
+              <AssetThumbnail
+                image={image}
+                darkMode={isDarkMode}
                 style={{
                   width: "100%",
                   height: "180px",
@@ -321,7 +312,11 @@ function MyUploads({ darkMode = false }) {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
                   <strong>{image.title || "Untitled"}</strong>
                   <span style={{ fontSize: "0.8rem", color: isDarkMode ? "#a8d0ff" : "#2563eb" }}>
-                    {image.status ? image.status.charAt(0).toUpperCase() + image.status.slice(1) : "Pending"}
+                    {selectedView === "not-submitted"
+                      ? "Not Submitted"
+                      : image.status
+                        ? image.status.charAt(0).toUpperCase() + image.status.slice(1)
+                        : "Pending"}
                   </span>
                 </div>
 
@@ -330,10 +325,11 @@ function MyUploads({ darkMode = false }) {
                 </p>
 
                 <p style={{ marginTop: "8px" }}>Collection: {image.collection || "—"}</p>
-                <p>Type: {image.type || "—"}</p>
+                <p>File Type: {image.extension ? String(image.extension).replace(/^\./, "").toUpperCase() : "—"}</p>
+                <p>Asset Type: {image.type || "—"}</p>
                 <p>Category: {image.category || "—"}</p>
 
-                {selectedView !== "pending" && selectedView !== "portfolio" && (
+                {selectedView !== "pending" && selectedView !== "portfolio" && selectedView !== "not-submitted" && (
                   <div style={{ marginTop: "10px", fontSize: "0.9rem", color: isDarkMode ? "#bcdcff" : "#475569" }}>
                     <p>Submitted: {formatDate(image.created_at)}</p>
                     <p>Reviewed: {formatDate(image.updated_at || image.reviewed_at || image.created_at)}</p>
@@ -342,8 +338,27 @@ function MyUploads({ darkMode = false }) {
                 )}
 
 
-                {selectedView === "portfolio" && (
-                  <div style={{ marginTop: "10px" }}>
+                <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+                  {selectedView === "not-submitted" && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setEditingDraftAsset(image)}
+                        style={{ background: "#2196f3", color: "white", border: "none", padding: "8px 12px", borderRadius: "6px", cursor: "pointer" }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => submitImage(image)}
+                        disabled={String(image.generated_thumbnail_status || "").toUpperCase() !== "READY"}
+                        style={{ background: "#16a34a", color: "white", border: "none", padding: "8px 12px", borderRadius: "6px", cursor: "pointer" }}
+                      >
+                        Submit
+                      </button>
+                    </>
+                  )}
+                  {selectedView === "portfolio" && (
                     <button
                       onClick={() => editImage(image)}
                       style={{
@@ -357,8 +372,24 @@ function MyUploads({ darkMode = false }) {
                     >
                       ✏ Edit
                     </button>
-                  </div>
-                )}
+                  )}
+                  {selectedView === "not-submitted" && <button
+                    type="button"
+                    onClick={() => deleteImage(image.id)}
+                    disabled={deletingImageIds.has(image.id)}
+                    style={{
+                      background: "#dc2626",
+                      color: "white",
+                      border: "none",
+                      padding: "8px 12px",
+                      borderRadius: "6px",
+                      cursor: deletingImageIds.has(image.id) ? "wait" : "pointer",
+                      opacity: deletingImageIds.has(image.id) ? 0.65 : 1
+                    }}
+                  >
+                    {deletingImageIds.has(image.id) ? "Deleting..." : "Delete"}
+                  </button>}
+                </div>
               </div>
             </div>
           ))}
@@ -471,6 +502,18 @@ function MyUploads({ darkMode = false }) {
             </div>
           </div>
         </div>
+      )}
+
+      {editingDraftAsset && (
+        <Upload
+          key={editingDraftAsset.id}
+          editingAsset={editingDraftAsset}
+          darkMode={isDarkMode}
+          onSaved={(savedAsset) => {
+            setEditingDraftAsset(null);
+            if (savedAsset) fetchMyUploads("not-submitted");
+          }}
+        />
       )}
     </div>
   );

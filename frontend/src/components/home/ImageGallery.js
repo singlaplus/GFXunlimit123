@@ -201,6 +201,10 @@ function ImageGallery(props) {
   const visibleCategories = categories.length > 0 ? categories : ["Images", "Vector/illustrations", "PSD", "Videos", "Templates"];
   const visibleCollections = collections.length > 0 ? collections : [];
   const loadedAssetsCount = Array.isArray(allImages) ? allImages.length : 0;
+  const totalCatalogAssets = Number(totalImages) || 0;
+  const displayShowingCount = totalCatalogAssets === 0
+    ? 0
+    : Math.min(Math.max(loadedAssetsCount, Number(resultsPerPage) || 0), totalCatalogAssets);
   const dropdownPanelStyle = (isOpen) => ({
     maxHeight: isOpen ? "360px" : "0px",
     opacity: isOpen ? 1 : 0,
@@ -379,7 +383,7 @@ function ImageGallery(props) {
             <h3 style={{ margin: "0 0 8px", color: darkMode ? "#f5f5f5" : "#111" }}>Results</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <div style={{ color: darkMode ? "#9ca3af" : "#6b7280", fontSize: "14px" }}>
-                Showing {Math.min(loadedAssetsCount, totalImages || 0)} of {totalImages || 0}
+                Showing {displayShowingCount} of {totalCatalogAssets}
               </div>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                 {[50, 100, 200].map((value) => (
