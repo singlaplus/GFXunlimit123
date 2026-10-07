@@ -36,6 +36,7 @@ const NON_CONTRIBUTOR_UPLOAD_DIRECTORIES = new Set([
   'website',
 ]);
 const contributorUploadLocks = new Map();
+const assetLifecycleLocks = new Map();
 
 function getProcessorVersion(filename) {
   return PROCESSOR_VERSION;
@@ -707,7 +708,7 @@ async function recordThumbnailQueueFailure(assetId, error) {
   );
 }
 
-async function generateAssetThumbnail(assetId, options = {}) {
+async function generateAssetThumbnailUnlocked(assetId, options = {}) {
   const id = Number(assetId);
   const assetResult = await pool.query(
     "SELECT id, title, filename, original_filename, to_char(created_at, 'YYYY-MM-DD') AS created_date FROM images WHERE id = $1",
@@ -908,6 +909,36 @@ async function generateAssetThumbnail(assetId, options = {}) {
     if (stagedSource?.sourcePath) await fsp.unlink(stagedSource.sourcePath).catch((error) => {
       console.error(`Failed to remove staged source for asset ${id}: ${error.message}`);
     });
+  }
+}
+
+async function acquireAssetLifecycleLock(assetId) {
+  const id = Number(assetId);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid asset ID');
+
+  const previousLock = assetLifecycleLocks.get(id) || Promise.resolve();
+  let releaseLock;
+  const currentLock = new Promise((resolve) => {
+    releaseLock = resolve;
+  });
+  assetLifecycleLocks.set(id, currentLock);
+  await previousLock;
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (assetLifecycleLocks.get(id) === currentLock) assetLifecycleLocks.delete(id);
+    releaseLock();
+  };
+}
+
+async function generateAssetThumbnail(assetId, options = {}) {
+  const releaseLock = await acquireAssetLifecycleLock(assetId);
+  try {
+    return await generateAssetThumbnailUnlocked(assetId, options);
+  } finally {
+    releaseLock();
   }
 }
 
@@ -1125,6 +1156,7 @@ module.exports = {
   isValidThumbnailFile,
   normalizeStoredFilename,
   deleteAssetThumbnail,
+  acquireAssetLifecycleLock,
   acquireContributorUploadLock,
   deleteContributorUploadFolderIfUnused,
   recordThumbnailQueueFailure,

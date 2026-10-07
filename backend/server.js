@@ -9,7 +9,6 @@ const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
 const crypto = require('crypto');
-const AdmZip = require("adm-zip");
 const axios = require("axios");
 const sharp = require("sharp");
 const { Transform } = require("node:stream");
@@ -26,9 +25,11 @@ const { applyWatermarkToBuffer, generateWatermarkSvg } = require("./utils/waterm
 const { getAssetSourceDimensions } = require("./utils/assetDimensions");
 const thumbnailQueue = require("./thumbnail-queue-worker");
 const assetThumbnails = require("./utils/assetThumbnails");
+const { deleteAssetCompletely } = require("./services/assetDeletion");
 const ProcessorDetector = require("./thumbnail-engine/processor-detector");
 const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
 const restoreRoutes = require("./routes/restore-routes");
+const { createBackupRouter } = require("./routes/backup-routes");
 const processorFactory = require("./thumbnail-engine/processor-factory");
 const {
   proxyRemoteThumbnail,
@@ -44,7 +45,6 @@ const {
 } = require("./utils/assetThumbnail");
 
 const app = express();
-const BACKUP_ROOT = path.join(__dirname, "backup");
 const FRONTEND_BUILD_PATH = path.join(path.resolve(__dirname, ".."), "frontend", "build");
 const FRONTEND_INDEX_PATH = path.join(FRONTEND_BUILD_PATH, "index.html");
 const JWT_SECRET = process.env.JWT_SECRET || "secretkey";
@@ -101,1254 +101,19 @@ function signJwtToken(payload, options = {}) {
   return jwt.sign(payload, JWT_SECRET || LEGACY_JWT_SECRET, options);
 }
 
-function ensureBackupDirectory(date = new Date(), backupMode = "incremental") {
-  const modeDirectory = backupMode === "complete" ? "complete" : "incremental";
-  const year = String(date.getUTCFullYear());
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
-  const directory = path.join(BACKUP_ROOT, modeDirectory, year, month, day);
-  fs.mkdirSync(directory, { recursive: true });
-  return directory;
-}
-
-function buildUniqueBackupId(date = new Date()) {
-  const stamp = new Date(date);
-  const year = stamp.getUTCFullYear();
-  const month = String(stamp.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(stamp.getUTCDate()).padStart(2, "0");
-  const hours = String(stamp.getUTCHours()).padStart(2, "0");
-  const minutes = String(stamp.getUTCMinutes()).padStart(2, "0");
-  const seconds = String(stamp.getUTCSeconds()).padStart(2, "0");
-  const suffix = crypto.randomBytes(3).toString("hex").toUpperCase();
-  return `GFX-BACKUP-${year}${month}${day}-${hours}${minutes}${seconds}-${suffix}`;
-}
-
-function buildBackupArchiveFile(date = new Date(), backupMode = "incremental") {
-  const directory = ensureBackupDirectory(date, backupMode);
-  const stamp = new Date(date);
-  const year = stamp.getUTCFullYear();
-  const month = String(stamp.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(stamp.getUTCDate()).padStart(2, "0");
-  const hours = String(stamp.getUTCHours()).padStart(2, "0");
-  const minutes = String(stamp.getUTCMinutes()).padStart(2, "0");
-  const seconds = String(stamp.getUTCSeconds()).padStart(2, "0");
-  const suffix = crypto.randomBytes(3).toString("hex").toUpperCase();
-  const fileName = `GFX_BACKUP_${year}-${month}-${day}_${hours}${minutes}${seconds}_${suffix}.gfxbackup`;
-  const filePath = path.join(directory, fileName);
-
-  if (fs.existsSync(filePath)) {
-    return buildBackupArchiveFile(new Date(stamp.getTime() + 1000), backupMode);
-  }
-
-  return { directory, fileName, filePath, uniqueId: buildUniqueBackupId(stamp) };
-}
-
-function resolveBackupArchivePath(requestedFile) {
-  if (typeof requestedFile !== "string" || !requestedFile.trim()) {
-    return { error: "Missing backup file path" };
-  }
-
-  let safeRelativePath = requestedFile.replace(/\\/g, "/").replace(/^\/+/, "");
-  safeRelativePath = safeRelativePath.replace(/^backend\/backup\//, "").replace(/^backup\//, "");
-  const absolutePath = path.resolve(BACKUP_ROOT, safeRelativePath);
-  const relativeToBackupRoot = path.relative(BACKUP_ROOT, absolutePath).split(path.sep).join("/");
-  const firstPathSegment = relativeToBackupRoot.split("/")[0];
-
-  if (!relativeToBackupRoot || relativeToBackupRoot.startsWith("../") || relativeToBackupRoot === ".." || !["incremental", "complete"].includes(firstPathSegment)) {
-    return { error: "Invalid backup path" };
-  }
-  if (!relativeToBackupRoot.endsWith(".gfxbackup")) {
-    return { error: "Invalid backup archive" };
-  }
-
-  try {
-    const realBackupRoot = fs.realpathSync(BACKUP_ROOT);
-    const realArchivePath = fs.realpathSync(absolutePath);
-    const realRelativePath = path.relative(realBackupRoot, realArchivePath);
-    if (!realRelativePath || realRelativePath.startsWith("..") || path.isAbsolute(realRelativePath) || fs.lstatSync(absolutePath).isSymbolicLink()) {
-      return { error: "Invalid backup path" };
-    }
-  } catch (error) {
-    return { error: "Invalid backup path" };
-  }
-
-  return { absolutePath, relativePath: relativeToBackupRoot };
-}
-
-function enforceBackupRetention() {
-  const configuredLimit = Number.parseInt(process.env.BACKUP_RETENTION_COUNT || "30", 10);
-  const retentionLimit = Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 30;
-  if (!fs.existsSync(BACKUP_ROOT)) return;
-
-  const backupFiles = fs.readdirSync(BACKUP_ROOT, { recursive: true, withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".gfxbackup"))
-    .map((entry) => {
-      const filePath = path.join(entry.parentPath || BACKUP_ROOT, entry.name);
-      return { filePath, modifiedAt: fs.statSync(filePath).mtimeMs };
-    })
-    .sort((left, right) => right.modifiedAt - left.modifiedAt);
-
-  backupFiles.slice(retentionLimit).forEach(({ filePath }) => {
-    try {
-      fs.unlinkSync(filePath);
-    } catch (error) {
-      console.warn("Failed to remove expired backup archive", filePath, error.message || error);
-    }
-  });
-}
-
-function stableHash(content) {
-  return crypto.createHash("sha256").update(content).digest("hex");
-}
-
-function normalizeDeviceId(deviceId) {
-  const candidate = typeof deviceId === "string" ? deviceId.trim() : "";
-  if (/^GFX-(MAC|PC1|LINUX|DEVICE)-\d{3}$/i.test(candidate)) {
-    return candidate;
-  }
-
-  const platform = process.platform === "darwin" ? "MAC" : process.platform === "win32" ? "PC1" : process.platform === "linux" ? "LINUX" : "DEVICE";
-  const suffix = String(Math.floor(Math.random() * 900 + 100));
-  return `GFX-${platform}-${suffix}`;
-}
-
-async function validateBackupArchive(filePath) {
-  const errors = [];
-  const resolvedPath = typeof filePath === "string" && filePath.trim()
-    ? path.isAbsolute(filePath) ? filePath : path.resolve(getProjectRoot(), filePath)
-    : null;
-
-  if (!resolvedPath) {
-    return { valid: false, errors: ["Missing backup archive path"] };
-  }
-
-  if (!fs.existsSync(resolvedPath)) {
-    return { valid: false, errors: [`Backup archive not found: ${resolvedPath}`] };
-  }
-
-  if (!resolvedPath.toLowerCase().endsWith(".gfxbackup")) {
-    errors.push("Backup archive must use the .gfxbackup extension");
-  }
-
-  try {
-    const zip = new AdmZip(resolvedPath);
-    const entries = zip.getEntries().map((entry) => entry.entryName);
-    const requiredEntries = ["manifest.json", "package.json", "checksums.json"];
-
-    for (const entryName of requiredEntries) {
-      if (!entries.includes(entryName)) {
-        errors.push(`Backup package is missing required entry: ${entryName}`);
-      }
-    }
-
-    const manifestEntry = zip.getEntry("manifest.json");
-    if (manifestEntry) {
-      try {
-        const manifest = JSON.parse(zip.readAsText(manifestEntry));
-        if (!manifest || manifest.format !== "GFXBACKUP") {
-          errors.push("Manifest is missing the required GFXBACKUP format header");
-        }
-      } catch (parseError) {
-        errors.push(`Manifest is corrupted or unreadable: ${parseError.message || parseError}`);
-      }
-    }
-
-    const checksumEntry = zip.getEntry("checksums.json");
-    if (checksumEntry) {
-      try {
-        const checksumMap = JSON.parse(zip.readAsText(checksumEntry));
-        for (const [entryName, expectedHash] of Object.entries(checksumMap || {})) {
-          const zipEntry = zip.getEntry(entryName);
-          if (!zipEntry) {
-            errors.push(`Checksum references missing file: ${entryName}`);
-            continue;
-          }
-          const actualHash = crypto.createHash("sha256").update(zipEntry.getData()).digest("hex");
-          if (actualHash !== expectedHash) {
-            errors.push(`Checksum mismatch for ${entryName}`);
-          }
-        }
-      } catch (parseError) {
-        errors.push(`Checksum file is corrupted or unreadable: ${parseError.message || parseError}`);
-      }
-    }
-  } catch (error) {
-    errors.push(`Backup archive is unreadable or corrupted: ${error.message || error}`);
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-    filePath: resolvedPath
-  };
-}
-
-function normalizeBackupDateRange(fromDate, toDate, now = new Date()) {
-  const currentDate = now.toISOString().slice(0, 10);
-  const normalizedFromDate = String(fromDate || currentDate).slice(0, 10);
-  const rawToDate = String(toDate || currentDate);
-  const normalizedToDate = rawToDate.slice(0, 10);
-  const hasTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(rawToDate);
-
-  return {
-    from: `${normalizedFromDate}T00:00:00.000Z`,
-    to: hasTimestamp ? new Date(rawToDate).toISOString() : normalizedToDate === currentDate ? now.toISOString() : `${normalizedToDate}T23:59:59.999Z`
-  };
-}
-
-function classifyBackupPath(relativePath) {
-  const normalized = String(relativePath || "").replace(/\\/g, "/");
-  if (!normalized || normalized === ".") return "application";
-  if (normalized === "package.json" || normalized === "setup.js" || normalized === "setup.sh" || normalized.startsWith("backend/") || normalized.startsWith("frontend/") || normalized.startsWith("GFX-Aanav/") || normalized.startsWith("scripts/") || normalized.startsWith("database/") || normalized.startsWith("config/")) {
-    return "application";
-  }
-  if (normalized.includes("/uploads/") || normalized.includes("/assets/") || normalized.includes("/thumbnails/") || normalized.includes("/previews/") || normalized.includes("/images/")) {
-    return "assets";
-  }
-  if (normalized.includes("/database/") || normalized.includes("/migrations/") || normalized.endsWith(".sql") || normalized.includes("database-")) {
-    return "database";
-  }
-  if (normalized.includes("/metadata/") || normalized.includes("device") || normalized.includes("version") || normalized.includes("sync")) {
-    return "metadata";
-  }
-  return "application";
-}
-
-function getProjectRoot() {
-  return path.resolve(__dirname, "..");
-}
-
-async function validateBackupPrerequisites(options = {}) {
-  const projectRoot = options.projectRoot || getProjectRoot();
-  const minFreeDiskBytes = typeof options.diskSpaceAvailableBytes === "number"
-    ? options.diskSpaceAvailableBytes
-    : 50 * 1024 * 1024;
-  const requiredDirectories = [
-    path.join(projectRoot, "backend"),
-    path.join(projectRoot, "frontend"),
-    path.join(projectRoot, "backend", "uploads"),
-    path.join(projectRoot, "backend", "backup")
-  ];
-  const requiredFiles = [
-    path.join(projectRoot, "package.json"),
-    path.join(projectRoot, "backend", "server.js"),
-    path.join(projectRoot, "backend", "db.js")
-  ];
-  const errors = [];
-
-  for (const dirPath of requiredDirectories) {
-    if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
-      errors.push(`Required folder missing: ${path.relative(projectRoot, dirPath) || path.basename(dirPath)}`);
-    }
-  }
-
-  for (const filePath of requiredFiles) {
-    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-      errors.push(`Required file missing: ${path.relative(projectRoot, filePath) || path.basename(filePath)}`);
-    }
-  }
-
-  try {
-    const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
-    if (!packageJson || !packageJson.version || typeof packageJson.version !== "string") {
-      throw new Error("Application version missing or invalid");
-    }
-  } catch (error) {
-    errors.push(`Application version validation failed: ${error.message || "package.json missing or unreadable"}`);
-  }
-
-  if (!options.skipDatabase) {
-    try {
-      await pool.query("SELECT 1");
-    } catch (error) {
-      errors.push(`Database connection validation failed: ${error.message || "Database unavailable"}`);
-    }
-
-    try {
-      const result = await pool.query("SELECT COUNT(*)::int AS table_count FROM information_schema.tables WHERE table_schema = 'public'");
-      const tableCount = Number(result.rows?.[0]?.table_count || 0);
-      if (!tableCount) {
-        errors.push("Database integrity validation failed: no public tables were found");
-      }
-    } catch (error) {
-      errors.push(`Database integrity validation failed: ${error.message || "Unable to inspect schema"}`);
-    }
-  }
-
-  if (!options.skipSyncMetadata) {
-    try {
-      const result = await pool.query("SELECT to_regclass('public.gfx_sync_changes') AS sync_table");
-      if (!result.rows?.[0]?.sync_table) {
-        errors.push("Existing sync metadata validation failed: public.gfx_sync_changes table is missing");
-      }
-    } catch (error) {
-      errors.push(`Existing sync metadata validation failed: ${error.message || "Unable to inspect sync metadata"}`);
-    }
-  }
-
-  const uploadPath = path.join(projectRoot, "backend", "uploads");
-  if (fs.existsSync(uploadPath) && fs.statSync(uploadPath).isDirectory()) {
-    const assetPaths = [
-      uploadPath,
-      path.join(projectRoot, "frontend", "src"),
-      path.join(projectRoot, "backend")
-    ];
-    for (const assetPath of assetPaths) {
-      if (!fs.existsSync(assetPath)) {
-        errors.push(`Asset path validation failed: ${path.relative(projectRoot, assetPath) || path.basename(assetPath)} is missing`);
-      }
-    }
-  } else {
-    errors.push("Asset path validation failed: backend/uploads is missing");
-  }
-
-  try {
-    const stats = fs.statfsSync(projectRoot);
-    const availableBytes = Number(stats.bavail || 0) * Number(stats.bsize || 4096);
-    if (availableBytes < minFreeDiskBytes) {
-      errors.push(`Disk space validation failed: only ${Math.round(availableBytes / (1024 * 1024))} MB available; at least ${Math.round(minFreeDiskBytes / (1024 * 1024))} MB required`);
-    }
-  } catch (error) {
-    errors.push(`Disk space validation failed: ${error.message || "Unable to read disk stats"}`);
-  }
-
-  if (errors.length > 0) {
-    throw new Error(errors.join("\n"));
-  }
-
-  return { valid: true, projectRoot };
-}
-
-function collectRelevantBackupPaths(includeUploads = false, projectRoot = getProjectRoot()) {
-  const root = projectRoot || getProjectRoot();
-  const roots = [
-    path.join(root, "backend"),
-    path.join(root, "frontend", "src"),
-    path.join(root, "frontend", "public"),
-    path.join(root, "package.json"),
-    path.join(root, "setup.js"),
-    path.join(root, "setup.sh"),
-    path.join(root, "GFX-Aanav", "config"),
-    path.join(root, "GFX-Aanav", "core")
-  ];
-
-  if (includeUploads) {
-    roots.push(path.join(projectRoot, "backend", "uploads"));
-  }
-
-  return roots.filter(Boolean);
-}
-
-function isIgnoredBackupPath(relativePath, includeUploads = false) {
-  const ignoredSegments = ["node_modules", "build", "dist", "coverage", ".git", "backup", "tmp", "dump.rdb"];
-  if (!includeUploads) {
-    ignoredSegments.push("uploads");
-  }
-
-  const normalized = String(relativePath || "").replace(/\\/g, "/");
-  const isEnvCredentialFile = normalized === ".env" || /^\.env(\..+)?$/.test(normalized);
-
-  return /(^|\/)(node_modules|build|dist|coverage|\.git|backup|tmp|dump\.rdb)(?:\/|$)/.test(normalized)
-    || (!includeUploads && /(^|\/)(uploads)(?:\/|$)/.test(normalized))
-    || (!isEnvCredentialFile && normalized.startsWith(".env"))
-    || normalized.includes(".log");
-}
-
-function collectAllProjectFilesForBackup(roots = collectRelevantBackupPaths(true), projectRoot = getProjectRoot()) {
-  const root = projectRoot || getProjectRoot();
-  const matches = new Set();
-
-  const walk = (scanPath) => {
-    if (!scanPath || !fs.existsSync(scanPath)) return;
-
-    const stats = fs.lstatSync(scanPath);
-    if (stats.isSymbolicLink()) return;
-    if (stats.isFile()) {
-      const relative = path.relative(projectRoot, scanPath).split(path.sep).join("/");
-      if (!isIgnoredBackupPath(relative, true)) {
-        matches.add(relative);
-      }
-      return;
-    }
-
-    for (const entry of fs.readdirSync(scanPath, { withFileTypes: true })) {
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "build" || entry.name === "dist" || entry.name === "coverage" || entry.name === "tmp" || entry.name === "backup") continue;
-      if (entry.name === "uploads" && !true) continue;
-      const fullPath = path.join(scanPath, entry.name);
-      walk(fullPath);
-    }
-  };
-
-  for (const root of roots) {
-    walk(root);
-  }
-
-  return Array.from(matches).sort();
-}
-
-function stableChecksumForFile(filePath) {
-  try {
-    const buffer = fs.readFileSync(filePath);
-    return crypto.createHash("sha256").update(buffer).digest("hex");
-  } catch (error) {
-    return null;
-  }
-}
-
-const projectBackupSnapshotCache = new Map();
-
-function buildProjectSnapshotMap(projectRoot = getProjectRoot()) {
-  const root = path.resolve(projectRoot || getProjectRoot());
-  const snapshot = {};
-
-  const walk = (scanPath) => {
-    if (!scanPath || !fs.existsSync(scanPath)) return;
-
-    const stats = fs.lstatSync(scanPath);
-    if (stats.isSymbolicLink()) return;
-    if (stats.isFile()) {
-      const relative = path.relative(root, scanPath).split(path.sep).join("/");
-      if (!relative || isIgnoredBackupPath(relative, true)) {
-        return;
-      }
-      snapshot[relative] = {
-        relativePath: relative,
-        fileSize: stats.size,
-        modifiedAt: new Date(stats.mtimeMs).toISOString(),
-        checksum: stableChecksumForFile(scanPath),
-        status: "known",
-        projectRoot: root
-      };
-      return;
-    }
-
-    for (const entry of fs.readdirSync(scanPath, { withFileTypes: true })) {
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "build" || entry.name === "dist" || entry.name === "coverage" || entry.name === "tmp" || entry.name === "backup") continue;
-      walk(path.join(scanPath, entry.name));
-    }
-  };
-
-  walk(root);
-  return snapshot;
-}
-
-function rememberProjectSnapshot(projectRoot = getProjectRoot(), snapshot = null) {
-  const root = path.resolve(projectRoot || getProjectRoot());
-  const nextSnapshot = snapshot || buildProjectSnapshotMap(root);
-  projectBackupSnapshotCache.set(root, nextSnapshot);
-  return nextSnapshot;
-}
-
-function getProjectSnapshot(projectRoot = getProjectRoot()) {
-  const root = path.resolve(projectRoot || getProjectRoot());
-  if (!projectBackupSnapshotCache.has(root)) {
-    rememberProjectSnapshot(root, buildProjectSnapshotMap(root));
-  }
-  return projectBackupSnapshotCache.get(root) || {};
-}
-
-function assetKeyFromRelativePath(currentFile) {
-  const relativePath = String(currentFile || "").replace(/\\/g, "/");
-  const uploadsIndex = relativePath.indexOf("/uploads/");
-  if (uploadsIndex === -1) return "";
-
-  const remainder = relativePath.slice(uploadsIndex + "/uploads/".length).split("/").filter(Boolean);
-  if (!remainder.length) return "";
-
-  const filtered = remainder.filter((segment) => !["thumbnails", "previews", "generated"].includes(segment));
-  const candidateSegments = filtered.length ? filtered : remainder;
-  const base = candidateSegments.slice(0, 2).join("/");
-  return base ? base.replace(/\/[^/]+$/, "") : "";
-}
-
-function buildFileIdentitySnapshot(filePath, relativePath, projectRoot = getProjectRoot()) {
-  try {
-    const stat = fs.statSync(filePath);
-    return {
-      relativePath,
-      fileSize: stat.size,
-      modifiedAt: new Date(stat.mtimeMs).toISOString(),
-      checksum: stableChecksumForFile(filePath),
-      status: "unknown",
-      projectRoot
-    };
-  } catch (error) {
-    return null;
-  }
-}
-
-function collectFileChangeStatusReport(liveFiles = [], previousSnapshot = {}, options = {}) {
-  const results = [];
-  const summary = { NEW: 0, MODIFIED: 0, UNCHANGED: 0 };
-  const root = options.projectRoot || getProjectRoot();
-
-  for (const entry of liveFiles) {
-    const relativePath = entry.relativePath || path.relative(root, entry.absolutePath || entry.filePath || "").split(path.sep).join("/");
-    const currentSnapshot = buildFileIdentitySnapshot(entry.absolutePath || entry.filePath || path.join(root, relativePath), relativePath, root);
-    if (!currentSnapshot) continue;
-
-    const prior = previousSnapshot[relativePath] || null;
-
-    let status = "NEW";
-    if (prior) {
-      const sameChecksum = !!(prior.checksum && currentSnapshot.checksum && prior.checksum === currentSnapshot.checksum);
-      const sameSize = Number(prior.fileSize) === Number(currentSnapshot.fileSize);
-      const sameTimestamp = !!(prior.modifiedAt && currentSnapshot.modifiedAt && prior.modifiedAt === currentSnapshot.modifiedAt);
-
-      if (sameChecksum) {
-        status = "UNCHANGED";
-      } else if (sameSize || sameTimestamp) {
-        status = "MODIFIED";
-      } else {
-        status = "MODIFIED";
-      }
-    }
-
-    summary[status] = (summary[status] || 0) + 1;
-    results.push({
-      relativePath,
-      status,
-      fileSize: currentSnapshot.fileSize,
-      modifiedAt: currentSnapshot.modifiedAt,
-      checksum: currentSnapshot.checksum,
-      previousChecksum: prior && prior.checksum ? prior.checksum : null,
-      previousFileSize: prior && prior.fileSize ? prior.fileSize : null,
-      source: entry.statusSource || options.statusSource || "live"
-    });
-  }
-
-  return {
-    files: results,
-    summary,
-    mode: "checksum-first-file-detection"
-  };
-}
-
-function collectChangedFilesSince(fromIso, roots = collectRelevantBackupPaths(true), options = {}) {
-  if (!fromIso) return [];
-  const sinceMs = new Date(fromIso).getTime();
-  const untilMs = options.to ? new Date(options.to).getTime() : Number.POSITIVE_INFINITY;
-  const projectRoot = options.projectRoot || getProjectRoot();
-  const matches = new Set();
-
-  const walk = (scanPath) => {
-    if (!scanPath || !fs.existsSync(scanPath)) return;
-
-    const stats = fs.lstatSync(scanPath);
-    if (stats.isSymbolicLink()) return;
-    if (stats.isFile()) {
-      const relative = path.relative(projectRoot, scanPath).split(path.sep).join("/");
-      const isIgnored = isIgnoredBackupPath(relative, true);
-      if (!isIgnored && stats.mtimeMs >= sinceMs && stats.mtimeMs <= untilMs) {
-        matches.add(relative);
-      }
-      return;
-    }
-
-    for (const entry of fs.readdirSync(scanPath, { withFileTypes: true })) {
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "build" || entry.name === "dist" || entry.name === "coverage" || entry.name === "tmp" || entry.name === "backup") continue;
-      const fullPath = path.join(scanPath, entry.name);
-      walk(fullPath);
-    }
-  };
-
-  for (const root of roots) {
-    walk(root);
-  }
-
-  return Array.from(matches).sort();
-}
-
-async function collectIdentityColumns(tableName) {
-  const pkResult = await pool.query(
-    `SELECT kcu.column_name
-     FROM information_schema.table_constraints tc
-     JOIN information_schema.key_column_usage kcu
-       ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-     WHERE tc.table_schema = 'public'
-       AND tc.table_name = $1
-       AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
-     ORDER BY kcu.ordinal_position`,
-    [tableName]
-  );
-
-  return (pkResult.rows || []).map((row) => row.column_name).filter(Boolean);
-}
-
-async function collectDatabaseChangeMetadata(fromIso, toIso) {
-  const result = {
-    fullDump: false,
-    deltaMode: "merge-safe",
-    changedTables: [],
-    tableSummaries: [],
-    newRecords: [],
-    updatedRecords: [],
-    schemaChanges: [],
-    migrations: [],
-    recordIdentity: {},
-    sync: {
-      sourceWindow: {
-        from: fromIso,
-        to: toIso
-      },
-      strategy: "merge-safe-incremental",
-      requiresDestinationMerge: true,
-      noFullRestoreAssumption: true
-    },
-    sourceWindow: {
-      from: fromIso,
-      to: toIso
-    }
-  };
-
-  try {
-    const tables = await pool.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`
-    );
-
-    const migrationDir = path.join(__dirname, "migrations");
-    if (fs.existsSync(migrationDir)) {
-      const migrationFiles = fs.readdirSync(migrationDir)
-        .filter((file) => file.endsWith(".sql"))
-        .sort();
-
-      result.migrations = migrationFiles.map((file) => ({
-        file,
-        path: `backend/migrations/${file}`,
-        checksum: stableHash(fs.readFileSync(path.join(migrationDir, file), "utf8"))
-      }));
-    }
-
-    const summary = [];
-    for (const row of tables.rows) {
-      const tableName = row.table_name;
-      if (!tableName) continue;
-
-      const columns = await pool.query(
-        `SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position`,
-        [tableName]
-      );
-      const columnNames = columns.rows.map((column) => column.column_name);
-      const timestampColumns = ["created_at", "updated_at", "modified_at", "last_updated", "changed_at", "inserted_at"];
-      const createdColumn = timestampColumns.find((candidate) => columnNames.includes(candidate));
-      const updatedColumn = ["updated_at", "modified_at", "last_updated", "changed_at"].find((candidate) => columnNames.includes(candidate));
-      const identityColumns = await collectIdentityColumns(tableName);
-      result.recordIdentity[tableName] = {
-        identityColumns,
-        hasStableIdentifier: identityColumns.length > 0,
-        restoreCheck: identityColumns.length > 0 ? "match-on-primary-or-unique-key" : "timestamp-only-fallback"
-      };
-
-      const tableSchema = {
-        tableName,
-        columns: columns.rows.map((column) => ({
-          name: column.column_name,
-          type: column.data_type,
-          nullable: column.is_nullable === "YES",
-          default: column.column_default || null
-        })),
-        identityColumns
-      };
-      result.schemaChanges.push(tableSchema);
-
-      if (!createdColumn && !updatedColumn) {
-        summary.push({ tableName, changedRows: 0, timestampColumn: null, note: "No timestamp column detected" });
-        continue;
-      }
-
-      const newRows = createdColumn && createdColumn !== updatedColumn
-        ? (await pool.query(`SELECT * FROM "${tableName}" WHERE "${createdColumn}" >= $1 AND "${createdColumn}" <= $2`, [fromIso, toIso])).rows || []
-        : [];
-      const updatedRows = updatedColumn
-        ? (await pool.query(`SELECT * FROM "${tableName}" WHERE "${updatedColumn}" >= $1 AND "${updatedColumn}" <= $2`, [fromIso, toIso])).rows || []
-        : [];
-
-      const attachIdentity = (record, operation = "UPDATE") => {
-        const allColumnNames = Object.keys(record || {});
-        const keyColumns = identityColumns || [];
-        const changedFieldNames = [...new Set(allColumnNames.filter((columnName) => {
-          if (!columnName || keyColumns.includes(columnName)) return false;
-          if (columnName === "created_at" && operation === "UPDATE") return false;
-          return true;
-        }))];
-
-        if (!identityColumns.length) {
-          return {
-            ...record,
-            operation,
-            changedFields: changedFieldNames,
-            __recordIdentity: { tableName, keyColumns: [], keyValues: {}, hasStableId: false }
-          };
-        }
-
-        const keyValues = {};
-        for (const columnName of identityColumns) {
-          keyValues[columnName] = record[columnName];
-        }
-
-        return {
-          ...record,
-          operation,
-          changedFields: changedFieldNames,
-          __recordIdentity: {
-            tableName,
-            keyColumns: identityColumns,
-            keyValues,
-            hasStableId: true,
-            recordKey: identityColumns.map((columnName) => `${columnName}:${record[columnName] ?? "null"}`).join("|")
-          }
-        };
-      };
-
-      const totalChangedRows = newRows.length + updatedRows.length;
-      summary.push({
-        tableName,
-        changedRows: totalChangedRows,
-        timestampColumn: updatedColumn || createdColumn,
-        createdColumn,
-        updatedColumn,
-        newRecordCount: newRows.length,
-        updatedRecordCount: updatedRows.length,
-        identityColumns
-      });
-
-      if (newRows.length > 0) {
-        result.newRecords.push({ tableName, recordCount: newRows.length, identityColumns, rows: newRows.map((row) => attachIdentity(row, "INSERT")) });
-      }
-      if (updatedRows.length > 0) {
-        const uniqueUpdatedRows = updatedRows.filter((row, index, arr) => {
-          if (!identityColumns.length) return true;
-          const key = identityColumns.map((columnName) => `${columnName}:${row[columnName] ?? "null"}`).join("|");
-          return arr.findIndex((candidate) => identityColumns.every((columnName) => (candidate[columnName] ?? "null") === (row[columnName] ?? "null"))) === index;
-        });
-
-        result.updatedRecords.push({ tableName, recordCount: uniqueUpdatedRows.length, identityColumns, rows: uniqueUpdatedRows.map((row) => attachIdentity(row, "UPDATE")) });
-      }
-      if (totalChangedRows > 0) {
-        result.changedTables.push(tableName);
-      }
-    }
-
-    result.tableSummaries = summary.filter((entry) => entry.changedRows > 0);
-  } catch (error) {
-    result.warning = error.message || "Database change scan failed";
-  }
-
-  return result;
-}
-
-async function collectFullDatabaseSnapshot(fromIso, toIso) {
-  const result = {
-    fullDump: true,
-    changedTables: [],
-    tableSummaries: [],
-    tables: [],
-    sourceWindow: {
-      from: fromIso,
-      to: toIso
-    }
-  };
-
-  try {
-    const tables = await pool.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`
-    );
-
-    for (const row of tables.rows) {
-      const tableName = row.table_name;
-      if (!tableName) continue;
-
-      const rowQuery = await pool.query(`SELECT * FROM "${tableName}"`);
-      const rows = rowQuery.rows || [];
-      result.changedTables.push(tableName);
-      result.tables.push({
-        tableName,
-        rowCount: rows.length,
-        rows
-      });
-      result.tableSummaries.push({
-        tableName,
-        rowCount: rows.length,
-        snapshot: "full-database-export"
-      });
-    }
-  } catch (error) {
-    result.warning = error.message || "Database full snapshot failed";
-  }
-
-  return result;
-}
-
-async function createGfxBackupPackage({ backupId, mode, from, to, deviceId, previousBackupId, projectRoot }) {
-  const currentProjectRoot = projectRoot || getProjectRoot();
-  const explicitProjectRoot = typeof projectRoot === "string" && path.resolve(projectRoot) !== getProjectRoot();
-  const skipProjectDatabaseMetadata = explicitProjectRoot;
-  await validateBackupPrerequisites({ projectRoot: currentProjectRoot, skipDatabase: skipProjectDatabaseMetadata, skipSyncMetadata: skipProjectDatabaseMetadata });
-
-  const createdAt = new Date().toISOString();
-  const normalizedMode = mode === "complete" || mode === "Complete Backup" ? "Complete Backup" : "Incremental Backup";
-  const normalizedFrom = from || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const normalizedTo = to || createdAt;
-  const normalizedDeviceId = normalizeDeviceId(deviceId);
-  const isCompleteBackup = normalizedMode === "Complete Backup";
-  const backupRoots = collectRelevantBackupPaths(true, currentProjectRoot);
-  const changedFiles = isCompleteBackup ? collectAllProjectFilesForBackup(backupRoots, currentProjectRoot) : collectChangedFilesSince(normalizedFrom, backupRoots, { projectRoot: currentProjectRoot, to: normalizedTo });
-  const database = skipProjectDatabaseMetadata
-    ? {
-        fullDump: false,
-        deltaMode: "merge-safe",
-        changedTables: [],
-        tableSummaries: [],
-        newRecords: [],
-        updatedRecords: [],
-        schemaChanges: [],
-        migrations: [],
-        recordIdentity: {},
-        sync: {
-          sourceWindow: { from: normalizedFrom, to: normalizedTo },
-          strategy: "merge-safe-incremental",
-          requiresDestinationMerge: true,
-          noFullRestoreAssumption: true,
-          previousBackupId: previousBackupId || "none",
-          deviceId: normalizedDeviceId,
-          device_id: normalizedDeviceId,
-          generatedAt: createdAt,
-          deltaMode: "merge-safe-incremental",
-          restoreStrategy: "merge-with-existing-database"
-        },
-        sourceWindow: { from: normalizedFrom, to: normalizedTo }
-      }
-    : isCompleteBackup
-      ? await collectFullDatabaseSnapshot(normalizedFrom, normalizedTo)
-      : await collectDatabaseChangeMetadata(normalizedFrom, normalizedTo);
-
-  if (!isCompleteBackup) {
-    database.sync = {
-      ...(database.sync || {}),
-      previousBackupId: previousBackupId || "none",
-      deviceId: normalizedDeviceId,
-      device_id: normalizedDeviceId,
-      generatedAt: createdAt,
-      deltaMode: "merge-safe-incremental",
-      restoreStrategy: "merge-with-existing-database"
-    };
-  }
-
-  const databaseCounts = {
-    newRecords: (database.newRecords || []).reduce((sum, entry) => sum + (entry.recordCount || entry.rows?.length || 0), 0),
-    updatedRecords: (database.updatedRecords || []).reduce((sum, entry) => sum + (entry.recordCount || entry.rows?.length || 0), 0),
-    schemaChanges: (database.schemaChanges || []).length,
-    conflicts: 0
-  };
-
-  const currentProjectRootKey = path.resolve(currentProjectRoot);
-  const previousProjectSnapshot = projectBackupSnapshotCache.has(currentProjectRootKey)
-    ? getProjectSnapshot(currentProjectRoot)
-    : {};
-  const assetFiles = changedFiles.filter((currentFile) => currentFile.includes("/uploads/"));
-  const uniqueAssetKeys = new Set();
-  const modifiedAssetKeys = new Set();
-
-  for (const currentFile of assetFiles) {
-    const assetKey = assetKeyFromRelativePath(currentFile);
-    if (!assetKey) continue;
-
-    const priorAssetFiles = Object.keys(previousProjectSnapshot).filter((relativePath) => {
-      if (!relativePath.includes("/uploads/")) return false;
-      return assetKeyFromRelativePath(relativePath) === assetKey;
-    });
-
-    uniqueAssetKeys.add(assetKey);
-    if (projectBackupSnapshotCache.has(currentProjectRootKey) && priorAssetFiles.length > 0) {
-      modifiedAssetKeys.add(assetKey);
-    }
-  }
-
-  const hasDatabaseChanges = (databaseCounts.newRecords + databaseCounts.updatedRecords + (database.changedTables || []).length) > 0;
-  const hasFileChanges = changedFiles.length > 0;
-  const shouldCreatePackage = isCompleteBackup || hasDatabaseChanges || hasFileChanges;
-
-  if (!shouldCreatePackage) {
-    rememberProjectSnapshot(currentProjectRoot, buildProjectSnapshotMap(currentProjectRoot));
-    return {
-      shouldCreatePackage: false,
-      summary: {
-        message: "No changes found.",
-        totalChanges: 0,
-        newFiles: 0,
-        modifiedFiles: 0,
-        newAssets: 0,
-        modifiedAssets: 0,
-        newDatabaseRecords: 0,
-        updatedDatabaseRecords: 0
-      },
-      filePath: undefined,
-      fileName: undefined,
-      relativePath: undefined,
-      fileSize: 0,
-      manifest: {
-        format: "GFXBACKUP",
-        formatVersion: 1,
-        backupId,
-        backupType: normalizedMode,
-        createdAt,
-        from: normalizedFrom,
-        to: normalizedTo,
-        previousBackupId: previousBackupId || "none",
-        deviceId: normalizedDeviceId,
-        fileInventory: [],
-        restorePlan: { analysisRequired: true, compareBy: "path-and-sha256", conflictPolicy: "report-before-apply", checkpointRequired: true, verificationRequired: true, rollbackSupportedByPackage: false },
-        database: { fullDump: false, deletedRecords: [], conflictPolicy: "report-before-apply", changedTables: [], tableSummaries: [] }
-      },
-      database,
-      metadata: { backupId, createdAt, mode: normalizedMode, from: normalizedFrom, to: normalizedTo, deviceId: normalizedDeviceId, readOnly: true },
-      backupId,
-      mode: normalizedMode,
-      from: normalizedFrom,
-      to: normalizedTo,
-      deviceId: normalizedDeviceId,
-      previousBackupId: previousBackupId || "none",
-      databaseCounts,
-      assetCounts: { new: 0, modified: 0 }
-    };
-  }
-
-  const backupInfo = {
-    backupId,
-    backupType: "gfxbackup",
-    mode: normalizedMode,
-    createdAt,
-    from: normalizedFrom,
-    to: normalizedTo,
-    previousBackupId: previousBackupId || "none",
-    deviceId: normalizedDeviceId,
-    device_id: normalizedDeviceId,
-    adminOnly: true,
-    readOnly: true,
-    portable: true,
-    noSecrets: true,
-    generatedBy: "admin-panel",
-    appVersion: process.env.npm_package_version || "unknown",
-    fileCount: changedFiles.length,
-    database,
-    isIncremental: !isCompleteBackup,
-    shouldCreatePackage: true
-  };
-
-  const manifestIncludes = [
-    "manifest.json",
-    "package.json",
-    "checksums.json",
-    "application/",
-    "assets/",
-    "database/",
-    "metadata/",
-    "database-full.json",
-    "metadata/device.json",
-    "metadata/sync.json",
-    "metadata/version.json"
-  ];
-
-  // Count file change status for complete vs incremental backup
-  const fileStatusCounts = {
-    new: 0,
-    modified: 0,
-    unchanged: 0
-  };
-
-  if (isCompleteBackup) {
-    fileStatusCounts.new = changedFiles.length;
-  } else {
-    fileStatusCounts.new = Math.max(0, changedFiles.length - (databaseCounts.updatedRecords || 0));
-    fileStatusCounts.modified = Math.max(0, (databaseCounts.updatedRecords || 0));
-    fileStatusCounts.unchanged = 0;
-  }
-
-  const assetStatusCounts = {
-    new: Math.max(0, uniqueAssetKeys.size - modifiedAssetKeys.size),
-    modified: Math.max(0, modifiedAssetKeys.size)
-  };
-  const databaseSchemaFingerprint = stableHash(JSON.stringify(database.schemaChanges || database.tables?.map((table) => ({ tableName: table.tableName, rowCount: table.rowCount })) || []));
-
-  const manifest = {
-    format: "GFXBACKUP",
-    formatVersion: 1,
-    backupId,
-    backupType: normalizedMode,
-    createdAt,
-    from: normalizedFrom,
-    to: normalizedTo,
-    previousBackupId: previousBackupId || "none",
-    deviceId: normalizedDeviceId,
-    adminOnly: true,
-    readOnly: true,
-    portable: true,
-    noSecrets: true,
-    includes: manifestIncludes,
-    files: fileStatusCounts,
-    assets: assetStatusCounts,
-    fileInventory: [],
-    restorePlan: {
-      analysisRequired: true,
-      compareBy: "path-and-sha256",
-      databaseMergeStrategy: "merge-complete-source-with-existing-destination",
-      conflictPolicy: "report-before-apply",
-      checkpointRequired: true,
-      verificationRequired: true,
-      rollbackSupportedByPackage: false
-    },
-    database: {
-      fullDump: isCompleteBackup,
-      recordCount: isCompleteBackup
-        ? (database.tables || []).reduce((sum, table) => sum + (table.rowCount || 0), 0)
-        : databaseCounts.newRecords + databaseCounts.updatedRecords,
-      ...databaseCounts,
-      schemaFingerprint: databaseSchemaFingerprint,
-      deletedRecords: [],
-      conflictPolicy: "report-before-apply",
-      changedTables: database.changedTables || [],
-      tableSummaries: database.tableSummaries || []
-    }
-  };
-
-  const packageManifest = {
-    packageType: "gfxbackup",
-    schemaVersion: "1.0",
-    backupId,
-    mode: normalizedMode,
-    createdAt,
-    from: normalizedFrom,
-    to: normalizedTo,
-    previousBackupId: previousBackupId || "none",
-    deviceId: normalizedDeviceId,
-    device_id: normalizedDeviceId,
-    includes: {
-      root: ["manifest.json", "package.json", "checksums.json"],
-      groups: ["application", "assets", "database", "metadata"]
-    }
-  };
-
-  const metadata = {
-    backupId,
-    createdAt,
-    mode: normalizedMode,
-    from: normalizedFrom,
-    to: normalizedTo,
-    previousBackupId: previousBackupId || "none",
-    deviceId: normalizedDeviceId,
-    device_id: normalizedDeviceId,
-    readOnly: true,
-    generatedBy: "Admin Panel Backup",
-    appVersion: process.env.npm_package_version || "unknown",
-    disasterRecovery: isCompleteBackup,
-    incrementalMode: !isCompleteBackup
-  };
-
-  const deviceMetadata = {
-    deviceId: normalizedDeviceId,
-    device_id: normalizedDeviceId,
-    createdAt,
-    machineType: process.platform,
-    nodeVersion: process.version,
-    backupId
-  };
-
-  const syncMetadata = {
-    backupId,
-    mode: normalizedMode,
-    from: normalizedFrom,
-    to: normalizedTo,
-    previousBackupId: previousBackupId || "none",
-    deviceId: normalizedDeviceId,
-    device_id: normalizedDeviceId,
-    generatedAt: createdAt
-  };
-
-  const versionMetadata = {
-    packageType: "gfxbackup",
-    schemaVersion: "1.0",
-    createdAt,
-    mode: normalizedMode,
-    appVersion: process.env.npm_package_version || "unknown"
-  };
-
-  const packageContent = JSON.stringify(packageManifest, null, 2);
-  const metadataContent = JSON.stringify(metadata, null, 2);
-  const databaseContent = JSON.stringify(database, null, 2);
-  const deviceMetadataContent = JSON.stringify(deviceMetadata, null, 2);
-  const syncMetadataContent = JSON.stringify(syncMetadata, null, 2);
-  const versionMetadataContent = JSON.stringify(versionMetadata, null, 2);
-
-  const archive = new AdmZip();
-  archive.addFile("package.json", Buffer.from(packageContent, "utf8"));
-  archive.addFile("metadata.json", Buffer.from(metadataContent, "utf8"));
-  archive.addFile("application/", Buffer.alloc(0));
-  archive.addFile("assets/", Buffer.alloc(0));
-  archive.addFile("database/", Buffer.alloc(0));
-  archive.addFile("metadata/", Buffer.alloc(0));
-  archive.addFile("metadata/device.json", Buffer.from(deviceMetadataContent, "utf8"));
-  archive.addFile("metadata/version.json", Buffer.from(versionMetadataContent, "utf8"));
-  archive.addFile("metadata/sync.json", Buffer.from(syncMetadataContent, "utf8"));
-  archive.addFile("database/metadata/database-summary.json", Buffer.from(databaseContent, "utf8"));
-  if (!isCompleteBackup) {
-    archive.addFile("database/changes/database-delta.json", Buffer.from(databaseContent, "utf8"));
-  }
-  if (isCompleteBackup) {
-    archive.addFile("database-full.json", Buffer.from(databaseContent, "utf8"));
-    archive.addFile("database/full/full-database.json", Buffer.from(databaseContent, "utf8"));
-  }
-  archive.addFile("database/changes/changes-summary.json", Buffer.from(JSON.stringify({
-    backupId,
-    mode: normalizedMode,
-    changedTables: database.changedTables || [],
-    tableSummaries: database.tableSummaries || []
-  }, null, 2), "utf8"));
-
-  for (const relativeFile of changedFiles) {
-    const absolutePath = path.join(currentProjectRoot, relativeFile);
-    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
-      continue;
-    }
-
-    const normalizedRelative = relativeFile.split(path.sep).join("/");
-    const zipDirectory = classifyBackupPath(normalizedRelative);
-    const zipPath = `${zipDirectory}/${normalizedRelative}`;
-    if (zipPath.includes("node_modules/") || zipPath.includes(".git/") || zipPath.includes("/backup/") || zipPath.includes("/tmp/") || zipPath.includes("/logs/") || zipPath.includes("/cache/") || zipPath.includes(".log")) {
-      continue;
-    }
-
-    // Preserve the original relative path beneath the backup group so asset
-    // originals, thumbnails, previews, and generated files remain traceable to
-    // their source directory instead of being flattened into duplicate names.
-    const fileContent = fs.readFileSync(absolutePath);
-    archive.addFile(zipPath, fileContent);
-  }
-
-  manifest.fileInventory = archive.getEntries()
-    .filter((entry) => !entry.isDirectory)
-    .map((entry) => {
-      const sourceRelativePath = entry.entryName.startsWith("application/") || entry.entryName.startsWith("assets/")
-        ? entry.entryName.replace(/^(application|assets)\//, "")
-        : null;
-      const sourcePath = sourceRelativePath ? path.join(currentProjectRoot, sourceRelativePath) : null;
-      const sourceStats = sourcePath && fs.existsSync(sourcePath) && fs.statSync(sourcePath).isFile() ? fs.statSync(sourcePath) : null;
-      return {
-        path: entry.entryName,
-        status: sourceRelativePath ? (isCompleteBackup ? "new" : "changed") : "metadata",
-        statusSource: sourceRelativePath ? "source-window" : "package-generated",
-        checksum: crypto.createHash("sha256").update(entry.getData()).digest("hex"),
-        size: entry.getData().length,
-        modifiedAt: sourceStats ? new Date(sourceStats.mtimeMs).toISOString() : null,
-        previousChecksum: null
-      };
-    });
-
-  archive.addFile("manifest.json", Buffer.from(JSON.stringify(manifest, null, 2), "utf8"));
-
-  const fileChecksums = Object.fromEntries(
-    archive.getEntries()
-      .filter((entry) => !entry.isDirectory && entry.entryName !== "checksums.json")
-      .map((entry) => [entry.entryName, crypto.createHash("sha256").update(entry.getData()).digest("hex")])
-  );
-  const checksumsContent = JSON.stringify(fileChecksums, null, 2);
-  archive.addFile("checksums.json", Buffer.from(checksumsContent, "utf8"));
-
-  const { filePath, fileName } = buildBackupArchiveFile(new Date(), isCompleteBackup ? "complete" : "incremental");
-  archive.writeZip(filePath);
-  rememberProjectSnapshot(currentProjectRoot, buildProjectSnapshotMap(currentProjectRoot));
-  enforceBackupRetention();
-
-  const summary = {
-    message: isCompleteBackup ? "Full backup created." : "Backup created.",
-    totalChanges: Math.max(fileStatusCounts.new + fileStatusCounts.modified + fileStatusCounts.unchanged, 0),
-    newFiles: fileStatusCounts.new,
-    modifiedFiles: fileStatusCounts.modified,
-    newAssets: assetStatusCounts.new,
-    modifiedAssets: assetStatusCounts.modified,
-    newDatabaseRecords: databaseCounts.newRecords,
-    updatedDatabaseRecords: databaseCounts.updatedRecords
-  };
-
-  return {
-    ...backupInfo,
-    shouldCreatePackage: true,
-    filePath,
-    fileName,
-    relativePath: path.relative(__dirname, filePath).split(path.sep).join("/"),
-    fileSize: fs.existsSync(filePath) ? fs.statSync(filePath).size : 0,
-    manifest,
-    metadata,
-    database,
-    summary,
-    fileInventory: manifest.fileInventory || [],
-    assetCounts: assetStatusCounts,
-    databaseCounts,
-    summaryMessage: summary.message
-  };
-}
-
 /* ---------------- FILE UPLOAD CONFIG ---------------- */
 
 const storage = multer.diskStorage({
 
   destination: function (req, file, cb) {
-    try {
-      const authHeader = req.headers["authorization"];
-      if (!authHeader) {
-        return cb(new Error("Access denied"));
-      }
-
-      const token = authHeader.split(" ")[1];
-        const decoded = verifyJwtToken(token);
-
-      pool.query(
-        `
-        SELECT username
-        FROM users
-        WHERE id = $1
-        `,
-        [decoded.user]
-      )
-        .then((result) => {
-          if (result.rows.length === 0) {
-            return cb(new Error("User not found"));
-          }
-
-          const username = result.rows[0].username || "unknown";
-          const now = new Date();
-          const year = now.getFullYear().toString();
-          const month = String(now.getMonth() + 1).padStart(2, "0");
-          const statusFolder = "Pending";
-
-          const uploadPath = path.join(
-            assetThumbnails.getOriginalAssetStorageRoot(),
-            username,
-            year,
-            month,
-            statusFolder
-          );
-
-          fs.mkdirSync(uploadPath, {
-            recursive: true,
-          });
-
-          cb(null, uploadPath);
-        })
-        .catch((err) => {
-          cb(err);
-        });
-    } catch (err) {
-      cb(err);
-    }
+    if (!req.uploadStagingPath) return cb(new Error("Upload staging was not initialized."));
+    cb(null, req.uploadStagingPath);
   },
 
   filename: function (req, file, cb) {
 
     const safeName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, "_");
-    cb(
-      null,
-      Date.now() + "-" + safeName
-    );
+    cb(null, `${Date.now()}-${crypto.randomUUID()}-${safeName}`);
 
   },
 
@@ -1533,6 +298,11 @@ app.use(
 
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+app.use("/admin/backup", createBackupRouter({
+  pool,
+  verifyAdmin,
+  projectRoot: path.resolve(__dirname, "..")
+}));
 app.use(cookieParser());
 
 if (process.env.NODE_ENV === "production") {
@@ -1777,7 +547,7 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
 
     response.data.on("error", (error) => {
       console.error("PC2 asset stream failed", error.message);
-      if (!res.headersSent) {
+      if (!res.destroyed && !res.headersSent) {
         res.status(502).end("PC2 asset stream failed");
       } else {
         res.destroy(error);
@@ -1956,7 +726,7 @@ const streamImageFile = async (req, res, absolutePath, { bypassProcessing = fals
       res.set("Content-Disposition", `attachment; filename="${path.basename(absolutePath)}"`);
       const readStream = fs.createReadStream(absolutePath);
       readStream.on("error", () => {
-        if (!res.headersSent) {
+        if (!res.destroyed && !res.headersSent) {
           res.status(500).send("Failed to read image");
         }
       });
@@ -3762,120 +2532,6 @@ app.delete("/admin/branding/hero-banner", verifyAdmin, async (req, res) => {
   }
 });
 
-app.post("/admin/backup/create", verifyAdmin, async (req, res) => {
-  try {
-    const generatedBackupId = buildUniqueBackupId();
-    const backupId = req.body?.backupId || generatedBackupId;
-    const mode = req.body?.mode === "complete" ? "Complete Backup" : "Incremental Backup";
-    const now = new Date();
-    const defaultFrom = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-    const dateRange = normalizeBackupDateRange(req.body?.from || defaultFrom, req.body?.to || now.toISOString(), now);
-    const from = dateRange.from;
-    const to = dateRange.to;
-    const deviceId = normalizeDeviceId(req.body?.deviceId || "");
-    const previousBackupId = req.body?.previousBackupId || "none";
-
-    const archive = await createGfxBackupPackage({ backupId, mode, from, to, deviceId, previousBackupId });
-
-    res.json({
-      backupId: archive.backupId,
-      mode,
-      from,
-      to,
-      deviceId: archive.deviceId,
-      filePath: archive.relativePath,
-      fileName: archive.fileName,
-      createdAt: archive.createdAt,
-      packageSize: archive.fileSize,
-      fileCounts: archive.manifest?.files || { new: 0, modified: 0, unchanged: 0 },
-      assetCounts: archive.manifest?.assets || { new: 0, modified: 0 },
-      databaseCounts: {
-        newRecords: archive.manifest?.database?.newRecords || 0,
-        updatedRecords: archive.manifest?.database?.updatedRecords || 0
-      },
-      downloadUrl: `/admin/backup/download?file=${encodeURIComponent(archive.relativePath)}`,
-      saveLocation: archive.relativePath,
-      incremental: mode === "Incremental Backup",
-      previousBackupId,
-      changedFileCount: (archive.manifest?.files?.new || 0) + (archive.manifest?.files?.modified || 0),
-      changedTables: archive.database?.changedTables || []
-    });
-  } catch (error) {
-    console.error("Failed to create backup archive", error);
-    res.status(500).json({ error: error.message || "Failed to create backup archive" });
-  }
-});
-
-app.get("/admin/backup/list", verifyAdmin, async (req, res) => {
-  try {
-    const backupRoot = path.resolve(__dirname, "backup");
-    if (!fs.existsSync(backupRoot)) {
-      return res.json([]);
-    }
-
-    const files = fs.readdirSync(backupRoot, { recursive: true, withFileTypes: true });
-    const backupEntries = [];
-
-    for (const entry of files) {
-      const absolutePath = path.join(entry.parentPath || backupRoot, entry.name);
-      const relativePath = path.relative(__dirname, absolutePath).split(path.sep).join("/");
-      if (!entry.isFile() || !absolutePath.endsWith(".gfxbackup")) {
-        continue;
-      }
-
-      const stat = fs.statSync(absolutePath);
-      const createdAt = new Date(stat.mtimeMs).toISOString();
-
-      let dateFrom = null;
-      let dateTo = null;
-      let mode = "Incremental Backup";
-      let fileCount = 0;
-      let databaseRecordCount = 0;
-
-      // Try to extract date range from backup manifest
-      try {
-        const zip = new AdmZip(absolutePath);
-        const manifestEntry = zip.getEntry("manifest.json");
-        if (manifestEntry) {
-          const manifestContent = zip.readAsText(manifestEntry);
-          const manifest = JSON.parse(manifestContent);
-          dateFrom = manifest.from || null;
-          dateTo = manifest.to || null;
-          mode = manifest.backupType || manifest.mode || "Incremental Backup";
-          fileCount = (manifest.files?.new || 0) + (manifest.files?.modified || 0) + (manifest.files?.unchanged || 0);
-          databaseRecordCount = manifest.database?.recordCount
-            ?? ((manifest.database?.newRecords || 0) + (manifest.database?.updatedRecords || 0));
-        }
-      } catch (manifestError) {
-        // Silently ignore if manifest cannot be read
-      }
-
-      backupEntries.push({
-        fileName: path.basename(absolutePath),
-        filePath: relativePath,
-        relativePath,
-        createdAt,
-        size: stat.size,
-        mode,
-        backupId: path.basename(absolutePath, ".gfxbackup"),
-        fileCount,
-        databaseRecordCount,
-        dateFrom,
-        dateTo,
-        // Include old field names for backward compatibility
-        from: dateFrom,
-        to: dateTo
-      });
-    }
-
-    backupEntries.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    res.json(backupEntries);
-  } catch (error) {
-    console.error("Failed to list backup archives", error);
-    res.status(500).json({ error: error.message || "Failed to list backup archives" });
-  }
-});
-
 app.get("/admin/assets/location", verifyAdmin, async (req, res) => {
   try {
     const uploadFolderPath = assetThumbnails.getOriginalAssetStorageRoot();
@@ -3996,41 +2652,6 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
       databaseBackupFolderFreeBytes: null,
       error: "Unable to determine database path"
     });
-  }
-});
-
-app.get("/admin/backup/download", verifyAdmin, async (req, res) => {
-  try {
-    const resolved = resolveBackupArchivePath(req.query.file);
-    if (resolved.error) {
-      return res.status(resolved.error === "Missing backup file path" ? 400 : 403).json({ error: resolved.error });
-    }
-    if (!fs.existsSync(resolved.absolutePath) || !fs.statSync(resolved.absolutePath).isFile()) {
-      return res.status(404).json({ error: "Backup file not found" });
-    }
-
-    res.download(resolved.absolutePath, path.basename(resolved.absolutePath));
-  } catch (error) {
-    console.error("Failed to download backup archive", error);
-    res.status(500).json({ error: error.message || "Failed to download backup archive" });
-  }
-});
-
-app.delete("/admin/backup/delete", verifyAdmin, async (req, res) => {
-  try {
-    const resolved = resolveBackupArchivePath(req.query.file);
-    if (resolved.error) {
-      return res.status(resolved.error === "Missing backup file path" ? 400 : 403).json({ error: resolved.error });
-    }
-    if (!fs.existsSync(resolved.absolutePath) || !fs.statSync(resolved.absolutePath).isFile()) {
-      return res.status(404).json({ error: "Backup file not found" });
-    }
-
-    fs.unlinkSync(resolved.absolutePath);
-    res.json({ success: true, message: "Backup file deleted successfully" });
-  } catch (error) {
-    console.error("Failed to delete backup archive", error);
-    res.status(500).json({ error: error.message || "Failed to delete backup archive" });
   }
 });
 
@@ -6663,6 +5284,7 @@ async function verifySuperAdmin(
 
     const token = authHeader.split(" ")[1];
     const decoded = verifyJwtToken(token);
+    authenticatedUserId = decoded.user;
 
     const user = await pool.query(
       `
@@ -8365,22 +6987,112 @@ const releaseContributorUploadLock = (req) => {
   if (typeof releaseLock === "function") releaseLock();
 };
 
+const prepareUploadStaging = async (req, res, next) => {
+  const uploadId = crypto.randomUUID();
+  const assetRoot = path.resolve(assetThumbnails.getOriginalAssetStorageRoot());
+  const stagingRoot = path.join(assetRoot, ".upload-staging");
+  req.uploadStagingId = uploadId;
+  req.uploadStagingPath = path.join(stagingRoot, uploadId);
+  try {
+    await fs.promises.mkdir(stagingRoot, { recursive: true });
+    const [realAssetRoot, realStagingPath] = await Promise.all([
+      fs.promises.realpath(assetRoot),
+      fs.promises.realpath(stagingRoot)
+    ]);
+    const relativeStagingPath = path.relative(realAssetRoot, realStagingPath);
+    if (!relativeStagingPath || relativeStagingPath === "." || relativeStagingPath === ".." || relativeStagingPath.startsWith(`..${path.sep}`) || path.isAbsolute(relativeStagingPath)) {
+      throw new Error("Upload staging path resolves outside asset storage.");
+    }
+    await fs.promises.mkdir(req.uploadStagingPath);
+    const realUploadPath = await fs.promises.realpath(req.uploadStagingPath);
+    const relativeUploadPath = path.relative(realStagingPath, realUploadPath);
+    if (relativeUploadPath !== uploadId) {
+      throw new Error("Upload staging directory resolves outside its request path.");
+    }
+    next();
+  } catch (error) {
+    releaseContributorUploadLock(req);
+    next(error);
+  }
+};
+
+const cleanupUploadStaging = async (req) => {
+  if (!req.uploadStagingId || !req.uploadStagingPath) return;
+  const stagingRoot = path.resolve(assetThumbnails.getOriginalAssetStorageRoot(), ".upload-staging");
+  const stagingPath = path.resolve(req.uploadStagingPath);
+  if (path.dirname(stagingPath) !== stagingRoot || path.basename(stagingPath) !== req.uploadStagingId) {
+    throw new Error("Refusing to clean an invalid upload staging path.");
+  }
+  try {
+    await fs.promises.rm(stagingPath, { recursive: true });
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  try {
+    await fs.promises.rmdir(stagingRoot);
+  } catch (error) {
+    if (!["ENOENT", "ENOTEMPTY"].includes(error.code)) throw error;
+  }
+};
+
 const parseUploadFiles = (req, res, next) => {
   upload.fields([
     { name: "image", maxCount: 1 },
     { name: "thumbnail", maxCount: 1 }
   ])(req, res, (error) => {
-    if (error) releaseContributorUploadLock(req);
-    next(error);
+    if (!error) return next();
+    cleanupUploadStaging(req).then(() => {
+      releaseContributorUploadLock(req);
+      next(error);
+    }).catch((cleanupError) => {
+      releaseContributorUploadLock(req);
+      next(cleanupError);
+    });
   });
 };
 
 app.post(
   "/upload",
   lockContributorUpload,
+  prepareUploadStaging,
   parseUploadFiles,
   async (req, res) => {
-
+    let finalizedFilePath = null;
+    let finalizedAssetId = null;
+    let authenticatedUserId = null;
+    let stagedOptionalPreviewPath = null;
+    let isPreSubmissionUpload = false;
+    let clientDisconnected = false;
+    let cleanupUnconfirmedPromise = null;
+    const cleanupUnconfirmedAsset = () => {
+      if (!finalizedAssetId || !authenticatedUserId) return Promise.resolve();
+      if (!cleanupUnconfirmedPromise) {
+        cleanupUnconfirmedPromise = deleteAssetCompletely(
+          finalizedAssetId,
+          authenticatedUserId,
+          { pool, assetThumbnails, thumbnailQueue },
+          { internal: true }
+        );
+      }
+      return cleanupUnconfirmedPromise;
+    };
+    res.once("close", () => {
+      if (!res.writableFinished) {
+        clientDisconnected = true;
+        if (finalizedAssetId) {
+          cleanupUnconfirmedAsset().catch((cleanupError) => {
+            console.error(`Failed to clean up unconfirmed asset ${finalizedAssetId} after disconnect:`, cleanupError);
+          });
+        }
+      }
+    });
+    const assertUploadConnected = () => {
+      if (req.aborted || clientDisconnected) {
+        const error = new Error("Upload was cancelled before finalization.");
+        error.code = "UPLOAD_CANCELLED";
+        throw error;
+      }
+    };
     try {
 
       const authHeader = req.headers["authorization"];
@@ -8401,7 +7113,7 @@ app.post(
         description,
         type
       } = req.body;
-      const isPreSubmissionUpload = String(req.body.preSubmission || "").toLowerCase() === "true";
+      isPreSubmissionUpload = String(req.body.preSubmission || "").toLowerCase() === "true";
 
       if (!originalFile) {
         return res.status(400).json("No image uploaded");
@@ -8412,7 +7124,7 @@ app.post(
       }
 
       const currentUser = await pool.query(
-        `SELECT role, status, contributor_cooling_until FROM users WHERE id = $1`,
+        `SELECT role, status, contributor_cooling_until, username FROM users WHERE id = $1`,
         [decoded.user]
       );
 
@@ -8439,15 +7151,46 @@ app.post(
       }
 
       const uploaded_by = decoded.user;
-      const uploadRelativeDir = path.relative(
-        assetThumbnails.getOriginalAssetStorageRoot(),
-        path.resolve(originalFile.destination)
-      ).replace(/\\/g, "/");
-
-      const storedFilename = path.posix.join(
-        uploadRelativeDir === "." ? "" : uploadRelativeDir,
-        originalFile.filename
-      );
+      assertUploadConnected();
+      const assetRoot = path.resolve(assetThumbnails.getOriginalAssetStorageRoot());
+      const now = new Date();
+      const year = String(now.getFullYear());
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const username = String(user.username || "unknown");
+      if (!username || username === "." || username === ".." || path.basename(username) !== username || path.win32.basename(username) !== username) {
+        return res.status(400).json({ error: "Invalid contributor storage path." });
+      }
+      const finalDirectory = path.resolve(assetRoot, username, year, month, "Pending");
+      const relativeDirectory = path.relative(assetRoot, finalDirectory);
+      if (!relativeDirectory || relativeDirectory === ".." || relativeDirectory.startsWith(`..${path.sep}`) || path.isAbsolute(relativeDirectory)) {
+        return res.status(400).json({ error: "Invalid contributor storage path." });
+      }
+      await fs.promises.mkdir(finalDirectory, { recursive: true });
+      const [realAssetRoot, realFinalDirectory] = await Promise.all([
+        fs.promises.realpath(assetRoot),
+        fs.promises.realpath(finalDirectory)
+      ]);
+      const relativeRealDirectory = path.relative(realAssetRoot, realFinalDirectory);
+      if (!relativeRealDirectory || relativeRealDirectory === "." || relativeRealDirectory === ".." || relativeRealDirectory.startsWith(`..${path.sep}`) || path.isAbsolute(relativeRealDirectory)) {
+        return res.status(400).json({ error: "Invalid contributor storage path." });
+      }
+      const finalFilePath = path.resolve(finalDirectory, originalFile.filename);
+      const relativeFilePath = path.relative(assetRoot, finalFilePath);
+      if (!relativeFilePath || relativeFilePath === ".." || relativeFilePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFilePath)) {
+        return res.status(400).json({ error: "Invalid asset file path." });
+      }
+      const stagedFileStats = await fs.promises.stat(originalFile.path);
+      if (stagedFileStats.size <= 0 || stagedFileStats.size !== Number(originalFile.size)) {
+        return res.status(400).json({ error: "Uploaded file size validation failed." });
+      }
+      assertUploadConnected();
+      await fs.promises.rename(originalFile.path, finalFilePath);
+      finalizedFilePath = finalFilePath;
+      const finalizedFileStats = await fs.promises.stat(finalFilePath);
+      if (!finalizedFileStats.isFile() || finalizedFileStats.size !== stagedFileStats.size) {
+        throw new Error("Finalized asset failed file verification.");
+      }
+      const storedFilename = relativeFilePath.split(path.sep).join("/");
       const originalFilename = path.basename(originalFile.originalname || originalFile.filename);
       const extension = path.extname(originalFilename).replace(/^\./, "").toLowerCase();
       const assetTitle = String(title || path.basename(originalFilename, path.extname(originalFilename))).trim();
@@ -8457,7 +7200,7 @@ app.post(
 
       const thumbnailUrl = null;
       const thumbnailStatus = "pending";
-      const initialAssetStatus = isPreSubmissionUpload ? "not_submitted" : "pending";
+      const initialAssetStatus = isPreSubmissionUpload ? "upload_processing" : "pending";
 
       const newImage = await pool.query(
         `
@@ -8527,8 +7270,8 @@ app.post(
           thumbnailStatus
         ]
       );
+      finalizedAssetId = newImage.rows[0].id;
 
-      let stagedOptionalPreviewPath = null;
       if (optionalThumbnailFile?.path) {
         try {
           stagedOptionalPreviewPath = await assetThumbnails.stageOptionalThumbnail(optionalThumbnailFile.path);
@@ -8563,7 +7306,9 @@ app.post(
         }
       }
 
-      await recordBusinessEvent(pool, isPreSubmissionUpload ? "ASSET_DRAFT_UPLOADED" : "ASSET_UPLOADED", {
+      assertUploadConnected();
+
+      await recordBusinessEvent(pool, "ASSET_UPLOADED", {
         userId: decoded.user,
         userRole: user.role,
         assetId: newImage.rows[0].id,
@@ -8575,12 +7320,71 @@ app.post(
         metadata: { filename: storedFilename, thumbnailStatus }
       });
 
-      res.json(newImage.rows[0]);
+      const finalStats = await fs.promises.stat(finalizedFilePath);
+      if (!finalStats.isFile() || finalStats.size !== finalizedFileStats.size || finalStats.size !== stagedFileStats.size) {
+        throw new Error("Finalized asset failed file verification.");
+      }
+      assertUploadConnected();
+      await cleanupUploadStaging(req);
+      assertUploadConnected();
+      res.json({
+        ...newImage.rows[0],
+        upload_complete: true,
+        finalized: true,
+        file_size: finalStats.size
+      });
 
     } catch (err) {
       console.error("UPLOAD ERROR:", err);
-      res.status(500).json(err.message);
+      let cleanupError = null;
+      if (stagedOptionalPreviewPath) {
+        try {
+          await assetThumbnails.removeStagedOptionalThumbnail(stagedOptionalPreviewPath);
+        } catch (error) {
+          cleanupError = error;
+          console.error("Failed to remove staged thumbnail input after upload failure:", error);
+        }
+      }
+      if (finalizedAssetId) {
+        try {
+          await cleanupUnconfirmedAsset();
+          finalizedFilePath = null;
+        } catch (error) {
+          cleanupError = error;
+          console.error(`Failed to clean up unconfirmed asset ${finalizedAssetId}:`, error);
+        }
+      } else if (finalizedFilePath) {
+        try {
+          await fs.promises.unlink(finalizedFilePath);
+          finalizedFilePath = null;
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            cleanupError = error;
+            console.error("Failed to remove unconfirmed original upload:", error);
+          }
+        }
+      }
+      try {
+        await cleanupUploadStaging(req);
+      } catch (error) {
+        cleanupError = cleanupError || error;
+        console.error("Failed to remove upload staging directory after failure:", error);
+      }
+      if (!res.headersSent) {
+        res.status(err.code === "UPLOAD_CANCELLED" ? 499 : 500).json({
+          error: err.message,
+          ...(cleanupError ? { cleanupError: "Upload cleanup could not be completed." } : {})
+        });
+      }
     } finally {
+      try {
+        await cleanupUploadStaging(req);
+      } catch (cleanupError) {
+        console.error("Failed to remove upload staging directory:", cleanupError);
+        if (!res.headersSent) {
+          res.status(500).json({ error: "Upload staging cleanup failed." });
+        }
+      }
       releaseContributorUploadLock(req);
     }
 
@@ -8613,8 +7417,8 @@ app.post(
       if (!requesterIsOwner && !requesterIsAdmin) {
         return res.status(404).json({ error: "Asset not found" });
       }
-      if (!requesterIsAdmin && !["not_submitted", "draft"].includes(String(image.status || "").toLowerCase())) {
-        return res.status(403).json({ error: "Only not-submitted assets can retry thumbnail processing." });
+      if (!requesterIsAdmin && !["not_submitted", "draft", "upload_processing"].includes(String(image.status || "").toLowerCase())) {
+        return res.status(403).json({ error: "Only private uploads can retry thumbnail processing." });
       }
 
       await pool.query(
@@ -10104,140 +8908,34 @@ app.delete(
   "/images/:id",
   (req, res, next) => authenticateToken(req, res, next),
   async (req, res) => {
-
     try {
-
-      const { id } = req.params;
-
-      // Get image filename first
-
-      const image =
-        await pool.query(
-          `
-          SELECT filename, uploaded_by, title, status
-          FROM images
-          WHERE id = $1
-          `,
-          [id]
-        );
-
-      if (
-        image.rows.length === 0
-      ) {
-
-        return res
-          .status(404)
-          .json("Image not found");
-
-      }
-
-      const requesterResult = await pool.query(
-        `SELECT role FROM users WHERE id = $1`,
-        [req.user.id]
+      const result = await deleteAssetCompletely(
+        req.params.id,
+        req.user.id,
+        { pool, assetThumbnails, thumbnailQueue }
       );
-      const requesterIsOwner = Number(image.rows[0].uploaded_by) === Number(req.user.id);
-      const requesterIsAdmin = String(requesterResult.rows[0]?.role || "").toLowerCase() === "admin";
-      if (!requesterIsOwner && !requesterIsAdmin) {
-        return res.status(404).json("Image not found");
-      }
-      if (
-        requesterIsOwner &&
-        !requesterIsAdmin &&
-        !["not_submitted", "draft"].includes(String(image.rows[0].status || "").toLowerCase())
-      ) {
-        return res.status(403).json("Contributors can delete only not-submitted assets.");
-      }
-
-      const filename =
-        image.rows[0].filename;
-      const assetRoot = assetThumbnails.getOriginalAssetStorageRoot();
-      const filePath = path.resolve(assetRoot, filename);
-      const relativeToAssetRoot = path.relative(assetRoot, filePath);
-      if (!relativeToAssetRoot || relativeToAssetRoot.startsWith("..") || path.isAbsolute(relativeToAssetRoot)) {
-        return res.status(400).json("Invalid file path");
-      }
-
-      const thumbnailRecord = await pool.query(
-        `SELECT thumbnail_path FROM asset_thumbnail_metadata WHERE asset_id = $1`,
-        [id]
-      );
-      const thumbnailDeleted = await assetThumbnails.deleteAssetThumbnail(
-        id,
-        thumbnailRecord.rows[0]?.thumbnail_path || null
-      );
-      if (!thumbnailDeleted) {
-        console.warn(`Thumbnail cleanup deferred for deleted asset ${id}; retry record was saved.`);
-      }
-
-      // Delete favorites
-
-      await pool.query(
-        `
-        DELETE FROM favorites
-        WHERE image_id = $1
-        `,
-        [id]
-      );
-
-      // Delete downloads
-
-      await pool.query(
-        `
-        DELETE FROM downloads
-        WHERE image_id = $1
-        `,
-        [id]
-      );
-
-      // Delete image record
-      await pool.query(
-        `
-        DELETE FROM images
-        WHERE id = $1
-        `,
-        [id]
-      );
-
-      // Delete physical file
-
-      if (
-        fs.existsSync(filePath)
-      ) {
-
-        fs.unlinkSync(filePath);
-
-      }
-
+      if (result.notFound) return res.status(404).json({ error: "Image not found." });
       try {
-        await assetThumbnails.deleteContributorUploadFolderIfUnused(image.rows[0].uploaded_by);
+        await assetThumbnails.deleteContributorUploadFolderIfUnused(result.asset.uploaded_by);
       } catch (cleanupError) {
         console.error(
-          `Failed to remove empty upload folder for contributor ${image.rows[0].uploaded_by}:`,
+          `Failed to remove empty upload folder for contributor ${result.asset.uploaded_by}:`,
           cleanupError
         );
       }
-
       await createAssetNotifications(pool, {
-        userIds: [image.rows[0].uploaded_by],
+        userIds: [result.asset.uploaded_by],
         eventType: 'ASSET_DELETED',
-        assetTitle: image.rows[0].title,
-        ownerId: image.rows[0].uploaded_by
+        assetTitle: result.asset.title,
+        ownerId: result.asset.uploaded_by
       });
-
-      res.json(
-        "Image deleted successfully"
-      );
-
+      res.json("Image deleted successfully");
     } catch (err) {
-
       console.error(err);
-
-      res.status(500).send(
-        "Delete error"
-      );
-
+      res.status(err.statusCode || 500).json({
+        error: err.statusCode ? err.message : "Delete failed because asset cleanup could not be completed."
+      });
     }
-
   }
 );
 /* ---------------- UPDATE IMAGE ---------------- */
@@ -14923,78 +13621,6 @@ app.post('/cart/clear', authenticateToken, async (req, res) => {
   }
 });
 
-async function ensureGfxSyncChangeTracking() {
-  try {
-    const existing = await pool.query(`
-      SELECT to_regclass('public.gfx_sync_changes') AS table_name;
-    `);
-
-    if (existing.rows[0] && existing.rows[0].table_name) {
-      await pool.query(`
-        CREATE INDEX IF NOT EXISTS idx_gfx_sync_changes_table_record
-          ON public.gfx_sync_changes(table_name, record_id, changed_at DESC);
-
-        CREATE INDEX IF NOT EXISTS idx_gfx_sync_changes_device
-          ON public.gfx_sync_changes(device_id, changed_at DESC);
-      `);
-      return true;
-    }
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS public.gfx_sync_changes (
-        id BIGSERIAL PRIMARY KEY,
-        device_id TEXT NOT NULL,
-        table_name TEXT NOT NULL,
-        record_id TEXT,
-        operation TEXT NOT NULL,
-        changed_fields JSONB DEFAULT '{}'::jsonb,
-        old_values JSONB DEFAULT '{}'::jsonb,
-        new_values JSONB DEFAULT '{}'::jsonb,
-        changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        version INTEGER NOT NULL DEFAULT 1,
-        source TEXT DEFAULT 'admin-panel',
-        metadata JSONB DEFAULT '{}'::jsonb
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_gfx_sync_changes_table_record
-        ON public.gfx_sync_changes(table_name, record_id, changed_at DESC);
-
-      CREATE INDEX IF NOT EXISTS idx_gfx_sync_changes_device
-        ON public.gfx_sync_changes(device_id, changed_at DESC);
-    `);
-    return true;
-  } catch (error) {
-    console.error('Failed to initialize gfx_sync_changes table:', error.message || error);
-    return false;
-  }
-}
-
-async function recordGfxSyncChange({ deviceId, tableName, recordId, operation, changedFields = {}, oldValues = {}, newValues = {}, version = 1, metadata = {} }) {
-  try {
-    await ensureGfxSyncChangeTracking();
-    await pool.query(
-      `INSERT INTO gfx_sync_changes (device_id, table_name, record_id, operation, changed_fields, old_values, new_values, version, source, metadata)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10::jsonb)`,
-      [
-        deviceId || 'unknown-device',
-        tableName,
-        String(recordId ?? 'unknown-record'),
-        operation,
-        JSON.stringify(changedFields || {}),
-        JSON.stringify(oldValues || {}),
-        JSON.stringify(newValues || {}),
-        Number(version || 1),
-        'admin-panel',
-        JSON.stringify(metadata || {})
-      ]
-    );
-    return true;
-  } catch (error) {
-    console.warn('gfx_sync_changes insert failed:', error.message || error);
-    return false;
-  }
-}
-
 /* ----------- THUMBNAIL SYSTEM INITIALIZATION ----------- */
 
 async function initializeThumbnailSystem() {
@@ -15005,7 +13631,6 @@ async function initializeThumbnailSystem() {
     // Run database migration
     console.log("Running thumbnail system database migrations...");
     try {
-      await ensureGfxSyncChangeTracking();
       const migrationFile = fs.readFileSync(
         path.join(__dirname, "migrations", "002_thumbnail_system.sql"),
         "utf8"
@@ -15248,23 +13873,10 @@ if (require.main === module) {
   })();
 }
 
-ensureGfxSyncChangeTracking().catch((error) => {
-  console.warn('Failed to initialize gfx_sync_changes on startup:', error.message || error);
-});
-
 module.exports = {
   app,
   buildMyUploadsQuery,
   buildAccountStatusNotificationMessage,
-  createGfxBackupPackage,
-  validateBackupPrerequisites,
-  validateBackupArchive,
-  normalizeDeviceId,
-  collectDatabaseChangeMetadata,
-  collectChangedFilesSince,
-  collectFileChangeStatusReport,
-  ensureGfxSyncChangeTracking,
-  recordGfxSyncChange,
   summarizeContributorDownloadWindowCounts,
 };
 

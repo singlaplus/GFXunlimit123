@@ -9,16 +9,18 @@ function buildMyUploadsQuery(view, userId) {
   `;
   const params = [userId];
 
-  if (view === "not-submitted" || view === "bulk-status") {
+  if (view === "not-submitted") {
     query += `
       AND LOWER(REPLACE(REPLACE(COALESCE(images.status, ''), '_', ' '), '-', ' ')) IN ('draft', 'not submitted')
     `;
-    if (view === "not-submitted") {
-      query += `
-        AND thumbnails.status = 'READY'
-        AND thumbnails.thumbnail_path IS NOT NULL
-      `;
-    }
+    query += `
+      AND thumbnails.status = 'READY'
+      AND thumbnails.thumbnail_path IS NOT NULL
+    `;
+  } else if (view === "bulk-status") {
+    query += `
+      AND LOWER(COALESCE(images.status, '')) IN ('draft', 'not submitted', 'upload_processing')
+    `;
   } else if (view === "approved") {
     query += `
       AND LOWER(COALESCE(images.status, '')) = 'approved'

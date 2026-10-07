@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import axios from "axios";
 import BulkUploadPage from "./BulkUploadPage";
 
@@ -7,31 +7,108 @@ jest.mock("react-toastify", () => ({
   toast: { success: jest.fn(), error: jest.fn() }
 }));
 
+const finalizedResponse = (id, fileSize = 5) => ({
+  data: { id, upload_complete: true, finalized: true, file_size: fileSize }
+});
+
 describe("BulkUploadPage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.setItem("token", "test-token");
+    axios.get.mockResolvedValue({ data: [] });
   });
 
-  it("uploads one file independently, shows upload progress, and waits for thumbnail readiness", async () => {
-    axios.post.mockImplementation(async (_url, _formData, config) => {
-      config.onUploadProgress({ loaded: 45, total: 100 });
-      return { data: { id: 101 } };
+  it("keeps one active transfer, allows queued removal, and waits for backend finalization", async () => {
+    const files = Array.from({ length: 10 }, (_, index) => new File(["asset"], `asset-${index + 1}.jpg`));
+    const requests = new Map();
+    let activeTransfers = 0;
+    let maximumTransfers = 0;
+    axios.post.mockImplementation((_url, formData, config) => {
+      const file = formData.get("image");
+      activeTransfers += 1;
+      maximumTransfers = Math.max(maximumTransfers, activeTransfers);
+      config.onUploadProgress({ loaded: 5, total: 5 });
+      return new Promise((resolve, reject) => {
+        requests.set(file.name, {
+          resolve: (response) => {
+            activeTransfers -= 1;
+            resolve(response);
+          },
+          reject: (error) => {
+            activeTransfers -= 1;
+            reject(error);
+          },
+          signal: config.signal
+        });
+      });
     });
-    axios.get.mockResolvedValue({
-      data: [{ id: 101, thumbnail_status: "COMPLETED", generated_thumbnail_status: "READY" }]
-    });
-    const file = new File(["asset"], "design.jpg", { type: "image/jpeg" });
 
     render(<BulkUploadPage />);
-    fireEvent.change(screen.getByLabelText(/upload assets/i), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText(/upload assets/i), { target: { files } });
+
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("UPLOADING · 99%")).toBeInTheDocument();
+    expect(await screen.findAllByText("QUEUED")).toHaveLength(9);
+
+    const fifthFile = screen.getByText("asset-5.jpg").closest("li");
+    fireEvent.click(within(fifthFile).getByRole("button", { name: "Remove" }));
+    expect(screen.queryByText("asset-5.jpg")).not.toBeInTheDocument();
+
+    requests.get("asset-1.jpg").resolve(finalizedResponse(101));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+    expect(requests.has("asset-2.jpg")).toBe(true);
+    expect(requests.has("asset-5.jpg")).toBe(false);
+    expect(maximumTransfers).toBe(1);
+
+    requests.get("asset-2.jpg").reject({ response: { data: "Upload failed" } });
+    expect(await screen.findByText("Upload failed")).toBeInTheDocument();
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(3));
+    expect(requests.has("asset-3.jpg")).toBe(true);
+    expect(maximumTransfers).toBe(1);
+  });
+
+  it("aborts the active HTTP transfer and advances to the next queued item", async () => {
+    const firstFile = new File(["asset"], "cancel-me.jpg");
+    const secondFile = new File(["asset"], "next.jpg");
+    let firstSignal;
+    axios.post.mockImplementation((_url, formData, config) => {
+      if (formData.get("image").name === "cancel-me.jpg") {
+        firstSignal = config.signal;
+        return new Promise((_resolve, reject) => {
+          config.signal.addEventListener("abort", () => reject({ name: "CanceledError" }));
+        });
+      }
+      return Promise.resolve(finalizedResponse(202));
+    });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [firstFile, secondFile] }
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel upload" }));
+
+    await waitFor(() => expect(firstSignal.aborted).toBe(true));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("CANCELLED")).toBeInTheDocument();
+    expect(axios.post.mock.calls[1][1].get("image").name).toBe("next.jpg");
+  });
+
+  it("marks an asset ready only after the thumbnail status endpoint reports READY", async () => {
+    axios.post.mockResolvedValue(finalizedResponse(301));
+    axios.get.mockResolvedValue({
+      data: [{ id: 301, thumbnail_status: "COMPLETED", generated_thumbnail_status: "READY" }]
+    });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [new File(["asset"], "ready.jpg")] }
+    });
 
     expect(await screen.findByText("Completed - ready to submit", {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(await screen.findByRole("progressbar", { name: "Overall upload progress" })).toHaveAttribute("aria-valuenow", "100");
     expect(axios.post).toHaveBeenCalledWith(
       "http://localhost:5000/upload",
       expect.any(FormData),
-      expect.objectContaining({ onUploadProgress: expect.any(Function) })
+      expect.objectContaining({ signal: expect.any(AbortSignal), onUploadProgress: expect.any(Function) })
     );
     expect(axios.get).toHaveBeenCalledWith(
       "http://localhost:5000/my-uploads?view=bulk-status",
@@ -39,75 +116,13 @@ describe("BulkUploadPage", () => {
     );
   });
 
-  it("uploads ten selected files as ten independent requests", async () => {
-    let nextAssetId = 200;
-    axios.post.mockImplementation(async () => ({ data: { id: nextAssetId++ } }));
-    axios.get.mockImplementation(async () => ({
-        data: Array.from({ length: 10 }, (_, index) => ({
-          id: 200 + index,
-          thumbnail_status: "COMPLETED",
-          generated_thumbnail_status: "READY"
-        }))
-      }));
-    const files = Array.from({ length: 10 }, (_, index) => new File(["asset"], `asset-${index}.jpg`));
-
+  it("rejects a batch larger than ten files without starting any transfer", async () => {
     render(<BulkUploadPage />);
-    fireEvent.change(screen.getByLabelText(/upload assets/i), { target: { files } });
-
-    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(10));
-    expect(await screen.findAllByText("Completed - ready to submit", {}, { timeout: 4000 })).toHaveLength(10);
-  });
-
-  it("allows retrying thumbnail generation after an upload has succeeded", async () => {
-    axios.post
-      .mockResolvedValueOnce({ data: { id: 250 } })
-      .mockResolvedValueOnce({ data: { id: 250, thumbnail_status: "PROCESSING" } });
-    axios.get
-      .mockRejectedValueOnce(new Error("Temporary status check error"))
-      .mockResolvedValueOnce({
-        data: [{ id: 250, thumbnail_status: "COMPLETED", generated_thumbnail_status: "READY" }]
-      });
-
-    render(<BulkUploadPage />);
-    fireEvent.change(screen.getByLabelText(/upload assets/i), {
-      target: { files: [new File(["asset"], "retry.jpg")] }
-    });
-    expect(await screen.findByRole("button", { name: "Retry" }, { timeout: 4000 })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText("Completed - ready to submit", {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(axios.post).toHaveBeenNthCalledWith(
-      2,
-      "http://localhost:5000/images/250/thumbnail/retry",
-      {},
-      expect.anything()
-    );
-  });
-
-  it("rejects more than ten files before uploading and continues other uploads after an individual failure", async () => {
-    axios.post.mockImplementation(async (_url, formData) => {
-      const file = formData.get("image");
-      if (file.name === "bad.jpg") {
-        throw { response: { data: "Unsupported file type" } };
-      }
-      return { data: { id: 301 } };
-    });
-    axios.get.mockResolvedValue({
-      data: [{ id: 301, thumbnail_status: "COMPLETED", generated_thumbnail_status: "READY" }]
-    });
-    const { rerender } = render(<BulkUploadPage />);
     fireEvent.change(screen.getByLabelText(/upload assets/i), {
       target: { files: Array.from({ length: 11 }, (_, index) => new File(["asset"], `too-many-${index}.jpg`)) }
     });
+
     expect(await screen.findByRole("alert")).toHaveTextContent(/maximum of 10/i);
     expect(axios.post).not.toHaveBeenCalled();
-
-    rerender(<BulkUploadPage />);
-    fireEvent.change(screen.getByLabelText(/upload assets/i), {
-      target: { files: [new File(["bad"], "bad.jpg"), new File(["good"], "good.jpg")] }
-    });
-    expect(await screen.findByText("Unsupported file type")).toBeInTheDocument();
-    expect(await screen.findByText("Completed - ready to submit", {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(axios.post).toHaveBeenCalledTimes(2);
   });
 });

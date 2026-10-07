@@ -12,12 +12,12 @@ test('not-submitted view returns only draft and not-submitted assets for the con
   assert.match(query, /thumbnails\.thumbnail_path IS NOT NULL/);
 });
 
-test('bulk status query includes only the contributor drafts while thumbnail processing is in progress', () => {
+test('bulk status query includes uploads processing thumbnails without exposing them as ready drafts', () => {
   const { query, params } = buildMyUploadsQuery('bulk-status', 42);
 
   assert.equal(params[0], 42);
   assert.match(query, /images\.uploaded_by = \$1/);
-  assert.match(query, /IN \('draft', 'not submitted'\)/);
+  assert.match(query, /IN \('draft', 'not submitted', 'upload_processing'\)/);
   assert.doesNotMatch(query, /thumbnails\.status = 'READY'/);
 });
 

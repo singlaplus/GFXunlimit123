@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { buildAuthHeaders } from "../utils/authSession";
@@ -10,7 +10,7 @@ const createQueueItem = (file) => ({
   id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   file,
   progress: 0,
-  status: "waiting",
+  status: "queued",
   assetId: null,
   failureStage: null,
   error: ""
@@ -19,6 +19,14 @@ const createQueueItem = (file) => ({
 export default function BulkUploadPage({ darkMode, fetchImages }) {
   const [queue, setQueue] = useState([]);
   const [message, setMessage] = useState("");
+  const [removedCount, setRemovedCount] = useState(0);
+  const queueRef = useRef([]);
+  const activeUploadRef = useRef(null);
+  const replaceQueue = (update) => {
+    const nextQueue = typeof update === "function" ? update(queueRef.current) : update;
+    queueRef.current = nextQueue;
+    setQueue(nextQueue);
+  };
   const isDarkMode = Boolean(darkMode);
   const colors = isDarkMode
     ? {
@@ -55,7 +63,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
   };
 
   const updateItem = (id, update) => {
-    setQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
+    replaceQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
   };
 
   const waitForThumbnail = async (assetId, queueItemId) => {
@@ -72,6 +80,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
       const thumbnailStatus = String(asset.generated_thumbnail_status || asset.thumbnail_status || "").toUpperCase();
       if (thumbnailStatus === "READY") {
         updateItem(queueItemId, { status: "completed", progress: 100, error: "" });
+        if (typeof fetchImages === "function") fetchImages();
         return;
       }
       if (thumbnailStatus === "FAILED") {
@@ -95,9 +104,14 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     });
   };
 
-  const uploadItem = async (item) => {
+  const pumpQueue = async () => {
+    if (activeUploadRef.current) return;
+    const item = queueRef.current.find((entry) => entry.status === "queued");
+    if (!item) return;
+
+    const activeUpload = { id: item.id, controller: new AbortController(), cancelled: false };
+    activeUploadRef.current = activeUpload;
     updateItem(item.id, { status: "uploading", progress: 0, failureStage: null, error: "" });
-    let uploadedAssetId = item.assetId;
     const formData = new FormData();
     formData.append("image", item.file);
     formData.append("preSubmission", "true");
@@ -105,23 +119,45 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     try {
       const response = await axios.post(`${API_BASE_URL}/upload`, formData, {
         headers: buildAuthHeaders(),
+        signal: activeUpload.controller.signal,
         onUploadProgress: (event) => {
-          if (!event.total) return;
+          if (activeUpload.cancelled || !event.total) return;
           updateItem(item.id, { progress: Math.min(99, Math.round((event.loaded * 100) / event.total)) });
         }
       });
-      uploadedAssetId = response.data?.id;
-      if (!uploadedAssetId) throw new Error("Upload completed without an asset ID.");
+      const uploadedAssetId = response.data?.id;
+      if (
+        !uploadedAssetId ||
+        response.data?.upload_complete !== true ||
+        response.data?.finalized !== true ||
+        Number(response.data?.file_size) !== Number(item.file.size)
+      ) {
+        throw new Error("The server did not confirm that this file was fully received and finalized.");
+      }
       updateItem(item.id, { assetId: uploadedAssetId, progress: 100, status: "processing" });
-      await waitForThumbnail(uploadedAssetId, item.id);
+      void waitForThumbnail(uploadedAssetId, item.id).catch((error) => {
+        const messageText = error.response?.data?.error || error.response?.data || error.message || "Unable to check thumbnail status.";
+        updateItem(item.id, {
+          status: "thumbnail-failed",
+          failureStage: "thumbnail",
+          error: typeof messageText === "string" ? messageText : "Unable to check thumbnail status."
+        });
+      });
       if (typeof fetchImages === "function") fetchImages();
     } catch (error) {
-      const messageText = error.response?.data?.error || error.response?.data || error.message || "Upload failed.";
-      updateItem(item.id, {
-        status: uploadedAssetId ? "thumbnail-failed" : "failed",
-        failureStage: uploadedAssetId ? "thumbnail" : "upload",
-        error: typeof messageText === "string" ? messageText : "Upload failed."
-      });
+      if (activeUpload.cancelled) {
+        updateItem(item.id, { status: "cancelled", progress: 0, error: "" });
+      } else {
+        const messageText = error.response?.data?.error || error.response?.data || error.message || "Upload failed.";
+        updateItem(item.id, {
+          status: "failed",
+          failureStage: "upload",
+          error: typeof messageText === "string" ? messageText : "Upload failed."
+        });
+      }
+    } finally {
+      if (activeUploadRef.current === activeUpload) activeUploadRef.current = null;
+      void pumpQueue();
     }
   };
 
@@ -139,8 +175,9 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
 
     setMessage("");
     const items = selectedFiles.map(createQueueItem);
-    setQueue((current) => [...current, ...items]);
-    items.forEach((item) => uploadItem(item));
+    setRemovedCount(0);
+    replaceQueue((current) => [...current, ...items]);
+    void pumpQueue();
   };
 
   const retryItem = async (item) => {
@@ -163,33 +200,37 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
       }
       return;
     }
-    await uploadItem(item);
+    updateItem(item.id, { status: "queued", progress: 0, failureStage: null, error: "" });
+    void pumpQueue();
   };
 
-  const deleteItem = async (item) => {
-    const confirmed = window.confirm(`Delete "${item.file.name}" from your not-submitted uploads?`);
-    if (!confirmed) return;
-    try {
-      await axios.delete(`${API_BASE_URL}/images/${item.assetId}`, { headers: buildAuthHeaders() });
-      setQueue((current) => current.filter((entry) => entry.id !== item.id));
-      toast.success("Not-submitted asset deleted.");
-    } catch (error) {
-      const messageText = error.response?.data?.error || error.response?.data || error.message || "Unable to delete asset.";
-      toast.error(typeof messageText === "string" ? messageText : "Unable to delete asset.");
-    }
+  const removeQueuedItem = (item) => {
+    replaceQueue((current) => current.filter((entry) => entry.id !== item.id));
+    setRemovedCount((count) => count + 1);
   };
 
-  const uploadedCount = queue.filter((item) => item.assetId).length;
+  const cancelActiveItem = (item) => {
+    const activeUpload = activeUploadRef.current;
+    if (!activeUpload || activeUpload.id !== item.id) return;
+    activeUpload.cancelled = true;
+    activeUpload.controller.abort();
+    updateItem(item.id, { status: "cancelled", progress: 0, error: "" });
+  };
+
+  const uploadedCount = queue.filter((item) => item.status === "completed").length;
   const overallProgress = queue.length
     ? Math.round(queue.reduce((total, item) => total + item.progress, 0) / queue.length)
     : 0;
-  const activeUploads = queue.some((item) => ["waiting", "uploading", "processing"].includes(item.status));
+  const activeUploads = Boolean(activeUploadRef.current) ||
+    queue.some((item) => ["queued", "uploading", "processing"].includes(item.status));
   const progressBarColor = isDarkMode ? "#a5b4fc" : "#4f46e5";
   const statusStyles = {
-    waiting: { background: isDarkMode ? "#29364a" : "#eef2f7", color: colors.muted },
+    queued: { background: isDarkMode ? "#29364a" : "#eef2f7", color: colors.muted },
     uploading: { background: isDarkMode ? "#312e81" : "#eef2ff", color: isDarkMode ? "#c7d2fe" : "#4338ca" },
     processing: { background: isDarkMode ? "#3b2f17" : "#fff7e6", color: isDarkMode ? "#fde68a" : "#a16207" },
+    uploaded: { background: isDarkMode ? "#3b2f17" : "#fff7e6", color: isDarkMode ? "#fde68a" : "#a16207" },
     completed: { background: isDarkMode ? "#12372b" : "#eaf8f0", color: isDarkMode ? "#86efac" : "#15803d" },
+    cancelled: { background: isDarkMode ? "#29364a" : "#eef2f7", color: colors.muted },
     failed: { background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318" },
     "thumbnail-failed": { background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318" }
   };
@@ -219,7 +260,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
               Upload a batch of assets in one go. We’ll prepare each thumbnail and keep your files private until you’re ready to submit them for review.
             </p>
             <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "22px" }}>
-              {["Independent uploads", "Private until submitted", "Thumbnail-ready drafts"].map((item) => (
+              {["One file at a time", "Private until submitted", "Thumbnail-ready drafts"].map((item) => (
                 <span key={item} style={{ padding: "7px 11px", border: `1px solid ${colors.border}`, borderRadius: "999px", color: colors.muted, fontSize: "12px", fontWeight: 650 }}>
                   {item}
                 </span>
@@ -233,7 +274,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
               <span style={{ color: colors.muted }}>assets at a time</span>
             </div>
             {[
-              ["01", "Upload files", "Each file uploads separately"],
+              ["01", "Upload files", "Files upload one at a time"],
               ["02", "Prepare previews", "Thumbnails are generated"],
               ["03", "Submit for review", "Edit details in Not Submitted"]
             ].map(([number, title, description]) => (
@@ -253,7 +294,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "18px", flexWrap: "wrap" }}>
           <div>
             <h2 style={{ margin: 0, fontSize: "21px", letterSpacing: "-.02em" }}>Start a new batch</h2>
-            <p style={{ margin: "7px 0 0", color: colors.muted, lineHeight: 1.55 }}>Choose up to 10 files. Every asset uploads independently, so one issue won’t stop the rest.</p>
+            <p style={{ margin: "7px 0 0", color: colors.muted, lineHeight: 1.55 }}>Choose up to 10 files. Each file is finalized by the server before the next queued file starts.</p>
           </div>
           <span style={{ padding: "8px 12px", borderRadius: "10px", background: isDarkMode ? "#252f45" : "#f1f3ff", color: colors.accent, fontSize: "13px", fontWeight: 750 }}>
             {queue.length} / {MAX_BULK_UPLOAD_FILES} selected
@@ -300,14 +341,14 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
         {message && <p role="alert" style={{ margin: "12px 0 0", padding: "11px 14px", borderRadius: "10px", background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318" }}>{message}</p>}
       </section>
 
-      {queue.length > 0 && (
+      {(queue.length > 0 || removedCount > 0) && (
         <section aria-label="Upload queue" style={{ ...panelStyle, marginTop: "22px", padding: "clamp(20px, 4vw, 34px)" }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px", flexWrap: "wrap" }}>
             <div>
               <div style={{ color: colors.accent, fontSize: "11px", fontWeight: 800, letterSpacing: ".14em", textTransform: "uppercase" }}>Batch activity</div>
               <h2 style={{ margin: "6px 0 0", fontSize: "22px", letterSpacing: "-.025em" }}>Upload queue</h2>
             </div>
-            <span style={{ color: colors.muted, fontSize: "13px" }}>{uploadedCount} / {queue.length} uploaded</span>
+            <span style={{ color: colors.muted, fontSize: "13px" }}>{uploadedCount} uploaded · {removedCount} removed</span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", marginTop: "22px", fontSize: "13px" }}>
             <strong>Overall progress</strong>
@@ -327,14 +368,19 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
           <ol style={{ display: "grid", gap: "10px", margin: 0, padding: 0, listStyle: "none" }}>
             {queue.map((item) => {
               const statusLabel = {
-                waiting: "Waiting",
-                uploading: `Uploading · ${item.progress}%`,
-                processing: "Preparing thumbnail",
+                queued: "QUEUED",
+                uploading: `UPLOADING · ${item.progress}%`,
+                uploaded: "UPLOADED",
+                processing: "PROCESSING THUMBNAIL",
                 completed: "Completed - ready to submit",
-                failed: "Upload failed",
-                "thumbnail-failed": "Thumbnail generation failed"
+                failed: "FAILED",
+                "thumbnail-failed": "THUMBNAIL FAILED",
+                cancelled: "CANCELLED"
               }[item.status];
               const extension = item.file.name.split(".").pop()?.toUpperCase() || "FILE";
+              const fileSize = item.file.size < 1024 * 1024
+                ? `${Math.max(1, Math.round(item.file.size / 1024))} KB`
+                : `${(item.file.size / (1024 * 1024)).toFixed(1)} MB`;
               return (
                 <li key={item.id} style={{ padding: "14px 16px", border: `1px solid ${colors.border}`, borderRadius: "14px", background: colors.raised }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -344,7 +390,8 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <strong title={item.file.name} style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "14px" }}>{item.file.name}</strong>
                       <span style={{ display: "block", marginTop: "4px", color: colors.muted, fontSize: "12px" }}>
-                        {item.status === "processing" ? "Upload complete · Thumbnail processing" : item.status === "completed" ? "Private draft · Available in Not Submitted" : item.status === "failed" || item.status === "thumbnail-failed" ? "This file needs attention" : "Your original file stays private"}
+                        {item.file.type || `.${extension.toLowerCase()}`} · {fileSize}
+                        {item.status === "processing" ? " · Upload confirmed; thumbnail processing" : item.status === "completed" ? " · Private draft in Not Submitted" : item.status === "failed" || item.status === "thumbnail-failed" ? " · This file needs attention" : ""}
                       </span>
                     </div>
                     <span aria-live="polite" style={{ ...statusStyles[item.status], flex: "0 0 auto", padding: "7px 10px", borderRadius: "999px", fontSize: "11px", fontWeight: 750 }}>
@@ -352,20 +399,28 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
                     </span>
                   </div>
                   {(item.status === "uploading" || item.status === "processing") && (
-                    <div style={{ height: "5px", marginTop: "13px", borderRadius: "99px", background: colors.track }}>
+                    <div
+                      role={item.status === "uploading" ? "progressbar" : undefined}
+                      aria-label={item.status === "uploading" ? `${item.file.name} upload progress` : undefined}
+                      aria-valuenow={item.status === "uploading" ? item.progress : undefined}
+                      aria-valuemin={item.status === "uploading" ? "0" : undefined}
+                      aria-valuemax={item.status === "uploading" ? "100" : undefined}
+                      style={{ height: "5px", marginTop: "13px", borderRadius: "99px", background: colors.track }}
+                    >
                       <div style={{ width: `${item.progress}%`, height: "100%", borderRadius: "99px", background: progressBarColor, transition: "width 200ms ease" }} />
                     </div>
                   )}
                   {item.error && <p style={{ margin: "11px 0 0", padding: "10px 12px", borderRadius: "9px", background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318", fontSize: "13px" }}>{item.error}</p>}
-                  {(item.status === "failed" || item.status === "thumbnail-failed" || item.assetId) && (
+                  {(item.status === "queued" || item.status === "uploading" || item.status === "failed" || item.status === "thumbnail-failed") && (
                     <div style={{ display: "flex", gap: "8px", marginTop: "11px" }}>
+                      {item.status === "queued" && (
+                        <button type="button" onClick={() => removeQueuedItem(item)} style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, borderRadius: "8px", background: colors.panel, color: colors.muted, cursor: "pointer", fontWeight: 650 }}>Remove</button>
+                      )}
+                      {item.status === "uploading" && (
+                        <button type="button" onClick={() => cancelActiveItem(item)} style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, borderRadius: "8px", background: colors.panel, color: colors.muted, cursor: "pointer", fontWeight: 650 }}>Cancel upload</button>
+                      )}
                       {(item.status === "failed" || item.status === "thumbnail-failed") && (
                         <button type="button" onClick={() => retryItem(item)} style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, borderRadius: "8px", background: colors.panel, color: colors.text, cursor: "pointer", fontWeight: 650 }}>Retry</button>
-                      )}
-                      {item.assetId && (
-                        <button type="button" onClick={() => deleteItem(item)} style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, borderRadius: "8px", background: colors.panel, color: colors.muted, cursor: "pointer", fontWeight: 650 }}>
-                          Delete draft
-                        </button>
                       )}
                     </div>
                   )}
@@ -373,10 +428,21 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
               );
             })}
           </ol>
-          {queue.every((item) => ["completed", "failed", "thumbnail-failed"].includes(item.status)) && (
+          {queue.every((item) => ["completed", "failed", "thumbnail-failed", "cancelled"].includes(item.status)) && (
+            <div role="status" style={{ marginTop: "18px", padding: "14px", borderRadius: "10px", background: colors.raised, color: colors.text }}>
+              <strong>Batch complete</strong>
+              <span style={{ display: "block", marginTop: "5px", color: colors.muted }}>
+                {uploadedCount} uploaded · {queue.filter((item) => ["failed", "thumbnail-failed"].includes(item.status)).length} failed · {removedCount} removed · {queue.filter((item) => item.status === "cancelled").length} cancelled
+              </span>
+            </div>
+          )}
+          {(queue.every((item) => ["completed", "failed", "thumbnail-failed", "cancelled"].includes(item.status)) || queue.length === 0) && (
             <button
               type="button"
-              onClick={() => setQueue([])}
+              onClick={() => {
+                replaceQueue([]);
+                setRemovedCount(0);
+              }}
               style={{ marginTop: "18px", padding: "10px 14px", border: `1px solid ${colors.border}`, borderRadius: "9px", background: colors.panel, color: colors.text, cursor: "pointer", fontWeight: 700 }}
             >
               Start a new batch

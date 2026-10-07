@@ -216,6 +216,27 @@ class ThumbnailQueueManager {
     return job.id;
   }
 
+  async cancelAssetThumbnailJobs(assetId) {
+    if (!this.queue) return;
+    const id = Number(assetId);
+    const jobs = await this.queue.getJobs(['waiting', 'delayed', 'paused', 'active']);
+    for (const job of jobs) {
+      if (job.name !== 'generate-asset-thumbnail' || Number(job.data?.assetId) !== id) continue;
+      if (job.data?.previewPath) {
+        await assetThumbnails.removeStagedOptionalThumbnail(job.data.previewPath);
+      }
+      if (job.finishedOn || job.processedOn) continue;
+      try {
+        await job.remove();
+      } catch (error) {
+        if (job.data?.previewPath && !job.processedOn) {
+          console.error(`Could not remove queued thumbnail job ${job.id} for deleted asset ${id}:`, error);
+          throw error;
+        }
+      }
+    }
+  }
+
   /**
    * Process a single thumbnail job
    */
@@ -227,6 +248,17 @@ class ThumbnailQueueManager {
           force: Boolean(job.data?.force),
           previewPath: job.data?.previewPath,
         });
+        await pool.query(
+          `UPDATE images
+           SET status = 'not_submitted'
+           WHERE id = $1
+             AND status = 'upload_processing'
+             AND EXISTS (
+               SELECT 1 FROM asset_thumbnail_metadata
+               WHERE asset_id = $1 AND status = 'READY' AND thumbnail_path IS NOT NULL
+             )`,
+          [assetId]
+        );
         if (job.data?.previewPath) {
           await assetThumbnails.removeStagedOptionalThumbnail(job.data.previewPath);
         }
