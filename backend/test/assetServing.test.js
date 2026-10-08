@@ -143,7 +143,7 @@ test('local asset root is selected only in production when configured', () => {
   assert.equal(getProductionAssetRoot('production', ''), null);
 });
 
-test('asset handler preserves the remote PC2 proxy branch when no local root is configured', async (t) => {
+test('asset handler preserves the remote SERVER proxy branch when no local root is configured', async (t) => {
   let proxyPath;
   const app = express();
   app.use('/api/files', createAssetServingHandler({

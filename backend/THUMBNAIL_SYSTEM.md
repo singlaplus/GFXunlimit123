@@ -12,20 +12,19 @@ The new derivative system stores one deterministic WebP file per asset, separate
 
 ## Storage configuration
 
-On Mac Studio, serving existing thumbnails does not require a mounted thumbnail share: the backend proxies the existing thumbnail endpoint on PC2 after checking authorization locally. No production thumbnail files are copied to Mac. If running Mac-side thumbnail generation, mount the PC2 asset and thumbnail shares over Tailscale first; the source share should be readable and the thumbnail share writable. Use Finder > Go > Connect to Server with the actual SMB share names configured on PC2, and save credentials in macOS Keychain rather than an environment file. Do not create local placeholder directories at the mount points. The application verifies that a configured `/Volumes` thumbnail path exists and fails closed when it is not mounted.
+On the DEVELOPER machine, serving existing thumbnails does not require a mounted thumbnail share: the backend proxies the existing thumbnail endpoint on the SERVER after checking authorization locally. Mac-side generation downloads originals from the SERVER's authenticated `/api/files` endpoint and stages them under `backend/tmp/asset-thumbnail-sources`; no mount of the original asset share is required. If `ASSETS_ROOT` is configured and the original is present there, the local copy is used. Generated thumbnails still require a configured writable `THUMBNAIL_STORAGE_PATH`.
 
-Set these variables in `backend/.env` on Mac Studio. The storage paths are needed for Mac-side generation; the PC2 URL is used for remote source and thumbnail requests:
+Set these variables in `backend/.env` on the DEVELOPER machine. `ASSETS_ROOT` is optional; do not set it to a Windows drive path. `PC2_ASSET_SERVER_URL` is used for authenticated remote original and thumbnail requests:
 
 ```text
-ASSETS_ROOT=/Volumes/GFXunlimitAssets
 THUMBNAIL_STORAGE_PATH=/Volumes/GFXunlimitThumbnails
 THUMBNAIL_CONCURRENCY=2
 PC2_ASSET_SERVER_URL=http://100.102.63.63:5000
 ```
 
-On macOS, `/api/assets/:id/thumbnail` is served by proxying PC2's existing thumbnail endpoint after the Mac backend performs its normal database authorization checks. The browser continues to use the Mac backend URL, and no production thumbnail files are copied to Mac. `PC2_ASSET_SERVER_URL` must be the PC2 backend origin; do not include credentials, a path, or a query string. Windows continues serving thumbnails from its configured local storage.
+On macOS, `/api/assets/:id/thumbnail` is served by proxying the SERVER's existing thumbnail endpoint after the DEVELOPER backend performs its normal database authorization checks. Original downloads use a short-lived backend-generated Bearer token tied to the asset owner's active session; the DEVELOPER backend and SERVER must use the same `JWT_SECRET`, which must remain server-side. Neither the SERVER URL nor the authorization token is sent to the browser. The browser continues to use the DEVELOPER backend URL, and no production thumbnail files are copied to the DEVELOPER machine. `PC2_ASSET_SERVER_URL` must be the SERVER backend origin; do not include credentials, a path, or a query string. Windows continues serving thumbnails from its configured local storage.
 
-Set these variables in the backend environment on PC2:
+Set these variables in the backend environment on the SERVER:
 
 ```text
 ASSETS_ROOT=F:\GFXunlimitAssets
@@ -33,9 +32,9 @@ THUMBNAIL_STORAGE_PATH=F:\GFXunlimitThumbnails
 THUMBNAIL_CONCURRENCY=2
 ```
 
-Both roots must be explicitly configured on Windows production and macOS. Do not set Windows drive paths in the Mac Studio environment; macOS does not fall back to local uploads or a local thumbnail directory. The original is located using `images.filename`; the readable prefix uses `images.original_filename` when present, then falls back to `filename`. The title is `images.title`, ID is `images.id`, and the date directory uses the calendar date in `images.created_at`. Missing/invalid dates fall back to the current local date. Worker concurrency defaults to 2 and is capped at 8.
+Both roots must be explicitly configured in Windows production. On macOS, configure `THUMBNAIL_STORAGE_PATH`; `ASSETS_ROOT` is optional and does not require a mounted SERVER original-assets share. The original is located using `images.filename`; the readable prefix uses `images.original_filename` when present, then falls back to `filename`. The title is `images.title`, ID is `images.id`, and the date directory uses the calendar date in `images.created_at`. Missing/invalid dates fall back to the current local date. Worker concurrency defaults to 2 and is capped at 8.
 
-Configure installed renderer executables through `GHOSTSCRIPT_PATH`, `IMAGEMAGICK_PATH`, and `FFMPEG_PATH` as needed. The backend can use Ghostscript and ImageMagick for vector/PDF/layered previews, FFmpeg for supported video frames, Sharp for raster/WebP encoding, and the existing PSD/AI/EPS processors. AEP/PRPROJ has no project renderer here; without a supplied preview it fails explicitly and keeps the source. Renderer availability and service-account access on PC2 have not been verified from the Mac Studio. Do not install tools on PC2 as part of this setup.
+Configure installed renderer executables through `GHOSTSCRIPT_PATH`, `IMAGEMAGICK_PATH`, and `FFMPEG_PATH` as needed. The backend can use Ghostscript and ImageMagick for vector/PDF/layered previews, FFmpeg for supported video frames, Sharp for raster/WebP encoding, and the existing PSD/AI/EPS processors. AEP/PRPROJ has no project renderer here; without a supplied preview it fails explicitly and keeps the source. Renderer availability and service-account access on the SERVER have not been verified from the DEVELOPER machine. Do not install tools on the SERVER as part of this setup.
 
 ## Commands
 
@@ -53,7 +52,7 @@ Backfill is resumable by offset/limit, skips valid unchanged outputs, and contin
 
 ## Rollout and deployment
 
-1. On Mac Studio, review and commit only the intended project files, then push the chosen branch:
+1. On the DEVELOPER machine, review and commit only the intended project files, then push the chosen branch:
 
    ```text
    git add THUMBNAIL_SYSTEM_COMPLETE.md package.json backend/THUMBNAIL_SYSTEM.md backend/server.js backend/thumbnail-queue-worker.js backend/thumbnail-engine/processor-detector.js backend/thumbnail-engine/psd-processor.js backend/migrations/028_asset_thumbnails.sql backend/scripts/thumbnail-cli-utils.js backend/scripts/thumbnails-backfill.js backend/scripts/thumbnails-check.js backend/scripts/thumbnails-cleanup.js backend/test/assetThumbnails.test.js backend/utils/assetThumbnails.js frontend/src/components/ImageGrid.js frontend/src/pages/AssetPage.jsx frontend/src/utils/assetPreview.js frontend/src/utils/assetPreview.test.js
@@ -61,8 +60,8 @@ Backfill is resumable by offset/limit, skips valid unchanged outputs, and contin
    git push origin <branch>
    ```
 
-2. On PC2, back up PostgreSQL and verify both `F:\GFXunlimitAssets` and `F:\GFXunlimitThumbnails` are available to the backend service account. Preserve the existing uploads tree and old thumbnail files.
-3. Deploy only the pushed commit on PC2; do not edit application code there:
+2. On the SERVER, back up PostgreSQL and verify both `F:\GFXunlimitAssets` and `F:\GFXunlimitThumbnails` are available to the backend service account. Preserve the existing uploads tree and old thumbnail files.
+3. Deploy only the pushed commit on the SERVER; do not edit application code there:
 
    ```text
    git fetch origin
@@ -73,8 +72,8 @@ Backfill is resumable by offset/limit, skips valid unchanged outputs, and contin
    npm run build --prefix frontend
    ```
 
-4. After a PostgreSQL backup, inspect the live schema and deliberately apply `backend/migrations/028_asset_thumbnails.sql` on PC2 if approved. This is additive: it creates the separate `asset_thumbnail_metadata` and orphan tables and an `ON DELETE CASCADE` relationship to `images`; it does not rewrite or delete rows/files in the legacy `asset_thumbnails` table. Backend startup and CLI scripts do not apply this migration.
-5. Set storage/concurrency environment variables and configure available renderers. On PC2, verify the Ghostscript executable directly with `& $env:GHOSTSCRIPT_PATH -version` in PowerShell; similarly verify ImageMagick and FFmpeg only when installed/configured. Restart the existing backend service only as a separately approved deployment action.
+4. After a PostgreSQL backup, inspect the live schema and deliberately apply `backend/migrations/028_asset_thumbnails.sql` on the SERVER if approved. This is additive: it creates the separate `asset_thumbnail_metadata` and orphan tables and an `ON DELETE CASCADE` relationship to `images`; it does not rewrite or delete rows/files in the legacy `asset_thumbnails` table. Backend startup and CLI scripts do not apply this migration.
+5. Set storage/concurrency environment variables and configure available renderers. On the SERVER, verify the Ghostscript executable directly with `& $env:GHOSTSCRIPT_PATH -version` in PowerShell; similarly verify ImageMagick and FFmpeg only when installed/configured. Restart the existing backend service only as a separately approved deployment action.
 6. Run a first 10–20-asset trial with representative media and inspect dimensions, file sizes, originals, and browser responses:
 
    ```text

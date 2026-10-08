@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { Readable } = require('node:stream');
+const axios = require('axios');
 const sharp = require('sharp');
 const {
   MAX_THUMBNAIL_BYTES,
@@ -16,6 +18,7 @@ const {
   getThumbnailCacheControl,
   getProcessorVersion,
   getThumbnailStorageRoot,
+  getAssetSourceInfo,
   isValidThumbnailFile,
   finalizeThumbnailFile,
   normalizeThumbnailRelativePath,
@@ -33,6 +36,55 @@ const { planOrphanThumbnailFiles } = require('../scripts/thumbnail-cli-utils');
 const pool = require('../db');
 const ProcessorDetector = require('../thumbnail-engine/processor-detector');
 const { getAssetSourceDimensions } = require('../utils/assetDimensions');
+
+function setPlatform(platform) {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { ...originalDescriptor, value: platform });
+  return () => Object.defineProperty(process, 'platform', originalDescriptor);
+}
+
+function preserveEnvironment(names) {
+  const values = new Map(names.map((name) => [name, process.env[name]]));
+  return () => {
+    for (const [name, value] of values) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+}
+
+function createThumbnailDatabaseMock(asset, observed = {}) {
+  let record = null;
+  return async (sql, values = []) => {
+    if (/SELECT id, title, filename, original_filename, uploaded_by, to_char\(created_at/.test(sql)) {
+      observed.assetLookupSelect = sql;
+      return { rows: [asset] };
+    }
+    if (/SELECT session_id FROM auth_sessions/.test(sql)) {
+      return { rows: [{ session_id: 'active-contributor-session' }] };
+    }
+    if (/SELECT \* FROM asset_thumbnail_metadata/.test(sql)) {
+      return { rows: record ? [record] : [] };
+    }
+    if (/INSERT INTO asset_thumbnail_metadata/.test(sql)) {
+      if (/'FAILED'/.test(sql)) observed.failureMessage = values[4];
+      record = {
+        asset_id: asset.id,
+        thumbnail_path: values[1],
+        status: /'READY'/.test(sql) ? 'READY' : /'FAILED'/.test(sql) ? 'FAILED' : 'PROCESSING',
+        processor_version: PROCESSOR_VERSION,
+      };
+      return { rows: [] };
+    }
+    if (/UPDATE images/.test(sql)) return { rows: [] };
+    throw new Error(`Unexpected test database query: ${sql}`);
+  };
+}
+
+function listStagedSourceFiles() {
+  const directory = path.join(__dirname, '..', 'tmp', 'asset-thumbnail-sources');
+  return fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
+}
 
 test('encodes a proportional WebP thumbnail at 20% dimensions with quality 37', async () => {
   for (const [width, height, expectedWidth, expectedHeight] of [
@@ -472,6 +524,166 @@ test('generation skips valid thumbnails and repairs missing files', async () => 
     else process.env.ASSETS_ROOT = previousAssetsRoot;
     if (previousThumbnailRoot === undefined) delete process.env.THUMBNAIL_STORAGE_PATH;
     else process.env.THUMBNAIL_STORAGE_PATH = previousThumbnailRoot;
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('macOS resolves and processes a remote SERVER original with an authenticated staged local source', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-remote-'));
+  const thumbnailRoot = path.join(temporaryDirectory, 'thumbnails');
+  const source = await sharp({
+    create: { width: 100, height: 60, channels: 3, background: '#2479bd' },
+  }).png().toBuffer();
+  const asset = {
+    id: 91801,
+    title: 'Remote Original',
+    filename: 'contributors/remote image.png',
+    original_filename: 'remote image.png',
+    created_date: '2026-10-02',
+    uploaded_by: 71,
+  };
+  const restoreEnvironment = preserveEnvironment(['ASSETS_ROOT', 'THUMBNAIL_STORAGE_PATH', 'PC2_ASSET_SERVER_URL', 'JWT_SECRET']);
+  const restorePlatform = setPlatform('darwin');
+  const originalQuery = pool.query;
+  const originalHead = axios.head;
+  const originalGet = axios.get;
+  const stagedFilesBefore = listStagedSourceFiles();
+  process.env.ASSETS_ROOT = '';
+  process.env.THUMBNAIL_STORAGE_PATH = thumbnailRoot;
+  process.env.PC2_ASSET_SERVER_URL = 'http://100.102.63.63:5000';
+  process.env.JWT_SECRET = 'thumbnail-test-secret';
+  const observed = {};
+  const databaseMock = createThumbnailDatabaseMock(asset, observed);
+  pool.query = databaseMock;
+  let requestedAuthorization;
+  axios.head = async (url, options) => {
+    assert.equal(url, 'http://100.102.63.63:5000/api/files/contributors/remote%20image.png');
+    requestedAuthorization = options.headers.authorization;
+    assert.equal(options.maxRedirects, 0);
+    return {
+      headers: {
+        'content-length': String(source.length),
+        'last-modified': 'Fri, 02 Oct 2026 12:00:00 GMT',
+      },
+    };
+  };
+  axios.get = async (url, options) => {
+    assert.equal(url, 'http://100.102.63.63:5000/api/files/contributors/remote%20image.png');
+    assert.equal(options.headers.authorization, requestedAuthorization);
+    assert.equal(options.responseType, 'stream');
+    return { data: Readable.from([source]) };
+  };
+
+  try {
+    const sourceInfo = await getAssetSourceInfo(asset.filename, asset.uploaded_by);
+    assert.equal(sourceInfo.kind, 'remote');
+    assert.equal(sourceInfo.size, source.length);
+    const result = await generateAssetThumbnail(asset.id);
+    assert.equal(result.status, 'generated');
+    assert.match(observed.assetLookupSelect, /\buploaded_by\b/);
+    assert.match(requestedAuthorization, /^Bearer /);
+    const generatedToken = require('jsonwebtoken').verify(
+      requestedAuthorization.slice('Bearer '.length),
+      process.env.JWT_SECRET
+    );
+    assert.equal(generatedToken.user, asset.uploaded_by);
+    assert.equal(generatedToken.sid, 'active-contributor-session');
+    assert.deepEqual(listStagedSourceFiles(), stagedFilesBefore);
+    assert.equal(fs.existsSync(result.thumbnailPath), true);
+  } finally {
+    pool.query = originalQuery;
+    axios.head = originalHead;
+    axios.get = originalGet;
+    restorePlatform();
+    restoreEnvironment();
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('macOS keeps using a configured local asset when it exists', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-local-'));
+  const assetsRoot = path.join(temporaryDirectory, 'assets');
+  const sourcePath = path.join(assetsRoot, 'local.png');
+  const restoreEnvironment = preserveEnvironment(['ASSETS_ROOT']);
+  const restorePlatform = setPlatform('darwin');
+  fs.mkdirSync(assetsRoot, { recursive: true });
+  fs.writeFileSync(sourcePath, 'local source');
+  process.env.ASSETS_ROOT = assetsRoot;
+
+  try {
+    const sourceInfo = await getAssetSourceInfo('local.png', 71);
+    assert.equal(sourceInfo.kind, 'local');
+    assert.equal(sourceInfo.sourcePath, fs.realpathSync(sourcePath));
+    assert.equal(sourceInfo.size, Buffer.byteLength('local source'));
+  } finally {
+    restorePlatform();
+    restoreEnvironment();
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('Windows production still requires ASSETS_ROOT', async () => {
+  const restoreEnvironment = preserveEnvironment(['ASSETS_ROOT', 'NODE_ENV']);
+  const restorePlatform = setPlatform('win32');
+  delete process.env.ASSETS_ROOT;
+  process.env.NODE_ENV = 'production';
+
+  try {
+    await assert.rejects(
+      getAssetSourceInfo('asset.png', 71),
+      /ASSETS_ROOT must be configured in Windows production/
+    );
+  } finally {
+    restorePlatform();
+    restoreEnvironment();
+  }
+});
+
+test('remote SERVER stream failure is clear and removes a partially staged source', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-remote-failure-'));
+  const thumbnailRoot = path.join(temporaryDirectory, 'thumbnails');
+  const source = Buffer.from('partial source content');
+  const asset = {
+    id: 91802,
+    title: 'Remote Failure',
+    filename: 'contributors/broken.png',
+    original_filename: 'broken.png',
+    created_date: '2026-10-02',
+    uploaded_by: 72,
+  };
+  const restoreEnvironment = preserveEnvironment(['ASSETS_ROOT', 'THUMBNAIL_STORAGE_PATH', 'PC2_ASSET_SERVER_URL', 'JWT_SECRET']);
+  const restorePlatform = setPlatform('darwin');
+  const originalQuery = pool.query;
+  const originalHead = axios.head;
+  const originalGet = axios.get;
+  const stagedFilesBefore = listStagedSourceFiles();
+  const observed = {};
+  process.env.ASSETS_ROOT = '';
+  process.env.THUMBNAIL_STORAGE_PATH = thumbnailRoot;
+  process.env.PC2_ASSET_SERVER_URL = 'http://100.102.63.63:5000';
+  process.env.JWT_SECRET = 'thumbnail-test-secret';
+  pool.query = createThumbnailDatabaseMock(asset, observed);
+  axios.head = async () => ({ headers: { 'content-length': String(source.length) } });
+  axios.get = async () => ({
+    data: Readable.from((async function* streamSource() {
+      yield source;
+      throw new Error('connection interrupted');
+    }())),
+  });
+
+  try {
+    await assert.rejects(
+      generateAssetThumbnail(asset.id),
+      /Failed to stage remote SERVER original: connection interrupted/
+    );
+    assert.match(observed.failureMessage, /Failed to stage remote SERVER original: connection interrupted/);
+    assert.deepEqual(listStagedSourceFiles(), stagedFilesBefore);
+  } finally {
+    pool.query = originalQuery;
+    axios.head = originalHead;
+    axios.get = originalGet;
+    restorePlatform();
+    restoreEnvironment();
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });

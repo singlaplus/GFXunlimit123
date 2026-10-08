@@ -15,7 +15,7 @@ const redisConnection = {
 async function main() {
   const assetRoot = String(process.env.ASSETS_ROOT || '').trim();
   if (!assetRoot) {
-    throw new Error('ASSETS_ROOT must point to the existing PC2 asset root');
+    throw new Error('ASSETS_ROOT must point to the existing SERVER asset root');
   }
 
   const queue = new Queue('thumbnail-processing', { connection: redisConnection });

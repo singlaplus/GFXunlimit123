@@ -532,7 +532,7 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
             console.error("Catalog image preview processing failed", error.message || error);
             return res.status(422).json({ error: "Image preview could not be processed" });
           }
-          console.warn("PC2 image preview optimization failed", error.message);
+          console.warn("SERVER image preview optimization failed", error.message);
           res.set("Content-Type", contentType);
           return res.send(imageBuffer);
         }
@@ -546,17 +546,17 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
     }
 
     response.data.on("error", (error) => {
-      console.error("PC2 asset stream failed", error.message);
+      console.error("SERVER asset stream failed", error.message);
       if (!res.destroyed && !res.headersSent) {
-        res.status(502).end("PC2 asset stream failed");
+        res.status(502).end("SERVER asset stream failed");
       } else {
         res.destroy(error);
       }
     });
     return response.data.pipe(res);
   } catch (error) {
-    console.error("PC2 asset proxy failed", error.message);
-    return res.status(502).json({ error: "PC2 asset server unavailable" });
+    console.error("SERVER asset proxy failed", error.message);
+    return res.status(502).json({ error: "SERVER asset server unavailable" });
   }
 };
 

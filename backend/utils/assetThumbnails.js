@@ -3,8 +3,10 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const sharp = require('sharp');
 const pool = require('../db');
 const processorFactory = require('../thumbnail-engine/processor-factory');
@@ -356,6 +358,73 @@ function getRemoteAssetUrl(filename) {
   return `${base.origin}/api/files/${encodedPath}`;
 }
 
+async function getRemoteAssetAuthorization(assetOwnerId) {
+  const userId = Number(assetOwnerId);
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('Cannot authenticate remote SERVER asset request without a valid asset owner');
+  }
+  const sessionResult = await pool.query(
+    `SELECT session_id FROM auth_sessions
+     WHERE user_id = $1 AND last_activity_at >= NOW() - INTERVAL '15 minutes'
+     ORDER BY last_activity_at DESC
+     LIMIT 1`,
+    [userId]
+  );
+  const sessionId = String(sessionResult.rows[0]?.session_id || '');
+  if (!sessionId) {
+    throw new Error('Cannot authenticate remote SERVER asset request without an active contributor session');
+  }
+  const token = jwt.sign(
+    { user: userId, sid: sessionId },
+    process.env.JWT_SECRET || 'secretkey',
+    { expiresIn: '15m' }
+  );
+  return `Bearer ${token}`;
+}
+
+function createRemoteAssetRequestError(error) {
+  const status = Number(error.response?.status);
+  const requestError = new Error(
+    Number.isInteger(status) && status > 0
+      ? `SERVER original asset request failed with HTTP ${status}`
+      : 'SERVER original asset request failed; verify SERVER availability and authorization'
+  );
+  if (Number.isInteger(status) && status > 0) {
+    requestError.response = { status };
+    if (status === 404) requestError.permanent = true;
+  }
+  return requestError;
+}
+
+async function getRemoteAssetSourceInfo(filename, assetOwnerId) {
+  const authorization = await getRemoteAssetAuthorization(assetOwnerId);
+  const url = getRemoteAssetUrl(filename);
+  let response;
+  try {
+    response = await axios.head(url, {
+      timeout: 30000,
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 300,
+      headers: { authorization },
+    });
+  } catch (error) {
+    throw createRemoteAssetRequestError(error);
+  }
+  const size = Number(response.headers['content-length']);
+  const parsedModifiedAt = response.headers['last-modified'] ? new Date(response.headers['last-modified']) : null;
+  const modifiedAt = parsedModifiedAt && Number.isFinite(parsedModifiedAt.getTime()) ? parsedModifiedAt : null;
+  if (Number.isFinite(size) && size > MAX_SOURCE_BYTES) {
+    throw new Error(`Source exceeds the ${MAX_SOURCE_BYTES} byte processing limit`);
+  }
+  return {
+    kind: 'remote',
+    url,
+    authorization,
+    size: Number.isFinite(size) ? size : null,
+    modifiedAt,
+  };
+}
+
 function getConfiguredAssetRoot() {
   const configured = String(process.env.ASSETS_ROOT || '').trim();
   if (configured) return path.resolve(configured);
@@ -378,21 +447,31 @@ async function stageLocalAsset(sourcePath, extension) {
   return { sourcePath: stagedPath, size: stats.size };
 }
 
-async function getAssetSourceInfo(filename) {
+async function getAssetSourceInfo(filename, assetOwnerId) {
   const assetRoot = getConfiguredAssetRoot();
-  if (process.platform === 'darwin' && !assetRoot) {
-    throw new Error('ASSETS_ROOT must be configured on macOS to read the mounted PC2 originals');
-  }
   if (assetRoot) {
-    const sourcePath = await resolveAssetFile(assetRoot, filename);
-    const stats = await fsp.stat(sourcePath);
-    if (stats.size > MAX_SOURCE_BYTES) throw new Error(`Source exceeds the ${MAX_SOURCE_BYTES} byte processing limit`);
-    return {
-      kind: 'local',
-      sourcePath,
-      size: stats.size,
-      modifiedAt: stats.mtime,
-    };
+    try {
+      const sourcePath = await resolveAssetFile(assetRoot, filename);
+      const stats = await fsp.stat(sourcePath);
+      if (stats.size > MAX_SOURCE_BYTES) throw new Error(`Source exceeds the ${MAX_SOURCE_BYTES} byte processing limit`);
+      return {
+        kind: 'local',
+        sourcePath,
+        size: stats.size,
+        modifiedAt: stats.mtime,
+      };
+    } catch (error) {
+      if (
+        process.platform !== 'darwin' ||
+        !['ENOENT', 'ENOTDIR', 'ASSET_ROOT_UNAVAILABLE'].includes(error.code)
+      ) {
+        throw error;
+      }
+    }
+  }
+
+  if (process.platform === 'darwin') {
+    return getRemoteAssetSourceInfo(filename, assetOwnerId);
   }
 
   const localUploadsRoot = path.resolve(__dirname, '..', 'uploads');
@@ -410,32 +489,28 @@ async function getAssetSourceInfo(filename) {
     if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
   }
 
-  const response = await axios.head(getRemoteAssetUrl(filename), {
-    timeout: 30000,
-    maxRedirects: 0,
-    validateStatus: (status) => status >= 200 && status < 300,
-  });
-  const size = Number(response.headers['content-length']);
-  const parsedModifiedAt = response.headers['last-modified'] ? new Date(response.headers['last-modified']) : null;
-  const modifiedAt = parsedModifiedAt && Number.isFinite(parsedModifiedAt.getTime()) ? parsedModifiedAt : null;
-  if (Number.isFinite(size) && size > MAX_SOURCE_BYTES) {
-    throw new Error(`Source exceeds the ${MAX_SOURCE_BYTES} byte processing limit`);
-  }
-  return { kind: 'remote', url: getRemoteAssetUrl(filename), size: Number.isFinite(size) ? size : null, modifiedAt };
+  return getRemoteAssetSourceInfo(filename, assetOwnerId);
 }
 
 async function stageRemoteAsset(assetInfo, extension) {
   const tempDirectory = getStagedSourceDirectory();
   await fsp.mkdir(tempDirectory, { recursive: true });
   const temporaryPath = path.join(tempDirectory, `${crypto.randomUUID()}${extension}`);
-  const response = await axios.get(assetInfo.url, {
-    responseType: 'stream',
-    timeout: 120000,
-    maxRedirects: 0,
-    validateStatus: (status) => status >= 200 && status < 300,
-  });
+  let response;
+  try {
+    response = await axios.get(assetInfo.url, {
+      responseType: 'stream',
+      timeout: 120000,
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 300,
+      headers: { authorization: assetInfo.authorization },
+    });
+  } catch (error) {
+    if (typeof error.response?.data?.destroy === 'function') error.response.data.destroy();
+    throw createRemoteAssetRequestError(error);
+  }
   let received = 0;
-  const guard = new (require('node:stream').Transform)({
+  const guard = new Transform({
     transform(chunk, encoding, callback) {
       received += chunk.length;
       if (received > MAX_SOURCE_BYTES) {
@@ -449,8 +524,14 @@ async function stageRemoteAsset(assetInfo, extension) {
     await pipeline(response.data, guard, fs.createWriteStream(temporaryPath, { flags: 'wx' }));
     return { sourcePath: temporaryPath, size: received };
   } catch (error) {
-    await fsp.unlink(temporaryPath).catch(() => {});
-    throw error;
+    try {
+      await fsp.unlink(temporaryPath);
+    } catch (cleanupError) {
+      if (cleanupError.code !== 'ENOENT') {
+        console.error(`Failed to remove incomplete remote SERVER source: ${cleanupError.message}`);
+      }
+    }
+    throw new Error(`Failed to stage remote SERVER original: ${error.message}`);
   }
 }
 
@@ -711,7 +792,7 @@ async function recordThumbnailQueueFailure(assetId, error) {
 async function generateAssetThumbnailUnlocked(assetId, options = {}) {
   const id = Number(assetId);
   const assetResult = await pool.query(
-    "SELECT id, title, filename, original_filename, to_char(created_at, 'YYYY-MM-DD') AS created_date FROM images WHERE id = $1",
+    "SELECT id, title, filename, original_filename, uploaded_by, to_char(created_at, 'YYYY-MM-DD') AS created_date FROM images WHERE id = $1",
     [id]
   );
   const asset = assetResult.rows[0];
@@ -733,7 +814,7 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
   let sourceInfo;
   try {
     storedFilename = normalizeStoredFilename(asset.filename);
-    sourceInfo = await getAssetSourceInfo(storedFilename);
+    sourceInfo = await getAssetSourceInfo(storedFilename, asset.uploaded_by);
   } catch (error) {
     if (['ENOENT', 'ENOTDIR', 'INVALID_ASSET_PATH'].includes(error.code) || error.response?.status === 404) {
       error.permanent = true;
