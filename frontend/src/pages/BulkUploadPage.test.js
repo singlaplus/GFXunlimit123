@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import axios from "axios";
 import BulkUploadPage from "./BulkUploadPage";
 
@@ -11,11 +11,31 @@ const finalizedResponse = (id, fileSize = 5) => ({
   data: { id, upload_complete: true, finalized: true, file_size: fileSize }
 });
 
+const useFastThumbnailPolling = () => {
+  const originalSetTimeout = window.setTimeout.bind(window);
+  jest.spyOn(window, "setTimeout").mockImplementation((callback, delay, ...args) => (
+    originalSetTimeout(callback, delay === 2000 ? 0 : delay, ...args)
+  ));
+  return async (condition) => {
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+      if (condition()) return;
+      await act(async () => {
+        await new Promise((resolve) => originalSetTimeout(resolve, 1));
+      });
+    }
+    throw new Error("Timed out waiting for Bulk Upload polling to finish.");
+  };
+};
+
 describe("BulkUploadPage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.setItem("token", "test-token");
     axios.get.mockResolvedValue({ data: [] });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it("keeps one active transfer, allows queued removal, and waits for backend finalization", async () => {
@@ -93,18 +113,23 @@ describe("BulkUploadPage", () => {
     expect(axios.post.mock.calls[1][1].get("image").name).toBe("next.jpg");
   });
 
-  it("marks an asset ready only after the thumbnail status endpoint reports READY", async () => {
+  it("continues polling when the asset is temporarily missing, then completes when READY", async () => {
+    const waitForPolling = useFastThumbnailPolling();
     axios.post.mockResolvedValue(finalizedResponse(301));
-    axios.get.mockResolvedValue({
-      data: [{ id: 301, thumbnail_status: "COMPLETED", generated_thumbnail_status: "READY" }]
-    });
+    axios.get
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({
+        data: [{ id: 301, thumbnail_status: "COMPLETED", generated_thumbnail_status: "READY" }]
+      });
 
     render(<BulkUploadPage />);
     fireEvent.change(screen.getByLabelText(/upload assets/i), {
       target: { files: [new File(["asset"], "ready.jpg")] }
     });
 
-    expect(await screen.findByText("Completed - ready to submit", {}, { timeout: 4000 })).toBeInTheDocument();
+    await waitForPolling(() => screen.queryByText("Completed - ready to submit"));
+    expect(screen.getByText("Completed - ready to submit")).toBeInTheDocument();
+    expect(axios.get).toHaveBeenCalledTimes(2);
     expect(axios.post).toHaveBeenCalledWith(
       "http://localhost:5000/upload",
       expect.any(FormData),
@@ -114,6 +139,41 @@ describe("BulkUploadPage", () => {
       "http://localhost:5000/my-uploads?view=bulk-status",
       expect.anything()
     );
+  });
+
+  it("retains thumbnail-failed handling and the backend error when FAILED is reported", async () => {
+    const waitForPolling = useFastThumbnailPolling();
+    axios.post.mockResolvedValue(finalizedResponse(302));
+    axios.get.mockResolvedValue({
+      data: [{ id: 302, generated_thumbnail_status: "FAILED", thumbnail_error: "Processor failed." }]
+    });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [new File(["asset"], "failed.jpg")] }
+    });
+
+    await waitForPolling(() => screen.queryByText("THUMBNAIL FAILED"));
+    expect(screen.getByText("THUMBNAIL FAILED")).toBeInTheDocument();
+    expect(screen.getByText("Processor failed.")).toBeInTheDocument();
+    expect(axios.get).toHaveBeenCalledTimes(8);
+  });
+
+  it("reports an availability timeout if the asset never appears during polling", async () => {
+    const waitForPolling = useFastThumbnailPolling();
+    axios.post.mockResolvedValue(finalizedResponse(303));
+    axios.get.mockResolvedValue({ data: [] });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [new File(["asset"], "missing.jpg")] }
+    });
+
+    await waitForPolling(() => screen.queryByText("THUMBNAIL FAILED"));
+    expect(screen.getByText("THUMBNAIL FAILED")).toBeInTheDocument();
+    expect(screen.getByText(/did not become available in bulk status before the thumbnail wait timed out/i)).toBeInTheDocument();
+    expect(screen.queryByText("Uploaded asset is not available to this contributor.")).not.toBeInTheDocument();
+    expect(axios.get).toHaveBeenCalledTimes(150);
   });
 
   it("rejects a batch larger than ten files without starting any transfer", async () => {

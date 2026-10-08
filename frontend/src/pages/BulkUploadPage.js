@@ -68,6 +68,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
 
   const waitForThumbnail = async (assetId, queueItemId) => {
     let failedChecks = 0;
+    let assetSeen = false;
     for (let attempt = 0; attempt < 150; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
       const response = await axios.get(`${API_BASE_URL}/my-uploads?view=bulk-status`, {
@@ -75,8 +76,10 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
       });
       const asset = (response.data || []).find((item) => Number(item.id) === Number(assetId));
       if (!asset) {
-        throw new Error("Uploaded asset is not available to this contributor.");
+        failedChecks = 0;
+        continue;
       }
+      assetSeen = true;
       const thumbnailStatus = String(asset.generated_thumbnail_status || asset.thumbnail_status || "").toUpperCase();
       if (thumbnailStatus === "READY") {
         updateItem(queueItemId, { status: "completed", progress: 100, error: "" });
@@ -100,7 +103,9 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     updateItem(queueItemId, {
       status: "thumbnail-failed",
       failureStage: "thumbnail",
-      error: "Thumbnail processing is taking longer than expected. Retry to check again."
+      error: assetSeen
+        ? "Thumbnail processing is taking longer than expected. Retry to check again."
+        : "Uploaded asset did not become available in bulk status before the thumbnail wait timed out."
     });
   };
 
