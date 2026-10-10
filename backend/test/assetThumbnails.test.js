@@ -18,6 +18,7 @@ const {
   getThumbnailCacheControl,
   getProcessorVersion,
   getThumbnailStorageRoot,
+  getLifecycleRecoveryStorageRoots,
   getAssetSourceInfo,
   isValidThumbnailFile,
   finalizeThumbnailFile,
@@ -52,6 +53,21 @@ function preserveEnvironment(names) {
     }
   };
 }
+
+test('macOS lifecycle recovery does not require local asset or thumbnail roots', () => {
+  const restoreEnvironment = preserveEnvironment(['ASSETS_ROOT', 'THUMBNAIL_STORAGE_PATH']);
+  delete process.env.ASSETS_ROOT;
+  delete process.env.THUMBNAIL_STORAGE_PATH;
+
+  try {
+    assert.deepEqual(
+      getLifecycleRecoveryStorageRoots({ platform: 'darwin' }),
+      { assetRoot: null, thumbnailRoot: null }
+    );
+  } finally {
+    restoreEnvironment();
+  }
+});
 
 function createThumbnailDatabaseMock(asset, observed = {}) {
   let record = null;
@@ -425,6 +441,7 @@ test('generation skips valid thumbnails and repairs missing files', async () => 
     id: 90817,
     title: 'Beautiful Summer Flowers',
     filename: 'summer flowers final.png',
+    uploaded_by: 227,
     created_date: '2026-10-02',
   };
   const previousAssetsRoot = process.env.ASSETS_ROOT;
@@ -435,7 +452,7 @@ test('generation skips valid thumbnails and repairs missing files', async () => 
   process.env.ASSETS_ROOT = assetsRoot;
   process.env.THUMBNAIL_STORAGE_PATH = thumbnailsRoot;
   pool.query = async (sql, values = []) => {
-    if (/SELECT id, title, filename, original_filename, to_char\(created_at/.test(sql)) {
+    if (/SELECT id, title, filename, original_filename, uploaded_by, to_char\(created_at/.test(sql)) {
       return { rows: [asset] };
     }
     if (/SELECT \* FROM asset_thumbnail_metadata/.test(sql)) return { rows: record ? [record] : [] };

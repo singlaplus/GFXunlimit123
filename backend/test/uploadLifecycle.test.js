@@ -11,10 +11,18 @@ const thumbnailQueue = require('../thumbnail-queue-worker');
 
 process.env.DISABLE_EMAIL_SCHEDULER = 'true';
 process.env.DISABLE_CURRENCY_SCHEDULER = 'true';
+const previousSchemaInitialization = process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION;
+const previousUserDeletionScheduler = process.env.DISABLE_USER_DELETION_SCHEDULER;
+process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION = 'true';
+process.env.DISABLE_USER_DELETION_SCHEDULER = 'true';
 const originalCronSchedule = cron.schedule;
 cron.schedule = () => ({ stop() {} });
 const { app } = require('../server');
 cron.schedule = originalCronSchedule;
+if (previousSchemaInitialization === undefined) delete process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION;
+else process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION = previousSchemaInitialization;
+if (previousUserDeletionScheduler === undefined) delete process.env.DISABLE_USER_DELETION_SCHEDULER;
+else process.env.DISABLE_USER_DELETION_SCHEDULER = previousUserDeletionScheduler;
 
 const contributorId = 54031;
 const token = jwt.sign({ user: contributorId }, process.env.JWT_SECRET || 'secretkey');
@@ -111,7 +119,13 @@ test('finalizes a complete upload in Pending and responds only with verified fil
     }
     return { rows: [{ id: 1 }], rowCount: 1 };
   };
-  thumbnailQueue.queueAssetThumbnailJob = async () => 'test-thumbnail-job';
+  thumbnailQueue.queueAssetThumbnailJob = async () => {
+    const finalizedPath = path.join(temporaryRoot, insertedImage.filename);
+    const stats = await fs.stat(finalizedPath);
+    assert.equal(stats.isFile(), true);
+    assert.equal(stats.size, insertedImage.file_size);
+    return 'test-thumbnail-job';
+  };
   const server = await startServer(t);
   const boundary = '----gfx-upload-lifecycle-success';
   const response = await sendUpload(
@@ -127,7 +141,9 @@ test('finalizes a complete upload in Pending and responds only with verified fil
   assert.equal(body.file_size, 5);
   assert.equal(insertedImage.status, 'upload_processing');
   assert.equal(insertedImage.filename.startsWith('.upload-staging/'), false);
-  await fs.access(path.join(temporaryRoot, insertedImage.filename));
+  const finalizedStats = await fs.stat(path.join(temporaryRoot, insertedImage.filename));
+  assert.equal(finalizedStats.isFile(), true);
+  assert.equal(finalizedStats.size, insertedImage.file_size);
   assert.deepEqual(await getDirectoryEntries(path.join(temporaryRoot, '.upload-staging')), []);
 });
 

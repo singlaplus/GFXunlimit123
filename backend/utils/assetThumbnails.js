@@ -438,6 +438,20 @@ function getOriginalAssetStorageRoot() {
   return getConfiguredAssetRoot() || path.resolve(__dirname, '..', 'uploads');
 }
 
+function getLifecycleRecoveryStorageRoots({ platform = process.platform } = {}) {
+  const originalRootConfigured = String(process.env.ASSETS_ROOT || '').trim();
+  const thumbnailRootConfigured = String(process.env.THUMBNAIL_STORAGE_PATH || '').trim();
+
+  return {
+    assetRoot: platform === 'darwin' && !originalRootConfigured
+      ? null
+      : getOriginalAssetStorageRoot(),
+    thumbnailRoot: platform === 'darwin' && !thumbnailRootConfigured
+      ? null
+      : getThumbnailStorageRoot(),
+  };
+}
+
 async function stageLocalAsset(sourcePath, extension) {
   const tempDirectory = getStagedSourceDirectory();
   await fsp.mkdir(tempDirectory, { recursive: true });
@@ -1232,6 +1246,7 @@ module.exports = {
   getThumbnailFilename,
   getThumbnailStorageRoot,
   getOriginalAssetStorageRoot,
+  getLifecycleRecoveryStorageRoots,
   getThumbnailCacheControl,
   finalizeThumbnailFile,
   isValidThumbnailFile,

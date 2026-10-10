@@ -26,6 +26,8 @@ const { getAssetSourceDimensions } = require("./utils/assetDimensions");
 const thumbnailQueue = require("./thumbnail-queue-worker");
 const assetThumbnails = require("./utils/assetThumbnails");
 const { deleteAssetCompletely } = require("./services/assetDeletion");
+const { moveAssetFileAndUpdate } = require("./services/assetFileMove");
+const { recoverAssetLifecycleOperations } = require("./services/assetLifecycleOperations");
 const ProcessorDetector = require("./thumbnail-engine/processor-detector");
 const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
 const restoreRoutes = require("./routes/restore-routes");
@@ -4317,7 +4319,7 @@ const getCollectionsList = async () => {
 };
 
 // Ensure credits_history and image metadata columns exist
-(async () => {
+if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS credit_price_settings (
@@ -8929,6 +8931,13 @@ app.delete(
         assetTitle: result.asset.title,
         ownerId: result.asset.uploaded_by
       });
+      if (result.cleanupPending) {
+        return res.status(202).json({
+          error: "Asset deletion completed; file cleanup remains queued for recovery.",
+          deleted: true,
+          cleanup_pending: true,
+        });
+      }
       res.json("Image deleted successfully");
     } catch (err) {
       console.error(err);
@@ -10997,75 +11006,33 @@ const moveGeneratedThumbnailFile = (currentFilename) => {
   return getPublicThumbnailUrl(relativeThumbPath);
 };
 
-const moveImageFile = async (currentFilename, newStatus) => {
-  if (!currentFilename) {
-    return null;
-  }
-
-  const normalized = currentFilename.replace(/\\/g, "/");
-  const parts = normalized.split("/");
-  const fileName = parts.pop();
-  const statusFolders = ["Pending", "Approved", "Rejected"];
-  let targetParts = parts;
-
-  if (statusFolders.includes(parts[parts.length - 1])) {
-    targetParts = [...parts.slice(0, -1), newStatus];
-  } else {
-    targetParts = [...parts, newStatus];
-  }
-
-  const newRelativePath = [...targetParts, fileName].join("/");
-  const oldPath = path.join(assetThumbnails.getOriginalAssetStorageRoot(), ...normalized.split("/"));
-  const newPath = path.join(assetThumbnails.getOriginalAssetStorageRoot(), ...newRelativePath.split("/"));
-
-  fs.mkdirSync(path.dirname(newPath), { recursive: true });
-
-  if (fs.existsSync(oldPath)) {
-    fs.renameSync(oldPath, newPath);
-  }
-
-  return newRelativePath;
-};
-
 app.put(
   "/admin/approve/:id",
   verifyAdmin,
   async (req, res) => {
     try {
       const { id } = req.params;
-      const imageResult = await pool.query(
-        `
-        SELECT filename, status, uploaded_by
-        FROM images
-        WHERE id = $1
-        `,
-        [id]
+      const moveResult = await moveAssetFileAndUpdate(
+        pool,
+        id,
+        "Approved",
+        assetThumbnails.getOriginalAssetStorageRoot()
       );
-
-      if (imageResult.rows.length === 0) {
-        return res.status(404).json("Image not found");
+      if (moveResult.notFound) return res.status(404).json("Image not found");
+      const movedThumbnailUrl = moveGeneratedThumbnailFile(moveResult.previousFilename);
+      let image = moveResult.asset;
+      if (movedThumbnailUrl) {
+        const thumbnailUpdate = await pool.query(
+          `UPDATE images SET thumbnail_url = $1 WHERE id = $2 RETURNING *`,
+          [movedThumbnailUrl, id]
+        );
+        image = thumbnailUpdate.rows[0] || image;
       }
 
-      const newFilename = await moveImageFile(
-        imageResult.rows[0].filename,
-        "Approved"
-      );
-      const movedThumbnailUrl = moveGeneratedThumbnailFile(imageResult.rows[0].filename);
+      await recordAdminAudit(req, 'ADMIN_ASSET_UPDATED', `Admin approved asset #${id}`, { status: moveResult.previousStatus }, { status: 'approved' }, { asset_id: Number(id), contributor_id: moveResult.asset.uploaded_by, action: 'approve' });
+      await createAssetNotifications(pool, { userIds: [moveResult.asset.uploaded_by], eventType: 'ASSET_APPROVED', assetTitle: image.title, ownerId: moveResult.asset.uploaded_by, actorId: req.user.id, status: 'approved' });
 
-      const image = await pool.query(
-        `
-        UPDATE images
-        SET status = 'approved', filename = $1, thumbnail_url = COALESCE($2, thumbnail_url), reviewed_at = NOW()
-        WHERE id = $3
-        RETURNING *
-        `,
-        [newFilename, movedThumbnailUrl, id]
-      );
-
-      await recordAdminAudit(req, 'ADMIN_ASSET_UPDATED', `Admin approved asset #${id}`, { status: imageResult.rows[0].status }, { status: 'approved' }, { asset_id: Number(id), contributor_id: imageResult.rows[0].uploaded_by, action: 'approve' });
-      await createAssetNotifications(pool, { userIds: [imageResult.rows[0].uploaded_by], eventType: 'ASSET_APPROVED', assetTitle: image.rows[0].title, ownerId: imageResult.rows[0].uploaded_by, actorId: req.user.id, status: 'approved' });
-
-      res.json(image.rows[0]);
+      res.json(image);
     } catch (err) {
       console.error(err);
       res.status(500).send("Approve error");
@@ -11080,39 +11047,27 @@ app.put(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const imageResult = await pool.query(
-        `
-        SELECT filename, status, uploaded_by
-        FROM images
-        WHERE id = $1
-        `,
-        [id]
+      const moveResult = await moveAssetFileAndUpdate(
+        pool,
+        id,
+        "Rejected",
+        assetThumbnails.getOriginalAssetStorageRoot()
       );
-
-      if (imageResult.rows.length === 0) {
-        return res.status(404).json("Image not found");
+      if (moveResult.notFound) return res.status(404).json("Image not found");
+      const movedThumbnailUrl = moveGeneratedThumbnailFile(moveResult.previousFilename);
+      let image = moveResult.asset;
+      if (movedThumbnailUrl) {
+        const thumbnailUpdate = await pool.query(
+          `UPDATE images SET thumbnail_url = $1 WHERE id = $2 RETURNING *`,
+          [movedThumbnailUrl, id]
+        );
+        image = thumbnailUpdate.rows[0] || image;
       }
 
-      const newFilename = await moveImageFile(
-        imageResult.rows[0].filename,
-        "Rejected"
-      );
-      const movedThumbnailUrl = moveGeneratedThumbnailFile(imageResult.rows[0].filename);
+      await recordAdminAudit(req, 'ADMIN_ASSET_UPDATED', `Admin rejected asset #${id}`, { status: moveResult.previousStatus }, { status: 'rejected' }, { asset_id: Number(id), contributor_id: moveResult.asset.uploaded_by, action: 'reject' });
+      await createAssetNotifications(pool, { userIds: [moveResult.asset.uploaded_by], eventType: 'ASSET_REJECTED', assetTitle: image.title, ownerId: moveResult.asset.uploaded_by, actorId: req.user.id, status: 'rejected' });
 
-      const image = await pool.query(
-        `
-        UPDATE images
-        SET status = 'rejected', filename = $1, thumbnail_url = COALESCE($2, thumbnail_url), reviewed_at = NOW()
-        WHERE id = $3
-        RETURNING *
-        `,
-        [newFilename, movedThumbnailUrl, id]
-      );
-
-      await recordAdminAudit(req, 'ADMIN_ASSET_UPDATED', `Admin rejected asset #${id}`, { status: imageResult.rows[0].status }, { status: 'rejected' }, { asset_id: Number(id), contributor_id: imageResult.rows[0].uploaded_by, action: 'reject' });
-      await createAssetNotifications(pool, { userIds: [imageResult.rows[0].uploaded_by], eventType: 'ASSET_REJECTED', assetTitle: image.rows[0].title, ownerId: imageResult.rows[0].uploaded_by, actorId: req.user.id, status: 'rejected' });
-
-      res.json(image.rows[0]);
+      res.json(image);
     } catch (err) {
       console.error(err);
       res.status(500).send("Reject error");
@@ -11901,12 +11856,14 @@ app.delete("/admin/users/:id", verifyAdmin, async (req, res) => {
   }
 });
 
-try {
-  const cron = require('node-cron');
-  cron.schedule('* * * * *', processDueUserDeletions);
-  processDueUserDeletions();
-} catch (err) {
-  console.warn('User deletion scheduler setup skipped', err.message || err);
+if (process.env.DISABLE_USER_DELETION_SCHEDULER !== 'true') {
+  try {
+    const cron = require('node-cron');
+    cron.schedule('* * * * *', processDueUserDeletions);
+    processDueUserDeletions();
+  } catch (err) {
+    console.warn('User deletion scheduler setup skipped', err.message || err);
+  }
 }
 
 app.delete("/admin/users/:id/cancel-deletion", verifyAdmin, async (req, res) => {
@@ -13774,6 +13731,11 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(contributorCommissionMigration);
+      const assetLifecycleMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "029_asset_lifecycle_operations.sql"),
+        "utf8"
+      );
+      await pool.query(assetLifecycleMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);
@@ -13782,16 +13744,30 @@ async function initializeThumbnailSystem() {
     const thumbnailSchema = await pool.query(`
       SELECT
         to_regclass('public.asset_thumbnail_metadata') AS thumbnail_metadata,
-        to_regclass('public.asset_thumbnail_orphans') AS orphans
+        to_regclass('public.asset_thumbnail_orphans') AS orphans,
+        to_regclass('public.asset_lifecycle_operations') AS lifecycle_operations
     `);
     schemaReady = Boolean(
       thumbnailSchema.rows[0]?.thumbnail_metadata &&
-      thumbnailSchema.rows[0]?.orphans
+      thumbnailSchema.rows[0]?.orphans &&
+      thumbnailSchema.rows[0]?.lifecycle_operations
     );
     if (!schemaReady) {
       console.error(
-        "Thumbnail schema is incomplete. Back up PostgreSQL and apply migration 028 as a separate deployment step."
+        "Thumbnail or asset lifecycle schema is incomplete. Back up PostgreSQL and apply the required migrations 028 and 029."
       );
+      return false;
+    }
+
+    try {
+      const recoveryRoots = assetThumbnails.getLifecycleRecoveryStorageRoots();
+      const recovery = await recoverAssetLifecycleOperations(pool, recoveryRoots);
+      console.log(`Asset lifecycle recovery finished: ${recovery.recovered} recovered, ${recovery.failed} pending.`);
+      if (recovery.failed > 0) {
+        console.warn('Some asset lifecycle operations remain pending because their required local storage is unavailable or unsafe.');
+      }
+    } catch (error) {
+      console.error("Asset lifecycle recovery could not start:", error);
       return false;
     }
 
