@@ -248,6 +248,7 @@ function normalizeAutomaticSchedule(input) {
   const destination = typeof input?.destination === 'string' ? input.destination.trim() : '';
   if (!destination) throw new Error('Select and test an automatic backup destination.');
   return {
+    id: String(input?.id || crypto.randomUUID()),
     enabled: Boolean(input?.enabled),
     destination,
     selectedTypes,
@@ -257,7 +258,8 @@ function normalizeAutomaticSchedule(input) {
     monthlyDay,
     timezone: SCHEDULE_TIMEZONE,
     lastRunSlot: String(input?.lastRunSlot || ''),
-    lastRun: input?.lastRun || null
+    lastRun: input?.lastRun || null,
+    pendingRun: input?.pendingRun || null
   };
 }
 
@@ -383,6 +385,7 @@ function createBackupService(options = {}) {
   const scheduleFile = path.join(stateDirectory, 'automatic-schedule.json');
   let automaticScheduleCache = null;
   let scheduleTickRunning = false;
+  let automaticLaunchRunning = false;
   const scheduleTimer = setInterval(() => {
     tickAutomaticSchedule().catch((error) => {
       console.error('Automatic backup scheduler failed:', formatError(error));
@@ -422,79 +425,113 @@ function createBackupService(options = {}) {
     if (automaticScheduleCache) return automaticScheduleCache;
     try {
       const stored = JSON.parse(await fsp.readFile(scheduleFile, 'utf8'));
-      automaticScheduleCache = normalizeAutomaticSchedule(stored);
+      const storedSchedules = Array.isArray(stored?.schedules)
+        ? stored.schedules
+        : stored && typeof stored === 'object'
+          ? [{ ...stored, id: stored.id || 'default' }]
+          : [];
+      automaticScheduleCache = storedSchedules.map((schedule) => normalizeAutomaticSchedule(schedule));
+      if (!Array.isArray(stored?.schedules)) await persistAutomaticSchedule(automaticScheduleCache);
     } catch (error) {
       if (error.code !== 'ENOENT') throw new Error(`Automatic backup schedule could not be read: ${formatError(error)}`);
-      automaticScheduleCache = null;
+      automaticScheduleCache = [];
     }
     return automaticScheduleCache;
   }
 
-  async function persistAutomaticSchedule(schedule) {
+  async function persistAutomaticSchedule(schedules) {
     await fsp.mkdir(stateDirectory, { recursive: true });
     const temporary = `${scheduleFile}.${crypto.randomUUID()}.tmp`;
-    await fsp.writeFile(temporary, JSON.stringify(schedule, null, 2), { mode: 0o600 });
+    await fsp.writeFile(temporary, JSON.stringify({ schedules }, null, 2), { mode: 0o600 });
     await fsp.rename(temporary, scheduleFile);
-    automaticScheduleCache = schedule;
+    automaticScheduleCache = schedules;
   }
 
-  function publicAutomaticSchedule(schedule, now = clock()) {
-    if (!schedule) {
-      return {
-        configured: false,
-        enabled: false,
-        destination: '',
-        selectedTypes: ['database', 'websiteCode'],
-        frequency: 'daily',
-        time: '02:00',
-        weeklyDay: 0,
-        monthlyDay: 1,
-        timezone: SCHEDULE_TIMEZONE,
-        nextRun: null,
-        lastRun: null
-      };
-    }
-    return {
+  function publicAutomaticSchedule(schedules, now = clock()) {
+    const publicSchedules = schedules.map((schedule) => ({
       ...schedule,
       nextRun: schedule.enabled ? getNextScheduleDate(schedule, now).toISOString() : null
+    }));
+    const primary = publicSchedules[0] || {
+      configured: false,
+      enabled: false,
+      destination: '',
+      selectedTypes: ['database', 'websiteCode'],
+      frequency: 'daily',
+      time: '02:00',
+      weeklyDay: 0,
+      monthlyDay: 1,
+      timezone: SCHEDULE_TIMEZONE,
+      nextRun: null,
+      lastRun: null
     };
+    return { ...primary, schedules: publicSchedules };
   }
 
   async function getAutomaticSchedule() {
     return publicAutomaticSchedule(await readAutomaticSchedule());
   }
 
-  async function saveAutomaticSchedule(input) {
-    const normalized = normalizeAutomaticSchedule(input);
-    assertSafeDestination(normalized.destination, [clientExportRoot]);
-    if (await pathsOverlapWithClientExportRoot(normalized.destination)) {
-      throw new Error('Automatic backup destination cannot overlap the server-managed Mac export staging location.');
-    }
-    normalized.destination = await resolveCanonicalProspectivePath(normalized.destination);
-    const previous = await readAutomaticSchedule();
-    if (normalized.enabled) {
-      const testedDestination = await testDestination(normalized.destination);
-      normalized.destination = testedDestination.path;
-      const runDate = getNextScheduleDate(normalized, clock());
-      const folder = await getAutomaticFolderSelection(normalized, runDate);
-      const plan = await buildPlan({
-        categories: normalized.selectedTypes,
-        destinations: [normalized.destination],
-        capacityReclaimBytes: [folder.reclaimBytes]
-      });
-      if (!plan.ready) {
-        throw new Error(`Automatic backup preflight failed:\n${plan.issues.join('\n')}`);
+  async function saveAutomaticSchedules(inputs) {
+    if (!Array.isArray(inputs)) throw new Error('Automatic backup schedules must be provided as a list.');
+    const previousSchedules = await readAutomaticSchedule();
+    const previousById = new Map(previousSchedules.map((schedule) => [schedule.id, schedule]));
+    const normalizedSchedules = [];
+    const seenIds = new Set();
+    const seenDestinations = new Set();
+    for (const input of inputs) {
+      const normalized = normalizeAutomaticSchedule(input);
+      if (seenIds.has(normalized.id)) throw new Error('Automatic backup schedule IDs must be unique.');
+      seenIds.add(normalized.id);
+      assertSafeDestination(normalized.destination, [clientExportRoot]);
+      if (await pathsOverlapWithClientExportRoot(normalized.destination)) {
+        throw new Error('Automatic backup destination cannot overlap the server-managed Mac export staging location.');
       }
+      normalized.destination = await resolveCanonicalProspectivePath(normalized.destination);
+      const destinationApi = pathApiFor(normalized.destination);
+      const destinationKey = destinationApi.sep === '\\'
+        ? normalized.destination.toLocaleLowerCase('en-US')
+        : normalized.destination;
+      if (seenDestinations.has(destinationKey)) {
+        throw new Error('Each automatic backup schedule must use a different server destination to prevent one schedule from replacing another schedule’s backup folder.');
+      }
+      seenDestinations.add(destinationKey);
+      if (normalized.enabled) {
+        const testedDestination = await testDestination(normalized.destination);
+        normalized.destination = testedDestination.path;
+        const runDate = getNextScheduleDate(normalized, clock());
+        const folder = await getAutomaticFolderSelection(normalized, runDate);
+        const plan = await buildPlan({
+          categories: normalized.selectedTypes,
+          destinations: [normalized.destination],
+          capacityReclaimBytes: [folder.reclaimBytes]
+        });
+        if (!plan.ready) {
+          throw new Error(`Automatic backup preflight failed:\n${plan.issues.join('\n')}`);
+        }
+      }
+      const previous = previousById.get(normalized.id);
+      const sameTrigger = previous &&
+        previous.frequency === normalized.frequency &&
+        previous.time === normalized.time &&
+        previous.weeklyDay === normalized.weeklyDay &&
+        previous.monthlyDay === normalized.monthlyDay;
+      const sameConfiguration = sameTrigger &&
+        previous.enabled === normalized.enabled &&
+        previous.destination === normalized.destination &&
+        previous.selectedTypes.length === normalized.selectedTypes.length &&
+        previous.selectedTypes.every((type, index) => type === normalized.selectedTypes[index]);
+      normalized.lastRunSlot = sameTrigger ? previous.lastRunSlot : '';
+      normalized.lastRun = previous?.lastRun || null;
+      normalized.pendingRun = sameConfiguration ? previous.pendingRun : null;
+      normalizedSchedules.push(normalized);
     }
-    const sameTrigger = previous &&
-      previous.frequency === normalized.frequency &&
-      previous.time === normalized.time &&
-      previous.weeklyDay === normalized.weeklyDay &&
-      previous.monthlyDay === normalized.monthlyDay;
-    normalized.lastRunSlot = sameTrigger ? previous.lastRunSlot : '';
-    normalized.lastRun = previous?.lastRun || null;
-    await persistAutomaticSchedule(normalized);
-    return publicAutomaticSchedule(normalized);
+    await persistAutomaticSchedule(normalizedSchedules);
+    return publicAutomaticSchedule(normalizedSchedules);
+  }
+
+  async function saveAutomaticSchedule(input) {
+    return saveAutomaticSchedules([input]);
   }
 
   async function getTreeBytes(rootPath) {
@@ -594,6 +631,7 @@ function createBackupService(options = {}) {
       id: job.id,
       backupType: job.backupType || 'MANUAL',
       clientExport: Boolean(job.clientExport),
+      automaticScheduleId: job.automaticScheduleId || null,
       automaticFrequency: job.automaticFrequency || null,
       automaticRunDate: job.automaticRunDate || null,
       status: job.status,
@@ -647,6 +685,7 @@ function createBackupService(options = {}) {
       id: job.id,
       backupType: job.backupType || 'MANUAL',
       clientExport: Boolean(job.clientExport),
+      automaticScheduleId: job.automaticScheduleId || null,
       automaticFrequency: job.automaticFrequency || null,
       automaticRunDate: job.automaticRunDate || null,
       status: job.status,
@@ -1865,6 +1904,7 @@ function createBackupService(options = {}) {
       status: 'RUNNING',
       backupType: automatic ? 'AUTOMATIC' : 'MANUAL',
       clientExport,
+      automaticScheduleId: automatic?.scheduleId || null,
       automaticFrequency: automatic?.frequency || null,
       automaticRunDate: automatic?.runDate ? getLocalDateKey(automatic.runDate) : null,
       selectedTypes: plan.selectedTypes,
@@ -1974,6 +2014,7 @@ function createBackupService(options = {}) {
       id: `GFX-AUTO-${now.toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${crypto.randomUUID()}`,
       status: 'FAILED',
       backupType: 'AUTOMATIC',
+      automaticScheduleId: schedule.id,
       automaticFrequency: schedule.frequency,
       automaticRunDate: getLocalDateKey(runDate),
       selectedTypes: schedule.selectedTypes,
@@ -1992,8 +2033,10 @@ function createBackupService(options = {}) {
     history.unshift(job);
     historyCache = history.slice(0, 200);
     await persistHistory();
-    const current = await readAutomaticSchedule();
+    const schedules = await readAutomaticSchedule();
+    const current = schedules.find((entry) => entry.id === schedule.id);
     if (current) {
+      current.pendingRun = null;
       current.lastRun = {
         jobId: job.id,
         startedAt: job.startedAt,
@@ -2004,12 +2047,13 @@ function createBackupService(options = {}) {
         frequency: schedule.frequency,
         error: formatError(error)
       };
-      await persistAutomaticSchedule(current);
+      await persistAutomaticSchedule(schedules);
     }
   }
 
   async function finishAutomaticRun(job) {
-    const schedule = await readAutomaticSchedule();
+    const schedules = await readAutomaticSchedule();
+    const schedule = schedules.find((entry) => entry.id === job.automaticScheduleId);
     if (!schedule) return;
     schedule.lastRun = {
       jobId: job.id,
@@ -2021,37 +2065,46 @@ function createBackupService(options = {}) {
       frequency: job.automaticFrequency,
       error: job.errors?.map((entry) => entry.message).join('; ') || null
     };
-    await persistAutomaticSchedule(schedule);
+    schedule.pendingRun = null;
+    await persistAutomaticSchedule(schedules);
   }
 
   async function launchAutomaticRun(schedule, runDate) {
-    let started;
+    if (activeJobId || automaticLaunchRunning) return;
+    automaticLaunchRunning = true;
     try {
-      const destination = await testDestination(schedule.destination);
-      const runSchedule = { ...schedule, destination: destination.path };
-      const folder = await getAutomaticFolderSelection(runSchedule, runDate);
-      started = await createJob({
-        categories: schedule.selectedTypes,
-        destinations: [destination.path],
-        automatic: { frequency: schedule.frequency, runDate, folder }
-      });
-    } catch (error) {
-      await recordAutomaticFailure(schedule, runDate, error);
-      return;
-    }
-    const latest = await readAutomaticSchedule();
-    if (latest) {
-      latest.lastRun = {
-        jobId: started.id,
-        startedAt: started.startedAt,
-        completedAt: null,
-        status: 'RUNNING',
-        verificationStatus: 'IN_PROGRESS',
-        totalBytes: started.totalBytes,
-        frequency: schedule.frequency,
-        error: null
-      };
-      await persistAutomaticSchedule(latest);
+      let started;
+      try {
+        const destination = await testDestination(schedule.destination);
+        const runSchedule = { ...schedule, destination: destination.path };
+        const folder = await getAutomaticFolderSelection(runSchedule, runDate);
+        started = await createJob({
+          categories: schedule.selectedTypes,
+          destinations: [destination.path],
+          automatic: { scheduleId: schedule.id, frequency: schedule.frequency, runDate, folder }
+        });
+      } catch (error) {
+        await recordAutomaticFailure(schedule, runDate, error);
+        return;
+      }
+      const latestSchedules = await readAutomaticSchedule();
+      const latest = latestSchedules.find((entry) => entry.id === schedule.id);
+      if (latest) {
+        latest.pendingRun = null;
+        latest.lastRun = {
+          jobId: started.id,
+          startedAt: started.startedAt,
+          completedAt: null,
+          status: 'RUNNING',
+          verificationStatus: 'IN_PROGRESS',
+          totalBytes: started.totalBytes,
+          frequency: schedule.frequency,
+          error: null
+        };
+        await persistAutomaticSchedule(latestSchedules);
+      }
+    } finally {
+      automaticLaunchRunning = false;
     }
   }
 
@@ -2059,23 +2112,32 @@ function createBackupService(options = {}) {
     if (scheduleTickRunning) return;
     scheduleTickRunning = true;
     try {
-      const schedule = await readAutomaticSchedule();
-      if (!schedule?.enabled || !isScheduledMinute(schedule, now)) return;
-      const slot = scheduleSlotKey(schedule, now);
-      if (schedule.lastRunSlot === slot) return;
-      schedule.lastRunSlot = slot;
-      schedule.lastRun = {
-        ...(schedule.lastRun || {}),
-        startedAt: now.toISOString(),
-        completedAt: null,
-        status: 'RUNNING',
-        verificationStatus: 'IN_PROGRESS',
-        frequency: schedule.frequency,
-        totalBytes: 0,
-        error: null
-      };
-      await persistAutomaticSchedule(schedule);
-      void launchAutomaticRun(schedule, now);
+      const schedules = await readAutomaticSchedule();
+      let changed = false;
+      for (const schedule of schedules) {
+        if (!schedule.enabled || schedule.pendingRun || !isScheduledMinute(schedule, now)) continue;
+        const slot = scheduleSlotKey(schedule, now);
+        if (schedule.lastRunSlot === slot) continue;
+        schedule.lastRunSlot = slot;
+        schedule.pendingRun = { slot, runDate: now.toISOString() };
+        schedule.lastRun = {
+          ...(schedule.lastRun || {}),
+          startedAt: now.toISOString(),
+          completedAt: null,
+          status: activeJobId ? 'QUEUED' : 'RUNNING',
+          verificationStatus: 'IN_PROGRESS',
+          frequency: schedule.frequency,
+          totalBytes: 0,
+          error: null
+        };
+        changed = true;
+      }
+      if (changed) await persistAutomaticSchedule(schedules);
+      if (activeJobId || automaticLaunchRunning) return;
+      const queued = schedules.find((schedule) => schedule.enabled && schedule.pendingRun);
+      if (queued) {
+        void launchAutomaticRun(queued, new Date(queued.pendingRun.runDate));
+      }
     } finally {
       scheduleTickRunning = false;
     }
@@ -2903,6 +2965,7 @@ function createBackupService(options = {}) {
     testDriveSet,
     getSourceMetrics,
     saveAutomaticSchedule,
+    saveAutomaticSchedules,
     tickAutomaticSchedule
   };
 }

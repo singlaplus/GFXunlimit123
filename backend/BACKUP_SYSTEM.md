@@ -46,7 +46,7 @@ Manual jobs may alternatively select **This Mac** in the Backup Center. Before p
 
 ## Automatic schedules
 
-The Admin page stores one automatic schedule on the PC2 backend in `backend/backup-system/automatic-schedule.json`. Its server-side scheduler checks the configured time every 15 seconds; closing the browser does not stop a run. The schedule uses the fixed `Asia/Kolkata` timezone. Daily, weekly, and monthly dates are calculated at runtime. Weekly schedules select a weekday; monthly schedules select a day from 1 through 31, with 31 mapped to the last day of shorter months.
+The Admin page stores multiple automatic schedules on the PC2 backend in `backend/backup-system/automatic-schedule.json`; existing single-schedule files are upgraded to the list format when first read. Each schedule has its own destination, selected backup types, frequency, and time. Destinations must be distinct so schedules cannot replace one another's date folders. The server-side scheduler checks configured times every 15 seconds; when several schedules are due together, they are queued and run one at a time. Closing the browser does not stop a run. Schedules use the fixed `Asia/Kolkata` timezone. Daily, weekly, and monthly dates are calculated at runtime. Weekly schedules select a weekday; monthly schedules select a day from 1 through 31, with 31 mapped to the last day of shorter months.
 
 Automatic jobs use the same source inventory, capacity planner, 90% safety limit, streaming copy, checksums, manifest, and verification as manual jobs. Database and Website Code are selected by default; Assets and Thumbnails can be explicitly enabled and must pass the same complete-group capacity checks. Each run is written under:
 

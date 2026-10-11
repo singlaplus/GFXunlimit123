@@ -193,7 +193,12 @@ describe("AdminBackupPage", () => {
         selectedTypes: ["database", "websiteCode"],
         drives: []
       } });
-      if (method === "put" && url.endsWith("/automatic")) return Promise.resolve({ data: { schedule: { configured: true, enabled: false, destination: "D:\\GFXunlimitBackups", selectedTypes: ["database", "websiteCode"], frequency: "daily", time: "02:00", timezone: "Asia/Kolkata", nextRun: null, lastRun: null } } });
+      if (method === "put" && url.endsWith("/automatic")) return Promise.resolve({
+        data: {
+          schedules: data?.schedules || [],
+          schedule: { ...(data?.schedules?.[0] || {}), schedules: data?.schedules || [] }
+        }
+      });
       return Promise.reject(new Error(`Unexpected API request: ${method} ${url}`));
     });
   });
@@ -608,30 +613,27 @@ describe("AdminBackupPage", () => {
       method: "put",
       url: "http://localhost:5000/admin/backup/automatic",
       data: expect.objectContaining({
-        frequency: "monthly",
-        time: "03:15",
-        selectedTypes: ["database", "websiteCode"]
+        schedules: expect.arrayContaining([
+          expect.objectContaining({
+            frequency: "monthly",
+            time: "03:15",
+            selectedTypes: ["database", "websiteCode"]
+          })
+        ])
       })
     })));
   });
 
-  test("Saved Schedule popup shows only the live persisted schedule, not unsaved edits or run history", async () => {
+  test("Saved Schedule popup lists every live persisted schedule, not unsaved edits or run history", async () => {
     const defaultRequest = axios.getMockImplementation();
     axios.mockImplementation((config) => {
       if (config.method === "get" && config.url.endsWith("/automatic")) {
-        return Promise.resolve({ data: { schedule: {
-          configured: true,
-          enabled: true,
-          destination: "D:\\SavedBackups",
-          selectedTypes: ["database", "websiteCode"],
-          frequency: "daily",
-          time: "02:00",
-          weeklyDay: 0,
-          monthlyDay: 1,
-          timezone: "Asia/Kolkata",
-          nextRun: "2026-10-12T02:00:00.000Z",
-          lastRun: null
-        } } });
+        const schedules = [
+          { id: "saved-1", enabled: true, destination: "D:\\SavedBackups1", selectedTypes: ["database"], frequency: "daily", time: "02:00", nextRun: "2026-10-12T02:00:00.000Z", lastRun: null },
+          { id: "saved-2", enabled: true, destination: "D:\\SavedBackups2", selectedTypes: ["websiteCode"], frequency: "weekly", time: "03:00", nextRun: "2026-10-13T03:00:00.000Z", lastRun: null },
+          { id: "saved-off", enabled: false, destination: "D:\\DisabledBackups", selectedTypes: ["database"], frequency: "monthly", time: "04:00", nextRun: null, lastRun: null }
+        ];
+        return Promise.resolve({ data: { schedules, schedule: { ...schedules[0], schedules } } });
       }
       return defaultRequest(config);
     });
@@ -642,9 +644,13 @@ describe("AdminBackupPage", () => {
     fireEvent.click(savedScheduleButton);
 
     const details = screen.getByRole("dialog", { name: "Saved Automatic Backup Schedule" });
+    expect(details).toHaveTextContent("Live automatic schedule 1");
+    expect(details).toHaveTextContent("Live automatic schedule 2");
     expect(details).toHaveTextContent("Frequency: daily");
-    expect(details).toHaveTextContent("Configured time: 02:00 am IST");
-    expect(details).toHaveTextContent("Backup types: Database, Website Code + .env");
+    expect(details).toHaveTextContent("Frequency: weekly");
+    expect(details).toHaveTextContent("D:\\SavedBackups1");
+    expect(details).toHaveTextContent("D:\\SavedBackups2");
+    expect(details).not.toHaveTextContent("D:\\DisabledBackups");
     expect(details).toHaveTextContent("Live automatic schedule");
     expect(details).not.toHaveTextContent("schedule history");
     expect(savedScheduleButton).toHaveAttribute("aria-expanded", "true");
@@ -652,6 +658,46 @@ describe("AdminBackupPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close saved schedules" }));
     expect(screen.queryByRole("dialog", { name: "Saved Automatic Backup Schedule" })).not.toBeInTheDocument();
     expect(savedScheduleButton).toHaveAttribute("aria-expanded", "false");
+  });
+
+  test("Add Schedule saves a second automatic schedule while preserving the first", async () => {
+    const defaultRequest = axios.getMockImplementation();
+    axios.mockImplementation((config) => {
+      if (config.method === "get" && config.url.endsWith("/automatic")) {
+        return Promise.resolve({ data: { schedule: {
+          id: "existing-daily",
+          configured: true,
+          enabled: false,
+          destination: "D:\\GFXunlimitBackups",
+          selectedTypes: ["database", "websiteCode"],
+          frequency: "daily",
+          time: "02:00",
+          weeklyDay: 0,
+          monthlyDay: 1,
+          timezone: "Asia/Kolkata",
+          nextRun: null,
+          lastRun: null
+        } } });
+      }
+      return defaultRequest(config);
+    });
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    await screen.findByLabelText("Schedule to edit");
+    fireEvent.click(screen.getByRole("button", { name: "Add Schedule" }));
+    fireEvent.change(screen.getByLabelText("Automatic Backup Location"), { target: { value: "D:\\SecondScheduleBackups" } });
+    fireEvent.change(screen.getByLabelText("Frequency"), { target: { value: "weekly" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Schedule" }));
+
+    await waitFor(() => expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+      method: "put",
+      url: "http://localhost:5000/admin/backup/automatic",
+      data: expect.objectContaining({
+        schedules: expect.arrayContaining([
+          expect.objectContaining({ frequency: "daily", destination: "D:\\GFXunlimitBackups" }),
+          expect.objectContaining({ frequency: "weekly", destination: "D:\\SecondScheduleBackups" })
+        ])
+      })
+    })));
   });
 
   test("Saved Schedule popup excludes a disabled schedule", async () => {

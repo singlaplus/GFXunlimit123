@@ -68,6 +68,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
   const [automaticDrive, setAutomaticDrive] = useState(null);
   const [automaticPlan, setAutomaticPlan] = useState(null);
   const [automaticSchedule, setAutomaticSchedule] = useState({
+    id: "new-schedule",
     configured: false,
     enabled: false,
     destination: "",
@@ -80,7 +81,8 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     nextRun: null,
     lastRun: null
   });
-  const [savedSchedule, setSavedSchedule] = useState(null);
+  const [savedSchedules, setSavedSchedules] = useState([]);
+  const [selectedScheduleId, setSelectedScheduleId] = useState("new-schedule");
   const [showSavedSchedule, setShowSavedSchedule] = useState(false);
   const [scheduleMessage, setScheduleMessage] = useState("");
 
@@ -131,11 +133,17 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     const response = await request("get", "/automatic");
     const schedule = response.data?.schedule;
     if (schedule) {
-      setAutomaticSchedule(schedule);
-      setSavedSchedule(schedule);
-      setAutomaticDestination(schedule.destination || "");
+      const schedules = response.data?.schedules || schedule.schedules || [schedule];
+      const persistedSchedules = schedules.map((entry, index) => ({ ...entry, id: entry.id || `legacy-schedule-${index + 1}` }));
+      const selected = persistedSchedules.find((entry) => entry.id === selectedScheduleId) || persistedSchedules[0];
+      setSavedSchedules(persistedSchedules);
+      if (selected) {
+        setAutomaticSchedule(selected);
+        setSelectedScheduleId(selected.id);
+        setAutomaticDestination(selected.destination || "");
+      }
     }
-  }, [request]);
+  }, [request, selectedScheduleId]);
 
   const refreshJob = useCallback(async (jobId) => {
     const response = await request("get", `/jobs/${encodeURIComponent(jobId)}`);
@@ -160,9 +168,16 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       setJob(activeJob);
       setHistory(Array.isArray(historyResponse.data?.jobs) ? historyResponse.data.jobs : []);
       if (scheduleResponse.data?.schedule) {
-        setAutomaticSchedule(scheduleResponse.data.schedule);
-        setSavedSchedule(scheduleResponse.data.schedule);
-        setAutomaticDestination(scheduleResponse.data.schedule.destination || "");
+        const schedule = scheduleResponse.data.schedule;
+        const schedules = (scheduleResponse.data?.schedules || schedule.schedules || [schedule])
+          .map((entry, index) => ({ ...entry, id: entry.id || `legacy-schedule-${index + 1}` }));
+        setSavedSchedules(schedules);
+        const selected = schedules[0];
+        if (selected) {
+          setAutomaticSchedule(selected);
+          setSelectedScheduleId(selected.id);
+          setAutomaticDestination(selected.destination || "");
+        }
       }
       setSources(sourceResponse.data?.sources || null);
       if (activeJob?.status === "RUNNING") {
@@ -436,14 +451,24 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     setBusy(true);
     setScheduleMessage("");
     try {
-      const response = await request("put", "/automatic", {
+      const current = {
         ...automaticSchedule,
         destination: automaticDestination.trim(),
         enabled: automaticSchedule.enabled
-      });
-      const saved = response.data?.schedule || automaticSchedule;
-      setAutomaticSchedule(saved);
-      setSavedSchedule(saved);
+      };
+      const schedulesToSave = [
+        ...savedSchedules.filter((schedule) => schedule.id !== current.id),
+        current
+      ];
+      const response = await request("put", "/automatic", { schedules: schedulesToSave });
+      const result = response.data?.schedule;
+      const schedules = response.data?.schedules || result?.schedules || (result ? [result] : schedulesToSave);
+      const persisted = schedules.map((schedule, index) => ({ ...schedule, id: schedule.id || `legacy-schedule-${index + 1}` }));
+      const selected = persisted.find((schedule) => schedule.id === current.id) || persisted[0] || current;
+      setSavedSchedules(persisted);
+      setAutomaticSchedule(selected);
+      setSelectedScheduleId(selected.id);
+      setAutomaticDestination(selected.destination || "");
       setAutomaticDrive(null);
       setAutomaticPlan(null);
       setScheduleMessage("Automatic backup schedule saved.");
@@ -455,6 +480,36 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     } finally {
       setBusy(false);
     }
+  };
+
+  const addAutomaticSchedule = () => {
+    const id = `schedule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const next = {
+      ...automaticSchedule,
+      id,
+      enabled: false,
+      configured: false,
+      lastRun: null,
+      lastRunSlot: "",
+      pendingRun: null
+    };
+    setAutomaticSchedule(next);
+    setSelectedScheduleId(id);
+    setAutomaticDestination(next.destination || "");
+    setAutomaticDrive(null);
+    setAutomaticPlan(null);
+    setScheduleMessage("");
+  };
+
+  const selectAutomaticSchedule = (scheduleId) => {
+    const selected = savedSchedules.find((schedule) => schedule.id === scheduleId);
+    if (!selected) return;
+    setAutomaticSchedule(selected);
+    setSelectedScheduleId(selected.id);
+    setAutomaticDestination(selected.destination || "");
+    setAutomaticDrive(null);
+    setAutomaticPlan(null);
+    setScheduleMessage("");
   };
 
   const pickLocalFolder = async () => {
@@ -1416,6 +1471,30 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
           {activeAutomaticJob && <span className="gfx-backup-auto-status__detail">{activeAutomaticJob.id} · {Number(activeAutomaticJob.progress?.percent || 0).toFixed(1)}% · {activeAutomaticJob.verificationStatus}</span>}
         </div>
 
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "end", gap: 8 }}>
+          {savedSchedules.length > 0 && (
+            <label style={{ display: "grid", gap: 6, flex: "1 1 260px", fontWeight: 700 }}>
+              Schedule to edit
+              <select
+                aria-label="Schedule to edit"
+                value={selectedScheduleId}
+                disabled={busy || activeJob}
+                onChange={(event) => selectAutomaticSchedule(event.target.value)}
+                style={{ padding: "10px 12px", borderRadius: 9, border: `1px solid ${palette.border}`, background: palette.surface, color: palette.text }}
+              >
+                {savedSchedules.map((schedule, index) => (
+                  <option key={schedule.id} value={schedule.id}>
+                    {`Schedule ${index + 1} · ${schedule.frequency} · ${schedule.enabled ? "On" : "Off"}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <button type="button" onClick={addAutomaticSchedule} disabled={busy || activeJob} style={buttonStyle()}>
+            Add Schedule
+          </button>
+        </div>
+
         <div className="gfx-backup-location" style={{ display: "grid", gap: 8 }}>
           <strong>Automatic Backup Location</strong>
           <p style={{ margin: 0, color: palette.muted, fontSize: 13 }}>
@@ -1600,18 +1679,20 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
               <h3 id="saved-schedule-title" style={{ margin: 0 }}>Saved Automatic Backup Schedule</h3>
               <button type="button" aria-label="Close saved schedules" onClick={() => setShowSavedSchedule(false)} style={buttonStyle()}>Close</button>
             </div>
-            {!savedSchedule ? (
-              <p style={{ color: palette.muted, margin: 0 }}>Live saved schedules are unavailable until the schedule has loaded.</p>
-            ) : !savedSchedule.enabled ? (
+            {savedSchedules.filter((schedule) => schedule.enabled).length === 0 ? (
               <p style={{ color: palette.muted, margin: 0 }}>There are no live automatic backup schedules.</p>
             ) : (
-              <div style={{ display: "grid", gap: 8, padding: 12, border: `1px solid ${palette.border}`, borderRadius: 9, background: palette.panel }}>
-                <strong>Live automatic schedule</strong>
-                <span>Server destination: <strong style={{ overflowWrap: "anywhere" }}>{savedSchedule.destination || "Not configured"}</strong></span>
-                <span>Backup types: <strong>{(savedSchedule.selectedTypes || []).map((key) => BACKUP_CATEGORIES.find((item) => item.key === key)?.title || key).join(", ") || "None"}</strong></span>
-                <span>Frequency: <strong>{savedSchedule.frequency || "Unavailable"}</strong></span>
-                <span>Configured time: <strong>{formatScheduleTime(savedSchedule.time)}</strong></span>
-                <span>Next run: <strong>{formatScheduleDate(savedSchedule.nextRun)}</strong></span>
+              <div style={{ display: "grid", gap: 8 }}>
+                {savedSchedules.filter((schedule) => schedule.enabled).map((schedule, index) => (
+                  <div key={schedule.id} style={{ display: "grid", gap: 8, padding: 12, border: `1px solid ${palette.border}`, borderRadius: 9, background: palette.panel }}>
+                    <strong>Live automatic schedule {index + 1}</strong>
+                    <span>Server destination: <strong style={{ overflowWrap: "anywhere" }}>{schedule.destination || "Not configured"}</strong></span>
+                    <span>Backup types: <strong>{(schedule.selectedTypes || []).map((key) => BACKUP_CATEGORIES.find((item) => item.key === key)?.title || key).join(", ") || "None"}</strong></span>
+                    <span>Frequency: <strong>{schedule.frequency || "Unavailable"}</strong></span>
+                    <span>Configured time: <strong>{formatScheduleTime(schedule.time)}</strong></span>
+                    <span>Next run: <strong>{formatScheduleDate(schedule.nextRun)}</strong></span>
+                  </div>
+                ))}
               </div>
             )}
           </section>

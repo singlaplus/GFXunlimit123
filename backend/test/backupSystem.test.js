@@ -350,6 +350,97 @@ test('automatic daily, weekly, and monthly schedules calculate dynamic dates in 
   assert.throws(() => normalizeAutomaticSchedule({ ...base, frequency: 'yearly' }), /frequency/);
 });
 
+test('multiple automatic schedules persist independently and retain the legacy primary schedule fields', async () => {
+  const projectRoot = makeProjectRoot();
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedules-state-'));
+  const firstDestination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedule-first-'));
+  const secondDestination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedule-second-'));
+  const service = makeService({ projectRoot, stateDirectory });
+  try {
+    const saved = await service.saveAutomaticSchedules([
+      {
+        id: 'daily-database',
+        enabled: false,
+        destination: firstDestination,
+        selectedTypes: ['database'],
+        frequency: 'daily',
+        time: '02:00'
+      },
+      {
+        id: 'weekly-code',
+        enabled: false,
+        destination: secondDestination,
+        selectedTypes: ['websiteCode'],
+        frequency: 'weekly',
+        time: '03:00',
+        weeklyDay: 2
+      }
+    ]);
+    assert.equal(saved.schedules.length, 2);
+    assert.equal(saved.schedules[0].id, 'daily-database');
+    assert.equal(saved.schedules[1].id, 'weekly-code');
+    assert.equal(saved.frequency, 'daily');
+    assert.equal(saved.schedules[0].nextRun, null);
+    assert.equal(saved.schedules[1].nextRun, null);
+
+    const restartedService = makeService({ projectRoot, stateDirectory });
+    const loaded = await restartedService.getAutomaticSchedule();
+    assert.deepEqual(loaded.schedules.map((schedule) => schedule.id), ['daily-database', 'weekly-code']);
+    assert.equal(loaded.schedules[1].frequency, 'weekly');
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+    fs.rmSync(firstDestination, { recursive: true, force: true });
+    fs.rmSync(secondDestination, { recursive: true, force: true });
+  }
+});
+
+test('multiple schedules due at once queue and launch as separate automatic jobs', async () => {
+  const projectRoot = makeProjectRoot();
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedule-queue-state-'));
+  const firstDestination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedule-queue-first-'));
+  const secondDestination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedule-queue-second-'));
+  const runDate = new Date('2026-10-12T02:00:00+05:30');
+  const service = makeService({
+    projectRoot,
+    stateDirectory,
+    now: () => new Date(runDate),
+    spawnSync: (executable) => ({
+      status: 0,
+      stdout: executable.includes('restore') ? 'pg_restore (PostgreSQL) 18.6\n' : 'pg_dump (PostgreSQL) 18.6\n'
+    }),
+    spawn: () => {
+      throw new Error('Mocked pg_dump failure; no process is started.');
+    }
+  });
+  try {
+    await service.saveAutomaticSchedules([
+      { id: 'queue-first', enabled: true, destination: firstDestination, selectedTypes: ['database'], frequency: 'daily', time: '02:00' },
+      { id: 'queue-second', enabled: true, destination: secondDestination, selectedTypes: ['database'], frequency: 'daily', time: '02:00' }
+    ]);
+
+    await service.tickAutomaticSchedule(runDate);
+    const deadline = Date.now() + 5000;
+    let history = [];
+    while (Date.now() < deadline) {
+      await service.tickAutomaticSchedule(runDate);
+      history = await service.getHistory();
+      if (history.filter((entry) => entry.backupType === 'AUTOMATIC').length === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const automaticJobs = history.filter((entry) => entry.backupType === 'AUTOMATIC');
+    assert.equal(automaticJobs.length, 2);
+    assert.ok(automaticJobs.every((job) => job.status === 'FAILED'));
+    const saved = await service.getAutomaticSchedule();
+    assert.deepEqual(saved.schedules.map((schedule) => schedule.lastRun.status), ['FAILED', 'FAILED']);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+    fs.rmSync(firstDestination, { recursive: true, force: true });
+    fs.rmSync(secondDestination, { recursive: true, force: true });
+  }
+});
+
 test('daily, weekly, and monthly rolling retention reuses the oldest eligible run at 30 folders', () => {
   for (const frequency of ['daily', 'weekly', 'monthly']) {
     const folders = Array.from({ length: 30 }, (_, index) => ({

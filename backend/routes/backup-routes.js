@@ -166,7 +166,8 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
 
   router.get('/automatic', async (req, res) => {
     try {
-      res.json({ schedule: await service.getAutomaticSchedule() });
+      const result = await service.getAutomaticSchedule();
+      res.json({ ...result, schedule: result, schedules: result.schedules || [result] });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Automatic backup schedule could not be loaded.' });
     }
@@ -174,7 +175,10 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
 
   router.put('/automatic', async (req, res) => {
     try {
-      res.json({ schedule: await service.saveAutomaticSchedule(req.body || {}) });
+      const result = Array.isArray(req.body?.schedules)
+        ? await service.saveAutomaticSchedules(req.body.schedules)
+        : await service.saveAutomaticSchedule(req.body || {});
+      res.json({ ...result, schedule: result, schedules: result.schedules || [result] });
     } catch (error) {
       res.status(422).json({ error: error.message || 'Automatic backup schedule could not be saved.' });
     }

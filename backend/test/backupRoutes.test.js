@@ -95,6 +95,7 @@ test('automatic destination browser hides Mac export staging and backend rejects
     const listingResponse = await fetch(`${baseUrl}/automatic/browse?path=${encodeURIComponent(parentDirectory)}`, {
       headers: adminHeaders
     });
+
     assert.equal(listingResponse.status, 200);
     const listing = await listingResponse.json();
     assert.deepEqual(listing.directories.map((directory) => directory.path), [serverDestination]);
@@ -116,6 +117,49 @@ test('automatic destination browser hides Mac export staging and backend rejects
     await close(server);
     fs.rmSync(parentDirectory, { recursive: true, force: true });
     fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('automatic schedule API saves and returns multiple independent schedules', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedules-route-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedules-route-state-'));
+  const firstDestination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedules-route-first-'));
+  const secondDestination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-schedules-route-second-'));
+  const app = express();
+  app.use(express.json());
+  app.use('/admin/backup', createBackupRouter({
+    pool: { query: async () => ({ rows: [] }) },
+    projectRoot,
+    serviceOptions: { stateDirectory, platform: 'win32' },
+    verifyAdmin: adminOnly
+  }));
+  const server = await listen(app);
+  const baseUrl = `http://127.0.0.1:${server.address().port}/admin/backup`;
+  const headers = { 'x-test-admin': 'yes', 'content-type': 'application/json' };
+  const schedules = [
+    { id: 'daily-db', enabled: false, destination: firstDestination, selectedTypes: ['database'], frequency: 'daily', time: '02:00' },
+    { id: 'weekly-code', enabled: false, destination: secondDestination, selectedTypes: ['websiteCode'], frequency: 'weekly', time: '03:00', weeklyDay: 2 }
+  ];
+  try {
+    const savedResponse = await fetch(`${baseUrl}/automatic`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ schedules })
+    });
+    assert.equal(savedResponse.status, 200);
+    const saved = await savedResponse.json();
+    assert.deepEqual(saved.schedules.map((schedule) => schedule.id), ['daily-db', 'weekly-code']);
+
+    const loadedResponse = await fetch(`${baseUrl}/automatic`, { headers });
+    assert.equal(loadedResponse.status, 200);
+    const loaded = await loadedResponse.json();
+    assert.deepEqual(loaded.schedules.map((schedule) => schedule.frequency), ['daily', 'weekly']);
+  } finally {
+    await close(server);
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+    fs.rmSync(firstDestination, { recursive: true, force: true });
+    fs.rmSync(secondDestination, { recursive: true, force: true });
   }
 });
 
