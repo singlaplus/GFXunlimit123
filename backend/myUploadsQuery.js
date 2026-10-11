@@ -19,7 +19,8 @@ function buildMyUploadsQuery(view, userId) {
     `;
   } else if (view === "bulk-status") {
     query += `
-      AND LOWER(COALESCE(images.status, '')) IN ('draft', 'not submitted', 'upload_processing')
+      AND LOWER(REPLACE(REPLACE(COALESCE(images.status, ''), '_', ' '), '-', ' '))
+        IN ('draft', 'not submitted', 'upload processing')
     `;
   } else if (view === "approved") {
     query += `

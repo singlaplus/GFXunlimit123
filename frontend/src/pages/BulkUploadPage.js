@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { buildAuthHeaders } from "../utils/authSession";
@@ -6,8 +6,17 @@ import { buildAuthHeaders } from "../utils/authSession";
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const MAX_BULK_UPLOAD_FILES = 10;
 
+const createUploadRequestId = () => {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
+    const random = Math.floor(Math.random() * 16);
+    return (character === "x" ? random : (random & 0x3) | 0x8).toString(16);
+  });
+};
+
 const createQueueItem = (file) => ({
   id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  uploadRequestId: createUploadRequestId(),
   file,
   progress: 0,
   status: "queued",
@@ -22,6 +31,16 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
   const [removedCount, setRemovedCount] = useState(0);
   const queueRef = useRef([]);
   const activeUploadRef = useRef(null);
+  const thumbnailPollsRef = useRef(new Map());
+  useEffect(() => () => {
+    for (const controller of thumbnailPollsRef.current.values()) controller.abort();
+    thumbnailPollsRef.current.clear();
+    const activeUpload = activeUploadRef.current;
+    if (activeUpload) {
+      activeUpload.cancelled = true;
+      activeUpload.controller.abort();
+    }
+  }, []);
   const replaceQueue = (update) => {
     const nextQueue = typeof update === "function" ? update(queueRef.current) : update;
     queueRef.current = nextQueue;
@@ -67,46 +86,78 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
   };
 
   const waitForThumbnail = async (assetId, queueItemId) => {
+    thumbnailPollsRef.current.get(queueItemId)?.abort();
+    const controller = new AbortController();
+    thumbnailPollsRef.current.set(queueItemId, controller);
     let failedChecks = 0;
     let assetSeen = false;
-    for (let attempt = 0; attempt < 150; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 2000));
-      const response = await axios.get(`${API_BASE_URL}/my-uploads?view=bulk-status`, {
-        headers: buildAuthHeaders()
-      });
-      const asset = (response.data || []).find((item) => Number(item.id) === Number(assetId));
-      if (!asset) {
-        failedChecks = 0;
-        continue;
-      }
-      assetSeen = true;
-      const thumbnailStatus = String(asset.generated_thumbnail_status || asset.thumbnail_status || "").toUpperCase();
-      if (thumbnailStatus === "READY") {
-        updateItem(queueItemId, { status: "completed", progress: 100, error: "" });
-        if (typeof fetchImages === "function") fetchImages();
+    const waitForNextCheck = () => new Promise((resolve, reject) => {
+      if (controller.signal.aborted) {
+        reject(new DOMException("Thumbnail polling was cancelled.", "AbortError"));
         return;
       }
-      if (thumbnailStatus === "FAILED") {
-        failedChecks += 1;
-        if (failedChecks >= 8) {
-          updateItem(queueItemId, {
-            status: "thumbnail-failed",
-            failureStage: "thumbnail",
-            error: asset.thumbnail_error || "Thumbnail generation failed."
-          });
+      const onAbort = () => {
+        window.clearTimeout(timer);
+        controller.signal.removeEventListener("abort", onAbort);
+        reject(new DOMException("Thumbnail polling was cancelled.", "AbortError"));
+      };
+      const timer = window.setTimeout(() => {
+        controller.signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, 2000);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        await waitForNextCheck();
+        if (controller.signal.aborted || !queueRef.current.some((item) => item.id === queueItemId)) return;
+        const response = await axios.get(`${API_BASE_URL}/my-uploads?view=bulk-status`, {
+          headers: buildAuthHeaders(),
+          signal: controller.signal
+        });
+        if (controller.signal.aborted) return;
+        const asset = (response.data || []).find((item) => Number(item.id) === Number(assetId));
+        if (!asset) {
+          failedChecks = 0;
+          continue;
+        }
+        assetSeen = true;
+        const thumbnailStatus = String(asset.generated_thumbnail_status || asset.thumbnail_status || "").toUpperCase();
+        if (thumbnailStatus === "READY") {
+          updateItem(queueItemId, { status: "completed", progress: 100, error: "" });
+          if (typeof fetchImages === "function") fetchImages();
           return;
         }
-      } else {
-        failedChecks = 0;
+        if (thumbnailStatus === "FAILED") {
+          failedChecks += 1;
+          if (failedChecks >= 8) {
+            updateItem(queueItemId, {
+              status: "thumbnail-failed",
+              failureStage: "thumbnail",
+              error: asset.thumbnail_error || "Thumbnail generation failed."
+            });
+            return;
+          }
+        } else {
+          failedChecks = 0;
+        }
+      }
+      if (controller.signal.aborted) return;
+      updateItem(queueItemId, {
+        status: "thumbnail-failed",
+        failureStage: "thumbnail",
+        error: assetSeen
+          ? "Thumbnail processing is taking longer than expected. Retry to check again."
+          : "Uploaded asset did not become available in bulk status before the thumbnail wait timed out."
+      });
+    } catch (error) {
+      if (controller.signal.aborted || error.name === "AbortError" || axios.isCancel?.(error)) return;
+      throw error;
+    } finally {
+      if (thumbnailPollsRef.current.get(queueItemId) === controller) {
+        thumbnailPollsRef.current.delete(queueItemId);
       }
     }
-    updateItem(queueItemId, {
-      status: "thumbnail-failed",
-      failureStage: "thumbnail",
-      error: assetSeen
-        ? "Thumbnail processing is taking longer than expected. Retry to check again."
-        : "Uploaded asset did not become available in bulk status before the thumbnail wait timed out."
-    });
   };
 
   const pumpQueue = async () => {
@@ -123,7 +174,10 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
 
     try {
       const response = await axios.post(`${API_BASE_URL}/upload`, formData, {
-        headers: buildAuthHeaders(),
+        headers: {
+          ...buildAuthHeaders(),
+          "Idempotency-Key": item.uploadRequestId
+        },
         signal: activeUpload.controller.signal,
         onUploadProgress: (event) => {
           if (activeUpload.cancelled || !event.total) return;
@@ -132,10 +186,11 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
       });
       const uploadedAssetId = response.data?.id;
       if (
-        !uploadedAssetId ||
+        !Number.isSafeInteger(uploadedAssetId) ||
+        uploadedAssetId <= 0 ||
         response.data?.upload_complete !== true ||
         response.data?.finalized !== true ||
-        Number(response.data?.file_size) !== Number(item.file.size)
+        response.data?.file_size !== item.file.size
       ) {
         throw new Error("The server did not confirm that this file was fully received and finalized.");
       }
@@ -210,6 +265,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
   };
 
   const removeQueuedItem = (item) => {
+    thumbnailPollsRef.current.get(item.id)?.abort();
     replaceQueue((current) => current.filter((entry) => entry.id !== item.id));
     setRemovedCount((count) => count + 1);
   };
@@ -219,6 +275,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     if (!activeUpload || activeUpload.id !== item.id) return;
     activeUpload.cancelled = true;
     activeUpload.controller.abort();
+    thumbnailPollsRef.current.get(item.id)?.abort();
     updateItem(item.id, { status: "cancelled", progress: 0, error: "" });
   };
 
@@ -416,7 +473,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
                     </div>
                   )}
                   {item.error && <p style={{ margin: "11px 0 0", padding: "10px 12px", borderRadius: "9px", background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318", fontSize: "13px" }}>{item.error}</p>}
-                  {(item.status === "queued" || item.status === "uploading" || item.status === "failed" || item.status === "thumbnail-failed") && (
+                  {(item.status === "queued" || item.status === "uploading" || item.status === "failed" || item.status === "thumbnail-failed" || item.status === "cancelled") && (
                     <div style={{ display: "flex", gap: "8px", marginTop: "11px" }}>
                       {item.status === "queued" && (
                         <button type="button" onClick={() => removeQueuedItem(item)} style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, borderRadius: "8px", background: colors.panel, color: colors.muted, cursor: "pointer", fontWeight: 650 }}>Remove</button>
@@ -424,7 +481,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
                       {item.status === "uploading" && (
                         <button type="button" onClick={() => cancelActiveItem(item)} style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, borderRadius: "8px", background: colors.panel, color: colors.muted, cursor: "pointer", fontWeight: 650 }}>Cancel upload</button>
                       )}
-                      {(item.status === "failed" || item.status === "thumbnail-failed") && (
+                      {(item.status === "failed" || item.status === "thumbnail-failed" || item.status === "cancelled") && (
                         <button type="button" onClick={() => retryItem(item)} style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, borderRadius: "8px", background: colors.panel, color: colors.text, cursor: "pointer", fontWeight: 650 }}>Retry</button>
                       )}
                     </div>

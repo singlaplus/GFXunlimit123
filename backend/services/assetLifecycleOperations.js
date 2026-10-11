@@ -12,7 +12,11 @@ async function hashFile(filePath) {
 
 async function hashContainedFile(root, relativePath) {
   const target = await ensureSafeParent(root, relativePath, false);
-  if (!target) throw new Error('Asset directory is unavailable.');
+  if (!target) {
+    const error = new Error('Asset directory is unavailable.');
+    error.code = 'ENOENT';
+    throw error;
+  }
   const stats = await fs.lstat(target.resolvedPath);
   if (stats.isSymbolicLink() || !stats.isFile()) {
     throw new Error('Asset path is not a regular file.');
@@ -146,7 +150,11 @@ async function copyContainedFile(root, sourceRelativePath, destinationRelativePa
 
 async function assertContainedFile(root, relativePath) {
   const target = await ensureSafeParent(root, relativePath, false);
-  if (!target) throw new Error('Asset directory is unavailable.');
+  if (!target) {
+    const error = new Error('Asset directory is unavailable.');
+    error.code = 'ENOENT';
+    throw error;
+  }
   const stats = await fs.lstat(target.resolvedPath);
   if (stats.isSymbolicLink() || !stats.isFile()) {
     throw new Error('Asset path is not a regular file.');
@@ -561,6 +569,7 @@ module.exports = {
   hashContainedFile,
   assertContainedFile,
   assertContainedPathAbsent,
+  ensureSafeParent,
   recoverAssetLifecycleOperations,
   recoverLifecycleOperation,
   recoverPendingAssetLifecycleOperations,

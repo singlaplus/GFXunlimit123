@@ -20,6 +20,7 @@ const {
   getThumbnailStorageRoot,
   getLifecycleRecoveryStorageRoots,
   getAssetSourceInfo,
+  stageRemoteAsset,
   isValidThumbnailFile,
   finalizeThumbnailFile,
   normalizeThumbnailRelativePath,
@@ -331,6 +332,7 @@ test('does not accept symlinked thumbnail outputs and keeps private assets out o
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-audit-'));
   const targetPath = path.join(temporaryDirectory, 'target.webp');
   const proportionalPath = path.join(temporaryDirectory, 'proportional.webp');
+  const tinyPath = path.join(temporaryDirectory, 'tiny.webp');
   const linkPath = path.join(temporaryDirectory, 'link.webp');
   try {
     const validImage = await sharp({
@@ -339,11 +341,16 @@ test('does not accept symlinked thumbnail outputs and keeps private assets out o
     const proportionalImage = await sharp({
       create: { width: 450, height: 360, channels: 3, background: '#8899aa' },
     }).webp().toBuffer();
+    const tinyImage = await sharp({
+      create: { width: 3, height: 2, channels: 3, background: '#8899aa' },
+    }).webp().toBuffer();
     fs.writeFileSync(targetPath, validImage);
     fs.writeFileSync(proportionalPath, proportionalImage);
+    fs.writeFileSync(tinyPath, tinyImage);
     fs.symlinkSync(targetPath, linkPath);
     assert.equal(await isValidThumbnailFile(targetPath), true);
     assert.equal(await isValidThumbnailFile(proportionalPath), true);
+    assert.equal(await isValidThumbnailFile(tinyPath), false);
     assert.equal(await isValidThumbnailFile(linkPath), false);
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
@@ -688,6 +695,29 @@ test('remote SERVER stream failure is clear and removes a partially staged sourc
     }())),
   });
 
+  test('refuses a remote stream whose declared byte count differs from the inspected original', async () => {
+    const originalGet = axios.get;
+    const source = Buffer.from('complete but unexpectedly changed remote bytes');
+    const stagedFilesBefore = listStagedSourceFiles();
+    axios.get = async () => ({
+      headers: { 'content-length': String(source.length + 1) },
+      data: Readable.from([source]),
+    });
+    try {
+      await assert.rejects(
+        stageRemoteAsset({
+          url: 'http://127.0.0.1:1/api/files/asset.jpg',
+          authorization: 'Bearer test',
+          size: source.length,
+        }, '.jpg'),
+        { code: 'REMOTE_SOURCE_CHANGED' }
+      );
+      assert.deepEqual(listStagedSourceFiles(), stagedFilesBefore);
+    } finally {
+      axios.get = originalGet;
+    }
+  });
+
   try {
     await assert.rejects(
       generateAssetThumbnail(asset.id),
@@ -702,6 +732,31 @@ test('remote SERVER stream failure is clear and removes a partially staged sourc
     restorePlatform();
     restoreEnvironment();
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('keeps remote authentication and missing-original responses distinct and permanent', async () => {
+  const originalGet = axios.get;
+  const stagedFilesBefore = listStagedSourceFiles();
+  try {
+    for (const status of [401, 403, 404]) {
+      axios.get = async () => {
+        const error = new Error(`HTTP ${status}`);
+        error.response = { status };
+        throw error;
+      };
+      await assert.rejects(
+        stageRemoteAsset({
+          url: `http://127.0.0.1:1/api/files/${status}.jpg`,
+          authorization: 'Bearer test',
+          size: 10,
+        }, '.jpg'),
+        (error) => error.statusCode === status && error.permanent === true
+      );
+    }
+    assert.deepEqual(listStagedSourceFiles(), stagedFilesBefore);
+  } finally {
+    axios.get = originalGet;
   }
 });
 

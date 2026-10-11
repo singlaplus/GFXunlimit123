@@ -17,7 +17,8 @@ test('bulk status query includes uploads processing thumbnails without exposing 
 
   assert.equal(params[0], 42);
   assert.match(query, /images\.uploaded_by = \$1/);
-  assert.match(query, /IN \('draft', 'not submitted', 'upload_processing'\)/);
+  assert.match(query, /LOWER\(REPLACE\(REPLACE\(COALESCE\(images\.status, ''\), '_', ' '\), '-', ' '\)\)/);
+  assert.match(query, /IN \('draft', 'not submitted', 'upload processing'\)/);
   assert.doesNotMatch(query, /thumbnails\.status = 'READY'/);
 });
 

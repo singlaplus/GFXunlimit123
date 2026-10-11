@@ -13,6 +13,17 @@ const processorFactory = require('./thumbnail-engine/processor-factory');
 const assetThumbnails = require('./utils/assetThumbnails');
 const { createAssetNotifications } = require('./messaging');
 
+function shouldInitializeThumbnailWorker({
+  platform = process.platform,
+  thumbnailStoragePath = process.env.THUMBNAIL_STORAGE_PATH,
+  nodeEnv = process.env.NODE_ENV,
+  allowLocalTestStorage = process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE === 'true',
+} = {}) {
+  if (platform !== 'darwin') return true;
+  if (String(thumbnailStoragePath || '').trim()) return true;
+  return nodeEnv === 'test' && allowLocalTestStorage;
+}
+
 // Redis connection
 const redisConnection = {
   host: process.env.REDIS_HOST || 'localhost',
@@ -42,6 +53,10 @@ class ThumbnailQueueManager {
    * Initialize queue and worker
    */
   async initialize() {
+    if (!shouldInitializeThumbnailWorker()) {
+      console.warn('Thumbnail worker disabled on macOS without configured thumbnail storage.');
+      return false;
+    }
     try {
       // Create queue
       this.queue = new Queue('thumbnail-processing', {
@@ -198,6 +213,19 @@ class ThumbnailQueueManager {
       return existingJob.id;
     }
 
+    const stableJobId = `asset-thumbnail-${normalizedId}`;
+    const previousJob = await this.queue.getJob(stableJobId);
+    if (previousJob) {
+      const previousState = await previousJob.getState();
+      if (['waiting', 'active', 'delayed', 'paused', 'waiting-children'].includes(previousState)) {
+        if (options.previewPath && options.previewPath !== previousJob.data?.previewPath) {
+          await assetThumbnails.removeStagedOptionalThumbnail(options.previewPath);
+        }
+        return previousJob.id;
+      }
+      await previousJob.remove();
+    }
+
     const job = await this.queue.add(
       'generate-asset-thumbnail',
       {
@@ -211,6 +239,7 @@ class ThumbnailQueueManager {
         backoff: { type: 'exponential', delay: 5000 },
         removeOnComplete: false,
         removeOnFailed: false,
+        jobId: stableJobId,
       }
     );
     return job.id;
@@ -250,7 +279,9 @@ class ThumbnailQueueManager {
         });
         await pool.query(
           `UPDATE images
-           SET status = 'not_submitted'
+           SET status = COALESCE(NULLIF(upload_target_status, ''), 'not_submitted'),
+               upload_target_status = NULL,
+               upload_error = NULL
            WHERE id = $1
              AND status = 'upload_processing'
              AND EXISTS (
@@ -266,6 +297,20 @@ class ThumbnailQueueManager {
       } catch (error) {
         const isFinalAttempt = job.attemptsMade + 1 >= Number(job.opts?.attempts || 1);
         if (error.permanent && typeof job.discard === 'function') job.discard();
+        if (!error.permanent && !isFinalAttempt) {
+          await Promise.all([
+            pool.query(
+              `UPDATE images SET thumbnail_status = 'RETRYING', thumbnail_error = $1 WHERE id = $2`,
+              [String(error.message || error).slice(0, 4000), assetId]
+            ),
+            pool.query(
+              `UPDATE asset_thumbnail_metadata
+               SET status = 'PROCESSING', error_message = $1, updated_at = NOW()
+               WHERE asset_id = $2`,
+              [String(error.message || error).slice(0, 4000), assetId]
+            ),
+          ]);
+        }
         if ((error.permanent || isFinalAttempt) && job.data?.previewPath) {
           await assetThumbnails.removeStagedOptionalThumbnail(job.data.previewPath).catch((cleanupError) => {
             console.error(`Failed to remove staged thumbnail input for asset ${assetId}: ${cleanupError.message}`);
@@ -491,3 +536,4 @@ class ThumbnailQueueManager {
 }
 
 module.exports = new ThumbnailQueueManager();
+module.exports.shouldInitializeThumbnailWorker = shouldInitializeThumbnailWorker;

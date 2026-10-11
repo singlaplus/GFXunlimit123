@@ -113,6 +113,31 @@ describe("BulkUploadPage", () => {
     expect(axios.post.mock.calls[1][1].get("image").name).toBe("next.jpg");
   });
 
+  it("reuses the same idempotency key when retrying an upload request", async () => {
+    const waitForPolling = useFastThumbnailPolling();
+    axios.post
+      .mockRejectedValueOnce({ message: "Connection reset." })
+      .mockResolvedValueOnce(finalizedResponse(203));
+    axios.get.mockResolvedValue({
+      data: [{ id: 203, generated_thumbnail_status: "READY" }]
+    });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [new File(["asset"], "retry.jpg")] }
+    });
+    expect(await screen.findByText("Connection reset.")).toBeInTheDocument();
+    const firstHeaders = axios.post.mock.calls[0][2].headers;
+    expect(firstHeaders["Idempotency-Key"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+    expect(axios.post.mock.calls[1][2].headers["Idempotency-Key"]).toBe(firstHeaders["Idempotency-Key"]);
+    await waitForPolling(() => screen.queryByText("Completed - ready to submit"));
+  });
+
   it("continues polling when the asset is temporarily missing, then completes when READY", async () => {
     const waitForPolling = useFastThumbnailPolling();
     axios.post.mockResolvedValue(finalizedResponse(301));

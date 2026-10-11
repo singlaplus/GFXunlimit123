@@ -4,12 +4,24 @@ const http = require('node:http');
 const cron = require('node-cron');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
+const sharp = require('sharp');
+const { Readable } = require('node:stream');
 
 process.env.DISABLE_EMAIL_SCHEDULER = 'true';
 process.env.DISABLE_CURRENCY_SCHEDULER = 'true';
+const previousNodeEnv = process.env.NODE_ENV;
+const previousLocalUploadTestStorage = process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE;
+const previousSchemaInitialization = process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION;
+const previousUserDeletionScheduler = process.env.DISABLE_USER_DELETION_SCHEDULER;
+process.env.NODE_ENV = 'test';
+process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE = 'true';
+process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION = 'true';
+process.env.DISABLE_USER_DELETION_SCHEDULER = 'true';
 const originalCronSchedule = cron.schedule;
 const originalPoolConnect = Pool.prototype.connect;
 const singleImageSelect = /SELECT id, title, filename, category, keywords, created_at, downloads, views, likes,[\s\S]*FROM images\s+WHERE id = \$1/i;
+const catalogPreviewSelect = /SELECT filename, thumbnail_generated_at, status, uploaded_by\s+FROM images\s+WHERE id = \$1/i;
 cron.schedule = () => ({ stop() {} });
 Pool.prototype.connect = async () => ({
   query: async () => ({ rows: [] }),
@@ -23,8 +35,16 @@ const { app } = require('../server');
 cron.schedule = originalCronSchedule;
 pool.query = originalPoolQuery;
 Pool.prototype.connect = originalPoolConnect;
+if (previousSchemaInitialization === undefined) delete process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION;
+else process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION = previousSchemaInitialization;
+if (previousUserDeletionScheduler === undefined) delete process.env.DISABLE_USER_DELETION_SCHEDULER;
+else process.env.DISABLE_USER_DELETION_SCHEDULER = previousUserDeletionScheduler;
 
 test.after(async () => {
+  if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = previousNodeEnv;
+  if (previousLocalUploadTestStorage === undefined) delete process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE;
+  else process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE = previousLocalUploadTestStorage;
   await pool.end();
 });
 
@@ -113,6 +133,53 @@ test('single-image endpoint serves approved assets publicly without internal fie
   for (const field of Object.keys(publicImage)) {
     assert.match(queryText, new RegExp(`\\b${field}\\b`, 'i'));
   }
+});
+
+test('catalog preview rejects a 3x2 image instead of returning a successful placeholder-sized preview', async (t) => {
+  const originalQuery = pool.query;
+  const originalAxiosRequest = axios.request;
+  const originalServerUrl = process.env.PC2_ASSET_SERVER_URL;
+  process.env.PC2_ASSET_SERVER_URL = 'http://100.102.63.63:5000';
+  pool.query = async (sql, values) => {
+    if (catalogPreviewSelect.test(sql)) {
+      assert.equal(String(values[0]), '180');
+      return {
+        rows: [{
+          filename: 'owner/2026/10/asset.jpg',
+          thumbnail_generated_at: null,
+          status: 'approved',
+          uploaded_by: 71,
+        }],
+      };
+    }
+    return originalQuery(sql, values);
+  };
+  axios.request = async () => ({
+    status: 200,
+    headers: { 'content-type': 'image/jpeg' },
+    data: await sharp({
+      create: { width: 3, height: 2, channels: 3, background: '#778899' },
+    }).jpeg().toBuffer(),
+  });
+
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(async () => {
+    pool.query = originalQuery;
+    axios.request = originalAxiosRequest;
+    if (originalServerUrl === undefined) delete process.env.PC2_ASSET_SERVER_URL;
+    else process.env.PC2_ASSET_SERVER_URL = originalServerUrl;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  const response = await request(
+    server.address().port,
+    '/api/catalog-preview/180?quality=63&watermark=true&v=fixture'
+  );
+  assert.equal(response.status, 422);
+  assert.match(JSON.parse(response.body).error, /too small to be a valid stock asset/);
 });
 
 test('single-image endpoint still requires authentication for non-approved assets', async (t) => {
@@ -211,6 +278,98 @@ test('private pre-submission assets are available only to their owner through im
     { Authorization: 'Bearer ' + otherContributorToken }
   );
   assert.equal(otherOriginalFile.status, 404);
+});
+
+test('private original proxy authenticates cookie and bearer requests and preserves SERVER rejection', async (t) => {
+  const originalQuery = pool.query;
+  const originalAxiosRequest = axios.request;
+  const originalServerUrl = process.env.PC2_ASSET_SERVER_URL;
+  const image = {
+    uploaded_by: 7,
+    status: 'not_submitted',
+  };
+  const forwardedHeaders = [];
+  let upstreamStatus = 403;
+  let upstreamCalls = 0;
+
+  process.env.PC2_ASSET_SERVER_URL = 'http://100.102.63.63:5000';
+  pool.query = async (sql, values) => {
+    if (/SELECT uploaded_by, status FROM images WHERE filename = \$1/i.test(sql)) {
+      return { rows: [image] };
+    }
+    if (/SELECT last_activity_at FROM auth_sessions/i.test(sql)) {
+      return { rows: [{ last_activity_at: new Date() }] };
+    }
+    if (/SELECT status\s+FROM users\s+WHERE id = \$1/i.test(sql)) {
+      return { rows: [{ status: 'active' }] };
+    }
+    if (/SELECT role FROM users WHERE id = \$1/i.test(sql)) {
+      return { rows: [{ role: Number(values[0]) === 8 ? 'admin' : 'contributor' }] };
+    }
+    if (/SELECT session_id FROM auth_sessions/i.test(sql)) {
+      return { rows: [{ session_id: `session-${values[0]}` }] };
+    }
+    return originalQuery(sql, values);
+  };
+  axios.request = async (config) => {
+    upstreamCalls += 1;
+    forwardedHeaders.push(config.headers);
+    return {
+      status: upstreamStatus,
+      headers: { 'content-type': 'application/json' },
+      data: Readable.from([Buffer.from('{"error":"SERVER denied access"}')]),
+    };
+  };
+
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(async () => {
+    pool.query = originalQuery;
+    axios.request = originalAxiosRequest;
+    if (originalServerUrl === undefined) delete process.env.PC2_ASSET_SERVER_URL;
+    else process.env.PC2_ASSET_SERVER_URL = originalServerUrl;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  const ownerToken = jwt.sign(
+    { user: 7, sid: 'owner-session' },
+    process.env.JWT_SECRET || 'secretkey',
+    { expiresIn: '1h' }
+  );
+  const cookieResponse = await request(
+    server.address().port,
+    '/api/files/contributor/2026/10/Pending/private.jpg',
+    { Cookie: `authToken=${ownerToken}` }
+  );
+  assert.equal(cookieResponse.status, 403);
+  assert.equal(upstreamCalls, 1);
+  assert.match(forwardedHeaders[0].authorization, /^Bearer\s+\S+$/);
+  assert.notEqual(forwardedHeaders[0].authorization, `Bearer ${ownerToken}`);
+  assert.equal(Object.hasOwn(forwardedHeaders[0], 'cookie'), false);
+
+  upstreamStatus = 404;
+  const bearerResponse = await request(
+    server.address().port,
+    '/api/files/contributor/2026/10/Pending/private.jpg',
+    { Authorization: `Bearer ${ownerToken}` }
+  );
+  assert.equal(bearerResponse.status, 404);
+  assert.equal(upstreamCalls, 2);
+
+  const otherToken = jwt.sign(
+    { user: 9, sid: 'other-session' },
+    process.env.JWT_SECRET || 'secretkey',
+    { expiresIn: '1h' }
+  );
+  const deniedResponse = await request(
+    server.address().port,
+    '/api/files/contributor/2026/10/Pending/private.jpg',
+    { Authorization: `Bearer ${otherToken}` }
+  );
+  assert.equal(deniedResponse.status, 404);
+  assert.equal(upstreamCalls, 2);
 });
 
 test('catalog preview allows asset owners and admins for pending assets only', async (t) => {

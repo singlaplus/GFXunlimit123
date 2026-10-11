@@ -27,7 +27,34 @@ const thumbnailQueue = require("./thumbnail-queue-worker");
 const assetThumbnails = require("./utils/assetThumbnails");
 const { deleteAssetCompletely } = require("./services/assetDeletion");
 const { moveAssetFileAndUpdate } = require("./services/assetFileMove");
-const { recoverAssetLifecycleOperations } = require("./services/assetLifecycleOperations");
+const { assertLocalAssetLifecycleSupported } = require("./services/assetLifecycleRouting");
+const { resolveUploadLimitBytes } = require("./uploadLimits");
+const {
+  ensureSafeParent,
+  recoverAssetLifecycleOperations,
+} = require("./services/assetLifecycleOperations");
+const {
+  hashStagedUpload,
+  cleanupAbandonedUploadStaging,
+  inspectExistingUpload,
+  normalizeUploadRequestId,
+  publishStagedUpload,
+} = require("./services/assetUploadLifecycle");
+const { checkAssetLifecycleSchema } = require("./services/assetLifecycleSchema");
+const {
+  createFinalUploadFilename,
+  getAssetUploadTimeZone,
+  getUploadDateParts,
+  sanitizeOriginalUploadFilename,
+  sanitizeUploadUsername,
+} = require("./services/assetUploadFilename");
+const {
+  createRemoteAssetUploadProxy,
+  shouldProxyRemoteAssetUpload,
+} = require("./services/remoteAssetUploadProxy");
+const { isAllowedAssetUploadFile } = require("./services/assetUploadValidation");
+const { prepareRemoteAssetFileAuthorization } = require("./services/remoteAssetFileAuthorization");
+const { releaseUploadLocks } = require("./services/uploadLockCleanup");
 const ProcessorDetector = require("./thumbnail-engine/processor-detector");
 const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
 const restoreRoutes = require("./routes/restore-routes");
@@ -131,40 +158,7 @@ const upload = multer({
 
   fileFilter: (req, file, cb) => {
 
-    const allowedExtensions = [
-      ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".psd", ".psb", ".ai", ".eps", ".pdf",
-      ".zip", ".mp4", ".avi", ".mkv", ".mov", ".webm", ".aep", ".prproj",
-    ];
-    const allowedTypes = [
-      "image/jpeg",
-      "image/jpg",
-      "image/png",
-      "image/webp",
-      "image/gif",
-      "image/svg+xml",
-      "image/vnd.adobe.photoshop",
-      "application/postscript",
-      "application/pdf",
-      "video/mp4",
-      "video/quicktime",
-      "video/x-msvideo",
-      "video/x-matroska",
-      "application/zip",
-      "application/x-zip-compressed"
-    ];
-
-    const thumbnailTypes = [
-      "image/jpeg",
-      "image/jpg",
-      "image/png",
-      "image/webp",
-      "image/gif",
-      "image/svg+xml"
-    ];
-
-    const isAllowed = file.fieldname === "thumbnail"
-      ? thumbnailTypes.includes(file.mimetype)
-      : allowedTypes.includes(file.mimetype) || allowedExtensions.includes(path.extname(file.originalname || "").toLowerCase());
+    const isAllowed = isAllowedAssetUploadFile(file);
 
     if (isAllowed) {
       cb(null, true);
@@ -322,6 +316,14 @@ const SHARP_RASTER_PREVIEW_EXTENSIONS = new Set([
   ".heif",
   ".heic",
 ]);
+const MIN_ASSET_PREVIEW_DIMENSION = 16;
+const MIN_ASSET_PREVIEW_SHORT_DIMENSION = 8;
+
+const hasMeaningfulPreviewDimensions = (width, height) =>
+  Number.isFinite(Number(width)) &&
+  Number.isFinite(Number(height)) &&
+  Math.max(Number(width), Number(height)) >= MIN_ASSET_PREVIEW_DIMENSION &&
+  Math.min(Number(width), Number(height)) >= MIN_ASSET_PREVIEW_SHORT_DIMENSION;
 const IMAGE_CONTENT_TYPES = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -446,7 +448,9 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
       responseType: processImage ? "arraybuffer" : "stream",
       decompress: false,
       headers: {
-        authorization: req.headers.authorization,
+        authorization: Object.prototype.hasOwnProperty.call(options, "authorization")
+          ? options.authorization
+          : req.headers.authorization,
         accept: req.headers.accept,
         range: req.headers.range,
       },
@@ -500,6 +504,11 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
 
         try {
           const sourceMetadata = await sharp(imageBuffer).metadata();
+          if (!hasMeaningfulPreviewDimensions(sourceMetadata.width, sourceMetadata.height)) {
+            return res.status(422).json({
+              error: `Preview source is too small to be a valid stock asset (minimum ${MIN_ASSET_PREVIEW_DIMENSION} px on the long side and ${MIN_ASSET_PREVIEW_SHORT_DIMENSION} px on the short side).`,
+            });
+          }
           const resizeOptions = options.scaleFactor
             ? getProportionalPreviewDimensions(sourceMetadata, options.scaleFactor)
             : { width: 1920, height: 1920 };
@@ -518,6 +527,12 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
           const previewBuffer = options.outputFormat === "webp"
             ? await preview.webp({ quality }).toBuffer()
             : await preview.jpeg({ quality }).toBuffer();
+          const previewMetadata = await sharp(previewBuffer).metadata();
+          if (!hasMeaningfulPreviewDimensions(previewMetadata.width, previewMetadata.height)) {
+            return res.status(422).json({
+              error: `Generated preview is too small to be a valid stock asset (minimum ${MIN_ASSET_PREVIEW_DIMENSION} px on the long side and ${MIN_ASSET_PREVIEW_SHORT_DIMENSION} px on the short side).`,
+            });
+          }
           res.status(200);
           res.set("Content-Type", options.outputFormat === "webp" ? "image/webp" : "image/jpeg");
           res.set("Content-Length", String(previewBuffer.length));
@@ -564,6 +579,12 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
 
 const getLocalAssetRoot = () => {
   const configuredRoot = String(process.env.ASSETS_ROOT || "").trim();
+  const allowLocalTestStorage =
+    process.env.NODE_ENV === "test" &&
+    process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE === "true";
+  if (process.platform === "darwin" && !allowLocalTestStorage) {
+    return null;
+  }
   if (process.env.NODE_ENV === "production" || configuredRoot) {
     return assetThumbnails.getOriginalAssetStorageRoot();
   }
@@ -574,7 +595,12 @@ const filesAssetHandler = createAssetServingHandler({
   getAssetRoot: getLocalAssetRoot,
   getAssetPath: (req) => decodeURIComponent(String(req.path || "").replace(/^\/+/, "")),
   getRemotePath: (assetPath) => `/api/files/${encodeAssetPath(assetPath)}`,
-  proxyHandler: proxyPc2AssetRequest,
+  proxyHandler: (req, res, upstreamPath, options) => proxyPc2AssetRequest(
+    req,
+    res,
+    upstreamPath,
+    { ...options, authorization: req.serverAssetAuthorization }
+  ),
 });
 
 const thumbnailAssetHandler = createAssetServingHandler({
@@ -913,14 +939,29 @@ app.use("/api/files", async (req, res, next) => {
       [relativePath]
     );
     const image = imageResult.rows[0];
-    if (!image || await authorizeAssetOwnerOrAdmin(req, res, image)) {
-      return next();
+    if (!image) return next();
+    const isPublicAsset = ["approved", "published", "live"].includes(
+      String(image.status || "").toLowerCase()
+    );
+    const authorization = await prepareRemoteAssetFileAuthorization({
+      getRequesterId: () => req.user?.id,
+      isPublic: isPublicAsset,
+      authorizeLocal: () => authorizeAssetOwnerOrAdmin(req, res, image),
+      getAuthorization: assetThumbnails.getRemoteAssetAuthorization,
+    });
+    if (!authorization.authorized) {
+      if (!res.headersSent) return res.status(404).json({ error: "Asset not found" });
+      return undefined;
     }
-    if (!res.headersSent) return res.status(404).json({ error: "Asset not found" });
-    return undefined;
+    req.serverAssetAuthorization = authorization.authorization;
+    return next();
   } catch (error) {
-    console.error("Asset file authorization failed", error);
-    return res.status(500).json({ error: "Unable to authorize asset file access" });
+    console.error("Asset file authorization failed.");
+    return res.status(error.statusCode || 500).json({
+      error: error.statusCode === 503
+        ? "Private SERVER asset access is temporarily unavailable."
+        : "Unable to authorize asset file access",
+    });
   }
 });
 app.use("/api/files", filesAssetHandler);
@@ -1064,6 +1105,13 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
 
         const extractedPreview = await processor.extractPreview(previewSourcePath || temporarySourcePath);
         const sourceMetadata = await sharp(extractedPreview).metadata();
+        if (!hasMeaningfulPreviewDimensions(sourceMetadata.width, sourceMetadata.height)) {
+          const error = new Error(
+            `Extracted preview is too small to be a valid stock asset (minimum ${MIN_ASSET_PREVIEW_DIMENSION} px on the long side and ${MIN_ASSET_PREVIEW_SHORT_DIMENSION} px on the short side).`
+          );
+          error.statusCode = 422;
+          throw error;
+        }
         const sourceDimensions = await getAssetSourceDimensions(
           previewSourcePath || temporarySourcePath,
           extension
@@ -1074,6 +1122,14 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
           .resize({ ...dimensions, fit: "inside", withoutEnlargement: true })
           .webp({ quality: 63 })
           .toBuffer();
+        const generatedMetadata = await sharp(generatedPreview).metadata();
+        if (!hasMeaningfulPreviewDimensions(generatedMetadata.width, generatedMetadata.height)) {
+          const error = new Error(
+            `Generated preview is too small to be a valid stock asset (minimum ${MIN_ASSET_PREVIEW_DIMENSION} px on the long side and ${MIN_ASSET_PREVIEW_SHORT_DIMENSION} px on the short side).`
+          );
+          error.statusCode = 422;
+          throw error;
+        }
         await fs.promises.mkdir(path.dirname(cacheFilePath), { recursive: true });
         temporaryCachePath = `${cacheFilePath}.${crypto.randomUUID()}.tmp`;
         await fs.promises.writeFile(temporaryCachePath, generatedPreview);
@@ -6959,15 +7015,7 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
 /* ---------------- UPLOAD IMAGE ---------------- */
 
 const lockContributorUpload = async (req, res, next) => {
-  const authHeader = req.headers["authorization"];
-  if (!authHeader) return next();
-
-  let contributorId;
-  try {
-    contributorId = verifyJwtToken(authHeader.split(" ")[1]).user;
-  } catch (_error) {
-    return next();
-  }
+  const contributorId = req.uploadDecoded?.user;
   if (!contributorId) return next();
 
   try {
@@ -6980,6 +7028,61 @@ const lockContributorUpload = async (req, res, next) => {
     next();
   } catch (error) {
     next(error);
+  }
+};
+
+const authenticateUploadRequest = async (req, res, next) => {
+  const authHeader = String(req.headers.authorization || "");
+  const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  const token = tokenMatch?.[1] || req.cookies?.authToken;
+  if (!token) return res.status(401).json("Access denied");
+
+  let decoded;
+  try {
+    decoded = verifyJwtToken(token);
+  } catch (_error) {
+    return res.status(401).json("Access denied");
+  }
+  const userId = Number(decoded.user);
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    return res.status(401).json("Access denied");
+  }
+
+  try {
+    const userResult = await pool.query(
+      `SELECT role, status, contributor_cooling_until, username, custom_permissions
+       FROM users WHERE id = $1`,
+      [userId]
+    );
+    const user = userResult.rows[0];
+    if (!user) return res.status(404).json("User not found");
+    if (!["contributor", "admin"].includes(String(user.role || "").toLowerCase())) {
+      return res.status(403).json("Only contributors can upload assets.");
+    }
+    if (
+      String(user.role || "").toLowerCase() === "contributor" &&
+      String(user.status || "").toLowerCase() === "pending" &&
+      user.contributor_cooling_until &&
+      new Date(user.contributor_cooling_until) <= new Date()
+    ) {
+      await pool.query(
+        `UPDATE users SET status = 'active', contributor_cooling_until = NULL WHERE id = $1`,
+        [userId]
+      );
+      user.status = "active";
+    }
+    if (
+      String(user.role || "").toLowerCase() === "contributor" &&
+      String(user.status || "").toLowerCase() !== "active"
+    ) {
+      return res.status(403).json("Contributor account is awaiting approval.");
+    }
+    req.uploadDecoded = decoded;
+    req.uploadUser = user;
+    return next();
+  } catch (error) {
+    console.error("Could not authenticate asset upload before staging:", error);
+    return res.status(500).json({ error: "Unable to verify upload permissions." });
   }
 };
 
@@ -7045,47 +7148,74 @@ const parseUploadFiles = (req, res, next) => {
     if (!error) return next();
     cleanupUploadStaging(req).then(() => {
       releaseContributorUploadLock(req);
-      next(error);
+      if (!res.headersSent) {
+        const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+        res.status(status).json({ error: error.message || "Invalid multipart upload." });
+      }
     }).catch((cleanupError) => {
       releaseContributorUploadLock(req);
-      next(cleanupError);
+      console.error("Failed to clean rejected upload staging directory:", cleanupError);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Upload staging cleanup failed." });
+      }
     });
   });
 };
 
 app.post(
   "/upload",
+  createRemoteAssetUploadProxy({
+    verifyUser: (req) => {
+      const authHeader = String(req.headers.authorization || "");
+      const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+      if (!tokenMatch) {
+        const error = new Error("Access denied");
+        error.statusCode = 401;
+        throw error;
+      }
+      let decoded;
+      try {
+        decoded = verifyJwtToken(tokenMatch[1]);
+      } catch (_error) {
+        const error = new Error("Access denied");
+        error.statusCode = 401;
+        throw error;
+      }
+      const userId = Number(decoded.user);
+      if (!Number.isSafeInteger(userId) || userId <= 0) {
+        const error = new Error("Access denied");
+        error.statusCode = 401;
+        throw error;
+      }
+      return userId;
+    },
+    getAuthorization: assetThumbnails.getRemoteAssetAuthorization,
+    shouldProxy: () => shouldProxyRemoteAssetUpload(),
+  })
+);
+
+app.post(
+  "/upload",
+  authenticateUploadRequest,
   lockContributorUpload,
   prepareUploadStaging,
   parseUploadFiles,
   async (req, res) => {
     let finalizedFilePath = null;
     let finalizedAssetId = null;
+    let uploadRequestId = null;
+    let uploadLockKey = null;
     let authenticatedUserId = null;
+    let uploadOperationClient = null;
+    let uploadOperationLockAcquired = false;
+    let createdNewUploadRecord = false;
+    let conflictingPlaceholderRemoved = false;
     let stagedOptionalPreviewPath = null;
     let isPreSubmissionUpload = false;
     let clientDisconnected = false;
-    let cleanupUnconfirmedPromise = null;
-    const cleanupUnconfirmedAsset = () => {
-      if (!finalizedAssetId || !authenticatedUserId) return Promise.resolve();
-      if (!cleanupUnconfirmedPromise) {
-        cleanupUnconfirmedPromise = deleteAssetCompletely(
-          finalizedAssetId,
-          authenticatedUserId,
-          { pool, assetThumbnails, thumbnailQueue },
-          { internal: true }
-        );
-      }
-      return cleanupUnconfirmedPromise;
-    };
     res.once("close", () => {
       if (!res.writableFinished) {
         clientDisconnected = true;
-        if (finalizedAssetId) {
-          cleanupUnconfirmedAsset().catch((cleanupError) => {
-            console.error(`Failed to clean up unconfirmed asset ${finalizedAssetId} after disconnect:`, cleanupError);
-          });
-        }
       }
     });
     const assertUploadConnected = () => {
@@ -7095,16 +7225,18 @@ app.post(
         throw error;
       }
     };
-    try {
-
-      const authHeader = req.headers["authorization"];
-
-      if (!authHeader) {
-        return res.status(401).json("Access denied");
+    const respondAfterStagingCleanup = async (status, body) => {
+      try {
+        await cleanupUploadStaging(req);
+      } catch (error) {
+        console.error("Failed to clean rejected upload staging directory:", error);
+        return res.status(500).json({ error: "Upload staging cleanup failed." });
       }
-
-      const token = authHeader.split(" ")[1];
-      const decoded = verifyJwtToken(token);
+      return res.status(status).json(body);
+    };
+    try {
+      const decoded = req.uploadDecoded;
+      const user = req.uploadUser;
       const originalFile = req.files && req.files.image ? req.files.image[0] : null;
       const optionalThumbnailFile = req.files && req.files.thumbnail ? req.files.thumbnail[0] : null;
       const {
@@ -7118,167 +7250,240 @@ app.post(
       isPreSubmissionUpload = String(req.body.preSubmission || "").toLowerCase() === "true";
 
       if (!originalFile) {
-        return res.status(400).json("No image uploaded");
+        return await respondAfterStagingCleanup(400, "No image uploaded");
       }
 
       if (!isPreSubmissionUpload && (!title || !category || !collection || !keywords)) {
-        return res.status(400).json("All fields are required");
+        return await respondAfterStagingCleanup(400, "All fields are required");
       }
 
-      const currentUser = await pool.query(
-        `SELECT role, status, contributor_cooling_until, username FROM users WHERE id = $1`,
-        [decoded.user]
-      );
-
-      if (currentUser.rows.length === 0) {
-        return res.status(404).json("User not found");
+      if (
+        String(user.role || "").toLowerCase() === "contributor" &&
+        Number(originalFile.size) > resolveUploadLimitBytes(user.custom_permissions)
+      ) {
+        const maxUploadMegabytes = Math.round(
+          resolveUploadLimitBytes(user.custom_permissions) / (1024 * 1024)
+        );
+        return await respondAfterStagingCleanup(413, {
+          error: `Uploaded file exceeds your ${maxUploadMegabytes} MB upload limit.`,
+        });
       }
-
-      const user = currentUser.rows[0];
-
-      if (user.role !== "contributor" && user.role !== "admin") {
-        return res.status(403).json("Only contributors can upload assets.");
-      }
-      if (isPreSubmissionUpload && user.role !== "contributor") {
-        return res.status(403).json("Only contributors can create pre-submission uploads.");
-      }
-
-      if (user.role === "contributor" && user.status === "pending" && user.contributor_cooling_until && new Date(user.contributor_cooling_until) <= new Date()) {
-        await pool.query(`UPDATE users SET status = 'active', contributor_cooling_until = NULL WHERE id = $1`, [decoded.user]);
-        user.status = "active";
-      }
-
-      if (user.role === "contributor" && user.status !== "active") {
-        return res.status(403).json("Contributor account is awaiting approval.");
+      if (isPreSubmissionUpload && String(user.role || "").toLowerCase() !== "contributor") {
+        return await respondAfterStagingCleanup(403, "Only contributors can create pre-submission uploads.");
       }
 
       const uploaded_by = decoded.user;
+      authenticatedUserId = uploaded_by;
+      try {
+        uploadRequestId = normalizeUploadRequestId(req.headers["idempotency-key"] || crypto.randomUUID());
+      } catch (error) {
+        error.statusCode = 400;
+        throw error;
+      }
+      req.headers["idempotency-key"] = uploadRequestId;
+      uploadLockKey = `${uploaded_by}:${uploadRequestId}`;
       assertUploadConnected();
+      uploadOperationClient = await pool.connect();
+      await uploadOperationClient.query(
+        "SELECT pg_advisory_lock(hashtext($1))",
+        [uploadLockKey]
+      );
+      uploadOperationLockAcquired = true;
+
       const assetRoot = path.resolve(assetThumbnails.getOriginalAssetStorageRoot());
-      const now = new Date();
-      const year = String(now.getFullYear());
-      const month = String(now.getMonth() + 1).padStart(2, "0");
-      const username = String(user.username || "unknown");
-      if (!username || username === "." || username === ".." || path.basename(username) !== username || path.win32.basename(username) !== username) {
-        return res.status(400).json({ error: "Invalid contributor storage path." });
+      const acceptedAt = new Date();
+      let username;
+      let originalFilename;
+      let finalUploadFilename;
+      let uploadDateParts;
+      try {
+        username = sanitizeUploadUsername(user.username);
+        originalFilename = sanitizeOriginalUploadFilename(originalFile.originalname || originalFile.filename);
+      } catch (_error) {
+        return await respondAfterStagingCleanup(400, { error: "Invalid contributor or upload filename." });
       }
-      const finalDirectory = path.resolve(assetRoot, username, year, month, "Pending");
-      const relativeDirectory = path.relative(assetRoot, finalDirectory);
-      if (!relativeDirectory || relativeDirectory === ".." || relativeDirectory.startsWith(`..${path.sep}`) || path.isAbsolute(relativeDirectory)) {
-        return res.status(400).json({ error: "Invalid contributor storage path." });
+      try {
+        uploadDateParts = getUploadDateParts(acceptedAt, getAssetUploadTimeZone());
+        finalUploadFilename = createFinalUploadFilename(username, originalFilename, uploadDateParts);
+      } catch (error) {
+        if (error.message.includes("filesystem filename limit")) {
+          return await respondAfterStagingCleanup(400, { error: "Upload filename exceeds the filesystem filename limit." });
+        }
+        console.error("Could not determine the SERVER upload date/timezone:", error.message);
+        return await respondAfterStagingCleanup(500, { error: "SERVER upload naming configuration is unavailable." });
       }
-      await fs.promises.mkdir(finalDirectory, { recursive: true });
-      const [realAssetRoot, realFinalDirectory] = await Promise.all([
-        fs.promises.realpath(assetRoot),
-        fs.promises.realpath(finalDirectory)
-      ]);
-      const relativeRealDirectory = path.relative(realAssetRoot, realFinalDirectory);
-      if (!relativeRealDirectory || relativeRealDirectory === "." || relativeRealDirectory === ".." || relativeRealDirectory.startsWith(`..${path.sep}`) || path.isAbsolute(relativeRealDirectory)) {
-        return res.status(400).json({ error: "Invalid contributor storage path." });
+      const year = uploadDateParts.year;
+      const month = uploadDateParts.month;
+      const stagedUpload = await hashStagedUpload(assetRoot, originalFile.path);
+      if (stagedUpload.witness.size <= 0 || stagedUpload.witness.size !== Number(originalFile.size)) {
+        return await respondAfterStagingCleanup(400, { error: "Uploaded file size validation failed." });
       }
-      const finalFilePath = path.resolve(finalDirectory, originalFile.filename);
-      const relativeFilePath = path.relative(assetRoot, finalFilePath);
-      if (!relativeFilePath || relativeFilePath === ".." || relativeFilePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFilePath)) {
-        return res.status(400).json({ error: "Invalid asset file path." });
-      }
-      const stagedFileStats = await fs.promises.stat(originalFile.path);
-      if (stagedFileStats.size <= 0 || stagedFileStats.size !== Number(originalFile.size)) {
-        return res.status(400).json({ error: "Uploaded file size validation failed." });
-      }
-      assertUploadConnected();
-      await fs.promises.rename(originalFile.path, finalFilePath);
-      finalizedFilePath = finalFilePath;
-      const finalizedFileStats = await fs.promises.stat(finalFilePath);
-      if (!finalizedFileStats.isFile() || finalizedFileStats.size !== stagedFileStats.size) {
-        throw new Error("Finalized asset failed file verification.");
-      }
-      const storedFilename = relativeFilePath.split(path.sep).join("/");
-      const originalFilename = path.basename(originalFile.originalname || originalFile.filename);
       const extension = path.extname(originalFilename).replace(/^\./, "").toLowerCase();
+      if (!extension) {
+        return await respondAfterStagingCleanup(400, { error: "Uploaded filename must include a supported file extension." });
+      }
       const assetTitle = String(title || path.basename(originalFilename, path.extname(originalFilename))).trim();
       const assetCategory = String(category || "").trim();
       const assetCollection = String(collection || "").trim();
       const assetKeywords = String(keywords || "").trim();
+      const assetDescription = String(description || "").trim();
+      const assetType = String(type || "").trim();
+      const initialAssetStatus = "upload_processing";
+      const uploadTargetStatus = isPreSubmissionUpload ? "not_submitted" : "pending";
+      const requestHash = crypto.createHash("sha256").update(JSON.stringify({
+        contentSha256: stagedUpload.sha256,
+        originalFilename,
+        title: assetTitle,
+        category: assetCategory,
+        collection: assetCollection,
+        keywords: assetKeywords,
+        description: assetDescription,
+        type: assetType,
+        targetStatus: uploadTargetStatus,
+      })).digest("hex");
 
-      const thumbnailUrl = null;
-      const thumbnailStatus = "pending";
-      const initialAssetStatus = isPreSubmissionUpload ? "upload_processing" : "pending";
-
-      const newImage = await pool.query(
-        `
-        INSERT INTO images
-        (
-          title,
-          filename,
-          category,
-          collection,
-          keywords,
-          description,
-          type,
-          file_size,
-          extension,
-          mime_type,
-          original_filename,
-          uploaded_by,
-          created_at,
-          downloads,
-          views,
-          likes,
-          status,
-          thumbnail_url,
-          thumbnail_status,
-          thumbnail_generated_at
-        )
-        VALUES
-        (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9,
-          $10,
-          $11,
-          $12,
-          NOW(),
-          0,
-          0,
-          0,
-          $13,
-          $14,
-          $15,
-          CASE WHEN $14::text IS NOT NULL THEN NOW() ELSE NULL END
-        )
-        RETURNING *
-        `,
-        [
-          assetTitle,
-          storedFilename,
-          assetCategory,
-          assetCollection,
-          assetKeywords,
-          String(description || "").trim(),
-          String(type || "").trim(),
-          Number(originalFile.size) || null,
-          extension || null,
-          originalFile.mimetype || null,
-          originalFilename,
-          uploaded_by,
-          initialAssetStatus,
-          thumbnailUrl,
-          thumbnailStatus
-        ]
+      let newImage;
+      let storedFilename;
+      let finalFilePath;
+      let verifiedFile;
+      let isReplay = false;
+      const existingResult = await pool.query(
+        `SELECT * FROM images WHERE uploaded_by = $1 AND upload_request_id = $2`,
+        [uploaded_by, uploadRequestId]
       );
-      finalizedAssetId = newImage.rows[0].id;
+      let existingImage = existingResult.rows[0] || null;
+      if (existingImage) {
+        if (
+          existingImage.upload_content_sha256 !== stagedUpload.sha256 ||
+          existingImage.upload_request_hash !== requestHash
+        ) {
+          return await respondAfterStagingCleanup(409, {
+            error: "This upload request ID was already used for different content or metadata.",
+            upload_request_id: uploadRequestId,
+          });
+        }
+        storedFilename = assetThumbnails.normalizeStoredFilename(existingImage.filename);
+        const target = await ensureSafeParent(assetRoot, storedFilename, true);
+        if (!target) throw new Error("Could not safely resolve the saved upload path.");
+        finalFilePath = target.resolvedPath;
+        finalizedAssetId = existingImage.id;
+        const persistedWitness = {
+          device: existingImage.upload_file_device,
+          inode: existingImage.upload_file_inode,
+          size: Number(existingImage.file_size),
+          sha256: existingImage.upload_content_sha256,
+        };
+        let savedUpload = null;
+        try {
+          savedUpload = await inspectExistingUpload(assetRoot, storedFilename, persistedWitness);
+        } catch (error) {
+          error.statusCode = 409;
+          error.message = `Existing upload cannot be safely verified: ${error.message}`;
+          throw error;
+        }
+        if (savedUpload) {
+          verifiedFile = savedUpload;
+          await fs.promises.unlink(originalFile.path);
+        } else {
+          const updatedWitness = {
+            ...stagedUpload.witness,
+            sha256: stagedUpload.sha256,
+          };
+          await pool.query(
+            `UPDATE images
+             SET upload_file_device = $1, upload_file_inode = $2, upload_error = NULL
+             WHERE id = $3 AND uploaded_by = $4 AND upload_request_id = $5
+               AND upload_content_sha256 = $6 AND upload_request_hash = $7`,
+            [
+              updatedWitness.device,
+              updatedWitness.inode,
+              existingImage.id,
+              uploaded_by,
+              uploadRequestId,
+              stagedUpload.sha256,
+              requestHash,
+            ]
+          );
+          savedUpload = await publishStagedUpload(assetRoot, originalFile.path, storedFilename, updatedWitness);
+          verifiedFile = savedUpload;
+          existingImage.upload_file_device = updatedWitness.device;
+          existingImage.upload_file_inode = updatedWitness.inode;
+          existingImage.upload_error = null;
+        }
+        if (!savedUpload) throw new Error("Retry did not produce a verifiable saved original.");
+        newImage = existingImage;
+        isReplay = true;
+      } else {
+        const finalDirectoryRelative = [username, year, month, "Pending"].join("/");
+        const target = await ensureSafeParent(assetRoot, `${finalDirectoryRelative}/${finalUploadFilename}`, true);
+        if (!target) throw new Error("Could not safely prepare the contributor storage path.");
+        storedFilename = `${finalDirectoryRelative}/${finalUploadFilename}`;
+        finalFilePath = target.resolvedPath;
+        const insert = await pool.query(
+          `
+          INSERT INTO images
+          (
+            title, filename, category, collection, keywords, description, type,
+            file_size, extension, mime_type, original_filename, uploaded_by,
+            created_at, downloads, views, likes, status, thumbnail_url,
+            thumbnail_status, thumbnail_generated_at, upload_request_id,
+            upload_content_sha256, upload_request_hash, upload_file_device,
+            upload_file_inode, upload_target_status, upload_error
+          )
+          VALUES
+          (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+            NOW(), 0, 0, 0, $13, NULL, 'pending', NULL, $14,
+            $15, $16, $17, $18, $19, NULL
+          )
+          RETURNING *
+          `,
+          [
+            assetTitle,
+            storedFilename,
+            assetCategory,
+            assetCollection,
+            assetKeywords,
+            assetDescription,
+            assetType,
+            stagedUpload.witness.size,
+            extension,
+            originalFile.mimetype || null,
+            originalFilename,
+            uploaded_by,
+            initialAssetStatus,
+            uploadRequestId,
+            stagedUpload.sha256,
+            requestHash,
+            stagedUpload.witness.device,
+            stagedUpload.witness.inode,
+            uploadTargetStatus,
+          ]
+        );
+        newImage = insert.rows[0];
+        if (!newImage?.id) throw new Error("Could not persist the upload recovery record.");
+        finalizedAssetId = newImage.id;
+        createdNewUploadRecord = true;
+        assertUploadConnected();
+        verifiedFile = await publishStagedUpload(assetRoot, originalFile.path, storedFilename, {
+          ...stagedUpload.witness,
+          sha256: stagedUpload.sha256,
+        });
+        isReplay = false;
+      }
+      finalizedFilePath = finalFilePath;
+      if (!verifiedFile) throw new Error("Saved original file is missing after upload finalization.");
 
-      if (optionalThumbnailFile?.path) {
+      const thumbnailStatus = String(newImage.thumbnail_status || "pending").toLowerCase();
+      const thumbnailWasReady = ["READY", "COMPLETED"].includes(thumbnailStatus.toUpperCase());
+      let thumbnailStatusForResponse = thumbnailWasReady ? "READY" : thumbnailStatus.toUpperCase();
+      let thumbnailErrorForResponse = newImage.thumbnail_error || null;
+
+      if (!isReplay && optionalThumbnailFile?.path) {
         try {
           stagedOptionalPreviewPath = await assetThumbnails.stageOptionalThumbnail(optionalThumbnailFile.path);
         } catch (error) {
-          console.error(`Failed to stage optional thumbnail input for asset ${newImage.rows[0].id}: ${error.message}`);
+          console.error(`Failed to stage optional thumbnail input for asset ${newImage.id}: ${error.message}`);
         }
         await fs.promises.unlink(optionalThumbnailFile.path).catch((error) => {
           if (error.code !== "ENOENT") {
@@ -7287,53 +7492,97 @@ app.post(
         });
       }
 
-      const fileExt = path.extname(originalFile.filename).toLowerCase();
-      if (fileExt) {
+      let queueThumbnail = !thumbnailWasReady;
+      if (thumbnailWasReady && newImage.status === "upload_processing") {
+        const promotion = await pool.query(
+          `UPDATE images
+           SET status = COALESCE(NULLIF(upload_target_status, ''), 'not_submitted'),
+               upload_target_status = NULL,
+               upload_error = NULL
+           WHERE id = $1
+             AND status = 'upload_processing'
+             AND EXISTS (
+               SELECT 1 FROM asset_thumbnail_metadata
+               WHERE asset_id = $1 AND status = 'READY' AND thumbnail_path IS NOT NULL
+             )`,
+          [newImage.id]
+        );
+        if (promotion.rowCount > 0) {
+          newImage.status = newImage.upload_target_status || "not_submitted";
+          newImage.upload_target_status = null;
+        } else {
+          queueThumbnail = true;
+        }
+      }
+      if (newImage.status !== "upload_processing" && thumbnailWasReady) queueThumbnail = false;
+      if (queueThumbnail) {
+        await pool.query(
+          `UPDATE images SET thumbnail_status = 'PROCESSING', thumbnail_error = NULL WHERE id = $1`,
+          [newImage.id]
+        );
         try {
           await thumbnailQueue.queueAssetThumbnailJob(
-            newImage.rows[0].id,
-            decoded.user,
+            newImage.id,
+            uploaded_by,
             { previewPath: stagedOptionalPreviewPath }
           );
+          thumbnailStatusForResponse = "PROCESSING";
+          thumbnailErrorForResponse = null;
         } catch (err) {
-          console.warn(`Failed to queue thumbnail processing: ${err.message}`);
+          console.error(`Failed to queue thumbnail processing for asset ${newImage.id}:`, err);
           await assetThumbnails.removeStagedOptionalThumbnail(stagedOptionalPreviewPath).catch((cleanupError) => {
-            console.error(`Failed to remove staged thumbnail input for asset ${newImage.rows[0].id}: ${cleanupError.message}`);
+            console.error(`Failed to remove staged thumbnail input for asset ${newImage.id}: ${cleanupError.message}`);
           });
           try {
-            await assetThumbnails.recordThumbnailQueueFailure(newImage.rows[0].id, err);
+            await assetThumbnails.recordThumbnailQueueFailure(newImage.id, err);
+            thumbnailStatusForResponse = "FAILED";
+            thumbnailErrorForResponse = String(err.message || err);
           } catch (recordError) {
-            console.error(`Failed to record thumbnail queue error for asset ${newImage.rows[0].id}:`, recordError.message);
+            console.error(`Failed to record thumbnail queue error for asset ${newImage.id}:`, recordError);
+            thumbnailStatusForResponse = "PROCESSING";
+            thumbnailErrorForResponse = "Thumbnail queueing has not yet been confirmed.";
           }
         }
       }
 
-      assertUploadConnected();
-
-      await recordBusinessEvent(pool, "ASSET_UPLOADED", {
-        userId: decoded.user,
-        userRole: user.role,
-        assetId: newImage.rows[0].id,
-        assetTitle,
-        actorId: decoded.user,
-        description: isPreSubmissionUpload
-          ? `Pre-submission asset uploaded: ${assetTitle}`
-          : `Asset uploaded: ${assetTitle}`,
-        metadata: { filename: storedFilename, thumbnailStatus }
-      });
-
-      const finalStats = await fs.promises.stat(finalizedFilePath);
-      if (!finalStats.isFile() || finalStats.size !== finalizedFileStats.size || finalStats.size !== stagedFileStats.size) {
-        throw new Error("Finalized asset failed file verification.");
+      let eventWarning = null;
+      try {
+        await recordBusinessEvent(pool, "ASSET_UPLOADED", {
+          userId: decoded.user,
+          userRole: user.role,
+          assetId: newImage.id,
+          assetTitle,
+          actorId: decoded.user,
+          description: isPreSubmissionUpload
+            ? `Pre-submission asset uploaded: ${assetTitle}`
+            : `Asset uploaded: ${assetTitle}`,
+          metadata: { filename: storedFilename, thumbnailStatus: thumbnailStatusForResponse }
+        });
+      } catch (eventError) {
+        eventWarning = "Asset saved, but its activity event could not be recorded.";
+        console.error(`Could not record upload activity for asset ${newImage.id}:`, eventError);
       }
-      assertUploadConnected();
+      const finalVerification = await inspectExistingUpload(assetRoot, storedFilename, {
+        device: newImage.upload_file_device,
+        inode: newImage.upload_file_inode,
+        size: Number(newImage.file_size),
+        sha256: newImage.upload_content_sha256,
+      });
+      if (!finalVerification) throw new Error("Finalized original is missing after upload completion.");
+      const finalStats = finalVerification.stats;
       await cleanupUploadStaging(req);
-      assertUploadConnected();
       res.json({
-        ...newImage.rows[0],
+        ...newImage,
+        thumbnail_status: thumbnailStatusForResponse,
         upload_complete: true,
         finalized: true,
-        file_size: finalStats.size
+        file_size: finalStats.size,
+        upload_request_id: uploadRequestId,
+        idempotent_replay: isReplay,
+        asset_status: newImage.status,
+        thumbnail_processing_status: thumbnailStatusForResponse,
+        thumbnail_error: thumbnailErrorForResponse,
+        ...(eventWarning ? { warning: eventWarning } : {}),
       });
 
     } catch (err) {
@@ -7347,23 +7596,32 @@ app.post(
           console.error("Failed to remove staged thumbnail input after upload failure:", error);
         }
       }
-      if (finalizedAssetId) {
+      if (
+        createdNewUploadRecord &&
+        finalizedAssetId &&
+        !finalizedFilePath &&
+        err.code === "UPLOAD_DESTINATION_COLLISION"
+      ) {
         try {
-          await cleanupUnconfirmedAsset();
-          finalizedFilePath = null;
+          await pool.query(
+            `DELETE FROM images WHERE id = $1 AND uploaded_by = $2 AND upload_request_id = $3`,
+            [finalizedAssetId, authenticatedUserId, uploadRequestId]
+          );
+          conflictingPlaceholderRemoved = true;
         } catch (error) {
           cleanupError = error;
-          console.error(`Failed to clean up unconfirmed asset ${finalizedAssetId}:`, error);
+          console.error(`Could not clear conflicting upload recovery record ${finalizedAssetId}:`, error);
         }
-      } else if (finalizedFilePath) {
+      }
+      if (finalizedAssetId && authenticatedUserId && uploadRequestId && !conflictingPlaceholderRemoved) {
         try {
-          await fs.promises.unlink(finalizedFilePath);
-          finalizedFilePath = null;
+          await pool.query(
+            `UPDATE images SET upload_error = $1
+             WHERE id = $2 AND uploaded_by = $3 AND upload_request_id = $4`,
+            [String(err.message || err).slice(0, 4000), finalizedAssetId, authenticatedUserId, uploadRequestId]
+          );
         } catch (error) {
-          if (error.code !== "ENOENT") {
-            cleanupError = error;
-            console.error("Failed to remove unconfirmed original upload:", error);
-          }
+          console.error(`Could not persist upload recovery detail for asset ${finalizedAssetId}:`, error);
         }
       }
       try {
@@ -7373,21 +7631,48 @@ app.post(
         console.error("Failed to remove upload staging directory after failure:", error);
       }
       if (!res.headersSent) {
-        res.status(err.code === "UPLOAD_CANCELLED" ? 499 : 500).json({
+        res.status(err.statusCode || (err.code === "UPLOAD_CANCELLED" ? 499 : 500)).json({
           error: err.message,
+          ...(uploadRequestId
+            ? {
+                upload_request_id: uploadRequestId,
+                retryable: ![
+                  "UPLOAD_DESTINATION_COLLISION",
+                  "UPLOAD_IDENTITY_MISMATCH",
+                  "UPLOAD_CONTENT_MISMATCH",
+                  "UPLOAD_STAGING_MISMATCH",
+                ].includes(err.code),
+                ...([
+                  "UPLOAD_DESTINATION_COLLISION",
+                  "UPLOAD_IDENTITY_MISMATCH",
+                  "UPLOAD_CONTENT_MISMATCH",
+                  "UPLOAD_STAGING_MISMATCH",
+                ].includes(err.code) ? { recovery_required: true } : {}),
+              }
+            : {}),
+          ...(finalizedAssetId ? { asset_id: finalizedAssetId } : {}),
           ...(cleanupError ? { cleanupError: "Upload cleanup could not be completed." } : {})
         });
       }
     } finally {
       try {
-        await cleanupUploadStaging(req);
-      } catch (cleanupError) {
-        console.error("Failed to remove upload staging directory:", cleanupError);
-        if (!res.headersSent) {
-          res.status(500).json({ error: "Upload staging cleanup failed." });
+        try {
+          await cleanupUploadStaging(req);
+        } catch (cleanupError) {
+          console.error("Failed to remove upload staging directory:", cleanupError);
+          if (!res.headersSent) {
+            res.status(500).json({ error: "Upload staging cleanup failed." });
+          }
         }
+      } finally {
+        await releaseUploadLocks({
+          client: uploadOperationClient,
+          advisoryLockAcquired: uploadOperationLockAcquired,
+          lockKey: uploadLockKey,
+          requestId: uploadRequestId,
+          releaseContributorLock: () => releaseContributorUploadLock(req),
+        });
       }
-      releaseContributorUploadLock(req);
     }
 
   }
@@ -8911,6 +9196,7 @@ app.delete(
   (req, res, next) => authenticateToken(req, res, next),
   async (req, res) => {
     try {
+      assertLocalAssetLifecycleSupported();
       const result = await deleteAssetCompletely(
         req.params.id,
         req.user.id,
@@ -11011,6 +11297,7 @@ app.put(
   verifyAdmin,
   async (req, res) => {
     try {
+      assertLocalAssetLifecycleSupported();
       const { id } = req.params;
       const moveResult = await moveAssetFileAndUpdate(
         pool,
@@ -11035,7 +11322,7 @@ app.put(
       res.json(image);
     } catch (err) {
       console.error(err);
-      res.status(500).send("Approve error");
+      res.status(err.statusCode || 500).send(err.statusCode ? err.message : "Approve error");
     }
   }
 );
@@ -11046,6 +11333,7 @@ app.put(
   verifyAdmin,
   async (req, res) => {
     try {
+      assertLocalAssetLifecycleSupported();
       const { id } = req.params;
       const moveResult = await moveAssetFileAndUpdate(
         pool,
@@ -11070,7 +11358,7 @@ app.put(
       res.json(image);
     } catch (err) {
       console.error(err);
-      res.status(500).send("Reject error");
+      res.status(err.statusCode || 500).send(err.statusCode ? err.message : "Reject error");
     }
   }
 );
@@ -13731,30 +14019,16 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(contributorCommissionMigration);
-      const assetLifecycleMigration = fs.readFileSync(
-        path.join(__dirname, "migrations", "029_asset_lifecycle_operations.sql"),
-        "utf8"
-      );
-      await pool.query(assetLifecycleMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);
     }
 
-    const thumbnailSchema = await pool.query(`
-      SELECT
-        to_regclass('public.asset_thumbnail_metadata') AS thumbnail_metadata,
-        to_regclass('public.asset_thumbnail_orphans') AS orphans,
-        to_regclass('public.asset_lifecycle_operations') AS lifecycle_operations
-    `);
-    schemaReady = Boolean(
-      thumbnailSchema.rows[0]?.thumbnail_metadata &&
-      thumbnailSchema.rows[0]?.orphans &&
-      thumbnailSchema.rows[0]?.lifecycle_operations
-    );
+    const schemaStatus = await checkAssetLifecycleSchema(pool);
+    schemaReady = schemaStatus.ready;
     if (!schemaReady) {
       console.error(
-        "Thumbnail or asset lifecycle schema is incomplete. Back up PostgreSQL and apply the required migrations 028 and 029."
+        `Required asset upload/lifecycle database schema is incomplete; startup aborted. Missing: ${schemaStatus.missing.join(", ")}. Review and apply migrations 028, 029, and 030 through an approved migration process.`
       );
       return false;
     }
@@ -13765,6 +14039,17 @@ async function initializeThumbnailSystem() {
       console.log(`Asset lifecycle recovery finished: ${recovery.recovered} recovered, ${recovery.failed} pending.`);
       if (recovery.failed > 0) {
         console.warn('Some asset lifecycle operations remain pending because their required local storage is unavailable or unsafe.');
+      }
+      const uploadStagingCleanup = await cleanupAbandonedUploadStaging({
+        assetRoot: assetThumbnails.getOriginalAssetStorageRoot(),
+      });
+      if (uploadStagingCleanup.removed > 0) {
+        console.log(`Removed ${uploadStagingCleanup.removed} abandoned upload staging directory(s).`);
+      }
+      if (uploadStagingCleanup.pending.length > 0) {
+        console.warn(
+          `Some upload staging entries need manual review: ${uploadStagingCleanup.pending.join('; ')}`
+        );
       }
     } catch (error) {
       console.error("Asset lifecycle recovery could not start:", error);
@@ -13783,6 +14068,60 @@ async function initializeThumbnailSystem() {
     const queueInitialized = await thumbnailQueue.initialize();
     if (!queueInitialized) {
       console.warn("⚠ Thumbnail queue initialization failed. Background processing disabled.");
+    } else {
+      const pendingUploads = await pool.query(
+        `SELECT id, uploaded_by, filename, file_size, upload_request_id,
+                upload_content_sha256, upload_file_device, upload_file_inode
+         FROM images
+         WHERE status = 'upload_processing'
+         ORDER BY id`
+      );
+      const uploadAssetRoot = assetThumbnails.getLifecycleRecoveryStorageRoots().assetRoot;
+      let requeuedCount = 0;
+      if (!uploadAssetRoot && pendingUploads.rows.length > 0) {
+        console.warn(
+          `${pendingUploads.rows.length} interrupted uploads remain pending because this machine has no configured original-asset root.`
+        );
+      }
+      for (const image of pendingUploads.rows) {
+        if (!uploadAssetRoot) continue;
+        try {
+          if (image.upload_request_id) {
+            const relativePath = assetThumbnails.normalizeStoredFilename(image.filename);
+            const verified = await inspectExistingUpload(uploadAssetRoot, relativePath, {
+              device: image.upload_file_device,
+              inode: image.upload_file_inode,
+              size: Number(image.file_size),
+              sha256: image.upload_content_sha256,
+            });
+            if (!verified) {
+              const message = "Original upload is missing; retry the same upload request to resume safely.";
+              await pool.query(
+                `UPDATE images SET upload_error = $1 WHERE id = $2 AND status = 'upload_processing'`,
+                [message, image.id]
+              );
+              console.warn(`Interrupted upload ${image.id} remains pending: ${message}`);
+              continue;
+            }
+          }
+          await thumbnailQueue.queueAssetThumbnailJob(image.id, image.uploaded_by);
+          requeuedCount += 1;
+        } catch (error) {
+          console.error(
+            `Could not requeue interrupted upload ${image.id}; it remains pending for recovery:`,
+            error
+          );
+          await pool.query(
+            `UPDATE images SET upload_error = $1 WHERE id = $2 AND status = 'upload_processing'`,
+            [String(error.message || error).slice(0, 4000), image.id]
+          ).catch((recordError) => {
+            console.error(`Could not persist recovery detail for upload ${image.id}:`, recordError);
+          });
+        }
+      }
+      if (requeuedCount > 0) {
+        console.log(`Requeued ${requeuedCount} verified interrupted asset upload(s).`);
+      }
     }
 
     console.log("\n========== THUMBNAIL SYSTEM READY ==========\n");

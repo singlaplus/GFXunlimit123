@@ -18,6 +18,15 @@ const PROPORTIONAL_PROCESSOR_VERSION = PROCESSOR_VERSION;
 const THUMBNAIL_SCALE = 0.2;
 const THUMBNAIL_INITIAL_QUALITY = 37;
 const THUMBNAIL_MIN_QUALITY = 1;
+const MIN_THUMBNAIL_DIMENSION = 16;
+const MIN_THUMBNAIL_SHORT_DIMENSION = 8;
+
+function hasMeaningfulThumbnailDimensions(width, height) {
+  return Number.isFinite(Number(width)) &&
+    Number.isFinite(Number(height)) &&
+    Math.max(Number(width), Number(height)) >= MIN_THUMBNAIL_DIMENSION &&
+    Math.min(Number(width), Number(height)) >= MIN_THUMBNAIL_SHORT_DIMENSION;
+}
 const MAX_THUMBNAIL_BYTES = 50 * 1024;
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_THUMBNAIL_CONCURRENCY = 8;
@@ -384,14 +393,23 @@ async function getRemoteAssetAuthorization(assetOwnerId) {
 
 function createRemoteAssetRequestError(error) {
   const status = Number(error.response?.status);
+  const originalCode = String(error.code || '');
+  const message = Number.isInteger(status) && status > 0
+    ? `SERVER original asset request failed with HTTP ${status}`
+    : ['ECONNABORTED', 'ETIMEDOUT'].includes(originalCode)
+      ? 'SERVER original asset request timed out'
+      : originalCode === 'ECONNRESET'
+        ? 'SERVER original asset stream was interrupted'
+        : 'SERVER original asset request failed; verify SERVER availability and authorization';
   const requestError = new Error(
-    Number.isInteger(status) && status > 0
-      ? `SERVER original asset request failed with HTTP ${status}`
-      : 'SERVER original asset request failed; verify SERVER availability and authorization'
+    message,
+    { cause: error }
   );
+  if (originalCode) requestError.code = originalCode;
   if (Number.isInteger(status) && status > 0) {
     requestError.response = { status };
-    if (status === 404) requestError.permanent = true;
+    requestError.statusCode = status;
+    if ([401, 403, 404].includes(status)) requestError.permanent = true;
   }
   return requestError;
 }
@@ -514,6 +532,7 @@ async function stageRemoteAsset(assetInfo, extension) {
   try {
     response = await axios.get(assetInfo.url, {
       responseType: 'stream',
+      decompress: false,
       timeout: 120000,
       maxRedirects: 0,
       validateStatus: (status) => status >= 200 && status < 300,
@@ -522,6 +541,23 @@ async function stageRemoteAsset(assetInfo, extension) {
   } catch (error) {
     if (typeof error.response?.data?.destroy === 'function') error.response.data.destroy();
     throw createRemoteAssetRequestError(error);
+  }
+  const responseDeclaredSize = Number(response.headers?.['content-length']);
+  if (Number.isFinite(responseDeclaredSize) && responseDeclaredSize > MAX_SOURCE_BYTES) {
+    response.data.destroy();
+    const error = new Error(`Source exceeds the ${MAX_SOURCE_BYTES} byte processing limit`);
+    error.code = 'SOURCE_TOO_LARGE';
+    throw error;
+  }
+  if (
+    Number.isFinite(responseDeclaredSize) &&
+    Number.isFinite(assetInfo.size) &&
+    responseDeclaredSize !== Number(assetInfo.size)
+  ) {
+    response.data.destroy();
+    const error = new Error('SERVER original asset changed between metadata check and download');
+    error.code = 'REMOTE_SOURCE_CHANGED';
+    throw error;
   }
   let received = 0;
   const guard = new Transform({
@@ -536,6 +572,21 @@ async function stageRemoteAsset(assetInfo, extension) {
   });
   try {
     await pipeline(response.data, guard, fs.createWriteStream(temporaryPath, { flags: 'wx' }));
+    if (received <= 0) {
+      const error = new Error('SERVER original asset response was empty');
+      error.code = 'REMOTE_SOURCE_EMPTY';
+      throw error;
+    }
+    if (
+      (Number.isFinite(responseDeclaredSize) && received !== responseDeclaredSize) ||
+      (Number.isFinite(assetInfo.size) && received !== Number(assetInfo.size))
+    ) {
+      const error = new Error(
+        `SERVER original asset stream was incomplete (${received} bytes received)`
+      );
+      error.code = 'REMOTE_SOURCE_INCOMPLETE';
+      throw error;
+    }
     return { sourcePath: temporaryPath, size: received };
   } catch (error) {
     try {
@@ -545,7 +596,11 @@ async function stageRemoteAsset(assetInfo, extension) {
         console.error(`Failed to remove incomplete remote SERVER source: ${cleanupError.message}`);
       }
     }
-    throw new Error(`Failed to stage remote SERVER original: ${error.message}`);
+    const stageError = new Error(`Failed to stage remote SERVER original: ${error.message}`, { cause: error });
+    if (error.code) stageError.code = error.code;
+    if (error.response) stageError.response = error.response;
+    if (error.permanent) stageError.permanent = true;
+    throw stageError;
   }
 }
 
@@ -745,10 +800,10 @@ async function isValidThumbnailFile(filePath) {
     const metadata = await sharp(filePath).metadata();
     if (
       metadata.format !== 'webp' ||
-      !metadata.width ||
-      !metadata.height
+      !hasMeaningfulThumbnailDimensions(metadata.width, metadata.height)
     ) return false;
-    await sharp(filePath).webp().toBuffer();
+    const decoded = await sharp(filePath).webp().toBuffer({ resolveWithObject: true });
+    if (!hasMeaningfulThumbnailDimensions(decoded.info.width, decoded.info.height)) return false;
     return true;
   } catch (error) {
     if (['ENOENT', 'ENOTDIR'].includes(error.code)) return false;
@@ -914,6 +969,11 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
       ? null
       : await getAssetSourceDimensions(sourcePath, extension);
     const thumbnail = await encodeThumbnail(previewBuffer, { sourceDimensions });
+    if (!hasMeaningfulThumbnailDimensions(thumbnail.width, thumbnail.height)) {
+      throw new Error(
+        `Generated preview is too small to be a valid stock thumbnail (minimum ${MIN_THUMBNAIL_DIMENSION} px on the long side and ${MIN_THUMBNAIL_SHORT_DIMENSION} px on the short side)`
+      );
+    }
     if (thumbnail.buffer.length > MAX_THUMBNAIL_BYTES) {
       throw new Error(`Generated thumbnail exceeds the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
     }
@@ -1242,6 +1302,8 @@ module.exports = {
   ensureThumbnailDirectory,
   isThumbnailPathInsideRoot,
   getAssetSourceInfo,
+  getRemoteAssetAuthorization,
+  stageRemoteAsset,
   getThumbnailFilePath,
   getThumbnailFilename,
   getThumbnailStorageRoot,

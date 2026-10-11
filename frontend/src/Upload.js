@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { limitWords, formatKeywords } from "./utils/uploadInputLimits";
@@ -19,6 +19,19 @@ const DEFAULT_CATEGORY_OPTIONS = [
   { id: "default-videos", name: "Videos" },
   { id: "default-templates", name: "Templates" }
 ];
+const SERVER_MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+
+function createUploadRequestId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
+    const random = Math.floor(Math.random() * 16);
+    return (character === "x" ? random : (random & 0x3) | 0x8).toString(16);
+  });
+}
+
+function formatUploadLimit(bytes) {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
 
 function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
   const [title, setTitle] = useState(editingAsset?.title || "");
@@ -36,6 +49,7 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const uploadRequestRef = useRef(null);
 
   const storedPermissions = (() => {
     try {
@@ -50,7 +64,16 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
     const unit = String(storedPermissions.upload_limit_unit || "MB").toUpperCase();
     const safeValue = [1, 5, 10, 20, 100].includes(value) ? value : 20;
     const safeUnit = ["MB", "GB"].includes(unit) ? unit : "MB";
-    return { value: safeValue, unit: safeUnit, label: `${safeValue} ${safeUnit}` };
+    const configuredBytes = safeValue * (safeUnit === "GB" ? 1024 ** 3 : 1024 ** 2);
+    const effectiveBytes = Math.min(configuredBytes, SERVER_MAX_UPLOAD_BYTES);
+    return {
+      value: safeValue,
+      unit: safeUnit,
+      bytes: effectiveBytes,
+      label: effectiveBytes < configuredBytes
+        ? `${formatUploadLimit(effectiveBytes)} (SERVER maximum)`
+        : `${safeValue} ${safeUnit}`
+    };
   })();
 
   const surfaceStyle = {
@@ -198,6 +221,24 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
       alert("All fields are required");
       return;
     }
+    const effectiveUploadLimitBytes = currentUserRole === "contributor"
+      ? currentUploadLimitConfig.bytes
+      : SERVER_MAX_UPLOAD_BYTES;
+    if (!editingAsset && image && image.size > effectiveUploadLimitBytes) {
+      toast.error(`File exceeds your ${formatUploadLimit(effectiveUploadLimitBytes)} upload limit.`);
+      return;
+    }
+    if (!editingAsset && image) {
+      const allowedExtensions = new Set([
+        ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".psd", ".psb", ".ai", ".eps", ".pdf",
+        ".zip", ".mp4", ".avi", ".mkv", ".mov", ".webm", ".aep", ".prproj"
+      ]);
+      const extension = image.name.slice(image.name.lastIndexOf(".")).toLowerCase();
+      if (!allowedExtensions.has(extension)) {
+        toast.error("Only supported image, design, document, video, and project files are allowed.");
+        return;
+      }
+    }
 
     if (editingAsset) {
       try {
@@ -226,6 +267,23 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
     }
 
     const formData = new FormData();
+    const fingerprint = JSON.stringify([
+      image.name,
+      image.size,
+      image.lastModified,
+      trimmedTitle,
+      category.join(","),
+      collection,
+      trimmedKeywords,
+      trimmedDescription,
+      type,
+      thumbnail?.name || "",
+      thumbnail?.size || 0,
+      thumbnail?.lastModified || 0
+    ]);
+    if (!uploadRequestRef.current || uploadRequestRef.current.fingerprint !== fingerprint) {
+      uploadRequestRef.current = { fingerprint, id: createUploadRequestId() };
+    }
 
     formData.append("title", trimmedTitle);
     formData.append("category", category.join(","));
@@ -247,6 +305,7 @@ setUploadProgress(0);
   formData,
   {
     headers: {
+      "Idempotency-Key": uploadRequestRef.current.id,
       Authorization: `Bearer ${token}`
     },
 
@@ -264,11 +323,22 @@ setUploadProgress(0);
   }
 );
 
-console.log("UPLOAD SUCCESS:", res.data);
+      if (
+        res.data?.upload_complete !== true ||
+        res.data?.finalized !== true ||
+        !Number.isSafeInteger(res.data?.id) ||
+        res.data.id <= 0 ||
+        res.data.file_size !== image.size
+      ) {
+        throw new Error("The server did not confirm that the original file was saved.");
+      }
+      uploadRequestRef.current = null;
 setUploadProgress(100);
-      toast.success(
-  "Image uploaded successfully!"
-);
+      if (String(res.data?.thumbnail_processing_status || "").toUpperCase() === "FAILED") {
+        toast.warning("Original file saved, but thumbnail processing failed. Retry it from your uploads.");
+      } else {
+        toast.success("Original file saved. Thumbnail processing is continuing.");
+      }
 
       fetchImages();
 
@@ -289,11 +359,13 @@ setUploadProgress(100);
 
     } catch (err) {
       console.error(err);
-
+      const errorData = err?.response?.data;
       toast.error(
-  err?.response?.data ||
-  "Upload failed"
-);
+        errorData?.error ||
+        (typeof errorData === "string" ? errorData : null) ||
+        err?.message ||
+        "Upload failed"
+      );
     } finally {
 
   setLoading(false);
@@ -499,11 +571,14 @@ setUploadProgress(100);
           )}
           <input
             type="file"
+            accept=".jpg,.jpeg,.png,.webp,.gif,.svg,.psd,.psb,.ai,.eps,.pdf,.zip,.mp4,.avi,.mkv,.mov,.webm,.aep,.prproj"
             onChange={(e) => {
               const file = e.target.files[0];
 
               if (!file) return;
 
+              if (preview) URL.revokeObjectURL(preview);
+              uploadRequestRef.current = null;
               setImage(file);
 
               const url = URL.createObjectURL(file);
