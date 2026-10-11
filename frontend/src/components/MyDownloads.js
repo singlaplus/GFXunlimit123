@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../utils/authSession";
@@ -28,7 +29,7 @@ function MyDownloads({ darkMode = false }) {
         return;
       }
 
-      const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+      const apiBaseUrl = API_BASE_URL;
       // customer_downloads with tokens and expiry
       const res1 = await axios.get(`${apiBaseUrl}/my-customer-downloads`, {
         headers: authHeaders,
@@ -97,7 +98,7 @@ function MyDownloads({ darkMode = false }) {
       if (!authHeaders.Authorization) return alert('You must be logged in to download.');
 
       // Get active customer download token for this image
-      const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+      const apiBaseUrl = API_BASE_URL;
       const tokenRes = await axios.get(`${apiBaseUrl}/customer-download-token/${image.image_id}`, {
         headers: authHeaders,
       });

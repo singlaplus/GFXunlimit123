@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useState } from "react";
 import axios from "axios";
 
@@ -34,7 +35,7 @@ const [agreeContributor, setAgreeContributor] =
 
       await axios.post(
 
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/register`,
+        `${API_BASE_URL}/register`,
 
         {
           username,

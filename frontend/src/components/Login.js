@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -20,7 +21,7 @@ function Login({ onSuccess, onClose }) {
   const [submitting, setSubmitting] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const apiBase = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+  const apiBase = API_BASE_URL;
 
   const clearOtpLogin = () => {
     setOtp("");

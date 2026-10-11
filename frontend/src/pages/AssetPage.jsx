@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useRef, useState } from "react";
 import { getSingleImage } from "../services/api";
 import axios from "axios";
@@ -11,7 +12,6 @@ import { getAssetSourceDimensions } from "../utils/assetDimensions";
 import AssetWatermark from "../components/AssetWatermark";
 import "./AssetPage.css";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const MAX_PREVIEW_HEIGHT = 432;
 
 export default function AssetPage(props) {
@@ -181,7 +181,7 @@ export default function AssetPage(props) {
       const token = localStorage.getItem("token");
       if (!token) return;
       try {
-        const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/favorites`, {
+        const res = await axios.get(`${API_BASE_URL}/favorites`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const favs = res.data || [];

@@ -31,6 +31,7 @@ import { WATCH_CONFIG_STORAGE_KEY, DEFAULT_WATCH_CONFIG } from "./utils/watchCon
 import { getStoredExploreFilterState, saveExploreFilterState } from "./utils/exploreFilters";
 import { AUTH_BUSY_START, AUTH_BUSY_END } from "./utils/authBusyEvents";
 import { getEffectiveAuthToken } from "./utils/authSession";
+import { API_BASE_URL } from "./utils/apiBaseUrl";
 
 function App() {
   const loc = useLocation();
@@ -58,8 +59,7 @@ function App() {
 
     const restoreSession = async () => {
       try {
-        const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
-        const response = await axios.get(`${apiBaseUrl}/me`, { withCredentials: true });
+        const response = await axios.get(`${API_BASE_URL}/me`, { withCredentials: true });
         
         if (response.data && response.data.id) {
           // Session is still valid, restore user data to localStorage so the UI can render immediately.
@@ -106,12 +106,12 @@ function App() {
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [authBusyType, setAuthBusyType] = useState("");
 
-  const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+  const apiBaseUrl = API_BASE_URL;
 
   useProfile(setUserRole, setUserPermissions);
 
   useEffect(() => {
-    const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+    const apiBaseUrl = API_BASE_URL;
 
     const loadBranding = async () => {
       try {
@@ -181,7 +181,7 @@ useEffect(() => {
   if (process.env.NODE_ENV === "test") return;
 
   axios.post(
-    `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/track-visitor`
+    `${API_BASE_URL}/track-visitor`
   );
 
 }, []);
@@ -445,7 +445,7 @@ const {
     const fetchTrending = async () => {
       try {
         const res = await axios.get(
-          `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images/trending?limit=5`
+          `${API_BASE_URL}/images/trending?limit=5`
         );
         setServerTrendingImages(res.data || []);
       } catch (err) {

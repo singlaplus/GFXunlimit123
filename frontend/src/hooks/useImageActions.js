@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import {
   likeImageRequest,
   addFavoriteRequest,
@@ -147,7 +148,7 @@ const shareImage = async (image) => {
     
 
     const imageUrl =
-      `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/api/images/${image.id}`;
+      `${API_BASE_URL}/api/images/${image.id}`;
 
     await navigator.clipboard.writeText(imageUrl);
 

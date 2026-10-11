@@ -1,6 +1,7 @@
 const axios = require('axios');
 const { pipeline } = require('node:stream/promises');
 const { parseThumbnailAssetId } = require('./assetThumbnails');
+const { getAssetServerOrigin } = require('../config');
 
 const THUMBNAIL_PROXY_TIMEOUT_MS = 10000;
 
@@ -12,15 +13,9 @@ function buildRemoteThumbnailUrl(baseUrl, assetId) {
   const numericAssetId = parseThumbnailAssetId(assetId);
   if (numericAssetId === null) throw new Error('Invalid asset ID for remote thumbnail');
 
-  const base = new URL(String(baseUrl || ''));
+  const base = new URL(getAssetServerOrigin(baseUrl));
   const hostname = base.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (
-    !['http:', 'https:'].includes(base.protocol) ||
-    base.username ||
-    base.password ||
-    base.pathname !== '/' ||
-    base.search ||
-    base.hash ||
     hostname === 'localhost' ||
     hostname.endsWith('.localhost') ||
     hostname === '::1' ||

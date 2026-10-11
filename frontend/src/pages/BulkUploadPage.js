@@ -1,9 +1,9 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { buildAuthHeaders } from "../utils/authSession";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const MAX_BULK_UPLOAD_FILES = 10;
 
 const createUploadRequestId = () => {

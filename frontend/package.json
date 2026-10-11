@@ -19,7 +19,7 @@
   },
   "scripts": {
     "start": "cross-env HOST=0.0.0.0 DANGEROUSLY_DISABLE_HOST_CHECK=true PORT=3000 react-scripts start",
-    "build": "react-scripts build",
+    "build": "node scripts/validate-production-api.cjs && react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "sync:fonts": "node scripts/sync-google-fonts.js"

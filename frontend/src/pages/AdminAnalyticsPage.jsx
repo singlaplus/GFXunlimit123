@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
@@ -152,7 +153,7 @@ export default function AdminAnalyticsPage() {
     params.append("format", "csv");
 
     const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-    const downloadUrl = `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/analytics/dashboard?${params.toString()}`;
+    const downloadUrl = `${API_BASE_URL}/admin/analytics/dashboard?${params.toString()}`;
     fetch(downloadUrl, {
       method: "GET",
       headers: token ? {
@@ -208,7 +209,7 @@ export default function AdminAnalyticsPage() {
         if (filters.gateway && filters.gateway !== "All") params.append("gateway", filters.gateway);
 
         const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-        const response = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/analytics/dashboard?${params.toString()}`, {
+        const response = await axios.get(`${API_BASE_URL}/admin/analytics/dashboard?${params.toString()}`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {}
         });
         setAnalytics(response?.data || buildFallbackAnalytics());

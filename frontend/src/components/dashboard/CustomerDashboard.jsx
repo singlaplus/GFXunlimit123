@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -6,8 +7,6 @@ import { buildAuthHeaders, getEffectiveAuthToken } from "../../utils/authSession
 import { loadCartItems } from "../../utils/cartPersistence";
 import "./CustomerDashboard.css";
 
-const API_BASE_URL =
-  process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const sections = [
   ["overview", "Overview"],
   ["downloads", "My downloads"],

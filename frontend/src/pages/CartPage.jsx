@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -5,7 +6,6 @@ import { calculateCartTotals, readAppliedCoupon, writeAppliedCoupon, clearApplie
 import { loadCartItems, saveCartItems } from '../utils/cartPersistence';
 import { getAssetPreviewUrl } from '../utils/assetPreview';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
 
 function formatCurrency(value, currency = null) {
   const amount = Number(value || 0);

@@ -9,6 +9,7 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const sharp = require('sharp');
 const pool = require('../db');
+const { getAssetServerOrigin, getAssetStorageRoots } = require('../config');
 const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
 const { getAssetSourceDimensions } = require('./assetDimensions');
@@ -119,7 +120,7 @@ function canonicalizePossiblyMissingPath(targetPath) {
 }
 
 function getThumbnailStorageRoot() {
-  const configuredRoot = String(process.env.THUMBNAIL_STORAGE_PATH || '').trim();
+  const { thumbnailStoragePath: configuredRoot } = getAssetStorageRoots();
   if (process.platform === 'darwin' && !configuredRoot) {
     throw new Error('THUMBNAIL_STORAGE_PATH must be configured on macOS; local thumbnail storage is not an implicit fallback');
   }
@@ -357,14 +358,9 @@ async function isThumbnailPathInsideRoot(filePath, root = getThumbnailStorageRoo
 }
 
 function getRemoteAssetUrl(filename) {
-  const configuredUrl = String(process.env.PC2_ASSET_SERVER_URL || '').trim();
-  if (!configuredUrl) throw new Error('PC2_ASSET_SERVER_URL is required to read assets outside local storage');
-  const base = new URL(configuredUrl);
-  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
-    throw new Error('PC2_ASSET_SERVER_URL must be a valid HTTP(S) origin');
-  }
+  const origin = getAssetServerOrigin();
   const encodedPath = filename.split('/').map(encodeURIComponent).join('/');
-  return `${base.origin}/api/files/${encodedPath}`;
+  return `${origin}/api/files/${encodedPath}`;
 }
 
 async function getRemoteAssetAuthorization(assetOwnerId) {
@@ -444,7 +440,7 @@ async function getRemoteAssetSourceInfo(filename, assetOwnerId) {
 }
 
 function getConfiguredAssetRoot() {
-  const configured = String(process.env.ASSETS_ROOT || '').trim();
+  const { assetsRoot: configured } = getAssetStorageRoots();
   if (configured) return path.resolve(configured);
   if (process.platform === 'win32' && process.env.NODE_ENV === 'production') {
     throw new Error('ASSETS_ROOT must be configured in Windows production');
@@ -457,8 +453,10 @@ function getOriginalAssetStorageRoot() {
 }
 
 function getLifecycleRecoveryStorageRoots({ platform = process.platform } = {}) {
-  const originalRootConfigured = String(process.env.ASSETS_ROOT || '').trim();
-  const thumbnailRootConfigured = String(process.env.THUMBNAIL_STORAGE_PATH || '').trim();
+  const {
+    assetsRoot: originalRootConfigured,
+    thumbnailStoragePath: thumbnailRootConfigured,
+  } = getAssetStorageRoots();
 
   return {
     assetRoot: platform === 'darwin' && !originalRootConfigured

@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
@@ -114,16 +115,16 @@ export default function AdminCommercePage() {
         setError("");
         const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
         const [summaryRes, analyticsRes, recentOrdersRes, payoutRequestsRes] = await Promise.all([
-          axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/summary`, {
+          axios.get(`${API_BASE_URL}/admin/orders/summary`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           }),
-          axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/analytics`, {
+          axios.get(`${API_BASE_URL}/admin/orders/analytics`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           }),
-          axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/recent`, {
+          axios.get(`${API_BASE_URL}/admin/orders/recent`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           }),
-          axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/payout-requests`, {
+          axios.get(`${API_BASE_URL}/admin/payout-requests`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           })
         ]);
@@ -152,7 +153,7 @@ export default function AdminCommercePage() {
       setError("");
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
       const response = await axios.put(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/${orderId}/status`,
+        `${API_BASE_URL}/admin/orders/${orderId}/status`,
         payload,
         {
           headers: token ? { Authorization: `Bearer ${token}` } : {}
@@ -172,7 +173,7 @@ export default function AdminCommercePage() {
     try {
       setActionLoading(true);
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      const response = await axios.put(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/payout-requests/${requestId}/status`, { status }, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      const response = await axios.put(`${API_BASE_URL}/admin/payout-requests/${requestId}/status`, { status }, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       setPayoutRequests((previous) => previous.map((request) => request.id === requestId ? { ...request, ...response.data } : request));
     } catch (err) {
       setError("Unable to update payout request status.");
@@ -312,7 +313,7 @@ export default function AdminCommercePage() {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "1100px" }}>
             <thead><tr style={{ textAlign: "left", borderBottom: `1px solid ${theme.border}` }}><th style={{ padding: "12px" }}>Contributor</th><th style={{ padding: "12px" }}>Credits / Amount</th><th style={{ padding: "12px" }}>Contact</th><th style={{ padding: "12px" }}>Check</th><th style={{ padding: "12px" }}>Progress</th><th style={{ padding: "12px" }}>Actions</th></tr></thead>
-            <tbody>{payoutRequests.length === 0 ? <tr><td colSpan="6" style={{ padding: "18px 12px", color: theme.muted }}>No requested earnings yet.</td></tr> : payoutRequests.map((request) => <tr key={request.id} style={{ borderBottom: `1px solid ${theme.border}` }}><td style={{ padding: "12px" }}>{request.username || request.account_email}</td><td style={{ padding: "12px" }}>{request.requested_credits} / ₹{Number(request.requested_credits).toFixed(2)}</td><td style={{ padding: "12px", color: theme.muted }}>{request.email}<br />{request.phone}<br />{request.whatsapp}</td><td style={{ padding: "12px" }}><a href={`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/api/files/${request.cancelled_check_path}`} target="_blank" rel="noreferrer" style={{ color: theme.accent }}>View upload</a></td><td style={{ padding: "12px" }}>{request.status === "payment_done" ? "Payment done" : request.status.charAt(0).toUpperCase() + request.status.slice(1)}</td><td style={{ padding: "12px", display: "flex", gap: "6px", flexWrap: "wrap" }}>{["reviewed", "approved", "rejected", "payment_done"].map((status) => <button key={status} type="button" disabled={actionLoading} onClick={() => handlePayoutStatus(request.id, status)} style={{ border: "none", borderRadius: "8px", padding: "7px 9px", background: status === "rejected" ? "#dc2626" : theme.button, color: "#fff", cursor: "pointer", fontSize: "11px" }}>{status === "payment_done" ? "Payment done" : status.charAt(0).toUpperCase() + status.slice(1)}</button>)}</td></tr>)}</tbody>
+            <tbody>{payoutRequests.length === 0 ? <tr><td colSpan="6" style={{ padding: "18px 12px", color: theme.muted }}>No requested earnings yet.</td></tr> : payoutRequests.map((request) => <tr key={request.id} style={{ borderBottom: `1px solid ${theme.border}` }}><td style={{ padding: "12px" }}>{request.username || request.account_email}</td><td style={{ padding: "12px" }}>{request.requested_credits} / ₹{Number(request.requested_credits).toFixed(2)}</td><td style={{ padding: "12px", color: theme.muted }}>{request.email}<br />{request.phone}<br />{request.whatsapp}</td><td style={{ padding: "12px" }}><a href={`${API_BASE_URL}/api/files/${request.cancelled_check_path}`} target="_blank" rel="noreferrer" style={{ color: theme.accent }}>View upload</a></td><td style={{ padding: "12px" }}>{request.status === "payment_done" ? "Payment done" : request.status.charAt(0).toUpperCase() + request.status.slice(1)}</td><td style={{ padding: "12px", display: "flex", gap: "6px", flexWrap: "wrap" }}>{["reviewed", "approved", "rejected", "payment_done"].map((status) => <button key={status} type="button" disabled={actionLoading} onClick={() => handlePayoutStatus(request.id, status)} style={{ border: "none", borderRadius: "8px", padding: "7px 9px", background: status === "rejected" ? "#dc2626" : theme.button, color: "#fff", cursor: "pointer", fontSize: "11px" }}>{status === "payment_done" ? "Payment done" : status.charAt(0).toUpperCase() + status.slice(1)}</button>)}</td></tr>)}</tbody>
           </table>
         </div>
       </div>

@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import Pagination from "../components/Pagination";
@@ -56,7 +57,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
   const selectedOrderId = orderIdMatch ? Number(orderIdMatch[1]) : null;
 
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-  const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+  const apiBaseUrl = API_BASE_URL;
 
   useEffect(() => {
     if (!token) {

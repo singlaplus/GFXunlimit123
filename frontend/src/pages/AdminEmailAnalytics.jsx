@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { getEffectiveAuthToken } from '../utils/authSession';
@@ -8,7 +9,6 @@ function getBarColor(index, total) {
   return colors[index % colors.length];
 }
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
 
 const PRESETS = [
   { key: 'today', label: 'Today' },

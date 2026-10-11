@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 
@@ -13,7 +14,7 @@ export default function PaymentsPage() {
     setError(null);
     try {
       const token = localStorage.getItem('token');
-      const base = `${process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000'}/credits/history`;
+      const base = `${API_BASE_URL}/credits/history`;
       // If logged in, request per-user history; otherwise request global latest 50
       const url = token ? base : `${base}?all=true`;
       const res = await axios.get(url, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
@@ -67,7 +68,7 @@ export default function PaymentsPage() {
     const fetchPayoutRequests = async () => {
       try {
         const token = localStorage.getItem('token');
-        const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000'}/payout-requests`, { headers: { Authorization: `Bearer ${token}` } });
+        const res = await axios.get(`${API_BASE_URL}/payout-requests`, { headers: { Authorization: `Bearer ${token}` } });
         setPayoutRequests(res.data || []);
       } catch (err) {
         setPayoutRequests([]);

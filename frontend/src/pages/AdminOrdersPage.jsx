@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import Pagination from "../components/Pagination";
@@ -197,10 +198,10 @@ export default function AdminOrdersPage() {
           ...filters
         };
         const [summaryRes, ordersRes] = await Promise.all([
-          axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/summary`, {
+          axios.get(`${API_BASE_URL}/admin/orders/summary`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           }),
-          axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders`, {
+          axios.get(`${API_BASE_URL}/admin/orders`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {},
             params
           })
@@ -307,7 +308,7 @@ export default function AdminOrdersPage() {
     let currentPage = 1;
     let totalOrders = 0;
     do {
-      const response = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders`, {
+      const response = await axios.get(`${API_BASE_URL}/admin/orders`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         params: { page: currentPage, limit: 100 }
       });
@@ -372,7 +373,7 @@ export default function AdminOrdersPage() {
     try {
       setLoading(true);
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      await axios.post(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/reset`, {}, {
+      await axios.post(`${API_BASE_URL}/admin/orders/reset`, {}, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
     } catch (err) {
@@ -440,7 +441,7 @@ export default function AdminOrdersPage() {
       setDetails(null);
       setShowDetails(true);
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      const response = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/${orderId}`, {
+      const response = await axios.get(`${API_BASE_URL}/admin/orders/${orderId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       setDetails(response.data || null);
@@ -473,7 +474,7 @@ export default function AdminOrdersPage() {
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
       const result = await axios.put(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/${details.order.id}/payment-status`,
+        `${API_BASE_URL}/admin/orders/${details.order.id}/payment-status`,
         { decision },
         { headers: token ? { Authorization: `Bearer ${token}` } : {} }
       );
@@ -485,7 +486,7 @@ export default function AdminOrdersPage() {
         : order));
       setPaymentReviewMessage(result.data?.message || `Payment ${decision}.`);
       const refreshed = await axios.get(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/${details.order.id}`,
+        `${API_BASE_URL}/admin/orders/${details.order.id}`,
         { headers: token ? { Authorization: `Bearer ${token}` } : {} }
       );
       setDetails(refreshed.data || null);
@@ -504,7 +505,7 @@ export default function AdminOrdersPage() {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
       const payload = ACTIONS.find((item) => item.key === action)?.payload || {};
       for (const orderId of Array.from(selectedOrders)) {
-        await axios.put(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/orders/${orderId}/status`, payload, {
+        await axios.put(`${API_BASE_URL}/admin/orders/${orderId}/status`, payload, {
           headers: token ? { Authorization: `Bearer ${token}` } : {}
         });
       }

@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { toast } from "react-toastify";
 import { clearExploreFilterState } from "../utils/exploreFilters";
 import { startFaviconAnimation, stopFaviconAnimation } from "../utils/faviconAnimation";
@@ -73,7 +74,7 @@ function Navbar({
     );
 
   await fetch(
-    `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/notifications/read/${username}`,
+    `${API_BASE_URL}/notifications/read/${username}`,
     {
       method: "PUT",
       headers: { "X-Session-Activity": String(readLastActivityAt()) }

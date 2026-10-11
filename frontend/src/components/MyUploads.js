@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -30,7 +31,7 @@ function MyUploads({ darkMode = false }) {
     try {
       const token = localStorage.getItem("token");
       const res = await axios.get(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/my-uploads?view=${encodeURIComponent(view)}`,
+        `${API_BASE_URL}/my-uploads?view=${encodeURIComponent(view)}`,
         {
           headers: {
             Authorization: `Bearer ${token}`
@@ -84,7 +85,7 @@ function MyUploads({ darkMode = false }) {
     setDeletingImageIds((prev) => new Set(prev).add(id));
     try {
       await axios.delete(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images/${id}`,
+        `${API_BASE_URL}/images/${id}`,
         {
           headers: {
             Authorization: `Bearer ${localStorage.getItem("token")}`
@@ -110,7 +111,7 @@ function MyUploads({ darkMode = false }) {
   const submitImage = async (image) => {
     try {
       await axios.post(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/my-uploads/${image.id}/submit`,
+        `${API_BASE_URL}/my-uploads/${image.id}/submit`,
         {},
         { headers: buildAuthHeaders() }
       );
@@ -133,7 +134,7 @@ function MyUploads({ darkMode = false }) {
   const saveImage = async () => {
     try {
       await axios.put(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images/${editingImage.id}`,
+        `${API_BASE_URL}/images/${editingImage.id}`,
         {
           title: editTitle,
           category: editCategory,
@@ -164,7 +165,7 @@ function MyUploads({ darkMode = false }) {
 
     try {
       const res = await axios.post(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images/${editingImage.id}/thumbnail`,
+        `${API_BASE_URL}/images/${editingImage.id}/thumbnail`,
         formData,
         {
           headers: {

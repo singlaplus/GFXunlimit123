@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -96,7 +97,7 @@ function MyFavorites({ darkMode = false }) {
 
       const res =
         await axios.get(
-          `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/favorites`,
+          `${API_BASE_URL}/favorites`,
           {
             headers: {
               Authorization:
@@ -122,7 +123,7 @@ function MyFavorites({ darkMode = false }) {
       localStorage.getItem("token");
 
     await axios.delete(
-      `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/favorites/${imageId}`,
+      `${API_BASE_URL}/favorites/${imageId}`,
       {
         headers: {
           Authorization:

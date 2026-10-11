@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../../../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
@@ -86,7 +87,7 @@ function BrowseCollections() {
   useEffect(() => {
     const loadCollections = async () => {
       try {
-        const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/collections`);
+        const res = await axios.get(`${API_BASE_URL}/collections`);
         const nextCollections = Array.isArray(res.data) ? res.data.map((item) => {
           const title = item.name || item;
           return title ? {

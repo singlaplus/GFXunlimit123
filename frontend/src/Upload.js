@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "./utils/apiBaseUrl.js";
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -11,7 +12,6 @@ import {
 
 const CATEGORY_STORAGE_KEY = "asset-categories";
 const COLLECTION_STORAGE_KEY = "asset-collections";
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const DEFAULT_CATEGORY_OPTIONS = [
   { id: "default-images", name: "Images" },
   { id: "default-vector", name: "Vector/illustrations" },

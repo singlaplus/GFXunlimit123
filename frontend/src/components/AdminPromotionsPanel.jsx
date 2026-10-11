@@ -1,9 +1,9 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
 import "./AdminPromotionsPanel.css";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const SECTION_ITEMS = [
   { key: "dashboard", label: "Dashboard" },
   { key: "coupons", label: "Coupons" },

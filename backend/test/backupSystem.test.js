@@ -65,12 +65,13 @@ function makeFakeDatabase(dataDirectory) {
   };
 }
 
-function makeService({ projectRoot, stateDirectory, environment, spawn } = {}) {
+function makeService({ projectRoot, stateDirectory, clientExportRoot, environment, spawn } = {}) {
   const dataDirectory = path.join(projectRoot, 'postgres-data');
   fs.mkdirSync(dataDirectory, { recursive: true });
   return createBackupService({
     projectRoot,
     stateDirectory,
+    clientExportRoot,
     database: makeFakeDatabase(dataDirectory),
     environment: {
       ...environment,
@@ -303,6 +304,7 @@ test('Website Code job copies and verifies files without writing .env plaintext'
       destinations: [destination],
       applicationVersion: '1.2.3'
     });
+
     const finished = await waitForTerminalJob(service, started.id);
     assert.equal(finished.status, 'SUCCESS');
     assert.equal(finished.verificationStatus, 'VERIFIED');
@@ -322,6 +324,68 @@ test('Website Code job copies and verifies files without writing .env plaintext'
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(destination, { recursive: true, force: true });
     fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('Mac-local manual export stages only a verified backup set and automatic jobs cannot select it', async () => {
+  const projectRoot = makeProjectRoot();
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const clientExportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-client-export-'));
+  const service = makeService({ projectRoot, stateDirectory, clientExportRoot });
+  try {
+    await assert.rejects(
+      service.buildPlan({ categories: ['websiteCode'], destinations: [clientExportRoot] }),
+      /protected production source/
+    );
+    await assert.rejects(
+      service.createJob({
+        categories: ['websiteCode'],
+        automatic: { frequency: 'daily', folder: { reclaimBytes: 0 } },
+        destinationMode: 'mac-local'
+      }),
+      /Automatic backups must use their configured server destination/
+    );
+
+    const started = await service.createJob({
+      categories: ['websiteCode'],
+      destinations: ['/this-client-path-is-never-a-server-path'],
+      destinationMode: 'mac-local',
+      applicationVersion: '1.2.3'
+    });
+    const finished = await waitForTerminalJob(service, started.id);
+    assert.equal(finished.status, 'SUCCESS');
+    assert.equal(finished.verificationStatus, 'VERIFIED');
+    assert.equal(finished.backupType, 'MANUAL');
+    assert.equal(finished.clientExport, true);
+    assert.equal(finished.drives[0].path, 'Mac-local export staging');
+    assert.equal(finished.progress.drivePath, 'Mac-local export staging');
+
+    const exportResult = await service.getClientExportFiles(started.id);
+    assert.ok(exportResult.some((file) => file.path === 'manifest.json'));
+    assert.ok(exportResult.some((file) => file.path === 'checksums.sha256'));
+    assert.ok(exportResult.some((file) => file.path === 'Website-Code/backend/server.js'));
+    const manifest = JSON.parse(fs.readFileSync(
+      path.join(clientExportRoot, 'GFXunlimit', `Backup-Set-${started.id}`, 'Drive-1', 'manifest.json'),
+      'utf8'
+    ));
+    assert.equal(manifest.backupSetId, started.id);
+    assert.equal(manifest.status, 'SUCCESS');
+    assert.equal(manifest.verificationStatus, 'VERIFIED');
+    assert.equal(manifest.destinationDrives[0].path, 'Mac-local export');
+    assert.ok(!JSON.stringify(manifest).includes(clientExportRoot));
+
+    const file = await service.openClientExportFile(started.id, 'Website-Code/backend/server.js');
+    let body = '';
+    for await (const chunk of file.stream) body += chunk.toString();
+    assert.equal(body, 'module.exports = true;\n');
+    await assert.rejects(service.openClientExportFile(started.id, '../../package.json'), /Invalid manual export file path/);
+
+    await service.deleteClientExport(started.id);
+    await assert.rejects(service.getClientExportFiles(started.id), /no longer available/);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+    fs.rmSync(clientExportRoot, { recursive: true, force: true });
   }
 });
 
@@ -403,6 +467,7 @@ test('server-side automatic weekly run reuses the oldest folder and completely o
     assert.equal(manifest.backupType, 'AUTOMATIC');
     assert.equal(manifest.automaticFrequency, 'weekly');
     assert.equal(fs.readdirSync(automaticRoot).filter((name) => /^\d{4}-\d{2}-\d{2}$/.test(name)).length, 30);
+    await assert.rejects(service.getClientExportFiles(completed.id), /completed, verified manual Mac export/);
     const schedule = await service.getAutomaticSchedule();
     assert.equal(schedule.lastRun.status, 'SUCCESS');
   } finally {

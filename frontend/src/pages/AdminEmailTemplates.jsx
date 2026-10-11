@@ -1,8 +1,8 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { getFooterHtml } from '../components/Footer';
 import { getEffectiveAuthToken } from '../utils/authSession';
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
 
 const TEMPLATE_VARIABLES = [
   '{{user_name}}',

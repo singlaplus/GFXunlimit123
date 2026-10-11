@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../../../utils/apiBaseUrl.js";
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -18,7 +19,7 @@ function Header({
 
   const keywords = Array.isArray(trendingKeywords) ? trendingKeywords : [];
   const heroBannerUrl = branding?.heroBanner
-    ? `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}${branding.heroBanner}`
+    ? `${API_BASE_URL}${branding.heroBanner}`
     : null;
   const showHeroAnimation = !heroBannerUrl;
   const heroStyle = heroBannerUrl
@@ -41,7 +42,7 @@ function Header({
     
     // Track the search keyword
     axios.post(
-      `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/search-keyword`,
+      `${API_BASE_URL}/search-keyword`,
       { keyword: trimmed }
     ).catch((err) => console.log("Search tracking error:", err));
     
@@ -238,7 +239,7 @@ function Header({
                 onClick={() => {
                   // Track the search keyword
                   axios.post(
-                    `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/search-keyword`,
+                    `${API_BASE_URL}/search-keyword`,
                     { keyword: item.keyword }
                   ).catch((err) => console.log("Search tracking error:", err));
                   

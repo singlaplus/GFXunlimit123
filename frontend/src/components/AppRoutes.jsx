@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
@@ -43,7 +44,6 @@ import TaxW9Form from "./dashboard/TaxW9Form";
 import { getEffectiveAuthToken } from "../utils/authSession";
 import { GOOGLE_FONT_FAMILIES } from "../data/googleFonts";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const BLOG_DRAFTS_STORAGE_KEY = "gfx-blog-drafts";
 const blogDraftHeaders = () => ({ Authorization: `Bearer ${getEffectiveAuthToken()}` });
 const normalizeBlogDraft = (draft) => ({ ...draft, savedAt: draft.savedAt || draft.updatedAt || draft.createdAt });

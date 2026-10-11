@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -22,7 +23,7 @@ export default function useNotifications(
 
         const res =
           await axios.get(
-            `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/notifications/${username}`,
+            `${API_BASE_URL}/notifications/${username}`,
             { headers: { Authorization: `Bearer ${getEffectiveAuthToken()}` } }
           );
 
@@ -30,7 +31,7 @@ export default function useNotifications(
 
         const countRes =
           await axios.get(
-            `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/notifications/count/${username}`,
+            `${API_BASE_URL}/notifications/count/${username}`,
             { headers: { Authorization: `Bearer ${getEffectiveAuthToken()}` } }
           );
 
@@ -90,7 +91,7 @@ export default function useNotifications(
     const username = localStorage.getItem("username");
     if (!username) return;
     await axios.delete(
-      `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/notifications/${encodeURIComponent(username)}`,
+      `${API_BASE_URL}/notifications/${encodeURIComponent(username)}`,
       { headers: { Authorization: `Bearer ${getEffectiveAuthToken()}` } }
     );
     setNotifications([]);

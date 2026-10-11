@@ -1,10 +1,10 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { buildAuthHeaders } from "../utils/authSession";
 import Pagination from "../components/Pagination";
 import "./AdminContributorsPage.css";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const PAGE_SIZE = 10;
 
 const columns = [

@@ -1,10 +1,10 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { calculateCartTotals, readAppliedCoupon, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
 import { loadCartItems, saveCartItems, clearCartItems } from '../utils/cartPersistence';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
 const REQUEST_ADMIN_PAYMENT_METHOD = "Request to Admin";
 const GFX_CREDITS_PAYMENT_METHOD = "GFX's Credits";
 

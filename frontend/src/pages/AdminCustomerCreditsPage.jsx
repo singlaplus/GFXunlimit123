@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
@@ -52,7 +53,7 @@ export default function AdminCustomerCreditsPage() {
         setLoading(true);
         setError("");
         const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-        const response = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/users`, {
+        const response = await axios.get(`${API_BASE_URL}/admin/users`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {}
         });
         setUsers(Array.isArray(response.data) ? response.data : []);
@@ -127,7 +128,7 @@ export default function AdminCustomerCreditsPage() {
     try {
       setIsDeletingCredits(true);
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      const response = await axios.delete(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/users/${deleteUser.id}/credits`, {
+      const response = await axios.delete(`${API_BASE_URL}/admin/users/${deleteUser.id}/credits`, {
         data: { credits: amount },
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });

@@ -18,10 +18,10 @@ New SERVER upload originals use `<canonical-username>_<DDMMYYYY>_<sanitized-orig
 
 The upload relay buffers at most 1 MiB of SERVER response data. If a non-2xx SERVER response exceeds that limit, the relay stops reading, preserves the SERVER HTTP status, and returns a bounded generic JSON error body instead of forwarding a partial body. Oversized success responses remain unconfirmed and return 502.
 
-Set `PC2_ASSET_SERVER_URL` in `backend/.env` on the DEVELOPER machine for authenticated remote original, thumbnail, and upload requests. `ASSETS_ROOT` is optional; do not set it to a Windows drive path. Do not configure a local thumbnail fallback when thumbnails are centralized on the SERVER:
+Set `PC2_ASSET_SERVER_URL` in `backend/.env` on the DEVELOPER machine for authenticated remote original, thumbnail, and upload requests. It must be the explicitly configured SERVER backend HTTP(S) origin, without credentials, a path, or a query string; do not infer the address from a computer name or private IP. `ASSETS_ROOT` is optional on the DEVELOPER machine; do not set it to a Windows drive path. Do not configure a local thumbnail fallback when thumbnails are centralized on the SERVER:
 
 ```text
-PC2_ASSET_SERVER_URL=http://100.102.63.63:5000
+PC2_ASSET_SERVER_URL=<configured SERVER backend origin>
 ```
 
 On macOS, `/api/assets/:id/thumbnail` is served by proxying the SERVER's existing thumbnail endpoint after the DEVELOPER backend performs its normal database authorization checks. Original downloads use a short-lived backend-generated Bearer token tied to the asset owner's active session; the DEVELOPER backend and SERVER must use the same `JWT_SECRET`, which must remain server-side. Neither the SERVER URL nor the authorization token is sent to the browser. The browser continues to use the DEVELOPER backend URL, and no production thumbnail files are copied to the DEVELOPER machine. `PC2_ASSET_SERVER_URL` must be the SERVER backend origin; do not include credentials, a path, or a query string. Windows continues serving thumbnails from its configured local storage.

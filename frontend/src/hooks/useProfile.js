@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect } from "react";
 import axios from "axios";
 import { normalizeRole } from "../utils/role";
@@ -37,7 +38,7 @@ export default function useProfile(setUserRole, setUserPermissions) {
         }
 
         const res = await axios.get(
-          `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/profile`,
+          `${API_BASE_URL}/profile`,
           token
             ? {
                 headers: {

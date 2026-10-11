@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -44,7 +45,7 @@ export function InactivitySessionProvider({ children }) {
     if (loggingOut.current) return;
     loggingOut.current = true;
     try {
-      await axios.post(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/logout`, {}, { withCredentials: true });
+      await axios.post(`${API_BASE_URL}/logout`, {}, { withCredentials: true });
     } catch (error) {
       // Clearing local state and redirecting must still happen when the server is unavailable.
     } finally {

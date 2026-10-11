@@ -1,4 +1,4 @@
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+import { API_BASE_URL } from "./apiBaseUrl.js";
 const EMPTY_THUMBNAIL = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
 const BLOCKED_THUMBNAIL_STATUSES = new Set(['pending', 'processing', 'retrying', 'failed', 'error']);
 

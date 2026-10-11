@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 
@@ -8,7 +9,7 @@ export default function useLeaderboard(currentPage) {
     const fetchLeaderboard = async () => {
       try {
         const res = await axios.get(
-          `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/leaderboard`
+          `${API_BASE_URL}/leaderboard`
         );
 
         setLeaderboard(res.data);

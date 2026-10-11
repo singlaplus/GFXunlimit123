@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { normalizeCategoryFilterBucket, normalizeCollectionValue } from "../../hooks/useFilteredImages";
@@ -78,7 +79,7 @@ function ImageGallery(props) {
 
   const loadCategoryCounts = async () => {
     try {
-      const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/catalog/facets`);
+      const res = await axios.get(`${API_BASE_URL}/catalog/facets`);
       const categoryRows = Array.isArray(res?.data?.categoryCounts) ? res.data.categoryCounts : [];
       const collectionRows = Array.isArray(res?.data?.collectionCounts) ? res.data.collectionCounts : [];
 
@@ -113,7 +114,7 @@ function ImageGallery(props) {
 
     const loadCategories = async () => {
       try {
-        const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/categories`);
+        const res = await axios.get(`${API_BASE_URL}/categories`);
         const nextCategories = normalizeAdminOptions(res.data);
         if (nextCategories.length > 0) {
           setCategories(nextCategories);
@@ -128,7 +129,7 @@ function ImageGallery(props) {
 
     const loadCollections = async () => {
       try {
-        const res = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/collections`);
+        const res = await axios.get(`${API_BASE_URL}/collections`);
         const nextCollections = Array.isArray(res.data) ? res.data.map((item) => item.name).filter(Boolean) : [];
         setCollections((prev) => (prev.length > 0 ? prev : nextCollections));
       } catch (err) {

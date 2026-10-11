@@ -1,8 +1,8 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { getEffectiveAuthToken } from '../utils/authSession';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
 const getIsDarkMode = () => typeof document !== 'undefined' && document.body.classList.contains('dark-mode');
 
 export default function AdminEmailScheduled() {

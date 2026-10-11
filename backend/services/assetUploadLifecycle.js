@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { createReadStream } = require('node:fs');
 const { pipeline } = require('node:stream/promises');
+const { getAssetStorageRoots } = require('../config');
 const {
   assertContainedFile,
   ensureSafeParent,
@@ -22,7 +23,7 @@ function normalizeUploadRequestId(value) {
 async function cleanupAbandonedUploadStaging({
   assetRoot,
   platform = process.platform,
-  configuredAssetRoot = process.env.ASSETS_ROOT,
+  configuredAssetRoot = getAssetStorageRoots().assetsRoot,
 } = {}) {
   if (platform === 'darwin' && !String(configuredAssetRoot || '').trim()) {
     return { removed: 0, pending: [] };

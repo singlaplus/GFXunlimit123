@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { getImages } from "../services/imageService";
@@ -393,11 +394,11 @@ export default function useImages({
   const fetchSingleImage = async (id) => {
     try {
       await axios.put(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images/${id}/view`
+        `${API_BASE_URL}/images/${id}/view`
       );
 
       const response = await axios.get(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images/${id}`
+        `${API_BASE_URL}/images/${id}`
       );
 
       setSelectedImage(response.data);

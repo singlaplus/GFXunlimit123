@@ -1,8 +1,8 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import "./PublicProfilePage.css";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const emptyProfile = {
   displayName: "",
   portfolioUrl: "https://www.shutterstock.com/g/",

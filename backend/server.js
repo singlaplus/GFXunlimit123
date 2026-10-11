@@ -59,6 +59,12 @@ const ProcessorDetector = require("./thumbnail-engine/processor-detector");
 const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
 const restoreRoutes = require("./routes/restore-routes");
 const { createBackupRouter } = require("./routes/backup-routes");
+const { createAdminVerifier } = require("./middleware/createAdminVerifier");
+const {
+  getAssetServerHttpOrigin,
+  getAssetStorageRoots,
+  getCorsAllowedOrigins,
+} = require("./config");
 const processorFactory = require("./thumbnail-engine/processor-factory");
 const {
   proxyRemoteThumbnail,
@@ -129,6 +135,12 @@ function verifyJwtToken(token) {
 function signJwtToken(payload, options = {}) {
   return jwt.sign(payload, JWT_SECRET || LEGACY_JWT_SECRET, options);
 }
+
+const verifyAdmin = createAdminVerifier({
+  pool,
+  jwtSecret: JWT_SECRET,
+  verifyToken: verifyJwtToken,
+});
 
 /* ---------------- FILE UPLOAD CONFIG ---------------- */
 
@@ -261,26 +273,11 @@ const handleBrandingUpload = (req, res, next) => {
 };
 /* ---------------- MIDDLEWARE ---------------- */
 
+const allowedCorsOrigins = getCorsAllowedOrigins();
 app.use(
   cors({
     origin: (origin, callback) => {
-      const allowedOrigins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://0.0.0.0:3000",
-        "http://100.101.63.63:3000",
-        "http://100.102.63.63:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://0.0.0.0:3001",
-        "http://localhost:3002",
-        "http://127.0.0.1:3002",
-        "http://0.0.0.0:3002",
-        "https://gfxunlimit.com",
-        "https://www.gfxunlimit.com"
-      ];
-
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin || allowedCorsOrigins.has(origin)) {
         callback(null, true);
         return;
       }
@@ -426,25 +423,13 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
       }
       if (unsupportedUntil) unsupportedPreviewSources.delete(upstreamPath);
     }
-    const pc2Url = new URL(process.env.PC2_ASSET_SERVER_URL || "");
-    if (
-      pc2Url.protocol !== "http:" ||
-      pc2Url.hostname !== "100.102.63.63" ||
-      pc2Url.port !== "5000" ||
-      pc2Url.pathname !== "/" ||
-      pc2Url.search ||
-      pc2Url.hash ||
-      pc2Url.username ||
-      pc2Url.password
-    ) {
-      throw new Error("PC2_ASSET_SERVER_URL must target http://100.102.63.63:5000");
-    }
+    const assetServerOrigin = getAssetServerHttpOrigin();
 
     const queryIndex = req.originalUrl.indexOf("?");
     const query = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : "";
     const response = await axios.request({
       method: req.method.toLowerCase(),
-      url: `${pc2Url.origin}${upstreamPath}${query}`,
+      url: `${assetServerOrigin}${upstreamPath}${query}`,
       responseType: processImage ? "arraybuffer" : "stream",
       decompress: false,
       headers: {
@@ -578,7 +563,7 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
 };
 
 const getLocalAssetRoot = () => {
-  const configuredRoot = String(process.env.ASSETS_ROOT || "").trim();
+  const { assetsRoot: configuredRoot } = getAssetStorageRoots();
   const allowLocalTestStorage =
     process.env.NODE_ENV === "test" &&
     process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE === "true";
@@ -1046,25 +1031,13 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
         if (assetRoot) {
           previewSourcePath = await resolveAssetFile(assetRoot, sourcePath);
         } else {
-          const pc2Url = new URL(process.env.PC2_ASSET_SERVER_URL || "");
-          if (
-            pc2Url.protocol !== "http:" ||
-            pc2Url.hostname !== "100.102.63.63" ||
-            pc2Url.port !== "5000" ||
-            pc2Url.pathname !== "/" ||
-            pc2Url.search ||
-            pc2Url.hash ||
-            pc2Url.username ||
-            pc2Url.password
-          ) {
-            throw new Error("PC2_ASSET_SERVER_URL must target http://100.102.63.63:5000");
-          }
+          const assetServerOrigin = getAssetServerHttpOrigin();
 
           const temporaryDirectory = path.join(__dirname, "tmp", "catalog-previews");
           await fs.promises.mkdir(temporaryDirectory, { recursive: true });
           temporarySourcePath = path.join(temporaryDirectory, `${imageId}-${crypto.randomUUID()}${extension}`);
           const sourceResponse = await axios.get(
-            `${pc2Url.origin}/api/files/${encodeAssetPath(sourcePath)}`,
+            `${assetServerOrigin}/api/files/${encodeAssetPath(sourcePath)}`,
             {
               responseType: "stream",
               decompress: false,
@@ -5240,90 +5213,6 @@ if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
   }
 })();
 /* ---------------- ADMIN MIDDLEWARE ---------------- */
-
-async function verifyAdmin(
-  req,
-  res,
-  next
-) {
-
-  try {
-
-    if (!JWT_SECRET) {
-      return res.status(503).json("Backup authentication is not configured");
-    }
-
-    const authHeader =
-      req.headers["authorization"];
-
-    if (!authHeader) {
-
-      return res
-        .status(401)
-        .json("Access denied");
-
-    }
-
-    const token =
-      authHeader.split(" ")[1];
-
-    const decoded = verifyJwtToken(token);
-
-    console.log("========== VERIFY ADMIN ==========");
-    console.log("Decoded Token:", decoded);
-
-    const user =
-      await pool.query(
-
-        `
-        SELECT role, status
-        FROM users
-        WHERE id = $1
-        `,
-
-        [decoded.user]
-
-      );
-
-    console.log("Database User:", user.rows);
-
-    if (
-      user.rows.length === 0
-    ) {
-
-      return res
-        .status(404)
-        .json("User not found");
-
-    }
-
-    console.log("User Role:", user.rows[0].role);
-
-    if (user.rows[0].role !== "admin" || user.rows[0].status === "inactive" || user.rows[0].status === "disabled") {
-
-      return res
-        .status(403)
-        .json(
-          "Admin access only"
-        );
-
-    }
-
-    req.user = { id: decoded.user };
-
-    next();
-
-  } catch (err) {
-
-    console.error(err);
-
-    res
-      .status(401)
-      .json("Invalid token");
-
-  }
-
-}
 
 async function verifySuperAdmin(
   req,
@@ -14207,7 +14096,7 @@ try {
 try {
   app.locals.pool = pool;
   app.locals.JWT_SECRET = JWT_SECRET;
-  app.use('/admin/restore', restoreRoutes);
+  app.use('/admin/restore', verifyAdmin, restoreRoutes);
 } catch (err) {
   console.error('Failed to mount restore routes', err);
 }

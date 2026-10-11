@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { hasActiveSession } from "../utils/authSession";
@@ -172,7 +173,7 @@ export default function CompanyPage({ slug = "about" }) {
 
   useEffect(() => {
     if (slug !== "pricing") return;
-    axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/subscription-plans`)
+    axios.get(`${API_BASE_URL}/subscription-plans`)
       .then((response) => {
         const plans = Array.isArray(response.data) ? response.data : [];
         setSubscriptionPlans(plans);
@@ -280,7 +281,7 @@ export default function CompanyPage({ slug = "about" }) {
     }
 
     try {
-      await axios.post(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/custom-subscriptions/otp/send`, { email: customPlanForm.email, name: customPlanForm.name }, { withCredentials: true });
+      await axios.post(`${API_BASE_URL}/custom-subscriptions/otp/send`, { email: customPlanForm.email, name: customPlanForm.name }, { withCredentials: true });
       setOtpSent(true);
       setOtpVerified(false);
       setOtpVerificationToken("");
@@ -297,7 +298,7 @@ export default function CompanyPage({ slug = "about" }) {
     }
 
     try {
-      const response = await axios.post(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/custom-subscriptions/otp/verify`, { email: customPlanForm.email, code: otpCode }, { withCredentials: true });
+      const response = await axios.post(`${API_BASE_URL}/custom-subscriptions/otp/verify`, { email: customPlanForm.email, code: otpCode }, { withCredentials: true });
       setOtpVerified(true);
       setOtpVerificationToken(response.data.verification_token || "");
       setOtpMessage("Email verified successfully.");
@@ -349,7 +350,7 @@ export default function CompanyPage({ slug = "about" }) {
     };
 
     axios.post(
-      `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/custom-subscriptions`,
+      `${API_BASE_URL}/custom-subscriptions`,
       payload,
       { withCredentials: true }
     )

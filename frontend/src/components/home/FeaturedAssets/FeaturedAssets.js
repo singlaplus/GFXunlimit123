@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../../../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -27,7 +28,7 @@ function FeaturedImages({
     const loadFeaturedImages = async () => {
       try {
         const res = await axios.get(
-          `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/images`
+          `${API_BASE_URL}/images`
         );
         const assets = Array.isArray(res.data?.images) ? res.data.images : [];
         const sortedAssets = [...assets]

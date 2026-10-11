@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
@@ -5,7 +6,7 @@ import Pagination from "../components/Pagination";
 import "./MessagesPage.css";
 import { formatNotificationId } from "../utils/notificationUtils";
 
-const API = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+const API = API_BASE_URL;
 
 const ACTIVITY_LABELS = {
   USER_LOGIN: "Login",

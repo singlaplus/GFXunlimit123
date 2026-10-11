@@ -1,11 +1,10 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
 import "./SubscriptionCheckoutPage.css";
 
-const API_BASE_URL =
-  process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const CREDITS_PAYMENT_METHOD = "GFX's Credits";
 
 export default function SubscriptionCheckoutPage({ darkMode = false }) {

@@ -1,7 +1,7 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useId, useState } from "react";
 import { assetWatermark } from "../utils/assetWatermark";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 
 function resolveBrandingAsset(path) {
   return new URL(path, `${API_BASE_URL.replace(/\/+$/, "")}/`).toString();

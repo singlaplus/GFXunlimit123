@@ -1,7 +1,7 @@
+import { API_BASE_URL } from "./apiBaseUrl.js";
 import axios from 'axios';
 import { getEffectiveAuthToken } from './authSession';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
 
 /**
  * Check if user is authenticated

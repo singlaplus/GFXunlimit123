@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { randomUUID } = require('node:crypto');
+const { getAssetServerHttpOrigin } = require('../config');
 
 const MAX_REMOTE_UPLOAD_DURATION_MS = 15 * 60 * 1000;
 const MAX_REMOTE_UPLOAD_RESPONSE_BYTES = 1024 * 1024;
@@ -63,26 +64,7 @@ function shouldProxyRemoteAssetUpload({
 }
 
 function getRemoteUploadBaseUrl(value = process.env.PC2_ASSET_SERVER_URL) {
-  const configured = String(value || '').trim();
-  let url;
-  try {
-    url = new URL(configured);
-  } catch (_error) {
-    throw new Error('PC2_ASSET_SERVER_URL must target the configured SERVER HTTP origin');
-  }
-  if (
-    url.protocol !== 'http:' ||
-    url.hostname !== '100.102.63.63' ||
-    url.port !== '5000' ||
-    url.pathname !== '/' ||
-    url.search ||
-    url.hash ||
-    url.username ||
-    url.password
-  ) {
-    throw new Error('PC2_ASSET_SERVER_URL must target the configured SERVER HTTP origin');
-  }
-  return url.origin;
+  return getAssetServerHttpOrigin(value);
 }
 
 function isTimeoutError(error) {

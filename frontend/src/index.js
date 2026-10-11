@@ -10,6 +10,7 @@ import MarketProvider from "./market/MarketProvider";
 import { InactivitySessionProvider } from "./context/InactivitySessionContext";
 import { hasActiveSession, normalizeAuthToken, shouldTriggerAuthSessionExpired } from "./utils/authSession";
 import { readLastActivityAt } from "./utils/inactivitySession";
+import { API_BASE_URL } from "./utils/apiBaseUrl";
 import reportWebVitals from "./reportWebVitals";
 
 axios.defaults.withCredentials = true;
@@ -22,8 +23,7 @@ let refreshPromise = null;
 
 const refreshAccessToken = () => {
   if (!refreshPromise) {
-    const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
-    refreshPromise = axios.post(`${apiBaseUrl}/auth/refresh`, {}, {
+    refreshPromise = axios.post(`${API_BASE_URL}/auth/refresh`, {}, {
       withCredentials: true,
       _authRefreshRequest: true,
     }).then((response) => {

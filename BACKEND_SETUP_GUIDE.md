@@ -125,6 +125,10 @@ PORT=3000 npm start
 SKIP_DB_CHECK=true PORT=3000 npm start
 ```
 
+The backend reads its service and storage settings from the existing environment configuration. `PC2_ASSET_SERVER_URL` selects the remote asset service origin; `ASSETS_ROOT` and `THUMBNAIL_STORAGE_PATH` select local original and thumbnail storage; and optional `CORS_ALLOWED_ORIGINS` replaces the default development/site CORS allowlist with comma-separated HTTP(S) origins. When setting it, include every origin that should be allowed. Set storage roots for the server's actual filesystem and service account. A browser-selected folder is not a server-side backup destination. Database connection variables and startup/migration behavior are unchanged.
+
+Production frontend builds require `REACT_APP_API_BASE_URL`. Local development and tests retain the `http://localhost:5000` fallback, while the production build exits with an error if the API URL is absent or invalid.
+
 ## Startup Process
 
 When you run `npm start`:

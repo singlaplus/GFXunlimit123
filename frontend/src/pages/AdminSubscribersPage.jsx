@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
@@ -42,7 +43,7 @@ export default function AdminSubscribersPage({
       try {
         const token = getEffectiveAuthToken();
         const response = await axios.get(
-          `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/custom-subscriptions`,
+          `${API_BASE_URL}/admin/custom-subscriptions`,
           { headers: token ? { Authorization: `Bearer ${token}` } : {} },
         );
         setSubscribers(Array.isArray(response.data) ? response.data : []);
@@ -64,11 +65,11 @@ export default function AdminSubscribersPage({
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const [usersResponse, plansResponse] = await Promise.all([
           axios.get(
-            `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/users`,
+            `${API_BASE_URL}/admin/users`,
             { headers },
           ),
           axios.get(
-            `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/subscription-plans`,
+            `${API_BASE_URL}/admin/subscription-plans`,
             { headers },
           ),
         ]);
@@ -122,7 +123,7 @@ export default function AdminSubscribersPage({
     try {
       const token = getEffectiveAuthToken();
       const response = await axios.post(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/custom-subscriptions/assign`,
+        `${API_BASE_URL}/admin/custom-subscriptions/assign`,
         {
           customerId: selectedCustomer.id,
           planId: selectedPlanId,
@@ -148,7 +149,7 @@ export default function AdminSubscribersPage({
     try {
       const token = getEffectiveAuthToken();
       const response = await axios.get(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/custom-subscriptions/${subscriber.id}/details`,
+        `${API_BASE_URL}/admin/custom-subscriptions/${subscriber.id}/details`,
         { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
       setDetails(response.data);
@@ -168,7 +169,7 @@ export default function AdminSubscribersPage({
     try {
       const token = getEffectiveAuthToken();
       await axios.post(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/custom-subscriptions/${selectedSubscriber.id}/revoke`,
+        `${API_BASE_URL}/admin/custom-subscriptions/${selectedSubscriber.id}/revoke`,
         {},
         { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
@@ -217,7 +218,7 @@ export default function AdminSubscribersPage({
     try {
       const token = getEffectiveAuthToken();
       const response = await axios.post(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/custom-subscriptions/${subscriber.id}/${action}`,
+        `${API_BASE_URL}/admin/custom-subscriptions/${subscriber.id}/${action}`,
         {},
         { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );

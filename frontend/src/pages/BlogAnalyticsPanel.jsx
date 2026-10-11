@@ -1,7 +1,7 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import { getEffectiveAuthToken } from "../utils/authSession";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const emptyData = { overview: {}, timeline: [], topBlogs: [], categories: [], authors: [], links: [], sources: [], devices: [], countries: [], statuses: [] };
 const DEFAULT_THEME = { surface: "#ffffff", surfaceAlt: "#f8fafc", border: "#e2e8f0", text: "#0f172a", muted: "#64748b", accent: "#2563eb", error: "#dc2626", shadow: "0 14px 34px rgba(15, 23, 42, 0.08)" };
 const DEFAULT_FILTERS = { range: "30d", startDate: "", endDate: "" };

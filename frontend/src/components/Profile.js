@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import AdminPanel from "./AdminPanel";
@@ -20,7 +21,7 @@ function Profile({ darkMode = false }) {
         const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
         const res =
           await axios.get(
-            `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/profile`,
+            `${API_BASE_URL}/profile`,
             {
               headers: buildAuthHeaders(token)
             }
@@ -46,7 +47,7 @@ function Profile({ darkMode = false }) {
 
         const res =
           await axios.get(
-            `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/profile/stats`,
+            `${API_BASE_URL}/profile/stats`,
             {
               headers: buildAuthHeaders(token)
             }
@@ -90,7 +91,7 @@ function Profile({ darkMode = false }) {
     const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
 
     await axios.put(
-      `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/credits/add`,
+      `${API_BASE_URL}/credits/add`,
       {
         credits
       },
@@ -133,7 +134,7 @@ function Profile({ darkMode = false }) {
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
       await axios.post(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/profile/change-password`,
+        `${API_BASE_URL}/profile/change-password`,
         {
           currentPassword,
           newPassword,

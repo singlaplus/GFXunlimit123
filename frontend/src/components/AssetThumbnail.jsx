@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { buildAuthHeaders } from "../utils/authSession";
@@ -11,7 +12,7 @@ const getOriginalImageUrl = (image) => {
   if (!filename || !BROWSER_IMAGE_EXTENSIONS.has(extension)) return "";
 
   const encodedPath = filename.split("/").map(encodeURIComponent).join("/");
-  const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+  const apiBaseUrl = API_BASE_URL;
   return `${apiBaseUrl.replace(/\/+$/, "")}/api/files/${encodedPath}`;
 };
 

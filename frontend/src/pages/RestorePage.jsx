@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useState, useRef } from 'react';
 import axios from 'axios';
 import { toast } from 'react-toastify';
@@ -5,7 +6,6 @@ import { getEffectiveAuthToken } from '../utils/authSession';
 import Pagination from '../components/Pagination';
 import './RestorePage.css';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
 
 function RestorePage() {
   const [session, setSession] = useState(null);

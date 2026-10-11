@@ -1,9 +1,9 @@
+import { API_BASE_URL } from "../../utils/apiBaseUrl.js";
 import { useState } from "react";
 import axios from "axios";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../../utils/authSession";
 import { calculateLoyaltyPoints } from "../../utils/loyaltyPoints";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const number = (value) => Number(value || 0).toLocaleString();
 const unavailable = "Not available";
 

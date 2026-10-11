@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useState, useEffect } from "react";
 import axios from "axios";
 
@@ -15,7 +16,7 @@ function RegistrationForm({ accountType, onSuccess }) {
   const [submitting, setSubmitting] = useState(false);
   const [resendCountdown, setResendCountdown] = useState(0);
 
-  const apiBase = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+  const apiBase = API_BASE_URL;
 
   // Countdown timer effect for resend OTP button
   useEffect(() => {

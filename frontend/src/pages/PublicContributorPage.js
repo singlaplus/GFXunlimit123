@@ -1,10 +1,10 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
 import Pagination from "../components/Pagination";
 import "./PublicContributorPage.css";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const PAGE_SIZE = 12;
 
 export default function PublicContributorPage({ darkMode, username }) {

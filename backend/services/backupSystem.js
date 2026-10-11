@@ -1,9 +1,11 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { getAssetStorageRoots } = require('../config');
 
 const SAFETY_RATIO = 0.9;
 const ENV_HEADER = Buffer.from('GFXENV1\n', 'ascii');
@@ -14,6 +16,7 @@ const STATE_DIR_NAME = 'backup-system';
 const DEFAULT_WINDOWS_POSTGRES_DATA_DIRECTORY = 'D:\\GFXunlimitDatabase';
 const AUTOMATIC_DIRECTORY_NAME = 'Automatic Backups';
 const AUTOMATIC_RETENTION_LIMIT = 30;
+const CLIENT_EXPORT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const SCHEDULE_TIMEZONE = 'Asia/Kolkata';
 const SCHEDULE_FREQUENCIES = new Set(['daily', 'weekly', 'monthly']);
 const WEEK_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -361,8 +364,10 @@ function createBackupService(options = {}) {
   const fsp = options.fsp || fileSystem.promises;
   const projectRoot = path.resolve(options.projectRoot || path.resolve(__dirname, '../..'));
   const stateDirectory = path.resolve(options.stateDirectory || path.join(__dirname, '..', STATE_DIR_NAME));
+  const clientExportRoot = path.resolve(options.clientExportRoot || path.join(os.tmpdir(), 'gfxunlimit-manual-backup-exports'));
   const database = options.database;
   const environment = options.environment || process.env;
+  const storageRoots = getAssetStorageRoots(environment);
   const spawnProcess = options.spawn || spawn;
   const clock = options.now || (() => new Date());
   const jobs = new Map();
@@ -380,6 +385,15 @@ function createBackupService(options = {}) {
     });
   }, 15000);
   scheduleTimer.unref?.();
+  setImmediate(() => {
+    fsp.realpath(clientExportRoot)
+      .then((root) => pruneExpiredClientExports(root))
+      .catch((error) => {
+        if (error.code !== 'ENOENT') {
+          console.error('Could not prune expired Mac-local backup exports:', formatError(error));
+        }
+      });
+  });
 
   async function loadHistory() {
     if (historyCache) return historyCache;
@@ -565,6 +579,7 @@ function createBackupService(options = {}) {
     const safeJob = {
       id: job.id,
       backupType: job.backupType || 'MANUAL',
+      clientExport: Boolean(job.clientExport),
       automaticFrequency: job.automaticFrequency || null,
       automaticRunDate: job.automaticRunDate || null,
       status: job.status,
@@ -588,14 +603,17 @@ function createBackupService(options = {}) {
         bytesPerSecond: job.progress.bytesPerSecond,
         etaSeconds: job.progress.etaSeconds,
         driveNumber: job.progress.driveNumber,
-        drivePath: job.progress.drivePath,
-        drives: job.progress.drives,
+        drivePath: job.clientExport && job.progress.drivePath ? 'Mac-local export staging' : job.progress.drivePath,
+        drives: job.progress.drives.map((drive) => ({
+          ...drive,
+          path: job.clientExport ? 'Mac-local export staging' : drive.path
+        })),
         categories: job.categoryProgress,
         verifiedFiles: job.filesCompleted,
         totalFiles: job.filesTotal
       },
       drives: job.drives.map(({ path: drivePath, driveNumber, requiredBytes, status }) => ({
-        path: drivePath,
+        path: job.clientExport ? 'Mac-local export staging' : drivePath,
         driveNumber,
         requiredBytes,
         status
@@ -614,6 +632,7 @@ function createBackupService(options = {}) {
     return {
       id: job.id,
       backupType: job.backupType || 'MANUAL',
+      clientExport: Boolean(job.clientExport),
       automaticFrequency: job.automaticFrequency || null,
       automaticRunDate: job.automaticRunDate || null,
       status: job.status,
@@ -627,11 +646,14 @@ function createBackupService(options = {}) {
         stage: job.progress.stage,
         category: job.progress.category,
         currentPath: job.progress.currentPath,
-        drivePath: job.progress.drivePath,
+        drivePath: job.clientExport && job.progress.drivePath ? 'Mac-local export staging' : job.progress.drivePath,
         currentFileBytes: job.progress.currentFileBytes,
         currentFileSize: job.progress.currentFileSize,
         categories: job.categoryProgress,
-        drives: job.progress.drives,
+        drives: job.progress.drives.map((drive) => ({
+          ...drive,
+          path: job.clientExport ? 'Mac-local export staging' : drive.path
+        })),
         verifiedFiles: job.filesCompleted,
         filesCompleted: job.filesCompleted,
         filesTotal: job.filesTotal,
@@ -655,7 +677,7 @@ function createBackupService(options = {}) {
         verified: job.databaseResult.verified
       } : null,
       drives: job.drives.map((drive) => ({
-        path: drive.path,
+        path: job.clientExport ? 'Mac-local export staging' : drive.path,
         driveNumber: drive.driveNumber,
         actualCapacityBytes: drive.actualCapacityBytes,
         currentUsedBytes: drive.currentUsedBytes,
@@ -721,11 +743,12 @@ function createBackupService(options = {}) {
     return { executable, available: true, version: versionText, error: null };
   }
 
-  async function getProtectedPaths(databaseInfo) {
+  async function getProtectedPaths(databaseInfo, includeClientExportRoot = true) {
     return [
       projectRoot,
-      environment.ASSETS_ROOT,
-      environment.THUMBNAIL_STORAGE_PATH,
+      storageRoots.assetsRoot,
+      storageRoots.thumbnailStoragePath,
+      includeClientExportRoot ? clientExportRoot : null,
       databaseInfo?.dataDirectory,
       environment.POSTGRES_DATA_DIRECTORY,
       environment.PGDATA
@@ -929,8 +952,8 @@ function createBackupService(options = {}) {
       getOptionalDatabaseInfo(false),
       collectWebsiteFiles(),
       (async () => {
-        const originalRoot = String(environment.ASSETS_ROOT || '').trim();
-        const thumbnailRoot = String(environment.THUMBNAIL_STORAGE_PATH || '').trim();
+        const originalRoot = storageRoots.assetsRoot || '';
+        const thumbnailRoot = storageRoots.thumbnailStoragePath || '';
         if (!originalRoot) throw new Error('ASSETS_ROOT must point to the production original asset root; backend/uploads is not used.');
         if (!thumbnailRoot) throw new Error('THUMBNAIL_STORAGE_PATH must point to the centralized production thumbnail root.');
         if (!pathApiFor(originalRoot).isAbsolute(originalRoot) || !pathApiFor(thumbnailRoot).isAbsolute(thumbnailRoot)) {
@@ -989,8 +1012,8 @@ function createBackupService(options = {}) {
           thumbnailBytes: null,
           originalFiles: 0,
           thumbnailFiles: 0,
-          originalRoot: String(environment.ASSETS_ROOT || '') || null,
-          thumbnailRoot: String(environment.THUMBNAIL_STORAGE_PATH || '') || null,
+          originalRoot: storageRoots.assetsRoot,
+          thumbnailRoot: storageRoots.thumbnailStoragePath,
           totalBytes: null,
           error: formatError(assetsResult.reason)
         };
@@ -1133,7 +1156,193 @@ function createBackupService(options = {}) {
     }
   }
 
-  async function buildPlan({ categories, destinations, capacityReclaimBytes = [] }) {
+  async function ensureClientExportRoot() {
+    await fsp.mkdir(clientExportRoot, { recursive: true, mode: 0o700 });
+    let stat = await fsp.lstat(clientExportRoot);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('The server-managed Mac export staging location is not a safe directory.');
+    }
+    if (process.platform !== 'win32') {
+      if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+        throw new Error('The server-managed Mac export staging location is owned by another user.');
+      }
+      await fsp.chmod(clientExportRoot, 0o700);
+      stat = await fsp.lstat(clientExportRoot);
+      if ((stat.mode & 0o077) !== 0) {
+        throw new Error('The server-managed Mac export staging location is not private.');
+      }
+    }
+    const root = await fsp.realpath(clientExportRoot);
+    await pruneExpiredClientExports(root);
+    return root;
+  }
+
+  async function pruneExpiredClientExports(root) {
+    const backupRoot = path.join(root, 'GFXunlimit');
+    let backupRootStat;
+    try {
+      backupRootStat = await fsp.lstat(backupRoot);
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      throw error;
+    }
+    if (!backupRootStat.isDirectory() || backupRootStat.isSymbolicLink()) {
+      throw new Error('The server-managed Mac export staging tree is not a safe directory.');
+    }
+    const entries = await fsp.readdir(backupRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      const match = /^Backup-Set-(GFX-[a-zA-Z0-9-]{1,100})$/.exec(entry.name);
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !match || match[1] === activeJobId) continue;
+      const setDirectory = path.join(backupRoot, entry.name);
+      let manifest;
+      try {
+        manifest = JSON.parse(await fsp.readFile(path.join(setDirectory, 'Drive-1', 'manifest.json'), 'utf8'));
+      } catch (error) {
+        if (error.code === 'ENOENT' || error instanceof SyntaxError) continue;
+        throw error;
+      }
+      const completedAt = Date.parse(manifest.completedAt);
+      if (
+        manifest.backupType === 'MANUAL' &&
+        manifest.status === 'SUCCESS' &&
+        manifest.verificationStatus === 'VERIFIED' &&
+        manifest.backupSetId === match[1] &&
+        Number.isFinite(completedAt) &&
+        Date.now() - completedAt >= CLIENT_EXPORT_RETENTION_MS
+      ) {
+        await fsp.rm(setDirectory, { recursive: true, force: false });
+      }
+    }
+  }
+
+  async function buildClientExportPlan({ categories }) {
+    const destination = await ensureClientExportRoot();
+    return buildPlan({ categories, destinations: [destination], protectClientExportRoot: false });
+  }
+
+  async function getClientExportSetDirectory(jobId) {
+    const job = await getJob(jobId);
+    if (
+      !job ||
+      job.id !== jobId ||
+      job.backupType !== 'MANUAL' ||
+      job.clientExport !== true ||
+      job.status !== 'SUCCESS' ||
+      job.verificationStatus !== 'VERIFIED'
+    ) {
+      throw new Error('Only a completed, verified manual Mac export is available.');
+    }
+
+    const root = await ensureClientExportRoot();
+    const setDirectory = path.join(root, 'GFXunlimit', `Backup-Set-${jobId}`, 'Drive-1');
+    let stat;
+    try {
+      stat = await fsp.lstat(setDirectory);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error('The verified manual export is no longer available on the server.');
+      }
+      throw error;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('The verified manual export is no longer available on the server.');
+    }
+    const realSetDirectory = await fsp.realpath(setDirectory);
+    const relative = path.relative(root, realSetDirectory);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error('The manual export is outside its server-managed staging location.');
+    }
+    const manifestPath = path.join(realSetDirectory, 'manifest.json');
+    const manifestStat = await fsp.lstat(manifestPath);
+    if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
+      throw new Error('The manual export manifest is not a regular file.');
+    }
+    const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
+    if (
+      manifest.format !== 'GFXUNLIMIT-BACKUP-SET' ||
+      manifest.backupSetId !== jobId ||
+      manifest.status !== 'SUCCESS' ||
+      manifest.verificationStatus !== 'VERIFIED'
+    ) {
+      throw new Error('The manual export manifest is not verified.');
+    }
+    return realSetDirectory;
+  }
+
+  async function collectClientExportFiles(jobId) {
+    const setDirectory = await getClientExportSetDirectory(jobId);
+    const files = [];
+    const pending = [{ directory: setDirectory, relativeDirectory: '' }];
+    while (pending.length) {
+      const current = pending.pop();
+      const entries = await fsp.readdir(current.directory, { withFileTypes: true });
+      for (const entry of entries) {
+        const relativePath = current.relativeDirectory
+          ? `${current.relativeDirectory}/${entry.name}`
+          : entry.name;
+        const absolutePath = path.join(current.directory, entry.name);
+        if (entry.isSymbolicLink()) throw new Error('The manual export contains an unsafe symbolic link.');
+        if (entry.isDirectory()) {
+          pending.push({ directory: absolutePath, relativeDirectory: relativePath });
+        } else if (entry.isFile()) {
+          const stat = await fsp.lstat(absolutePath);
+          if (!stat.isFile() || stat.isSymbolicLink()) {
+            throw new Error('The manual export contains an unsafe filesystem entry.');
+          }
+          files.push({ path: relativePath.split(path.sep).join('/'), sizeBytes: stat.size });
+        } else {
+          throw new Error('The manual export contains an unsupported filesystem entry.');
+        }
+      }
+    }
+    files.sort((left, right) => left.path.localeCompare(right.path));
+    return { files, setDirectory };
+  }
+
+  async function getClientExportFiles(jobId) {
+    const { files } = await collectClientExportFiles(jobId);
+    return files;
+  }
+
+  async function openClientExportFile(jobId, relativePath) {
+    if (
+      typeof relativePath !== 'string' ||
+      !relativePath ||
+      relativePath.includes('\\') ||
+      relativePath.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+    ) {
+      throw new Error('Invalid manual export file path.');
+    }
+    const { files, setDirectory } = await collectClientExportFiles(jobId);
+    const file = files.find((candidate) => candidate.path === relativePath);
+    if (!file) throw new Error('Manual export file not found.');
+
+    const absolutePath = path.join(setDirectory, ...relativePath.split('/'));
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+    const handle = await fsp.open(absolutePath, flags);
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size !== file.sizeBytes) {
+      await handle.close();
+      throw new Error('Manual export file changed after verification.');
+    }
+    return {
+      filename: path.basename(relativePath),
+      sizeBytes: stat.size,
+      stream: handle.createReadStream()
+    };
+  }
+
+  async function deleteClientExport(jobId) {
+    const setDirectory = await getClientExportSetDirectory(jobId);
+    await fsp.rm(setDirectory, { recursive: true, force: false });
+  }
+
+  async function buildPlan({
+    categories,
+    destinations,
+    capacityReclaimBytes = [],
+    protectClientExportRoot = true
+  }) {
     const selectedTypes = normalizeCategories(categories);
     if (!Array.isArray(destinations) || destinations.length === 0 || destinations.length > MAX_DESTINATIONS) {
       throw new Error(`Add between 1 and ${MAX_DESTINATIONS} tested backup destinations.`);
@@ -1147,7 +1356,7 @@ function createBackupService(options = {}) {
     }
 
     const databaseInfo = await getOptionalDatabaseInfo(selectedTypes.includes('database'));
-    const protectedPaths = await getProtectedPaths(databaseInfo);
+    const protectedPaths = await getProtectedPaths(databaseInfo, protectClientExportRoot);
     const driveStats = [];
     const volumeIds = new Set();
     for (const destination of normalizedDestinations) {
@@ -1188,8 +1397,8 @@ function createBackupService(options = {}) {
     const sourceRoots = {
       websiteCode: projectRoot,
       databaseData: databaseInfo.dataDirectory || null,
-      originalAssets: environment.ASSETS_ROOT || null,
-      thumbnails: environment.THUMBNAIL_STORAGE_PATH || null
+      originalAssets: storageRoots.assetsRoot,
+      thumbnails: storageRoots.thumbnailStoragePath
     };
 
     if (selectedTypes.includes('database')) {
@@ -1244,8 +1453,8 @@ function createBackupService(options = {}) {
     }
 
     if (selectedTypes.includes('assetsAndThumbnails')) {
-      const originalRoot = String(environment.ASSETS_ROOT || '').trim();
-      const thumbnailRoot = String(environment.THUMBNAIL_STORAGE_PATH || '').trim();
+      const originalRoot = storageRoots.assetsRoot || '';
+      const thumbnailRoot = storageRoots.thumbnailStoragePath || '';
       if (!originalRoot) issues.push('ASSETS_ROOT must point to the production original asset root; local backend/uploads fallback is not used.');
       else if (!pathApiFor(originalRoot).isAbsolute(originalRoot)) issues.push('ASSETS_ROOT must be an absolute production storage path.');
       if (!thumbnailRoot) issues.push('THUMBNAIL_STORAGE_PATH must point to the centralized production thumbnail root.');
@@ -1411,17 +1620,35 @@ function createBackupService(options = {}) {
     return results;
   }
 
-  async function createJob({ categories, destinations, applicationVersion, automatic = null }) {
+  async function createJob({
+    categories,
+    destinations,
+    applicationVersion,
+    automatic = null,
+    destinationMode = 'server'
+  }) {
     if (activeJobId) throw new Error('A backup job is already running. Wait for it to finish before starting another.');
+    if (!['server', 'mac-local'].includes(destinationMode)) {
+      throw new Error('Backup destination mode is invalid.');
+    }
+    if (automatic && destinationMode !== 'server') {
+      throw new Error('Automatic backups must use their configured server destination.');
+    }
+    const clientExport = !automatic && destinationMode === 'mac-local';
+    const jobId = `GFX-${clock().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${crypto.randomUUID()}`;
+    const normalizedDestinations = clientExport
+      ? [await ensureClientExportRoot()]
+      : destinations;
     const plan = await buildPlan({
       categories,
-      destinations,
-      capacityReclaimBytes: automatic ? [automatic.folder.reclaimBytes] : []
+      destinations: normalizedDestinations,
+      capacityReclaimBytes: automatic ? [automatic.folder.reclaimBytes] : [],
+      protectClientExportRoot: !clientExport
     });
     if (!plan.ready) {
       throw new Error(`Backup cannot start because preflight failed:\n${plan.issues.join('\n')}`);
     }
-    const id = `GFX-${clock().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${crypto.randomUUID()}`;
+    const id = jobId;
     await fsp.mkdir(stateDirectory, { recursive: true });
     let lockHandle;
     try {
@@ -1467,6 +1694,7 @@ function createBackupService(options = {}) {
       id,
       status: 'RUNNING',
       backupType: automatic ? 'AUTOMATIC' : 'MANUAL',
+      clientExport,
       automaticFrequency: automatic?.frequency || null,
       automaticRunDate: automatic?.runDate ? getLocalDateKey(automatic.runDate) : null,
       selectedTypes: plan.selectedTypes,
@@ -2011,7 +2239,7 @@ function createBackupService(options = {}) {
       sourceRoots: job.plan.sourceRoots,
       destinationDrives: job.plan.drives.map((drive) => ({
         driveNumber: drive.driveNumber,
-        path: drive.path,
+        path: job.clientExport ? 'Mac-local export' : drive.path,
         actualCapacityBytes: drive.actualCapacityBytes,
         currentAvailableBytes: drive.currentAvailableBytes,
         currentUsedBytes: drive.currentUsedBytes,
@@ -2193,10 +2421,28 @@ function createBackupService(options = {}) {
       await fsp.unlink(activeLockFile).catch((error) => {
         if (error.code !== 'ENOENT') console.error('Could not release backup job lock:', formatError(error));
       });
+      if (job.clientExport && job.status !== 'SUCCESS') {
+        const failedSetDirectory = path.join(clientExportRoot, 'GFXunlimit', `Backup-Set-${job.id}`);
+        await fsp.rm(failedSetDirectory, { recursive: true, force: true }).catch((error) => {
+          console.error('Could not remove failed Mac-local backup staging data:', formatError(error));
+        });
+      }
       if (job.backupType === 'AUTOMATIC') {
         await finishAutomaticRun(job).catch((error) => {
           console.error('Could not persist automatic backup schedule status:', formatError(error));
         });
+      }
+      if (job.clientExport && job.status === 'SUCCESS') {
+        const cleanupTimer = setTimeout(() => {
+          fsp.realpath(clientExportRoot)
+            .then((root) => pruneExpiredClientExports(root))
+            .catch((error) => {
+              if (error.code !== 'ENOENT') {
+                console.error('Could not prune expired Mac-local backup export:', formatError(error));
+              }
+            });
+        }, CLIENT_EXPORT_RETENTION_MS);
+        cleanupTimer.unref?.();
       }
     }
   }
@@ -2247,12 +2493,16 @@ function createBackupService(options = {}) {
 
   return {
     browseDestination,
+    buildClientExportPlan,
     buildPlan,
     createJob,
+    deleteClientExport,
+    getClientExportFiles,
     getActiveJob,
     getAutomaticSchedule,
     getHistory,
     getJob,
+    openClientExportFile,
     publicPlan,
     testDestination,
     testDriveSet,

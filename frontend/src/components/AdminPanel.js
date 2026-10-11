@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import axios from "axios";
@@ -25,7 +26,6 @@ import AssetThumbnail from "./AssetThumbnail";
 
 const CATEGORY_STORAGE_KEY = "asset-categories";
 const COLLECTION_STORAGE_KEY = "asset-collections";
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
 const USER_DELETE_COOLING_PERIOD_MINUTES = 60;
 
 export const getAnimatedCountIncrement = (target, stepIndex) => {

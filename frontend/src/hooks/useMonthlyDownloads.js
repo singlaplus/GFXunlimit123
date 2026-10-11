@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect } from "react";
 import axios from "axios";
 
@@ -10,7 +11,7 @@ export default function useMonthlyDownloads(setMonthlyDownloads) {
         if (!userId) return;
 
         const res = await axios.get(
-          `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/api/monthly-downloads/${userId}`
+          `${API_BASE_URL}/api/monthly-downloads/${userId}`
         );
 
         setMonthlyDownloads(res.data);

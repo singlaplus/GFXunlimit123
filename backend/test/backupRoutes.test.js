@@ -32,6 +32,8 @@ test('all Backup routes require the provided Admin authorization middleware', as
     assert.equal(denied.status, 401);
     const deniedBrowse = await fetch(`${baseUrl}/browse`);
     assert.equal(deniedBrowse.status, 401);
+    const deniedExport = await fetch(`${baseUrl}/jobs/GFX-TEST/export/file?path=manifest.json`);
+    assert.equal(deniedExport.status, 401);
     const deniedSchedule = await fetch(`${baseUrl}/automatic`);
     assert.equal(deniedSchedule.status, 401);
     const authorized = await fetch(`${baseUrl}/history`, {

@@ -4,6 +4,7 @@ const path = require('path');
 const { Queue } = require('bullmq');
 const pool = require('../db');
 const { resolveAssetFile } = require('../utils/assetServing');
+const { getAssetStorageRoots } = require('../config');
 
 const redisConnection = {
   host: process.env.REDIS_HOST || 'localhost',
@@ -13,7 +14,7 @@ const redisConnection = {
 };
 
 async function main() {
-  const assetRoot = String(process.env.ASSETS_ROOT || '').trim();
+  const assetRoot = getAssetStorageRoots().assetsRoot || '';
   if (!assetRoot) {
     throw new Error('ASSETS_ROOT must point to the existing SERVER asset root');
   }

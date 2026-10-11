@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useLayoutEffect, useState } from "react";
 import axios from "axios";
 import ImageGallery from "./home/ImageGallery";
@@ -96,7 +97,7 @@ export default function MarketplaceContainer(props) {
                     // Track the search keyword
                     if (searchTerm) {
                       axios.post(
-                        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/search-keyword`,
+                        `${API_BASE_URL}/search-keyword`,
                         { keyword: searchTerm }
                       ).catch((err) => console.log("Search tracking error:", err));
                     }

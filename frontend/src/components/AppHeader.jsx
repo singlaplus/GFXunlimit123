@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useCallback, useState, useRef, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -94,7 +95,7 @@ export default function AppHeader({
     if (!token || (!isCustomerUser && !isContributorUser && !isAdminUser)) return undefined;
     const loadMessageCount = async () => {
       try {
-        const response = await axios.get(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/api/messages/summary`, {
+        const response = await axios.get(`${API_BASE_URL}/api/messages/summary`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         setMessageUnreadCount(Number(response.data?.unread || 0));
@@ -126,7 +127,7 @@ export default function AppHeader({
     const fullName = localStorage.getItem("fullName") || "";
 
     try {
-      await axios.post(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/logout`, {
+      await axios.post(`${API_BASE_URL}/logout`, {
         email: userEmail,
         username,
         full_name: fullName,
@@ -185,7 +186,7 @@ export default function AppHeader({
     // Track the search keyword if not empty
     if (trimmed) {
       axios.post(
-        `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/search-keyword`,
+        `${API_BASE_URL}/search-keyword`,
         { keyword: trimmed }
       ).catch((err) => console.log("Search tracking error:", err));
     }
@@ -232,7 +233,7 @@ export default function AppHeader({
         ? branding?.profileIconAdmin
         : null;
   const profileIconSrc = profileIconUrl
-    ? `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}${profileIconUrl}?v=${branding?.profileIconsVersion || "default"}`
+    ? `${API_BASE_URL}${profileIconUrl}?v=${branding?.profileIconsVersion || "default"}`
     : null;
 
   useEffect(() => {
@@ -260,7 +261,7 @@ export default function AppHeader({
   }, [isCustomerUser]);
 
   useEffect(() => {
-    const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+    const apiBaseUrl = API_BASE_URL;
 
     const loadBranding = async () => {
       try {
@@ -290,7 +291,7 @@ export default function AppHeader({
     }
 
     if (branding?.favicon) {
-      const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+      const apiBaseUrl = API_BASE_URL;
       iconLink.href = `${apiBaseUrl}${branding.favicon}`;
       iconLink.removeAttribute("type");
     } else {
@@ -330,7 +331,7 @@ export default function AppHeader({
 
   const addCredits = async (amount) => {
     try {
-      const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+      const apiBaseUrl = API_BASE_URL;
       const priceResponse = await fetch(`${apiBaseUrl}/settings/credit-price`);
       const priceData = priceResponse.ok ? await priceResponse.json() : {};
       const price = Number(priceData?.credit_prices?.[amount] ?? amount);
@@ -412,7 +413,7 @@ export default function AppHeader({
     if (payoutMode === "redeem") {
       try {
         setPayoutSubmitting(true);
-        const response = await axios.post(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/redeem-credits`, { credits }, { headers: { Authorization: `Bearer ${token}` } });
+        const response = await axios.post(`${API_BASE_URL}/redeem-credits`, { credits }, { headers: { Authorization: `Bearer ${token}` } });
         setRequestedUnpaidEarnings((amount) => amount + credits);
         window.dispatchEvent(new CustomEvent("creditsRedeemed", { detail: { credits } }));
         window.dispatchEvent(new Event("creditsUpdated"));
@@ -439,7 +440,7 @@ export default function AppHeader({
       formData.append("phone", payoutContact.phone.trim());
       formData.append("whatsapp", payoutContact.whatsapp.trim());
       formData.append("cancelled_check", cancelledCheck);
-      const response = await axios.post(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/payout-requests`, formData, {
+      const response = await axios.post(`${API_BASE_URL}/payout-requests`, formData, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setUnpaidEarningsCleared(true);
@@ -478,7 +479,7 @@ export default function AppHeader({
 >
   {branding?.logo ? (
     <img
-      src={`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}${branding.logo}`}
+      src={`${API_BASE_URL}${branding.logo}`}
       alt="Website logo"
       className="brand-logo-image"
     />

@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
@@ -26,7 +27,7 @@ export default function AdminCurrentPlansPage({ darkMode = false }) {
       try {
         const token = getEffectiveAuthToken();
         const response = await axios.get(
-          `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/subscription-plans`,
+          `${API_BASE_URL}/admin/subscription-plans`,
           { headers: token ? { Authorization: `Bearer ${token}` } : {} }
         );
         setPlans(Array.isArray(response.data) ? response.data : []);
@@ -44,7 +45,7 @@ export default function AdminCurrentPlansPage({ darkMode = false }) {
   const reloadPlans = async () => {
     const token = getEffectiveAuthToken();
     const response = await axios.get(
-      `${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/subscription-plans`,
+      `${API_BASE_URL}/admin/subscription-plans`,
       { headers: token ? { Authorization: `Bearer ${token}` } : {} }
     );
     setPlans(Array.isArray(response.data) ? response.data : []);
@@ -81,7 +82,7 @@ export default function AdminCurrentPlansPage({ darkMode = false }) {
     setError("");
     try {
       const token = getEffectiveAuthToken();
-      await axios.post(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/subscription-plans`, {
+      await axios.post(`${API_BASE_URL}/admin/subscription-plans`, {
         id: editingPlan.id,
         name: form.name.trim(),
         short_description: form.shortDescription.trim(),
@@ -114,7 +115,7 @@ export default function AdminCurrentPlansPage({ darkMode = false }) {
     if (!window.confirm(`Delete ${plan.name || "this plan"}?`)) return;
     try {
       const token = getEffectiveAuthToken();
-      await axios.delete(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/subscription-plans/${plan.id}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      await axios.delete(`${API_BASE_URL}/admin/subscription-plans/${plan.id}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       await reloadPlans();
     } catch (err) {
       console.error(err);
@@ -129,7 +130,7 @@ export default function AdminCurrentPlansPage({ darkMode = false }) {
     [reorderedPlans[planIndex], reorderedPlans[targetIndex]] = [reorderedPlans[targetIndex], reorderedPlans[planIndex]];
     try {
       const token = getEffectiveAuthToken();
-      await axios.post(`${process.env.REACT_APP_API_BASE_URL || "http://localhost:5000"}/admin/subscription-plans/reorder`, {
+      await axios.post(`${API_BASE_URL}/admin/subscription-plans/reorder`, {
         orders: reorderedPlans.map((item, index) => ({ id: item.id, display_order: index }))
       }, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       setPlans(reorderedPlans);
