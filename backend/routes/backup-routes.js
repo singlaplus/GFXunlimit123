@@ -1,15 +1,90 @@
 const express = require('express');
+const axios = require('axios');
 const path = require('node:path');
+const { pipeline } = require('node:stream/promises');
+const { getAssetServerHttpOrigin } = require('../config');
 const { createBackupService } = require('../services/backupSystem');
 
 function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {} }) {
   const router = express.Router();
+  router.use(verifyAdmin);
+
+  if ((serviceOptions.platform || process.platform) === 'darwin') {
+    const environment = serviceOptions.environment || process.env;
+    const httpClient = serviceOptions.httpClient || axios;
+    router.use(async (req, res) => {
+      let response;
+      const controller = new AbortController();
+      const abortUpstream = () => controller.abort();
+      const abortIfClientClosed = () => {
+        if (!res.writableFinished) abortUpstream();
+      };
+      req.once('aborted', abortUpstream);
+      res.once('close', abortIfClientClosed);
+
+      try {
+        let serverOrigin;
+        try {
+          serverOrigin = getAssetServerHttpOrigin(environment.PC2_ASSET_SERVER_URL);
+        } catch (_error) {
+          return res.status(503).json({
+            error: 'SERVER backup service is not configured; no local backup was started.'
+          });
+        }
+        const upstreamUrl = new URL(req.originalUrl, `${serverOrigin}/`);
+        if (
+          upstreamUrl.origin !== serverOrigin ||
+          (upstreamUrl.pathname !== '/admin/backup' && !upstreamUrl.pathname.startsWith('/admin/backup/'))
+        ) {
+          return res.status(400).json({ error: 'Invalid Backup Center request.' });
+        }
+
+        response = await httpClient.request({
+          method: req.method,
+          url: upstreamUrl.toString(),
+          data: ['GET', 'HEAD'].includes(req.method) ? undefined : req.body,
+          responseType: 'stream',
+          timeout: 0,
+          maxRedirects: 0,
+          signal: controller.signal,
+          validateStatus: () => true,
+          headers: {
+            ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}),
+            ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
+            ...(req.headers['content-type'] ? { 'content-type': req.headers['content-type'] } : {}),
+            ...(req.headers.accept ? { accept: req.headers.accept } : {})
+          }
+        });
+
+        res.status(response.status);
+        for (const header of ['content-type', 'content-length', 'content-disposition', 'cache-control', 'etag']) {
+          const value = response.headers?.[header];
+          if (value) res.setHeader(header, value);
+        }
+        await pipeline(response.data, res);
+      } catch (_error) {
+        response?.data?.destroy?.();
+        if (controller.signal.aborted || req.aborted || res.destroyed) return;
+        if (res.headersSent) {
+          res.destroy();
+          return;
+        }
+        res.status(502).json({
+          error: 'Configured SERVER backup service could not be reached; no local backup was started.'
+        });
+      } finally {
+        req.removeListener('aborted', abortUpstream);
+        res.removeListener('close', abortIfClientClosed);
+      }
+    });
+    return router;
+  }
+
   const service = createBackupService({
     ...serviceOptions,
     database: pool,
     projectRoot: projectRoot || path.resolve(__dirname, '../..')
   });
-  router.use(verifyAdmin);
 
   router.get('/sources', async (req, res) => {
     try {

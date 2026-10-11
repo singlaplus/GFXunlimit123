@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
+import { sha256ReadableStream } from "../utils/streamSha256";
 import "./AdminBackupPage.css";
 
 const BACKUP_CATEGORIES = [
@@ -36,10 +37,7 @@ function statusColor(status) {
 
 export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }) {
   const [categories, setCategories] = useState(BACKUP_CATEGORIES.map(({ key }) => key));
-  const [destinations, setDestinations] = useState([{ id: 1, path: "" }]);
-  const [nextDestinationId, setNextDestinationId] = useState(2);
-  const [testedDrives, setTestedDrives] = useState({});
-  const [destinationMessages, setDestinationMessages] = useState({});
+  const [testedManualDestination, setTestedManualDestination] = useState(null);
   const [plan, setPlan] = useState(null);
   const [job, setJob] = useState(null);
   const [history, setHistory] = useState([]);
@@ -47,12 +45,16 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
   const [pageError, setPageError] = useState("");
   const [sources, setSources] = useState(null);
   const [sourceError, setSourceError] = useState("");
-  const [localFolderSelections, setLocalFolderSelections] = useState({});
-  const [manualDestinationMode, setManualDestinationMode] = useState("server");
+  const [manualDestinationType, setManualDestinationType] = useState("mac-local");
+  const [manualLocalFolder, setManualLocalFolder] = useState(null);
+  const [manualServerPath, setManualServerPath] = useState("");
+  const [manualServerBrowse, setManualServerBrowse] = useState(null);
+  const [automaticBrowseFolder, setAutomaticBrowseFolder] = useState(null);
   const [localExportBusy, setLocalExportBusy] = useState(false);
-  const [localExportError, setLocalExportError] = useState("");
   const [localExportComplete, setLocalExportComplete] = useState(false);
   const [localExportProgress, setLocalExportProgress] = useState("");
+  const [manualLocalJobTarget, setManualLocalJobTarget] = useState(null);
+  const [localExportAttemptedJobId, setLocalExportAttemptedJobId] = useState(null);
   const [automaticDestination, setAutomaticDestination] = useState("");
   const [automaticDrive, setAutomaticDrive] = useState(null);
   const [automaticPlan, setAutomaticPlan] = useState(null);
@@ -186,74 +188,75 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     };
   }, [automaticSchedule.enabled, request]);
 
-  const updateDestination = (id, value) => {
-    setDestinations((previous) => previous.map((destination) => (
-      destination.id === id ? { ...destination, path: value } : destination
-    )));
-    setTestedDrives((previous) => {
-      const next = { ...previous };
-      delete next[id];
-      return next;
-    });
-    setPlan(null);
-    setPageError("");
-  };
+  const destinationMatchesTest = manualDestinationType === "mac-local"
+    ? testedManualDestination?.mode === "mac-local" &&
+      testedManualDestination.handle === manualLocalFolder?.handle
+    : testedManualDestination?.mode === "server" &&
+      testedManualDestination.path === manualServerPath.trim();
 
-  const addDestination = () => {
-    if (destinations.length >= 8) return;
-    setDestinations((previous) => [...previous, { id: nextDestinationId, path: "" }]);
-    setNextDestinationId((previous) => previous + 1);
-    setPlan(null);
-  };
-
-  const removeDestination = (id) => {
-    if (destinations.length <= 1) return;
-    setDestinations((previous) => previous.filter((destination) => destination.id !== id));
-    setLocalFolderSelections((previous) => {
-      const next = { ...previous };
-      delete next[`manual-${id}`];
-      return next;
-    });
-    setTestedDrives((previous) => {
-      const next = { ...previous };
-      delete next[id];
-      return next;
-    });
-    setPlan(null);
-  };
-
-  const testConnection = async (destination) => {
-    if (!destination.path.trim()) {
-      setPageError(`Enter a path for Drive ${destinations.findIndex((item) => item.id === destination.id) + 1}.`);
-      return;
-    }
+  const testManualDestination = async () => {
     setBusy(true);
     setPageError("");
+    setTestedManualDestination(null);
+    setPlan(null);
+    if (manualDestinationType === "server") {
+      const selectedPath = manualServerPath.trim();
+      if (!selectedPath) {
+        setPageError("Enter or browse to a destination folder on the backup server before testing.");
+        setBusy(false);
+        return;
+      }
+      try {
+        const response = await request("post", "/test-connection", { path: selectedPath });
+        const drive = response.data?.drives?.[0];
+        if (!drive) throw new Error("The backup server returned no destination information.");
+        setTestedManualDestination({ mode: "server", path: selectedPath, drive });
+        toast.success("Backup-server destination tested and writable.");
+      } catch (error) {
+        setPageError(error.response?.data?.error || error.message || "Could not test the backup-server destination.");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    const directory = manualLocalFolder?.handle;
+    if (!directory) {
+      setPageError("Browse and select a folder on this computer before testing the destination.");
+      setBusy(false);
+      return;
+    }
+    let fileHandle;
+    let fileName;
     try {
-      const response = await request("post", "/test-connection", { path: destination.path.trim() });
-      const drive = response.data?.drives?.[0];
-      if (!drive) throw new Error("The server returned no destination information.");
-      setTestedDrives((previous) => ({ ...previous, [destination.id]: drive }));
-      setDestinationMessages((previous) => ({ ...previous, [destination.id]: { ok: true, message: "Destination connected and writable." } }));
-      setPlan(null);
-      toast.success(`Drive ${destinations.findIndex((item) => item.id === destination.id) + 1} is ready.`);
+      const permission = await directory.queryPermission({ mode: "readwrite" });
+      const granted = permission === "granted"
+        ? permission
+        : await directory.requestPermission({ mode: "readwrite" });
+      if (granted !== "granted") throw new Error("Read/write permission for the selected folder was not granted.");
+      fileName = `.gfx-backup-write-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      fileHandle = await directory.getFileHandle(fileName, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write("GFX Backup write test");
+      await writable.close();
+      if (await (await fileHandle.getFile()).text() !== "GFX Backup write test") {
+        throw new Error("The selected folder did not return the test file contents.");
+      }
+      await directory.removeEntry(fileName);
+      fileHandle = null;
+      setTestedManualDestination({ mode: "mac-local", handle: directory });
+      toast.success("Selected folder tested and writable.");
     } catch (error) {
-      const message = error.response?.data?.error || error.message || "Destination test failed.";
-      setDestinationMessages((previous) => ({ ...previous, [destination.id]: { ok: false, message } }));
-      setPageError(message);
-      setTestedDrives((previous) => {
-        const next = { ...previous };
-        delete next[destination.id];
-        return next;
-      });
+      if (fileHandle) await directory.removeEntry(fileName).catch(() => {});
+      setPageError(error.message || "Could not test read/write access to the selected folder.");
     } finally {
       setBusy(false);
     }
   };
 
   const buildPlan = async () => {
-    if (manualDestinationMode === "mac-local" && !localFolderSelections["manual-local"]?.handle) {
-      setPageError("Choose a folder on this Mac before building a local backup plan.");
+    if (!destinationMatchesTest) {
+      setPageError("Test the currently selected backup destination successfully before building its plan.");
       return;
     }
     setBusy(true);
@@ -264,16 +267,18 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       if (!freshSources) throw new Error("Current backup source sizes could not be refreshed.");
       const response = await request("post", "/plan", {
         categories,
-        ...(manualDestinationMode === "mac-local"
+        ...(manualDestinationType === "mac-local"
           ? { destinationMode: "mac-local" }
-          : { destinations: destinations.map(({ path: destinationPath }) => destinationPath.trim()) })
+          : { destinationMode: "server", destinations: [manualServerPath.trim()] })
       });
-      setPlan(response.data);
       if (!response.data?.ready) {
-        setPageError((response.data?.issues || []).join(" "));
+        setPageError(`Backup plan validation failed: ${(response.data?.issues || []).join(" ") || "The selected backup does not fit the safe capacity plan."}`);
+        return;
       }
+      setPlan(response.data);
     } catch (error) {
-      setPageError(error.response?.data?.error || "Backup preflight failed.");
+      setSourceError("");
+      setPageError(error.response?.data?.error || error.message || "Backup preflight failed.");
     } finally {
       setBusy(false);
     }
@@ -281,8 +286,8 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
 
   const startBackup = async () => {
     if (job?.status === "RUNNING" || categories.length === 0) return;
-    if (manualDestinationMode === "mac-local" && !localFolderSelections["manual-local"]?.handle) {
-      setPageError("Choose a folder on this Mac before starting a local backup.");
+    if (!destinationMatchesTest || !plan?.ready) {
+      setPageError("Test the selected destination and build a safe backup plan before starting.");
       return;
     }
     setBusy(true);
@@ -292,34 +297,54 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       if (!freshSources) throw new Error("Current backup source sizes could not be refreshed.");
       const refreshedPlanResponse = await request("post", "/plan", {
         categories,
-        ...(manualDestinationMode === "mac-local"
+        ...(manualDestinationType === "mac-local"
           ? { destinationMode: "mac-local" }
-          : { destinations: destinations.map(({ path: destinationPath }) => destinationPath.trim()) })
+          : { destinationMode: "server", destinations: [manualServerPath.trim()] })
       });
       const freshPlan = refreshedPlanResponse.data;
       setPlan(freshPlan);
       if (!freshPlan?.ready) {
-        setPageError((freshPlan?.issues || []).join(" ") || "The current complete backup does not fit safely.");
+        setPlan(null);
+        setPageError(`Backup plan validation failed: ${(freshPlan?.issues || []).join(" ") || "The current complete backup does not fit safely."}`);
         return;
       }
       const response = await request("post", "/start", {
         categories,
-        ...(manualDestinationMode === "mac-local"
+        ...(manualDestinationType === "mac-local"
           ? { destinationMode: "mac-local" }
-          : { destinations: destinations.map(({ path: destinationPath }) => destinationPath.trim()) })
+          : { destinationMode: "server", destinations: [manualServerPath.trim()] })
       });
       setJob(response.data);
+      setManualLocalJobTarget(manualDestinationType === "mac-local"
+        ? { jobId: response.data.id, destination: testedManualDestination }
+        : null);
+      setLocalExportAttemptedJobId(null);
       setLocalExportComplete(false);
-      setLocalExportError("");
       setLocalExportProgress("");
       await refreshHistory();
-      toast.info(manualDestinationMode === "mac-local"
-        ? "The verified backup is being prepared on the server. You can transfer it to this Mac when complete."
-        : "The server-side backup has started.");
+      toast.info(manualDestinationType === "mac-local"
+        ? "The server is preparing a verified manual backup for the selected computer folder."
+        : "The backup server is writing a verified manual backup to the tested server folder.");
     } catch (error) {
+      setSourceError("");
       const message = error.response?.data?.error || "Backup could not be started.";
       setPageError(message);
       toast.error(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const browseManualServerPath = async (selectedPath = "") => {
+    setBusy(true);
+    setPageError("");
+    try {
+      const query = selectedPath ? `?path=${encodeURIComponent(selectedPath)}` : "";
+      const response = await request("get", `/browse${query}`);
+      setManualServerBrowse(response.data);
+    } catch (error) {
+      setPageError(error.response?.data?.error || "Could not browse the backup server folders.");
+      setManualServerBrowse(null);
     } finally {
       setBusy(false);
     }
@@ -379,10 +404,9 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
 
   const pickLocalFolder = async (selectionKey) => {
     if (typeof window === "undefined" || typeof window.showDirectoryPicker !== "function") {
-      setLocalFolderSelections((previous) => ({
-        ...previous,
-        [selectionKey]: { ...previous[selectionKey], error: "Local folder selection is unavailable in this browser or context. Use a supported browser in a secure context, or enter a server-accessible destination path instead." }
-      }));
+      const message = "Local folder selection is unavailable in this browser or context. Use a supported browser in a secure context.";
+      if (selectionKey === "automatic") setAutomaticBrowseFolder({ ...automaticBrowseFolder, error: message });
+      else setPageError(message);
       return;
     }
 
@@ -390,22 +414,25 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       const directory = await window.showDirectoryPicker({
         mode: selectionKey === "manual-local" ? "readwrite" : "read"
       });
-      setLocalFolderSelections((previous) => ({
-        ...previous,
-        [selectionKey]: { name: directory.name, handle: directory, error: "" }
-      }));
-      if (selectionKey === "manual-local") setLocalExportComplete(false);
+      if (selectionKey === "automatic") {
+        setAutomaticBrowseFolder({ name: directory.name, handle: directory, error: "" });
+      } else {
+        setManualLocalFolder({ name: directory.name, handle: directory });
+        setTestedManualDestination(null);
+        setPlan(null);
+        setPageError("");
+        setLocalExportComplete(false);
+      }
     } catch (error) {
       if (error?.name === "AbortError") return;
-      setLocalFolderSelections((previous) => ({
-        ...previous,
-        [selectionKey]: { ...previous[selectionKey], error: "Could not select a local folder. Check browser permissions and try again." }
-      }));
+      const message = "Could not select a local folder. Check browser permissions and try again.";
+      if (selectionKey === "automatic") setAutomaticBrowseFolder({ ...automaticBrowseFolder, error: message });
+      else setPageError(message);
     }
   };
 
-  const transferBackupToMac = async (exportJob = job) => {
-    const directory = localFolderSelections["manual-local"]?.handle;
+  const transferBackupToMac = async (exportJob = job, testedDestination = testedManualDestination) => {
+    const directory = testedDestination?.mode === "mac-local" ? testedDestination.handle : null;
     if (
       !directory ||
       exportJob?.backupType !== "MANUAL" ||
@@ -413,11 +440,11 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       exportJob?.status !== "SUCCESS" ||
       exportJob?.verificationStatus !== "VERIFIED"
     ) {
-      setLocalExportError("A selected Mac folder and a completed, verified Mac-local manual backup are required.");
+      setPageError("A tested Mac folder and a completed, verified manual backup are required.");
       return;
     }
     setLocalExportBusy(true);
-    setLocalExportError("");
+    setPageError("");
     setLocalExportComplete(false);
     let stagingParent = null;
     let createdSetName = null;
@@ -431,7 +458,11 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       const token = getAuthToken();
       const exportResponse = await request("get", `/jobs/${encodeURIComponent(exportJob.id)}/export`);
       const files = exportResponse.data?.files;
-      if (!Array.isArray(files) || files.length === 0) throw new Error("The verified backup contains no files to transfer.");
+      if (!Array.isArray(files) || files.length < 3) throw new Error("The verified backup is missing its manifest, checksums, or backup data.");
+      const fileByPath = new Map(files.map((file) => [String(file.path || ""), file]));
+      if (fileByPath.size !== files.length || !fileByPath.has("manifest.json") || !fileByPath.has("checksums.sha256")) {
+        throw new Error("The verified backup has an invalid or incomplete file list.");
+      }
 
       const gfxDirectory = await directory.getDirectoryHandle("GFXunlimit", { create: true });
       const setName = `Backup-Set-${exportJob.id}`;
@@ -446,7 +477,13 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       createdSetName = setName;
       const driveDirectory = await setDirectory.getDirectoryHandle("Drive-1", { create: true });
 
-      for (const [index, file] of files.entries()) {
+      const orderedFiles = [
+        fileByPath.get("checksums.sha256"),
+        ...files.filter((file) => !["checksums.sha256", "manifest.json"].includes(file.path)),
+        fileByPath.get("manifest.json")
+      ];
+      let expectedChecksums = null;
+      for (const [index, file] of orderedFiles.entries()) {
         const parts = String(file.path || "").split("/");
         if (!parts.length || parts.some((part) => !part || part === "." || part === ".." || part.includes("\\"))) {
           throw new Error("The server returned an unsafe backup file name.");
@@ -479,15 +516,61 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
         if (writtenFile.size !== Number(file.sizeBytes)) {
           throw new Error(`Transferred file size did not match the verified server copy: ${file.path}`);
         }
+        if (file.path === "checksums.sha256") {
+          expectedChecksums = new Map();
+          const lines = (await writtenFile.text()).split(/\r?\n/).filter(Boolean);
+          for (const line of lines) {
+            const match = /^([a-f0-9]{64})\s+(\d+)\s+(.+)$/i.exec(line);
+            if (!match || expectedChecksums.has(match[3])) {
+              throw new Error("The backup checksum file is malformed or contains duplicate paths.");
+            }
+            expectedChecksums.set(match[3], { sha256: match[1].toLowerCase(), sizeBytes: Number(match[2]) });
+          }
+          const payloadFiles = files.filter((candidate) => !["checksums.sha256", "manifest.json"].includes(candidate.path));
+          if (!expectedChecksums.size || expectedChecksums.size !== payloadFiles.length) {
+            throw new Error("The backup checksum list does not match its payload files.");
+          }
+          for (const payload of payloadFiles) {
+            if (!expectedChecksums.has(payload.path) || expectedChecksums.get(payload.path).sizeBytes !== Number(payload.sizeBytes)) {
+              throw new Error(`The backup checksum list is missing or mismatches ${payload.path}.`);
+            }
+          }
+        } else if (file.path !== "manifest.json") {
+          const expected = expectedChecksums?.get(file.path);
+          if (!expected) throw new Error(`No verified checksum was provided for ${file.path}.`);
+          const actualSha256 = await sha256ReadableStream(writtenFile.stream());
+          if (actualSha256 !== expected.sha256) {
+            throw new Error(`Transferred file checksum did not match the verified server copy: ${file.path}`);
+          }
+        } else {
+          let manifest;
+          try {
+            manifest = JSON.parse(await writtenFile.text());
+          } catch (_error) {
+            throw new Error("The transferred backup manifest is not valid JSON.");
+          }
+          if (
+            manifest.format !== "GFXUNLIMIT-BACKUP-SET" ||
+            manifest.backupSetId !== exportJob.id ||
+            manifest.backupType !== "MANUAL" ||
+            manifest.status !== "SUCCESS" ||
+            manifest.verificationStatus !== "VERIFIED" ||
+            !Array.isArray(manifest.selectedTypes) ||
+            !manifest.totals ||
+            manifest.totals.files !== expectedChecksums?.size
+          ) {
+            throw new Error("The transferred backup manifest does not describe this verified manual backup.");
+          }
+        }
         setLocalExportProgress(`Transferred ${index + 1} of ${files.length} files`);
       }
 
       setLocalExportComplete(true);
-      toast.success("The verified manual backup was transferred to the selected Mac folder.");
+      toast.success("The manual backup was copied to the tested Mac folder and its checksums were verified.");
       try {
         await request("delete", `/jobs/${encodeURIComponent(exportJob.id)}/export`);
       } catch (error) {
-        setLocalExportError("The Mac copy is complete, but temporary server staging could not be removed. Contact the administrator to reclaim that space.");
+        setPageError("The Mac copy is verified, but temporary server staging could not be removed. Contact the administrator to reclaim that space.");
       }
     } catch (error) {
       const message = error.response?.data?.error || error.message || "The backup could not be transferred to this Mac.";
@@ -495,15 +578,29 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
         try {
           await stagingParent.removeEntry(createdSetName, { recursive: true });
         } catch (cleanupError) {
-          setLocalExportError(`${message} The incomplete Mac folder could not be removed; delete Backup-Set-${exportJob.id} before retrying.`);
+          setPageError(`${message} The incomplete Mac folder could not be removed; delete Backup-Set-${exportJob.id} before retrying.`);
           return;
         }
       }
-      setLocalExportError(message);
+      setPageError(message);
     } finally {
       setLocalExportBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (
+      job?.backupType === "MANUAL" &&
+      job.clientExport === true &&
+      job.status === "SUCCESS" &&
+      job.verificationStatus === "VERIFIED" &&
+      manualLocalJobTarget?.jobId === job.id &&
+      localExportAttemptedJobId !== job.id
+    ) {
+      setLocalExportAttemptedJobId(job.id);
+      void transferBackupToMac(job, manualLocalJobTarget.destination);
+    }
+  }, [job, localExportAttemptedJobId, manualLocalJobTarget, transferBackupToMac]);
 
   const sourceSize = (key) => {
     if (!sources) return null;
@@ -659,113 +756,142 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
             <div><span className="gfx-backup-kicker">02 / ON DEMAND</span><h3>Manual backup</h3><p>Run a complete backup now, with verified storage and a clear capacity plan.</p></div>
             <span className="gfx-backup-section-badge">COMPLETE · VERIFIED</span>
           </div>
-          <div role="radiogroup" aria-label="Manual backup destination type" style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 12 }}>
-            <label>
-              <input
-                type="radio"
-                name="manual-backup-destination-mode"
-                value="server"
-                checked={manualDestinationMode === "server"}
-                disabled={busy || activeJob}
-                onChange={() => { setManualDestinationMode("server"); setPlan(null); }}
-              /> Server destination
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="manual-backup-destination-mode"
-                value="mac-local"
-                checked={manualDestinationMode === "mac-local"}
-                disabled={busy || activeJob}
-                onChange={() => { setManualDestinationMode("mac-local"); setPlan(null); }}
-              /> This Mac
-            </label>
-          </div>
-          {manualDestinationMode === "server" ? (
-            <div style={{ marginTop: 10 }}>
-              <h4 style={{ margin: "10px 0 5px" }}>Backup Destination</h4>
-              <p style={{ margin: 0, color: palette.muted, fontSize: 13 }}>
-                Browse selects a folder on this computer only and does not make it writable by server-side jobs. Enter a destination accessible to the backend server. Drive 1 has priority.
-              </p>
+          <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+            <fieldset style={{ display: "flex", flexWrap: "wrap", gap: 14, border: `1px solid ${palette.border}`, borderRadius: 9, padding: 10 }}>
+              <legend style={{ fontSize: 13, fontWeight: 700 }}>Manual destination type</legend>
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="radio"
+                  name="manual-destination-type"
+                  checked={manualDestinationType === "mac-local"}
+                  disabled={busy || activeJob || localExportBusy}
+                  onChange={() => {
+                    setManualDestinationType("mac-local");
+                    setTestedManualDestination(null);
+                    setPlan(null);
+                    setPageError("");
+                  }}
+                />
+                This computer
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="radio"
+                  name="manual-destination-type"
+                  checked={manualDestinationType === "server"}
+                  disabled={busy || activeJob || localExportBusy}
+                  onChange={() => {
+                    setManualDestinationType("server");
+                    setTestedManualDestination(null);
+                    setPlan(null);
+                    setPageError("");
+                  }}
+                />
+                Backup server
+              </label>
+            </fieldset>
+            {manualDestinationType === "mac-local" ? (
+            <>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setManualDestinationType("mac-local");
+                  setTestedManualDestination(null);
+                  setPlan(null);
+                  setPageError("");
+                  pickLocalFolder("manual-local");
+                }}
+                disabled={busy || activeJob || localExportBusy}
+                style={buttonStyle()}
+              >
+                Browse this computer
+              </button>
             </div>
-          ) : (
-            <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-              <p style={{ margin: 0, color: palette.muted, fontSize: 13 }}>
-                The server creates and verifies the backup using the existing backup engine, then streams its files to the folder you choose here. It uses temporary server space until transfer completes; unclaimed exports expire after 24 hours.
-              </p>
-              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-                <button type="button" onClick={() => pickLocalFolder("manual-local")} disabled={busy || activeJob || localExportBusy} style={buttonStyle()}>
-                  {localFolderSelections["manual-local"]?.name ? "Change Mac folder" : "Choose Mac folder"}
-                </button>
-                {localFolderSelections["manual-local"]?.name && (
-                  <span role="status">Selected folder: <strong>{localFolderSelections["manual-local"].name}</strong></span>
-                )}
-              </div>
-              {localFolderSelections["manual-local"]?.error && (
-                <div role="alert" style={{ color: "#b91c1c" }}>{localFolderSelections["manual-local"].error}</div>
-              )}
-              <small style={{ color: palette.muted }}>
-                Requires a supported browser with File System Access API support in a secure context. The selected folder handle stays in this browser and is never sent to the server.
-              </small>
-            </div>
-          )}
-        </div>
-        {manualDestinationMode === "server" && <div style={{ display: "grid", gap: 12 }}>
-          {destinations.map((destination, index) => {
-            const tested = testedDrives[destination.id];
-            const planned = plan?.drives?.find((drive) => drive.driveNumber === index + 1);
-            return (
-              <div key={destination.id} className="gfx-backup-drive-card" style={{ display: "grid", gap: 10, padding: 14, borderRadius: 12, background: palette.panel, border: `1px solid ${palette.border}` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                  <strong>Drive {index + 1}</strong>
-                  <strong style={{ color: statusColor(planned?.status || tested?.status) }}>{planned?.status || tested?.status || "NOT TESTED"}</strong>
-                </div>
+            <label style={{ display: "grid", gap: 6, fontSize: 13, fontWeight: 700 }}>
+              Selected folder
+              <input
+                aria-label="Selected folder"
+                value={manualLocalFolder?.name || ""}
+                readOnly
+                placeholder="No folder selected"
+                style={{ width: "100%", boxSizing: "border-box", padding: "11px 12px", border: `1px solid ${palette.border}`, borderRadius: 9, background: palette.panel, color: palette.text }}
+              />
+            </label>
+            <small style={{ color: palette.muted }}>
+              {manualLocalFolder?.name
+                ? "This is the folder name provided by the browser. Browsers do not reveal the absolute local path; the server stages the verified backup, then the browser copies it into this folder."
+                : "Browse and select a folder on this computer. The browser will test that exact folder before backup planning can continue."}
+            </small>
+            </>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
                 <label style={{ display: "grid", gap: 6, fontSize: 13, fontWeight: 700 }}>
-                  Destination path
+                  Selected server folder
                   <input
-                    value={destination.path}
-                    disabled={activeJob || busy}
-                    onChange={(event) => updateDestination(destination.id, event.target.value)}
-                    placeholder="Select backup location"
-                    style={{ width: "100%", boxSizing: "border-box", padding: "11px 12px", border: `1px solid ${palette.border}`, borderRadius: 9, background: palette.surface, color: palette.text }}
+                    aria-label="Selected server folder"
+                    value={manualServerPath}
+                    onChange={(event) => {
+                      setManualServerPath(event.target.value);
+                      setTestedManualDestination(null);
+                      setPlan(null);
+                      setPageError("");
+                    }}
+                    disabled={busy || activeJob || localExportBusy}
+                    placeholder="Browse or enter a path accessible to the backup server"
+                    style={{ width: "100%", boxSizing: "border-box", padding: "11px 12px", border: `1px solid ${palette.border}`, borderRadius: 9, background: palette.panel, color: palette.text }}
                   />
                 </label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  <button type="button" onClick={() => pickLocalFolder(`manual-${destination.id}`)} disabled={busy || activeJob} style={buttonStyle()}>{destination.path ? "Change" : "Browse this computer"}</button>
-                  <button type="button" onClick={() => testConnection(destination)} disabled={busy || activeJob} style={buttonStyle()}>Test Connection</button>
-                  {destinations.length > 1 && <button type="button" onClick={() => removeDestination(destination.id)} disabled={busy || activeJob} style={buttonStyle()}>Remove Drive</button>}
+                  <button type="button" onClick={() => browseManualServerPath()} disabled={busy || activeJob || localExportBusy} style={buttonStyle()}>
+                    Browse server folders
+                  </button>
+                  {manualServerBrowse?.currentPath && (
+                    <button type="button" onClick={() => {
+                      setManualServerPath(manualServerBrowse.currentPath);
+                      setTestedManualDestination(null);
+                      setPlan(null);
+                      setPageError("");
+                    }} disabled={busy || activeJob || localExportBusy} style={buttonStyle()}>
+                      Use this server folder
+                    </button>
+                  )}
                 </div>
-                {localFolderSelections[`manual-${destination.id}`]?.name && (
-                  <div role="status" style={{ color: palette.muted, fontSize: 13 }}>
-                    Local folder selected: <strong>{localFolderSelections[`manual-${destination.id}`].name}</strong>. It is not the server destination above and cannot be used by the current backup jobs.
+                {manualServerBrowse && (
+                  <div style={{ display: "grid", gap: 6, padding: 10, border: `1px solid ${palette.border}`, borderRadius: 9, background: palette.panel }}>
+                    {manualServerBrowse.currentPath
+                      ? <strong>Server location: {manualServerBrowse.currentPath}</strong>
+                      : <strong>Available server drives</strong>}
+                    {manualServerBrowse.parentPath && (
+                      <button type="button" onClick={() => browseManualServerPath(manualServerBrowse.parentPath)} disabled={busy} style={buttonStyle()}>
+                        Up one folder
+                      </button>
+                    )}
+                    {manualServerBrowse.directories?.map((directory) => (
+                      <button key={directory.path} type="button" onClick={() => browseManualServerPath(directory.path)} disabled={busy} style={{ ...buttonStyle(), textAlign: "left" }}>
+                        {directory.name}
+                      </button>
+                    ))}
+                    {!manualServerBrowse.directories?.length && <small>No child folders found in this location.</small>}
                   </div>
                 )}
-                {localFolderSelections[`manual-${destination.id}`]?.error && (
-                  <div role="alert" style={{ color: "#b91c1c" }}>{localFolderSelections[`manual-${destination.id}`].error}</div>
-                )}
-                {destinationMessages[destination.id] && (
-                  <div role={destinationMessages[destination.id].ok ? "status" : "alert"} style={{ color: destinationMessages[destination.id].ok ? "#15803d" : "#b91c1c" }}>
-                    {destinationMessages[destination.id].ok ? "✓ " : "✕ "}{destinationMessages[destination.id].message}
-                  </div>
-                )}
-                {(tested || planned) && (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, fontSize: 12, color: palette.muted }}>
-                    <span>Actual capacity: <strong style={{ color: palette.text }}>{formatBytes(planned?.actualCapacityBytes ?? tested?.totalBytes)}</strong></span>
-                    <span>Used: <strong style={{ color: palette.text }}>{formatBytes(planned?.currentUsedBytes ?? tested?.usedBytes)}</strong></span>
-                    <span>Available: <strong style={{ color: palette.text }}>{formatBytes(planned?.currentAvailableBytes ?? tested?.availableBytes)}</strong></span>
-                    <span>90% safety limit: <strong style={{ color: palette.text }}>{formatBytes(planned?.safetyLimitBytes ?? tested?.safetyLimitBytes)}</strong></span>
-                    <span>Usable backup space: <strong style={{ color: palette.text }}>{formatBytes(planned?.usableBackupBytes ?? tested?.usableBackupBytes)}</strong></span>
-                    {planned && <span>Required: <strong style={{ color: palette.text }}>{formatBytes(planned.requiredBytes)}</strong></span>}
-                    {planned && <span>Safe space remaining: <strong style={{ color: palette.text }}>{formatBytes(planned.remainingSafeBytes)}</strong></span>}
-                  </div>
-                )}
+                <small style={{ color: palette.muted }}>
+                  This path is tested and used by the backup server. It is not a path on this computer.
+                </small>
               </div>
-            );
-          })}
-        </div>}
+            )}
+            <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+              <button type="button" onClick={testManualDestination} disabled={busy || activeJob || localExportBusy} style={buttonStyle()}>
+                Test Connection
+              </button>
+              {destinationMatchesTest && <span role="status" style={{ color: "#15803d" }}>Selected destination tested successfully.</span>}
+            </div>
+          </div>
+        </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 9 }}>
-          {manualDestinationMode === "server" && <button type="button" onClick={addDestination} disabled={destinations.length >= 8 || busy || activeJob} style={buttonStyle()}>+ Add another backup drive</button>}
-          <button type="button" onClick={buildPlan} disabled={busy || activeJob || categories.length === 0} style={buttonStyle()}>Build Complete Backup Plan</button>
+          <button type="button" onClick={buildPlan} disabled={!destinationMatchesTest || busy || activeJob || categories.length === 0} style={buttonStyle()}>
+            Build Complete Backup Plan
+          </button>
         </div>
       </section>
 
@@ -774,9 +900,9 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
           <div>
             <h3 style={{ margin: "0 0 6px" }}>Pre-backup plan</h3>
             <p style={{ margin: 0, color: palette.muted }}>
-              {manualDestinationMode === "mac-local"
-                ? "The server will stage a verified backup set temporarily, then stream its unchanged files into the selected Mac folder."
-                : "Every selected category is a complete copy. Existing target files are overwritten; source folder hierarchy is preserved."}
+              {manualDestinationType === "mac-local"
+                ? "The server will stage a verified backup set temporarily, then stream its unchanged files into the selected computer folder."
+                : "The backup server will write the verified backup set to the tested server folder."}
             </p>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 9 }}>
@@ -790,6 +916,15 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
             )}
             <span>Total required reserve: <strong>{formatBytes(plan.totalRequiredBytes)}</strong></span>
             <span>Files: <strong>{Number(plan.filesTotal || 0).toLocaleString()}</strong></span>
+            {categories.includes("database") && plan.database?.sourceServer && (
+              <span>Database source: <strong>{plan.database.sourceServer} · {plan.database.name}</strong></span>
+            )}
+            {categories.includes("assetsAndThumbnails") && plan.sourceRoots && (
+              <>
+                <span>Original asset source: <strong>{plan.sourceRoots.originalAssets || "Unavailable"}</strong></span>
+                <span>Thumbnail source: <strong>{plan.sourceRoots.thumbnails || "Unavailable"}</strong></span>
+              </>
+            )}
           </div>
           {plan.categories?.originalAssets?.users?.length > 0 && (
             <div style={{ display: "grid", gap: 6 }}>
@@ -822,7 +957,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
             </div>
           )}
           <button className="gfx-backup-primary" type="button" onClick={startBackup} disabled={!plan.ready || busy || activeJob} style={{ ...buttonStyle(true), width: "fit-content" }}>
-            {busy ? "Starting..." : manualDestinationMode === "mac-local" ? "Start Mac-local Backup" : "Start Complete Backup"}
+            {busy ? "Starting..." : "Start Manual Backup"}
           </button>
         </section>
       )}
@@ -834,7 +969,17 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
           <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 12 }}>
             <div>
               <span className="gfx-backup-kicker">{job.backupType === "AUTOMATIC" ? "AUTOMATIC BACKUP RUN" : "MANUAL BACKUP RUN"}</span>
-              <h3 style={{ margin: "5px 0" }}>{job.status === "SUCCESS" && job.verificationStatus === "VERIFIED" ? "Backup completed and verified" : job.status === "FAILED" || job.verificationStatus === "FAILED" ? "Backup failed" : `Backup Progress — ${Number(job.progress?.percent || 0).toFixed(1)}%`}</h3>
+              <h3 style={{ margin: "5px 0" }}>{job.clientExport === true && job.status === "SUCCESS" && job.verificationStatus === "VERIFIED"
+                ? localExportComplete
+                  ? "Manual backup copied and verified"
+                  : localExportAttemptedJobId === job.id && pageError
+                    ? "Local copy failed; verified server staging retained"
+                    : "Server backup verified; copying to selected folder"
+                : job.status === "SUCCESS" && job.verificationStatus === "VERIFIED"
+                  ? "Backup completed and verified"
+                  : job.status === "FAILED" || job.verificationStatus === "FAILED"
+                    ? "Backup failed"
+                    : `Backup Progress — ${Number(job.progress?.percent || 0).toFixed(1)}%`}</h3>
               <span style={{ color: palette.muted }}>Set ID: {job.id}</span>
             </div>
             <strong style={{ color: statusColor(job.status) }}>{job.status} · {job.verificationStatus}</strong>
@@ -842,18 +987,17 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
           {job.backupType === "MANUAL" && job.clientExport === true && job.status === "SUCCESS" && job.verificationStatus === "VERIFIED" && (
             <div style={{ display: "grid", gap: 8 }}>
               <p style={{ margin: 0, color: palette.muted }}>
-                The server-side backup is verified and ready to transfer to this Mac. The server copy remains staged until transfer completes.
+                The server-side backup is verified and ready to transfer to this computer. The server copy remains staged until transfer completes.
               </p>
               <button
                 type="button"
                 onClick={() => transferBackupToMac(job)}
-                disabled={localExportBusy || localExportComplete || !localFolderSelections["manual-local"]?.handle}
+                disabled={localExportBusy || localExportComplete || !testedManualDestination?.handle}
                 style={buttonStyle(true)}
               >
-                {localExportBusy ? "Transferring to Mac..." : localExportComplete ? "Transferred to Mac" : "Transfer verified backup to Mac"}
+                {localExportBusy ? "Transferring to this computer..." : localExportComplete ? "Transferred to this computer" : "Transfer verified backup to this computer"}
               </button>
               {localExportProgress && <span role="status">{localExportProgress}</span>}
-              {localExportError && <div role="alert" style={{ color: "#b91c1c" }}>{localExportError}</div>}
             </div>
           )}
           {(job.status === "RUNNING" || job.status === "SUCCESS") && (
@@ -910,7 +1054,9 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
               )}
               {(job.progress?.stage === "COPY_VERIFYING" || job.progress?.stage === "VERIFYING" || job.progress?.stage === "FINALIZING" || job.status === "SUCCESS") && (
                 <div className="gfx-backup-verification" role="status">
-                  <strong>{job.verificationStatus === "VERIFIED" ? "Backup completed and verified" : job.progress?.stage === "COPY_VERIFYING" ? "Verifying current file…" : job.progress?.stage === "FINALIZING" ? "Finalizing verified backup…" : "Verifying backup…"}</strong>
+                  <strong>{job.clientExport === true && !localExportComplete
+                    ? localExportBusy ? "Server staging verified; copying and checking files on this Mac…" : "Server staging verified; local copy not yet verified"
+                    : job.verificationStatus === "VERIFIED" ? "Backup completed and verified" : job.progress?.stage === "COPY_VERIFYING" ? "Verifying current file…" : job.progress?.stage === "FINALIZING" ? "Finalizing verified backup…" : "Verifying backup…"}</strong>
                   <span>Verified: {Number(job.progress?.verifiedFiles ?? job.filesCompleted ?? 0).toLocaleString()} / {Number(job.progress?.totalFiles ?? job.filesTotal ?? 0).toLocaleString()} files</span>
                 </div>
               )}
@@ -956,10 +1102,10 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
                   <button
                     type="button"
                     onClick={() => transferBackupToMac(entry)}
-                    disabled={localExportBusy || !localFolderSelections["manual-local"]?.handle}
+                    disabled={localExportBusy || !testedManualDestination?.handle}
                     style={buttonStyle()}
                   >
-                    Transfer to Mac
+                    Transfer to this computer
                   </button>
                 )}
               </div>
@@ -1012,13 +1158,13 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
             <button type="button" onClick={() => pickLocalFolder("automatic")} disabled={busy || activeJob} style={buttonStyle()}>{automaticDestination ? "Change" : "Browse this computer"}</button>
             <button type="button" onClick={testAutomaticDestination} disabled={busy || activeJob || !automaticDestination} style={buttonStyle()}>Test Connection</button>
           </div>
-          {localFolderSelections.automatic?.name && (
+          {automaticBrowseFolder?.name && (
             <div role="status" style={{ color: palette.muted, fontSize: 13 }}>
-              Local folder selected: <strong>{localFolderSelections.automatic.name}</strong>. It is not the saved server destination and cannot be used by automatic backup jobs.
+              Local folder selected: <strong>{automaticBrowseFolder.name}</strong>. It is not the saved server destination and cannot be used by automatic backup jobs.
             </div>
           )}
-          {localFolderSelections.automatic?.error && (
-            <div role="alert" style={{ color: "#b91c1c" }}>{localFolderSelections.automatic.error}</div>
+          {automaticBrowseFolder?.error && (
+            <div role="alert" style={{ color: "#b91c1c" }}>{automaticBrowseFolder.error}</div>
           )}
           {scheduleMessage && <div role="status" style={{ color: (automaticPlan?.ready || /saved/i.test(scheduleMessage)) ? "#15803d" : "#b91c1c" }}>{automaticPlan?.ready ? "✓ " : ""}{scheduleMessage}</div>}
           {automaticDrive && (

@@ -693,6 +693,11 @@ function createBackupService(options = {}) {
   }
 
   async function getDatabaseInfo() {
+    const sourceHost = String(environment.DB_HOST || environment.PGHOST || '').trim();
+    const sourceDatabase = String(environment.DB_NAME || environment.PGDATABASE || '').trim();
+    if (!sourceHost || !sourceDatabase) {
+      throw new Error('DB_HOST (or PGHOST) and DB_NAME (or PGDATABASE) must be explicitly configured for backups; implicit localhost/database defaults are not allowed.');
+    }
     if (!database || typeof database.query !== 'function') {
       throw new Error('Database connection is unavailable for backup planning.');
     }
@@ -711,7 +716,7 @@ function createBackupService(options = {}) {
       version: String(row.server_version),
       dataDirectory: String(row.data_directory || environment.POSTGRES_DATA_DIRECTORY || ''),
       sizeBytes: Number(row.size_bytes || 0),
-      sourceServer: String(environment.DB_HOST || environment.PGHOST || 'configured PostgreSQL server')
+      sourceServer: sourceHost
     };
   }
 
@@ -769,7 +774,7 @@ function createBackupService(options = {}) {
           (process.platform === 'win32' ? DEFAULT_WINDOWS_POSTGRES_DATA_DIRECTORY : '')
         ),
         sizeBytes: 0,
-        sourceServer: String(environment.DB_HOST || environment.PGHOST || 'configured PostgreSQL server'),
+        sourceServer: String(environment.DB_HOST || environment.PGHOST || '').trim() || null,
         available: false,
         error: formatError(error)
       };
@@ -1420,17 +1425,13 @@ function createBackupService(options = {}) {
     }
 
     if (selectedTypes.includes('websiteCode')) {
-      let encryptionKey;
       try {
-        encryptionKey = getEncryptionKey();
+        getEncryptionKey();
       } catch (error) {
         issues.push(formatError(error));
       }
       try {
         const websiteFiles = await collectWebsiteFiles();
-        if (websiteFiles.some((file) => file.encrypted) && !encryptionKey) {
-          issues.push('Website Code includes environment files but encryption is not configured.');
-        }
         const sourceBytes = websiteFiles.reduce((sum, file) => sum + file.sizeBytes, 0);
         const plannedBytes = websiteFiles.reduce((sum, file) => sum + file.sizeBytes + (file.encrypted ? ENV_OVERHEAD_BYTES : 0), 0);
         categoryTotals.websiteCode = { estimatedBytes: sourceBytes, plannedBytes, files: websiteFiles.length };

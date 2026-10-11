@@ -65,7 +65,7 @@ function makeFakeDatabase(dataDirectory) {
   };
 }
 
-function makeService({ projectRoot, stateDirectory, clientExportRoot, environment, spawn } = {}) {
+function makeService({ projectRoot, stateDirectory, clientExportRoot, environment, spawn, spawnSync, useDefaultEncryptionKey = true } = {}) {
   const dataDirectory = path.join(projectRoot, 'postgres-data');
   fs.mkdirSync(dataDirectory, { recursive: true });
   return createBackupService({
@@ -73,11 +73,10 @@ function makeService({ projectRoot, stateDirectory, clientExportRoot, environmen
     stateDirectory,
     clientExportRoot,
     database: makeFakeDatabase(dataDirectory),
-    environment: {
-      ...environment,
-      BACKUP_ENCRYPTION_KEY: environment?.BACKUP_ENCRYPTION_KEY || '11'.repeat(32)
-    },
-    spawnSync: () => ({ status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' }),
+    environment: useDefaultEncryptionKey
+      ? { DB_HOST: 'test-postgres', DB_NAME: 'stocksite', ...environment, BACKUP_ENCRYPTION_KEY: environment?.BACKUP_ENCRYPTION_KEY || '11'.repeat(32) }
+      : { DB_HOST: 'test-postgres', DB_NAME: 'stocksite', ...environment },
+    spawnSync: spawnSync || (() => ({ status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' })),
     spawn
   });
 }
@@ -152,6 +151,127 @@ test('backup category validation accepts only the three complete categories', ()
   assert.throws(() => normalizeCategories(['incremental']), /Backup categories/);
   assert.equal(isEnvironmentFile('backend/.env.production'), true);
   assert.equal(isEnvironmentFile('backend/settings.json'), false);
+});
+
+test('PostgreSQL 18 backups require pg_dump 18 or newer', async () => {
+  const projectRoot = makeProjectRoot();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-pgdump-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-pgdump-state-'));
+  try {
+    for (const [version, available] of [['17.6', false], ['18.0', true], ['19.1', true]]) {
+      let resolvedExecutable;
+      const service = makeService({
+        projectRoot,
+        stateDirectory: path.join(stateDirectory, version),
+        environment: { PG_DUMP_PATH: 'C:\\configured\\postgres\\bin\\pg_dump.exe' },
+        spawnSync: (executable) => {
+          resolvedExecutable = executable;
+          return { status: 0, stdout: `pg_dump (PostgreSQL) ${version}\n` };
+        }
+      });
+      const plan = await service.buildPlan({ categories: ['database'], destinations: [destination] });
+      assert.equal(resolvedExecutable, 'C:\\configured\\postgres\\bin\\pg_dump.exe');
+      assert.equal(plan.database.pgDump.available, available);
+      if (!available) assert.match(plan.issues.join(' '), /install pg_dump 18 or newer/);
+    }
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('backup planning refuses implicit local database defaults', async () => {
+  const projectRoot = makeProjectRoot();
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-no-db-target-'));
+  let queryCount = 0;
+  const service = createBackupService({
+    projectRoot,
+    stateDirectory,
+    database: {
+      async query() {
+        queryCount += 1;
+        return { rows: [] };
+      }
+    },
+    environment: {}
+  });
+  try {
+    const sources = await service.getSourceMetrics();
+    assert.equal(sources.database.available, false);
+    assert.match(sources.database.error, /DB_HOST \(or PGHOST\) and DB_NAME \(or PGDATABASE\) must be explicitly configured/);
+    assert.equal(queryCount, 0);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('assets and thumbnails planning never falls back locally and rejects missing storage roots', async () => {
+  const projectRoot = makeProjectRoot();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-missing-assets-destination-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-missing-assets-state-'));
+  const inaccessibleRoot = path.join(stateDirectory, 'not-a-directory');
+  const thumbnailRoot = path.join(stateDirectory, 'thumbnails');
+  fs.writeFileSync(inaccessibleRoot, 'not a directory');
+  fs.mkdirSync(thumbnailRoot);
+  try {
+    const missingService = makeService({
+      projectRoot,
+      stateDirectory: path.join(stateDirectory, 'missing'),
+      environment: {}
+    });
+    const missingPlan = await missingService.buildPlan({
+      categories: ['assetsAndThumbnails'],
+      destinations: [destination]
+    });
+    assert.equal(missingPlan.ready, false);
+    assert.equal(missingPlan.sourceRoots.originalAssets, null);
+    assert.equal(missingPlan.sourceRoots.thumbnails, null);
+    assert.match(missingPlan.issues.join(' '), /ASSETS_ROOT must point to the production original asset root/);
+    assert.match(missingPlan.issues.join(' '), /THUMBNAIL_STORAGE_PATH must point to the centralized production thumbnail root/);
+    assert.match(missingPlan.issues.join(' '), /backend\/uploads fallback is not used/i);
+
+    const inaccessibleService = makeService({
+      projectRoot,
+      stateDirectory: path.join(stateDirectory, 'inaccessible'),
+      environment: { ASSETS_ROOT: inaccessibleRoot, THUMBNAIL_STORAGE_PATH: thumbnailRoot }
+    });
+    const inaccessiblePlan = await inaccessibleService.buildPlan({
+      categories: ['assetsAndThumbnails'],
+      destinations: [destination]
+    }).catch((error) => ({ error: error.message }));
+    assert.match(inaccessiblePlan.error || inaccessiblePlan.issues.join(' '), /destination|not a directory|source/i);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('Website Code planning fails clearly when environment-file encryption key is missing', async () => {
+  const projectRoot = makeProjectRoot();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-encryption-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-encryption-state-'));
+  const service = makeService({
+    projectRoot,
+    stateDirectory,
+    environment: {},
+    useDefaultEncryptionKey: false
+  });
+  try {
+    const plan = await service.buildPlan({ categories: ['websiteCode'], destinations: [destination] });
+    assert.equal(plan.ready, false);
+    assert.equal(
+      plan.issues.filter((issue) => issue.includes('BACKUP_ENCRYPTION_KEY')).length,
+      1
+    );
+    assert.match(plan.issues.join(' '), /requires BACKUP_ENCRYPTION_KEY/);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
 });
 
 test('automatic daily, weekly, and monthly schedules calculate dynamic dates in server local time', () => {
@@ -429,7 +549,7 @@ test('server-side automatic weekly run reuses the oldest folder and completely o
     projectRoot,
     stateDirectory,
     database: makeFakeDatabase(path.join(projectRoot, 'postgres-data')),
-    environment: { BACKUP_ENCRYPTION_KEY: '11'.repeat(32) },
+    environment: { DB_HOST: 'test-postgres', DB_NAME: 'stocksite', BACKUP_ENCRYPTION_KEY: '11'.repeat(32) },
     spawnSync: () => ({ status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' }),
     spawn: successfulDumpSpawner,
     now: () => new Date(currentTime)

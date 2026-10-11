@@ -12,15 +12,17 @@ For multi-drive sets, combine the category trees from each `Drive-n` folder whil
 
 The backend process must have:
 
-- `ASSETS_ROOT=F:\GFXunlimitAssets`
+- `ASSETS_ROOT=F:\GFXunlimitAssets` set to the documented production original-asset directory
 - `THUMBNAIL_STORAGE_PATH=F:\GFXunlimitThumbnails`
 - `POSTGRES_DATA_DIRECTORY=D:\GFXunlimitDatabase` if the connected PostgreSQL account cannot report its data directory
-- `PG_DUMP_PATH` set to the PostgreSQL 18.6 `pg_dump.exe` when it is not on `PATH`
+- `PG_DUMP_PATH` set to PostgreSQL `pg_dump` 18 or newer when a compatible executable is not on `PATH`
 - `BACKUP_ENCRYPTION_KEY` set to a randomly generated 32-byte key, encoded as 64 hexadecimal characters or base64
 
 Database connection settings are taken from the backend's existing `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` environment values. The secret password is passed only to the `pg_dump` child process environment; it is not written into job status or manifests.
 
-Website `.env` files are encrypted individually with AES-256-GCM before writing, at the same relative paths. The key is never written to the destination or manifest. Store it securely outside the backup drives: without that key, encrypted environment files cannot be recovered. The destination and backup drives themselves should also be access-controlled.
+Backup requests made through the macOS DEVELOPER backend are relayed, with the authenticated admin request, to the configured `PC2_ASSET_SERVER_URL`. The Windows SERVER backend performs source discovery, planning, `pg_dump`, asset reads, and staging there; the Mac backend does not try to read Windows drive paths or use its local database for these requests. The SERVER's `DB_HOST` and `DB_NAME` (or PostgreSQL equivalents `PGHOST` and `PGDATABASE`) must be explicit for backup operations; implicit localhost/database defaults are rejected. `PG_DUMP_PATH`, when set, selects the executable in the backend process environment. Otherwise `pg_dump` is resolved from that backend process's `PATH`.
+
+Website `.env` files are encrypted individually with AES-256-GCM before writing, at the same relative paths. If environment files are present and `BACKUP_ENCRYPTION_KEY` is missing or invalid, planning fails and the backup cannot start; they are never silently copied unencrypted. The key is never written to the destination or manifest. Store it securely outside the backup drives: without that key, encrypted environment files cannot be recovered. The destination and backup drives themselves should also be access-controlled.
 
 ## Website Code source allowlist
 
@@ -39,7 +41,7 @@ Destination validation is performed by the PC2 backend: it creates the path if n
 
 One job runs at a time. Job state and history are persisted under `backend/backup-system/`; the browser only polls server-side progress. Completed files have SHA-256 entries in `checksums.sha256`; the database dump is made with custom-format `pg_dump --create`, checked for nonzero size, and hashed. The database's own schema and data are stored in `Database/stocksite.dump`; no JSON-table snapshot is used.
 
-Manual jobs may alternatively select **This Mac** in the Backup Center. The selected browser folder handle is used only by the browser's File System Access API and is never sent as a server path. The backend runs the same plan, copy, checksum, manifest, and verification flow into a server temporary staging directory, then exposes only files from that successful, verified manual job to the authenticated administrator for streamed transfer. On non-Windows systems the staging root is owner-only; on Windows it resides under the backend service account's OS temporary directory. The browser recreates `GFXunlimit/Backup-Set-<job-id>/Drive-1/` under the chosen folder. No archive conversion or change to the backup-set format occurs. Unclaimed staging sets are scheduled for removal after 24 hours and expired sets are pruned at service startup or on the next export request; a successful browser transfer requests immediate cleanup. This requires a supported browser and read/write folder permission, and needs temporary free space on the backend server.
+Manual jobs may alternatively select **This Mac** in the Backup Center. Before planning is enabled, the browser obtains read/write permission and creates, reads, and removes a temporary test file in the chosen folder. The selected browser folder handle is used only by the browser's File System Access API and is never sent as a server path. The backend runs the same plan, copy, checksum, manifest, and verification flow into a server temporary staging directory, then exposes only files from that successful, verified manual job to the authenticated administrator for streamed transfer. On non-Windows systems the staging root is owner-only; on Windows it resides under the backend service account's OS temporary directory. The browser recreates `GFXunlimit/Backup-Set-<job-id>/Drive-1/` under the tested folder, checks each copied file's size and SHA-256 against `checksums.sha256`, and validates the manifest before reporting the local copy complete. No archive conversion or change to the backup-set format occurs. Unclaimed staging sets are scheduled for removal after 24 hours and expired sets are pruned at service startup or on the next export request; a successful browser transfer requests immediate cleanup. This requires a supported browser and read/write folder permission, and needs temporary free space on the backend server.
 
 ## Automatic schedules
 

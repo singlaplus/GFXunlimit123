@@ -8,12 +8,143 @@ jest.mock("react-toastify", () => ({
   toast: { info: jest.fn(), success: jest.fn(), error: jest.fn() }
 }));
 
+const exportPayloadPath = "Website-Code/backend/server.js";
+const exportPayload = "test";
+const exportPayloadSha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+const exportChecksums = `${exportPayloadSha256} 4 ${exportPayloadPath}\n`;
+const exportManifest = JSON.stringify({
+  format: "GFXUNLIMIT-BACKUP-SET",
+  backupSetId: "GFX-TEST",
+  backupType: "MANUAL",
+  status: "SUCCESS",
+  verificationStatus: "VERIFIED",
+  selectedTypes: ["database"],
+  totals: { files: 1 }
+});
+const exportContents = {
+  "checksums.sha256": exportChecksums,
+  "manifest.json": exportManifest,
+  [exportPayloadPath]: exportPayload
+};
+const exportFiles = Object.entries(exportContents).map(([filePath, contents]) => ({
+  path: filePath,
+  sizeBytes: contents.length
+}));
+
+function makeBrowserDirectory(name = "MacBackups") {
+  const files = new Map();
+  const directories = new Map();
+  const makeFile = (filePath) => {
+    if (!files.has(filePath)) {
+      let bytes = new Uint8Array();
+      files.set(filePath, {
+        async createWritable() {
+          const chunks = [];
+          return {
+            async write(chunk) {
+              chunks.push(typeof chunk === "string"
+                ? Uint8Array.from(chunk, (character) => character.charCodeAt(0))
+                : new Uint8Array(chunk));
+            },
+            async close() {
+              const size = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+              bytes = new Uint8Array(size);
+              let offset = 0;
+              for (const chunk of chunks) {
+                bytes.set(chunk, offset);
+                offset += chunk.length;
+              }
+            },
+            async abort() {}
+          };
+        },
+        async getFile() {
+          const snapshot = new Uint8Array(bytes);
+          return {
+            size: snapshot.length,
+            async text() { return String.fromCharCode(...snapshot); },
+            stream() {
+              let read = false;
+              return {
+                getReader: () => ({
+                  async read() {
+                    if (read) return { done: true };
+                    read = true;
+                    return { done: false, value: snapshot };
+                  },
+                  releaseLock() {}
+                })
+              };
+            }
+          };
+        }
+      });
+    }
+    return files.get(filePath);
+  };
+  const makeDirectory = (directoryPath) => {
+    if (!directories.has(directoryPath)) {
+      directories.set(directoryPath, {
+        async getDirectoryHandle(childName, options = {}) {
+          const childPath = directoryPath ? `${directoryPath}/${childName}` : childName;
+          if (!directories.has(childPath) && !options.create) {
+            const error = new Error("Directory not found");
+            error.name = "NotFoundError";
+            throw error;
+          }
+          return makeDirectory(childPath);
+        },
+        async getFileHandle(fileName, options = {}) {
+          const filePath = directoryPath ? `${directoryPath}/${fileName}` : fileName;
+          if (!files.has(filePath) && !options.create) {
+            const error = new Error("File not found");
+            error.name = "NotFoundError";
+            throw error;
+          }
+          return makeFile(filePath);
+        },
+        async removeEntry(entryName, options = {}) {
+          const entryPath = directoryPath ? `${directoryPath}/${entryName}` : entryName;
+          files.delete(entryPath);
+          if (options.recursive) {
+            for (const key of files.keys()) if (key.startsWith(`${entryPath}/`)) files.delete(key);
+            for (const key of directories.keys()) if (key === entryPath || key.startsWith(`${entryPath}/`)) directories.delete(key);
+          }
+          directories.delete(entryPath);
+        }
+      });
+    }
+    return directories.get(directoryPath);
+  };
+  return {
+    name,
+    files,
+    async queryPermission() { return "granted"; },
+    async requestPermission() { return "granted"; },
+    getDirectoryHandle: (...args) => makeDirectory("").getDirectoryHandle(...args),
+    getFileHandle: (...args) => makeDirectory("").getFileHandle(...args),
+    removeEntry: (...args) => makeDirectory("").removeEntry(...args)
+  };
+}
+
 describe("AdminBackupPage", () => {
   beforeEach(() => {
     axios.mockReset();
+    Object.defineProperty(window, "showDirectoryPicker", {
+      configurable: true,
+      value: jest.fn().mockResolvedValue(makeBrowserDirectory())
+    });
     axios.mockImplementation(({ method, url, data }) => {
       if (method === "get" && url.endsWith("/jobs/active")) return Promise.resolve({ data: { job: null } });
       if (method === "get" && url.endsWith("/history")) return Promise.resolve({ data: { jobs: [] } });
+      if (method === "get" && url.includes("/browse")) {
+        const selectedPath = new URL(url).searchParams.get("path");
+        return Promise.resolve({ data: {
+          currentPath: selectedPath,
+          parentPath: null,
+          directories: selectedPath ? [] : [{ name: "D:\\Backups", path: "D:\\Backups" }]
+        } });
+      }
       if (method === "get" && url.endsWith("/automatic")) return Promise.resolve({ data: { schedule: {
         configured: false,
         enabled: false,
@@ -34,13 +165,13 @@ describe("AdminBackupPage", () => {
         assets: { available: true, originalRoot: "F:\\GFXunlimitAssets", originalBytes: 4096, thumbnailRoot: "F:\\GFXunlimitThumbnails", thumbnailBytes: 512, totalBytes: 4608 }
       } } });
       if (method === "post" && url.endsWith("/test-connection")) {
-        const destinationPath = url.includes("automatic") ? "D:\\GFXunlimitBackups" : "D:\\GFXunlimitBackups";
+        const destinationPath = data?.path || "D:\\GFXunlimitBackups";
         return Promise.resolve({ data: { drives: [{ path: destinationPath, totalBytes: 100000, usedBytes: 1000, availableBytes: 99000, safetyLimitBytes: 90000, usableBackupBytes: 89000, status: "READY" }] } });
       }
       if (method === "post" && url.endsWith("/plan")) {
         return Promise.resolve({ data: { ready: true, selectedTypes: ["database"], database: { name: "stocksite", version: "PostgreSQL 18.6", sourceServer: "PC2", estimatedBytes: 1024, pgDump: { available: true, version: "pg_dump 18.6" } }, categories: { database: { plannedBytes: 10000, estimatedBytes: 1024 }, websiteCode: { plannedBytes: 0 }, originalAssets: { plannedBytes: 0, estimatedBytes: 0, users: [] }, thumbnails: { plannedBytes: 0, estimatedBytes: 0 } }, totalRequiredBytes: 10000, filesTotal: 1, drives: [{ driveNumber: 1, path: "D:\\GFXunlimitBackups", actualCapacityBytes: 100000, currentUsedBytes: 1000, currentAvailableBytes: 99000, safetyLimitBytes: 90000, usableBackupBytes: 89000, requiredBytes: 10000, remainingSafeBytes: 79000, status: "READY", groups: [] }], issues: [] } });
       }
-      if (method === "get" && /\/jobs\/[^/]+\/export$/.test(url)) return Promise.resolve({ data: { files: [{ path: "manifest.json", sizeBytes: 4 }] } });
+      if (method === "get" && /\/jobs\/[^/]+\/export$/.test(url)) return Promise.resolve({ data: { files: exportFiles } });
       if (method === "delete" && /\/jobs\/[^/]+\/export$/.test(url)) return Promise.resolve({ status: 204 });
       if (method === "post" && url.endsWith("/start")) return Promise.resolve({ data: {
         id: "GFX-TEST",
@@ -80,7 +211,7 @@ describe("AdminBackupPage", () => {
     expect(screen.queryByText("Start Complete Backup")).not.toBeInTheDocument();
   });
 
-  test("selected source size recalculates and Browse selects a local folder without changing the server destination", async () => {
+  test("selected source size recalculates and the manual destination uses Browse", async () => {
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
     const cards = await screen.findByLabelText("Backup categories");
     const [databaseCheckbox, websiteCheckbox, assetsCheckbox] = cards.querySelectorAll('input[type="checkbox"]');
@@ -90,29 +221,98 @@ describe("AdminBackupPage", () => {
     fireEvent.click(assetsCheckbox);
     expect(await screen.findByText("Selected Backup Size: 1.00 KB")).toBeInTheDocument();
 
-    const picker = jest.fn().mockResolvedValue({ name: "MacBackups" });
+    const picker = jest.fn().mockResolvedValue(makeBrowserDirectory("LocalBackups"));
     Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: picker });
-    const destination = screen.getByLabelText("Destination path");
-    fireEvent.change(destination, { target: { value: "D:\\ExistingServerBackup" } });
-    await act(async () => {
-      fireEvent.click(within(destination.closest(".gfx-backup-drive-card")).getByRole("button", { name: "Change" }));
-    });
-
-    expect(picker).toHaveBeenCalledWith({ mode: "read" });
-    expect(await screen.findByText("MacBackups")).toBeInTheDocument();
-    expect(destination).toHaveValue("D:\\ExistingServerBackup");
+    expect(screen.queryByText("Folder accessible to the backend server")).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Browse this computer" })[0]);
+    expect(picker).toHaveBeenCalledWith({ mode: "readwrite" });
+    await waitFor(() => expect(screen.getByLabelText("Selected folder")).toHaveValue("LocalBackups"));
+    expect(screen.getByText("Manual destination type")).toBeInTheDocument();
+    expect(screen.getByLabelText("Backup server")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Backup destination path")).not.toBeInTheDocument();
     expect(axios).not.toHaveBeenCalledWith(expect.objectContaining({ url: expect.stringContaining("/browse") }));
-    expect(screen.getByText(/does not make it writable by server-side jobs/i)).toBeInTheDocument();
   });
 
-  test("Browse on an unsupported browser reports the limitation without calling the server Browse API", async () => {
+  test("unsupported browser reports the local-folder limitation without calling the server Browse API", async () => {
+    delete window.showDirectoryPicker;
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
-    await screen.findByLabelText("Destination path");
-
     fireEvent.click(screen.getAllByRole("button", { name: "Browse this computer" })[0]);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/Local folder selection is unavailable/i);
     expect(axios).not.toHaveBeenCalledWith(expect.objectContaining({ url: expect.stringContaining("/browse") }));
+  });
+
+  test("Browse this computer selects the only manual destination without sending a local path to the server", async () => {
+    const directory = makeBrowserDirectory("CurrentComputerBackups");
+    const picker = jest.fn().mockResolvedValue(directory);
+    Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: picker });
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    fireEvent.click((await screen.findAllByRole("button", { name: "Browse this computer" }))[0]);
+
+    expect(picker).toHaveBeenCalledWith({ mode: "readwrite" });
+    expect(await screen.findByLabelText("Selected folder")).toHaveValue("CurrentComputerBackups");
+    expect(screen.getByRole("button", { name: "Build Complete Backup Plan" })).toBeDisabled();
+    expect(axios.mock.calls.some(([request]) => (
+      request.url.includes("/test-connection") &&
+      JSON.stringify(request.data).includes("CurrentComputerBackups")
+    ))).toBe(false);
+  });
+
+  test("server manual destination is tested, and changing it invalidates its test and plan", async () => {
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    fireEvent.click(await screen.findByLabelText("Backup server"));
+    const serverPath = screen.getByLabelText("Selected server folder");
+    fireEvent.change(serverPath, { target: { value: "D:\\FirstBackup" } });
+    const buildPlan = screen.getByRole("button", { name: "Build Complete Backup Plan" });
+    expect(buildPlan).toBeDisabled();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Test Connection" })[0]);
+    await screen.findByText("Selected destination tested successfully.");
+    expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+      method: "post",
+      url: "http://localhost:5000/admin/backup/test-connection",
+      data: { path: "D:\\FirstBackup" }
+    }));
+    expect(buildPlan).toBeEnabled();
+
+    fireEvent.change(serverPath, { target: { value: "D:\\SecondBackup" } });
+    expect(buildPlan).toBeDisabled();
+    expect(screen.queryByText("Selected destination tested successfully.")).not.toBeInTheDocument();
+  });
+
+  test("server manual backup builds and starts against the tested server path", async () => {
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    fireEvent.click(await screen.findByLabelText("Backup server"));
+    fireEvent.change(screen.getByLabelText("Selected server folder"), { target: { value: "D:\\ManualBackups" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Test Connection" })[0]);
+    await screen.findByText("Selected destination tested successfully.");
+    fireEvent.click(screen.getByRole("button", { name: "Build Complete Backup Plan" }));
+    await screen.findByRole("region", { name: "Backup plan" });
+    fireEvent.click(screen.getByRole("button", { name: "Start Manual Backup" }));
+    await waitFor(() => expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+      method: "post",
+      url: "http://localhost:5000/admin/backup/start",
+      data: { categories: ["database", "websiteCode", "assetsAndThumbnails"], destinationMode: "server", destinations: ["D:\\ManualBackups"] }
+    })));
+    expect(axios.mock.calls.some(([request]) => (
+      request.url.endsWith("/start") && request.data?.destinationMode === "mac-local"
+    ))).toBe(false);
+  });
+
+  test("server folder browsing uses the backend browser and never sets the automatic destination", async () => {
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    fireEvent.click(await screen.findByLabelText("Backup server"));
+    fireEvent.click(screen.getByRole("button", { name: "Browse server folders" }));
+    expect(await screen.findByText("D:\\Backups")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "D:\\Backups" }));
+    expect(await screen.findByText("Server location: D:\\Backups")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Use this server folder" }));
+    expect(screen.getByLabelText("Selected server folder")).toHaveValue("D:\\Backups");
+    expect(screen.getByLabelText("Automatic Backup Location")).toHaveValue("");
+    expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+      method: "get",
+      url: "http://localhost:5000/admin/backup/browse"
+    }));
   });
 
   test("automatic Browse selects a local folder without changing the saved server destination", async () => {
@@ -131,99 +331,88 @@ describe("AdminBackupPage", () => {
     expect(axios).not.toHaveBeenCalledWith(expect.objectContaining({ url: expect.stringContaining("/browse") }));
   });
 
-  test("tests the destination and submits a complete plan before starting", async () => {
+  test("unsafe plan validation shows one actionable error and never starts the backup", async () => {
+    const defaultImplementation = axios.getMockImplementation();
+    axios.mockImplementation((config) => (
+      config.method === "post" && config.url.endsWith("/plan")
+        ? Promise.resolve({ data: { ready: false, issues: ["The selected destination has insufficient safe capacity."] } })
+        : defaultImplementation(config)
+    ));
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
-    const categoryCards = await screen.findByLabelText("Backup categories");
-    const categoryCheckboxes = categoryCards.querySelectorAll('input[type="checkbox"]');
-    fireEvent.click(categoryCheckboxes[1]);
-    fireEvent.click(categoryCheckboxes[2]);
-    const destination = screen.getByLabelText("Destination path");
-    fireEvent.change(destination, { target: { value: "D:\\GFXunlimitBackups" } });
+    fireEvent.click((await screen.findAllByRole("button", { name: "Browse this computer" }))[0]);
+    await waitFor(() => expect(screen.getByLabelText("Selected folder")).toHaveValue("MacBackups"));
     fireEvent.click(screen.getAllByText("Test Connection")[0]);
-    await waitFor(() => expect(axios).toHaveBeenCalledWith(expect.objectContaining({
-      method: "post",
-      url: "http://localhost:5000/admin/backup/test-connection"
-    })));
-    await screen.findByText("READY");
-    fireEvent.click(screen.getByText("Build Complete Backup Plan"));
-    await screen.findByText(/stocksite.*PostgreSQL 18/i);
-    await waitFor(() => expect(screen.getByText("Start Complete Backup")).not.toBeDisabled());
-    fireEvent.click(screen.getByText("Start Complete Backup"));
-    await waitFor(() => expect(axios).toHaveBeenCalledWith(expect.objectContaining({
-      method: "post",
-      url: "http://localhost:5000/admin/backup/start",
-      data: expect.objectContaining({ categories: ["database"] })
-    })));
+    await screen.findByText("Selected destination tested successfully.");
+    fireEvent.click(screen.getByRole("button", { name: "Build Complete Backup Plan" }));
+
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent(/insufficient safe capacity/i);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Start Manual Backup" })).not.toBeInTheDocument();
+    expect(axios.mock.calls.some(([request]) => request.url.endsWith("/start"))).toBe(false);
   });
 
-  test("manual Mac backup streams verified files through the selected folder handle", async () => {
-    const written = [];
-    const fileHandle = {
-      async createWritable() {
-        return {
-          async write(chunk) { written.push(String.fromCharCode(...chunk)); },
-          async close() {},
-          async abort() {}
-        };
-      },
-      async getFile() { return { size: 4 }; }
-    };
-    const handles = {};
-    const makeDirectory = (key) => ({
-      async getDirectoryHandle(name, options = {}) {
-        const childKey = `${key}/${name}`;
-        if (!handles[childKey] && !options.create) {
-          const error = new Error("Directory not found");
-          error.name = "NotFoundError";
-          throw error;
-        }
-        if (!handles[childKey]) handles[childKey] = makeDirectory(childKey);
-        return handles[childKey];
-      },
-      async getFileHandle() { return fileHandle; },
-      async removeEntry() {}
-    });
-    const directory = {
-      name: "MacBackups",
-      async queryPermission() { return "granted"; },
-      getDirectoryHandle: makeDirectory("").getDirectoryHandle
-    };
+  test("changing a tested Mac folder invalidates its destination test and plan eligibility", async () => {
+    const picker = jest.fn()
+      .mockResolvedValueOnce(makeBrowserDirectory("FirstMacFolder"))
+      .mockResolvedValueOnce(makeBrowserDirectory("SecondMacFolder"));
+    Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: picker });
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Browse this computer" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Selected folder")).toHaveValue("FirstMacFolder"));
+    fireEvent.click(screen.getAllByText("Test Connection")[0]);
+    await screen.findByText("Selected destination tested successfully.");
+    const buildPlan = screen.getByRole("button", { name: "Build Complete Backup Plan" });
+    expect(buildPlan).toBeEnabled();
+    fireEvent.click(screen.getAllByRole("button", { name: "Browse this computer" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Selected folder")).toHaveValue("SecondMacFolder"));
+    expect(buildPlan).toBeDisabled();
+  });
+
+  test("manual Mac backup tests the chosen folder and automatically streams and verifies the complete set", async () => {
+    const directory = makeBrowserDirectory();
     Object.defineProperty(window, "showDirectoryPicker", {
       configurable: true,
       value: jest.fn().mockResolvedValue(directory)
     });
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      body: {
-        async pipeTo(writable) {
-          await writable.write(new Uint8Array([116, 101, 115, 116]));
-          await writable.close();
+    global.fetch = jest.fn(async (url) => {
+      const filePath = new URL(url).searchParams.get("path");
+      const bytes = Uint8Array.from(exportContents[filePath], (character) => character.charCodeAt(0));
+      return {
+        ok: true,
+        body: {
+          async pipeTo(writable) {
+            await writable.write(bytes);
+            await writable.close();
+          }
         }
-      }
+      };
     });
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
 
-    fireEvent.click(await screen.findByLabelText("This Mac"));
-    fireEvent.click(screen.getByRole("button", { name: "Choose Mac folder" }));
-    await screen.findByText("MacBackups");
+    fireEvent.click(screen.getAllByRole("button", { name: "Browse this computer" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Selected folder")).toHaveValue("MacBackups"));
+    expect(window.showDirectoryPicker).toHaveBeenCalledWith({ mode: "readwrite" });
+    const buildPlan = screen.getByRole("button", { name: "Build Complete Backup Plan" });
+    expect(buildPlan).toBeDisabled();
+    fireEvent.click(screen.getAllByText("Test Connection")[0]);
+    await screen.findByText("Selected destination tested successfully.");
+    expect([...directory.files.keys()]).toEqual([]);
+    expect(buildPlan).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Build Complete Backup Plan" }));
     await waitFor(() => expect(axios).toHaveBeenCalledWith(expect.objectContaining({
       method: "post",
       url: "http://localhost:5000/admin/backup/plan",
       data: expect.objectContaining({ destinationMode: "mac-local" })
     })));
-    fireEvent.click(await screen.findByRole("button", { name: "Start Mac-local Backup" }));
-    await screen.findByRole("button", { name: "Transfer verified backup to Mac" });
-    fireEvent.click(screen.getByRole("button", { name: "Transfer verified backup to Mac" }));
-
-    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    fireEvent.click(await screen.findByRole("button", { name: "Start Manual Backup" }));
     expect(screen.queryAllByRole("alert").map((element) => element.textContent)).toEqual([]);
-    expect(await screen.findByRole("button", { name: "Transferred to Mac" })).toBeDisabled();
-    expect(written).toEqual(["test"]);
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/jobs/GFX-TEST/export/file?path=manifest.json"),
-      expect.objectContaining({ credentials: "include" })
-    );
+    expect(await screen.findByRole("button", { name: "Transferred to this computer" })).toBeDisabled();
+    expect(global.fetch).toHaveBeenCalledTimes(exportFiles.length);
+    const localPrefix = "GFXunlimit/Backup-Set-GFX-TEST/Drive-1/";
+    expect(await directory.files.get(`${localPrefix}${exportPayloadPath}`).getFile().then((file) => file.text())).toBe(exportPayload);
+    expect(JSON.parse(await directory.files.get(`${localPrefix}manifest.json`).getFile().then((file) => file.text())).verificationStatus).toBe("VERIFIED");
+    expect(await directory.files.get(`${localPrefix}checksums.sha256`).getFile().then((file) => file.text())).toBe(exportChecksums);
     expect(axios).toHaveBeenCalledWith(expect.objectContaining({
       method: "delete",
       url: "http://localhost:5000/admin/backup/jobs/GFX-TEST/export"
@@ -233,6 +422,40 @@ describe("AdminBackupPage", () => {
       (request.url.endsWith("/plan") || request.url.endsWith("/start")) &&
       JSON.stringify(request.data).includes("MacBackups")
     ))).toBe(false);
+  });
+
+  test("failed local export removes the incomplete backup set and reports one actionable error", async () => {
+    const directory = makeBrowserDirectory();
+    Object.defineProperty(window, "showDirectoryPicker", {
+      configurable: true,
+      value: jest.fn().mockResolvedValue(directory)
+    });
+    global.fetch = jest.fn(async (url) => {
+      const filePath = new URL(url).searchParams.get("path");
+      const contents = filePath === exportPayloadPath ? "fail" : exportContents[filePath];
+      const bytes = Uint8Array.from(contents, (character) => character.charCodeAt(0));
+      return {
+        ok: true,
+        body: {
+          async pipeTo(writable) {
+            await writable.write(bytes);
+            await writable.close();
+          }
+        }
+      };
+    });
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Browse this computer" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Selected folder")).toHaveValue("MacBackups"));
+    fireEvent.click(screen.getAllByText("Test Connection")[0]);
+    await screen.findByText("Selected destination tested successfully.");
+    fireEvent.click(screen.getByRole("button", { name: "Build Complete Backup Plan" }));
+    await screen.findByRole("button", { name: "Start Manual Backup" });
+    fireEvent.click(screen.getByRole("button", { name: "Start Manual Backup" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/checksum did not match/i);
+    expect([...directory.files.keys()].some((filePath) => filePath.startsWith("GFXunlimit/Backup-Set-GFX-TEST/"))).toBe(false);
+    expect(screen.queryByRole("button", { name: "Transferred to this computer" })).not.toBeInTheDocument();
   });
 
   test("automatic schedule defaults to database and Website Code and saves configured frequency", async () => {
