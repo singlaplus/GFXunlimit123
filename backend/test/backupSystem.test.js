@@ -1,9 +1,10 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { PassThrough } = require('node:stream');
+const { PassThrough, Writable } = require('node:stream');
 const { test } = require('node:test');
 const {
   SAFETY_RATIO,
@@ -65,7 +66,29 @@ function makeFakeDatabase(dataDirectory) {
   };
 }
 
-function makeService({ projectRoot, stateDirectory, clientExportRoot, environment, spawn, spawnSync, useDefaultEncryptionKey = true } = {}) {
+function successfulRestoreSpawner() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = () => {};
+  process.nextTick(() => {
+    child.stdout.end('; Archive created at 2026-10-11\n; Dump Version: 1.16-0\n; Format: CUSTOM\n; Selected TOC Entries:\n1; 0 0 DATABASE - stocksite\n');
+    child.emit('close', 0, null);
+  });
+  return child;
+}
+
+function makeService({
+  projectRoot,
+  stateDirectory,
+  clientExportRoot,
+  environment,
+  spawn,
+  spawnRestore = successfulRestoreSpawner,
+  spawnSync,
+  pgRestoreListTimeoutMs,
+  useDefaultEncryptionKey = true
+} = {}) {
   const dataDirectory = path.join(projectRoot, 'postgres-data');
   fs.mkdirSync(dataDirectory, { recursive: true });
   return createBackupService({
@@ -77,7 +100,9 @@ function makeService({ projectRoot, stateDirectory, clientExportRoot, environmen
       ? { DB_HOST: 'test-postgres', DB_NAME: 'stocksite', ...environment, BACKUP_ENCRYPTION_KEY: environment?.BACKUP_ENCRYPTION_KEY || '11'.repeat(32) }
       : { DB_HOST: 'test-postgres', DB_NAME: 'stocksite', ...environment },
     spawnSync: spawnSync || (() => ({ status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' })),
-    spawn
+    spawn,
+    spawnRestore,
+    pgRestoreListTimeoutMs
   });
 }
 
@@ -159,21 +184,51 @@ test('PostgreSQL 18 backups require pg_dump 18 or newer', async () => {
   const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-pgdump-state-'));
   try {
     for (const [version, available] of [['17.6', false], ['18.0', true], ['19.1', true]]) {
-      let resolvedExecutable;
+      const resolvedExecutables = [];
       const service = makeService({
         projectRoot,
         stateDirectory: path.join(stateDirectory, version),
         environment: { PG_DUMP_PATH: 'C:\\configured\\postgres\\bin\\pg_dump.exe' },
         spawnSync: (executable) => {
-          resolvedExecutable = executable;
+          resolvedExecutables.push(executable);
           return { status: 0, stdout: `pg_dump (PostgreSQL) ${version}\n` };
         }
       });
       const plan = await service.buildPlan({ categories: ['database'], destinations: [destination] });
-      assert.equal(resolvedExecutable, 'C:\\configured\\postgres\\bin\\pg_dump.exe');
+      assert.ok(resolvedExecutables.includes('C:\\configured\\postgres\\bin\\pg_dump.exe'));
+      assert.ok(resolvedExecutables.includes('C:\\configured\\postgres\\bin\\pg_restore.exe'));
       assert.equal(plan.database.pgDump.available, available);
+      assert.equal(plan.database.pgRestore.available, available);
       if (!available) assert.match(plan.issues.join(' '), /install pg_dump 18 or newer/);
     }
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('pg_restore must be compatible with the archive-producing pg_dump version', async () => {
+  const projectRoot = makeProjectRoot();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-restore-version-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const service = makeService({
+    projectRoot,
+    stateDirectory,
+    environment: { PG_DUMP_PATH: '/opt/postgresql/bin/pg_dump', PG_RESTORE_PATH: '/opt/postgresql-18/bin/pg_restore' },
+    spawnSync: (executable) => ({
+      status: 0,
+      stdout: executable.endsWith('pg_dump')
+        ? 'pg_dump (PostgreSQL) 19.1\n'
+        : 'pg_restore (PostgreSQL) 18.6\n'
+    })
+  });
+  try {
+    const plan = await service.buildPlan({ categories: ['database'], destinations: [destination] });
+    assert.equal(plan.database.pgDump.available, true);
+    assert.equal(plan.database.pgRestore.available, false);
+    assert.match(plan.database.pgRestore.error, /pg_restore 18 cannot validate PostgreSQL 18 backups created by pg_dump 19/);
+    assert.equal(plan.ready, false);
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(destination, { recursive: true, force: true });
@@ -358,6 +413,139 @@ test('destination checks reject a protected source and nested destinations', () 
   }
 });
 
+test('automatic destination browsing hides Mac export staging and automatic settings reject it', async () => {
+  const projectRoot = makeProjectRoot();
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const browseRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-auto-browse-'));
+  const clientExportRoot = path.join(browseRoot, 'manual-export-staging');
+  const destination = path.join(browseRoot, 'server-backups');
+  fs.mkdirSync(clientExportRoot);
+  fs.mkdirSync(destination);
+  const service = makeService({ projectRoot, stateDirectory, clientExportRoot });
+  try {
+    const listing = await service.browseAutomaticDestination(browseRoot);
+    assert.deepEqual(listing.directories.map((entry) => entry.path), [destination]);
+    assert.equal((await service.testDestination(destination)).status, 'READY');
+    await assert.rejects(service.browseAutomaticDestination(clientExportRoot), /not an automatic backup destination/);
+    await assert.rejects(service.testDestination(clientExportRoot), /protected production source/);
+    await assert.rejects(service.saveAutomaticSchedule({
+      enabled: false,
+      destination: clientExportRoot,
+      selectedTypes: ['database', 'websiteCode'],
+      frequency: 'daily',
+      time: '02:00',
+      weeklyDay: 0,
+      monthlyDay: 1
+    }), /protected production source/);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+    fs.rmSync(browseRoot, { recursive: true, force: true });
+  }
+});
+
+test('automatic destination browsing and schedules reject symlink aliases of Mac export staging', async (t) => {
+  const projectRoot = makeProjectRoot();
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const browseRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-auto-alias-'));
+  const clientExportRoot = path.join(browseRoot, 'manual-export-staging');
+  const alias = path.join(os.tmpdir(), `gfx-backup-auto-alias-link-${crypto.randomUUID()}`);
+  fs.mkdirSync(path.join(clientExportRoot, 'private-export'), { recursive: true });
+  const service = makeService({ projectRoot, stateDirectory, clientExportRoot });
+  try {
+    try {
+      fs.symlinkSync(browseRoot, alias, 'dir');
+    } catch (error) {
+      if (['EACCES', 'ENOTSUP', 'EPERM'].includes(error.code)) {
+        t.skip('Directory symlinks are unavailable in this environment.');
+        return;
+      }
+      throw error;
+    }
+
+    const aliasedStagingPath = path.join(alias, 'manual-export-staging');
+    await assert.rejects(service.browseAutomaticDestination(aliasedStagingPath), /not an automatic backup destination/);
+    await assert.rejects(service.saveAutomaticSchedule({
+      enabled: false,
+      destination: aliasedStagingPath,
+      selectedTypes: ['database', 'websiteCode'],
+      frequency: 'daily',
+      time: '02:00',
+      weeklyDay: 0,
+      monthlyDay: 1
+    }), /overlap the server-managed Mac export staging location/);
+  } finally {
+    try {
+      fs.unlinkSync(alias);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+    fs.rmSync(browseRoot, { recursive: true, force: true });
+  }
+});
+
+test('automatic execution rejects a server destination replaced by an alias of Mac export staging', async (t) => {
+  const projectRoot = makeProjectRoot();
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-auto-runtime-alias-'));
+  const destination = path.join(root, 'server-backups');
+  const movedDestination = path.join(root, 'server-backups-original');
+  const clientExportRoot = path.join(root, 'manual-export-staging');
+  fs.mkdirSync(destination);
+  fs.mkdirSync(clientExportRoot);
+  const runDate = new Date(Date.UTC(2026, 9, 7, 15, 30));
+  let currentTime = new Date(runDate.getTime() - 60 * 1000);
+  const service = makeService({
+    projectRoot,
+    stateDirectory,
+    clientExportRoot,
+    environment: { TZ: 'Asia/Kolkata' },
+    spawn: () => {
+      throw new Error('The backup process must not start after destination validation fails.');
+    },
+    now: () => new Date(currentTime)
+  });
+  try {
+    try {
+      await service.saveAutomaticSchedule({
+        enabled: true,
+        destination,
+        selectedTypes: ['database'],
+        frequency: 'daily',
+        time: '21:00',
+        weeklyDay: 0,
+        monthlyDay: 1
+      });
+      fs.renameSync(destination, movedDestination);
+      fs.symlinkSync(clientExportRoot, destination, 'dir');
+    } catch (error) {
+      if (['EACCES', 'ENOTSUP', 'EPERM'].includes(error.code)) {
+        t.skip('Directory symlinks are unavailable in this environment.');
+        return;
+      }
+      throw error;
+    }
+    currentTime = runDate;
+    await service.tickAutomaticSchedule(runDate);
+    const deadline = Date.now() + 3000;
+    let schedule;
+    while (Date.now() < deadline) {
+      schedule = await service.getAutomaticSchedule();
+      if (schedule.lastRun?.status === 'FAILED') break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(schedule.lastRun.status, 'FAILED');
+    assert.match(schedule.lastRun.error, /protected production source/i);
+    assert.deepEqual(fs.readdirSync(clientExportRoot), []);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('complete Website Code plan preserves paths and encrypts .env files', async () => {
   const projectRoot = makeProjectRoot();
   const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-destination-'));
@@ -509,6 +697,79 @@ test('Mac-local manual export stages only a verified backup set and automatic jo
   }
 });
 
+test('Mac-local database export uses stocksite.backup and requires its finalized manifest', async () => {
+  const projectRoot = makeProjectRoot();
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const clientExportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-client-export-'));
+  const databaseDump = Buffer.concat([Buffer.from('PGDMP'), Buffer.from('complete-test-dump')]);
+  let dumpArgs;
+  const service = makeService({
+    projectRoot,
+    stateDirectory,
+    clientExportRoot,
+    spawn: (_executable, args) => {
+      dumpArgs = args;
+      const child = new EventEmitter();
+      child.stderr = new PassThrough();
+      child.kill = () => {};
+      process.nextTick(() => {
+        const outputPath = args[args.indexOf('--file') + 1];
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.writeFileSync(outputPath, databaseDump);
+        child.emit('close', 0, null);
+      });
+      return child;
+    }
+  });
+  try {
+    const plan = await service.buildClientExportPlan({ categories: ['database'] });
+    assert.equal(plan.internalGroups.find((group) => group.kind === 'database').outputRelativePath, 'Database/stocksite.backup');
+
+    const started = await service.createJob({
+      categories: ['database'],
+      destinationMode: 'mac-local'
+    });
+    const finished = await waitForTerminalJob(service, started.id);
+    assert.equal(finished.status, 'SUCCESS');
+    assert.equal(finished.verificationStatus, 'VERIFIED');
+    assert.ok(dumpArgs.includes('--format=custom'));
+    assert.ok(dumpArgs.includes('--create'));
+
+    const exportFiles = await service.getClientExportFiles(started.id);
+    assert.deepEqual(exportFiles.map((file) => file.path).sort(), [
+      'Database/stocksite.backup',
+      'checksums.sha256',
+      'manifest.json'
+    ]);
+    assert.equal(exportFiles.find((file) => file.path === 'Database/stocksite.backup').sizeBytes, databaseDump.length);
+    const exportedDump = await service.openClientExportFile(started.id, 'Database/stocksite.backup');
+    const receivedDump = [];
+    for await (const chunk of exportedDump.stream) receivedDump.push(chunk);
+    assert.deepEqual(Buffer.concat(receivedDump), databaseDump);
+
+    const setDirectory = path.join(clientExportRoot, 'GFXunlimit', `Backup-Set-${started.id}`, 'Drive-1');
+    const manifestPath = path.join(setDirectory, 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    assert.equal(manifest.status, 'SUCCESS');
+    assert.equal(manifest.verificationStatus, 'VERIFIED');
+    assert.equal(manifest.database.relativePath, 'Database/stocksite.backup');
+    assert.match(fs.readFileSync(path.join(setDirectory, 'checksums.sha256'), 'utf8'), /Database\/stocksite\.backup/);
+
+    fs.writeFileSync(
+      path.join(setDirectory, 'Database', 'stocksite.backup'),
+      Buffer.alloc(databaseDump.length, 0x41)
+    );
+    await assert.rejects(service.getClientExportFiles(started.id), /checksum verification failed/);
+    fs.writeFileSync(path.join(setDirectory, 'Database', 'stocksite.backup'), databaseDump);
+    fs.unlinkSync(manifestPath);
+    await assert.rejects(service.getClientExportFiles(started.id), /manifest is missing/);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+    fs.rmSync(clientExportRoot, { recursive: true, force: true });
+  }
+});
+
 test('server-side automatic weekly run reuses the oldest folder and completely overwrites its contents', async () => {
   const projectRoot = makeProjectRoot();
   const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-automatic-'));
@@ -552,6 +813,7 @@ test('server-side automatic weekly run reuses the oldest folder and completely o
     environment: { DB_HOST: 'test-postgres', DB_NAME: 'stocksite', BACKUP_ENCRYPTION_KEY: '11'.repeat(32) },
     spawnSync: () => ({ status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' }),
     spawn: successfulDumpSpawner,
+    spawnRestore: successfulRestoreSpawner,
     now: () => new Date(currentTime)
   });
   try {
@@ -580,12 +842,13 @@ test('server-side automatic weekly run reuses the oldest folder and completely o
     const runFolder = path.join(automaticRoot, formattedRunDate);
     assert.equal(fs.existsSync(path.join(runFolder, 'Database', 'obsolete.dump')), false);
     assert.equal(fs.existsSync(path.join(runFolder, 'Website-Code', 'obsolete.txt')), false);
-    assert.equal(fs.existsSync(path.join(runFolder, 'Database', 'stocksite.dump')), true);
+    assert.equal(fs.existsSync(path.join(runFolder, 'Database', 'stocksite.backup')), true);
     assert.equal(fs.existsSync(path.join(runFolder, 'Website-Code', 'backend', 'server.js')), true);
     assert.equal(fs.existsSync(oldFolderPaths[oldFolderPaths.length - 1]), false);
     const manifest = JSON.parse(fs.readFileSync(path.join(runFolder, 'manifest.json'), 'utf8'));
     assert.equal(manifest.backupType, 'AUTOMATIC');
     assert.equal(manifest.automaticFrequency, 'weekly');
+    assert.equal(manifest.database.relativePath, 'Database/stocksite.backup');
     assert.equal(fs.readdirSync(automaticRoot).filter((name) => /^\d{4}-\d{2}-\d{2}$/.test(name)).length, 30);
     await assert.rejects(service.getClientExportFiles(completed.id), /completed, verified manual Mac export/);
     const schedule = await service.getAutomaticSchedule();
@@ -600,7 +863,9 @@ test('successful native database dumps are measured, checksummed, and recorded i
   const projectRoot = makeProjectRoot();
   const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-destination-'));
   const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  let dumpArgs;
   const successfulDumpSpawner = (executable, args) => {
+    dumpArgs = args;
     const child = new EventEmitter();
     child.stderr = new PassThrough();
     child.kill = () => {};
@@ -621,11 +886,15 @@ test('successful native database dumps are measured, checksummed, and recorded i
     assert.equal(finished.completedBytes, Buffer.byteLength('PGDMPverified-native-postgres-dump'));
     assert.equal(finished.database.verified, true);
     assert.equal((await service.getHistory())[0].status, 'SUCCESS');
+    assert.ok(dumpArgs.includes('--format=custom'));
     const setRoot = path.join(destination, 'GFXunlimit', `Backup-Set-${started.id}`, 'Drive-1');
     const manifest = JSON.parse(fs.readFileSync(path.join(setRoot, 'manifest.json'), 'utf8'));
     assert.equal(manifest.database.verified, true);
     assert.equal(manifest.database.serverVersion, 'PostgreSQL 18.6 (test)');
-    assert.match(fs.readFileSync(path.join(setRoot, 'checksums.sha256'), 'utf8'), /Database\/stocksite\.dump/);
+    assert.equal(manifest.database.relativePath, 'Database/stocksite.backup');
+    assert.equal(fs.existsSync(path.join(setRoot, 'Database', 'stocksite.backup')), true);
+    assert.equal(fs.existsSync(path.join(setRoot, 'Database', 'stocksite.dump')), false);
+    assert.match(fs.readFileSync(path.join(setRoot, 'checksums.sha256'), 'utf8'), /Database\/stocksite\.backup/);
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(destination, { recursive: true, force: true });
@@ -659,8 +928,263 @@ test('native database dump failure fails the job and removes its partial dump', 
     const finished = await waitForTerminalJob(service, started.id);
     assert.equal(finished.status, 'FAILED');
     assert.match(finished.errors[0].message, /pg_dump failed/);
-    const dumpPath = path.join(destination, 'GFXunlimit', `Backup-Set-${started.id}`, 'Drive-1', 'Database', 'stocksite.dump');
+    const dumpPath = path.join(destination, 'GFXunlimit', `Backup-Set-${started.id}`, 'Drive-1', 'Database', 'stocksite.backup');
     assert.equal(fs.existsSync(dumpPath), false);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('Mac-local export rejects an incomplete custom-format dump even when pg_dump exits successfully', async () => {
+  const projectRoot = makeProjectRoot();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-client-destination-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const incompleteDumpSpawner = (_executable, args) => {
+    const child = new EventEmitter();
+    child.stderr = new PassThrough();
+    child.kill = () => {};
+    process.nextTick(() => {
+      const outputPath = args[args.indexOf('--file') + 1];
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      fs.writeFileSync(outputPath, 'PGDMP');
+      child.emit('close', 0, null);
+    });
+    return child;
+  };
+  const service = makeService({
+    projectRoot,
+    stateDirectory,
+    clientExportRoot: destination,
+    spawn: incompleteDumpSpawner
+  });
+  try {
+    const started = await service.createJob({ categories: ['database'], destinationMode: 'mac-local' });
+    const finished = await waitForTerminalJob(service, started.id);
+    assert.equal(finished.status, 'FAILED');
+    assert.equal(finished.verificationStatus, 'FAILED');
+    assert.match(finished.errors[0].message, /incomplete custom-format database dump/);
+    await assert.rejects(service.getClientExportFiles(started.id), /completed, verified manual Mac export/);
+    assert.equal(fs.existsSync(path.join(destination, 'GFXunlimit', `Backup-Set-${started.id}`, 'Drive-1')), false);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('database backup rejects a missing dump and an invalid custom-format signature', async () => {
+  for (const [label, dumpContents, expectedError] of [
+    ['missing', null, /ENOENT|no such file/i],
+    ['invalid', Buffer.from('not-a-postgres-archive'), /custom-format archive signature/]
+  ]) {
+    const projectRoot = makeProjectRoot();
+    const destination = fs.mkdtempSync(path.join(os.tmpdir(), `gfx-backup-${label}-destination-`));
+    const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+    const spawner = (_executable, args) => {
+      const child = new EventEmitter();
+      child.stderr = new PassThrough();
+      child.kill = () => {};
+      process.nextTick(() => {
+        if (dumpContents) {
+          const outputPath = args[args.indexOf('--file') + 1];
+          fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+          fs.writeFileSync(outputPath, dumpContents);
+        }
+        child.emit('close', 0, null);
+      });
+      return child;
+    };
+    const service = makeService({ projectRoot, stateDirectory, spawn: spawner });
+    try {
+      const started = await service.createJob({ categories: ['database'], destinations: [destination] });
+      const finished = await waitForTerminalJob(service, started.id);
+      assert.equal(finished.status, 'FAILED', `${label} dump must fail`);
+      assert.equal(finished.verificationStatus, 'FAILED', `${label} dump must not be verified`);
+      assert.match(finished.errors[0].message, expectedError);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(destination, { recursive: true, force: true });
+      fs.rmSync(stateDirectory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('database planning fails closed when a compatible pg_restore is unavailable', async () => {
+  const projectRoot = makeProjectRoot();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-no-pg-restore-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const service = makeService({
+    projectRoot,
+    stateDirectory,
+    environment: { PG_DUMP_PATH: '/opt/postgresql/bin/pg_dump' },
+    spawnSync: (executable) => executable.endsWith('/pg_restore')
+      ? { status: null, error: Object.assign(new Error('not found'), { code: 'ENOENT' }) }
+      : { status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' }
+  });
+  try {
+    const plan = await service.buildPlan({ categories: ['database'], destinations: [destination] });
+    assert.equal(plan.ready, false);
+    assert.equal(plan.database.pgRestore.available, false);
+    assert.ok(plan.issues.some((issue) => /pg_restore was not found/.test(issue)));
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('database dump with a PGDMP prefix fails when pg_restore rejects its truncated archive', async () => {
+  const projectRoot = makeProjectRoot();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-truncated-archive-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const dumpBytes = Buffer.from('PGDMP-truncated-archive');
+  let restoreExecutable;
+  let restoreArguments;
+  const service = makeService({
+    projectRoot,
+    stateDirectory,
+    spawn: (_executable, args) => {
+      const child = new EventEmitter();
+      child.stderr = new PassThrough();
+      child.kill = () => {};
+      process.nextTick(() => {
+        const outputPath = args[args.indexOf('--file') + 1];
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.writeFileSync(outputPath, dumpBytes);
+        child.emit('close', 0, null);
+      });
+      return child;
+    },
+    spawnRestore: (executable, args) => {
+      restoreExecutable = executable;
+      restoreArguments = args;
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => {};
+      process.nextTick(() => {
+        child.stderr.end('could not read archive TOC: unexpected end of file');
+        child.emit('close', 1, null);
+      });
+      return child;
+    }
+  });
+  try {
+    const started = await service.createJob({ categories: ['database'], destinations: [destination] });
+    const finished = await waitForTerminalJob(service, started.id);
+    assert.equal(finished.status, 'FAILED');
+    assert.equal(finished.verificationStatus, 'FAILED');
+    assert.match(finished.errors[0].message, /pg_restore --list failed with exit code 1.*unexpected end of file/);
+    assert.equal(restoreExecutable, 'pg_restore');
+    assert.equal(restoreArguments[0], '--list');
+    assert.ok(restoreArguments[1].endsWith('Database/stocksite.backup'));
+    assert.equal(fs.existsSync(restoreArguments[1]), false);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('database archive TOC validation rejects empty output and times out', async () => {
+  for (const scenario of ['empty-output', 'timeout']) {
+    const projectRoot = makeProjectRoot();
+    const destination = fs.mkdtempSync(path.join(os.tmpdir(), `gfx-backup-pg-restore-${scenario}-`));
+    const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+    let killed = false;
+    const service = makeService({
+      projectRoot,
+      stateDirectory,
+      pgRestoreListTimeoutMs: 20,
+      spawn: (_executable, args) => {
+        const child = new EventEmitter();
+        child.stderr = new PassThrough();
+        child.kill = () => {};
+        process.nextTick(() => {
+          const outputPath = args[args.indexOf('--file') + 1];
+          fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+          fs.writeFileSync(outputPath, Buffer.from('PGDMP-a-fixture-archive'));
+          child.emit('close', 0, null);
+        });
+        return child;
+      },
+      spawnRestore: () => {
+        const child = new EventEmitter();
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.kill = () => {
+          killed = true;
+          process.nextTick(() => child.emit('close', null, 'SIGTERM'));
+        };
+        if (scenario === 'empty-output') {
+          process.nextTick(() => child.emit('close', 0, null));
+        }
+        return child;
+      }
+    });
+    try {
+      const started = await service.createJob({ categories: ['database'], destinations: [destination] });
+      const finished = await waitForTerminalJob(service, started.id);
+      assert.equal(finished.status, 'FAILED');
+      assert.equal(finished.verificationStatus, 'FAILED');
+      if (scenario === 'empty-output') {
+        assert.match(finished.errors[0].message, /did not return a valid custom-format archive table-of-contents header/);
+        assert.equal(killed, false);
+      } else {
+        assert.match(finished.errors[0].message, /pg_restore --list timed out after 20 ms/);
+        assert.equal(killed, true);
+      }
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(destination, { recursive: true, force: true });
+      fs.rmSync(stateDirectory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('backup fails closed when checksum generation fails', async () => {
+  const projectRoot = makeProjectRoot();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-checksum-failure-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-state-'));
+  const failingFileSystem = Object.create(fs);
+  failingFileSystem.createWriteStream = (filePath, options) => (
+    path.basename(filePath) === 'checksums.sha256'
+      ? new Writable({
+          write(_chunk, _encoding, callback) {
+            callback(new Error('injected checksum write failure'));
+          }
+        })
+      : fs.createWriteStream(filePath, options)
+  );
+  const service = createBackupService({
+    fs: failingFileSystem,
+    projectRoot,
+    stateDirectory,
+    database: makeFakeDatabase(path.join(projectRoot, 'postgres-data')),
+    environment: { DB_HOST: 'test-postgres', DB_NAME: 'stocksite', BACKUP_ENCRYPTION_KEY: '11'.repeat(32) },
+    spawnSync: () => ({ status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' }),
+    spawnRestore: successfulRestoreSpawner,
+    spawn: (_executable, args) => {
+      const child = new EventEmitter();
+      child.stderr = new PassThrough();
+      child.kill = () => {};
+      process.nextTick(() => {
+        const outputPath = args[args.indexOf('--file') + 1];
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.writeFileSync(outputPath, Buffer.concat([Buffer.from('PGDMP'), Buffer.from('valid test archive')]));
+        child.emit('close', 0, null);
+      });
+      return child;
+    }
+  });
+  try {
+    const started = await service.createJob({ categories: ['database'], destinations: [destination] });
+    const finished = await waitForTerminalJob(service, started.id);
+    assert.equal(finished.status, 'FAILED');
+    assert.equal(finished.verificationStatus, 'FAILED');
+    assert.match(finished.errors.map((error) => error.message).join(' '), /checksum/i);
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(destination, { recursive: true, force: true });

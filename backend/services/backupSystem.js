@@ -16,6 +16,8 @@ const STATE_DIR_NAME = 'backup-system';
 const DEFAULT_WINDOWS_POSTGRES_DATA_DIRECTORY = 'D:\\GFXunlimitDatabase';
 const AUTOMATIC_DIRECTORY_NAME = 'Automatic Backups';
 const AUTOMATIC_RETENTION_LIMIT = 30;
+const PG_TOOL_VERSION_TIMEOUT_MS = 10000;
+const PG_RESTORE_LIST_TIMEOUT_MS = 60000;
 const CLIENT_EXPORT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const SCHEDULE_TIMEZONE = 'Asia/Kolkata';
 const SCHEDULE_FREQUENCIES = new Set(['daily', 'weekly', 'monthly']);
@@ -369,6 +371,8 @@ function createBackupService(options = {}) {
   const environment = options.environment || process.env;
   const storageRoots = getAssetStorageRoots(environment);
   const spawnProcess = options.spawn || spawn;
+  const spawnRestore = options.spawnRestore || spawnProcess;
+  const pgRestoreListTimeoutMs = options.pgRestoreListTimeoutMs || PG_RESTORE_LIST_TIMEOUT_MS;
   const clock = options.now || (() => new Date());
   const jobs = new Map();
   let activeJobId = null;
@@ -462,9 +466,15 @@ function createBackupService(options = {}) {
 
   async function saveAutomaticSchedule(input) {
     const normalized = normalizeAutomaticSchedule(input);
+    assertSafeDestination(normalized.destination, [clientExportRoot]);
+    if (await pathsOverlapWithClientExportRoot(normalized.destination)) {
+      throw new Error('Automatic backup destination cannot overlap the server-managed Mac export staging location.');
+    }
+    normalized.destination = await resolveCanonicalProspectivePath(normalized.destination);
     const previous = await readAutomaticSchedule();
     if (normalized.enabled) {
-      await testDestination(normalized.destination);
+      const testedDestination = await testDestination(normalized.destination);
+      normalized.destination = testedDestination.path;
       const runDate = getNextScheduleDate(normalized, clock());
       const folder = await getAutomaticFolderSelection(normalized, runDate);
       const plan = await buildPlan({
@@ -541,7 +551,7 @@ function createBackupService(options = {}) {
     };
   }
 
-  async function clearAutomaticFolder(folderPath, rootPath) {
+  async function clearAutomaticFolder(folderPath, rootPath, job) {
     const realRoot = await fsp.realpath(rootPath);
     const realFolder = await fsp.realpath(folderPath);
     const relative = path.relative(realRoot, realFolder);
@@ -553,6 +563,7 @@ function createBackupService(options = {}) {
       throw new Error('Automatic rolling target is not a safe directory.');
     }
     for (const entry of await fsp.readdir(folderPath)) {
+      await assertAutomaticDestinationStillSafe(job);
       const childPath = path.join(folderPath, entry);
       await fsp.rm(childPath, { recursive: true, force: false });
     }
@@ -560,7 +571,9 @@ function createBackupService(options = {}) {
 
   async function prepareAutomaticFolder(job) {
     const { root, targetPath, recyclePath } = job.automaticFolder;
+    await assertAutomaticDestinationStillSafe(job);
     await fsp.mkdir(root, { recursive: true });
+    await assertAutomaticDestinationStillSafe(job);
     if (recyclePath) {
       await fsp.rename(recyclePath, targetPath);
     } else {
@@ -570,7 +583,8 @@ function createBackupService(options = {}) {
         if (error.code !== 'EEXIST') throw error;
       }
     }
-    await clearAutomaticFolder(targetPath, root);
+    await assertAutomaticDestinationStillSafe(job);
+    await clearAutomaticFolder(targetPath, root, job);
     job.drives[0].setDirectory = targetPath;
   }
 
@@ -722,12 +736,26 @@ function createBackupService(options = {}) {
 
   function detectPgDump(serverVersion) {
     const executable = environment.PG_DUMP_PATH || 'pg_dump';
-    const result = (options.spawnSync || require('node:child_process').spawnSync)(executable, ['--version'], {
-      encoding: 'utf8',
-      windowsHide: true
-    });
-    if (result.error || result.status !== 0) {
-      return { executable, available: false, version: null, error: 'pg_dump was not found or could not be executed.' };
+    let result;
+    try {
+      result = (options.spawnSync || require('node:child_process').spawnSync)(executable, ['--version'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: PG_TOOL_VERSION_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024
+      });
+    } catch (error) {
+      return { executable, available: false, version: null, error: `pg_dump could not be checked: ${formatError(error)}` };
+    }
+    if (result.error || result.status !== 0 || result.signal) {
+      return {
+        executable,
+        available: false,
+        version: null,
+        error: result.error?.code === 'ETIMEDOUT'
+          ? 'pg_dump version check timed out; configure a working PostgreSQL client installation.'
+          : 'pg_dump was not found or could not be executed.'
+      };
     }
     const versionText = String(result.stdout || result.stderr || '').trim();
     const clientMatch = versionText.match(/(?:PostgreSQL\s+)?(\d+)(?:\.\d+)?/i);
@@ -743,6 +771,60 @@ function createBackupService(options = {}) {
         available: false,
         version: versionText,
         error: `pg_dump ${clientMajor} cannot back up PostgreSQL ${serverMajor}; install pg_dump ${serverMajor} or newer.`
+      };
+    }
+    return { executable, available: true, version: versionText, error: null };
+  }
+
+  function detectPgRestore(serverVersion, pgDump) {
+    const dumpApi = pathApiFor(pgDump.executable);
+    const dumpExtension = dumpApi.extname(pgDump.executable).toLowerCase();
+    const pairedRestore = dumpApi.join(
+      dumpApi.dirname(pgDump.executable),
+      `pg_restore${dumpExtension === '.exe' ? '.exe' : ''}`
+    );
+    const executable = environment.PG_RESTORE_PATH || (
+      environment.PG_DUMP_PATH ? pairedRestore : 'pg_restore'
+    );
+    let result;
+    try {
+      result = (options.spawnSync || require('node:child_process').spawnSync)(executable, ['--version'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: PG_TOOL_VERSION_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024
+      });
+    } catch (error) {
+      return { executable, available: false, version: null, error: `pg_restore could not be checked: ${formatError(error)}` };
+    }
+    if (result.error || result.status !== 0 || result.signal) {
+      const timedOut = result.error?.code === 'ETIMEDOUT';
+      return {
+        executable,
+        available: false,
+        version: null,
+        error: timedOut
+          ? 'pg_restore version check timed out; configure a working PostgreSQL client installation.'
+          : 'pg_restore was not found or could not be executed; configure PG_RESTORE_PATH or install a compatible PostgreSQL client.'
+      };
+    }
+    const versionText = String(result.stdout || result.stderr || '').trim();
+    const clientMatch = versionText.match(/(?:PostgreSQL\s+)?(\d+)(?:\.\d+)?/i);
+    const serverMatch = String(serverVersion).match(/PostgreSQL\s+(\d+)(?:\.\d+)?/i);
+    const dumpVersionMatch = String(pgDump.version || '').match(/(?:PostgreSQL\s+)?(\d+)(?:\.\d+)?/i);
+    if (!clientMatch || !serverMatch || !dumpVersionMatch) {
+      return { executable, available: false, version: versionText, error: 'Could not verify pg_restore compatibility with the PostgreSQL server.' };
+    }
+    const clientMajor = Number(clientMatch[1]);
+    const serverMajor = Number(serverMatch[1]);
+    const dumpMajor = Number(dumpVersionMatch[1]);
+    const requiredMajor = Math.max(serverMajor, dumpMajor);
+    if (clientMajor < requiredMajor) {
+      return {
+        executable,
+        available: false,
+        version: versionText,
+        error: `pg_restore ${clientMajor} cannot validate PostgreSQL ${serverMajor} backups created by pg_dump ${dumpMajor}; install pg_restore ${requiredMajor} or newer.`
       };
     }
     return { executable, available: true, version: versionText, error: null };
@@ -1081,6 +1163,67 @@ function createBackupService(options = {}) {
     };
   }
 
+  async function browseAutomaticDestination(directoryPath = '') {
+    const result = await browseDestination(directoryPath);
+    if (directoryPath && await isPathWithinClientExportRoot(result.currentPath)) {
+      throw new Error('The server-managed Mac export staging location is not an automatic backup destination.');
+    }
+    const directories = [];
+    for (const directory of result.directories) {
+      if (!await isPathWithinClientExportRoot(directory.path)) directories.push(directory);
+    }
+    return {
+      ...result,
+      directories
+    };
+  }
+
+  async function resolveCanonicalProspectivePath(candidatePath) {
+    const api = pathApiFor(candidatePath);
+    let nearestExisting = api.resolve(candidatePath);
+    const missingSegments = [];
+    while (true) {
+      try {
+        await fsp.lstat(nearestExisting);
+        break;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        const parent = api.dirname(nearestExisting);
+        if (parent === nearestExisting) throw error;
+        missingSegments.unshift(api.basename(nearestExisting));
+        nearestExisting = parent;
+      }
+    }
+    return api.join(await fsp.realpath(nearestExisting), ...missingSegments);
+  }
+
+  async function isPathWithinClientExportRoot(candidatePath) {
+    const [candidate, exportRoot] = await Promise.all([
+      resolveCanonicalProspectivePath(candidatePath),
+      resolveCanonicalProspectivePath(clientExportRoot)
+    ]);
+    return isPathWithin(candidate, exportRoot);
+  }
+
+  async function pathsOverlapWithClientExportRoot(candidatePath) {
+    const [candidate, exportRoot] = await Promise.all([
+      resolveCanonicalProspectivePath(candidatePath),
+      resolveCanonicalProspectivePath(clientExportRoot)
+    ]);
+    return pathsOverlap(candidate, exportRoot);
+  }
+
+  function isPathWithin(candidate, parent) {
+    const api = pathApiFor(candidate);
+    if (api !== pathApiFor(parent)) return false;
+    const relative = api.relative(resolveComparablePath(parent), resolveComparablePath(candidate));
+    return relative === '' || (
+      relative !== '..' &&
+      !relative.startsWith(`..${api.sep}`) &&
+      !api.isAbsolute(relative)
+    );
+  }
+
   async function validateDestination(destination, protectedPaths) {
     const resolved = assertSafeDestination(destination, protectedPaths);
     const api = pathApiFor(resolved);
@@ -1222,7 +1365,11 @@ function createBackupService(options = {}) {
 
   async function buildClientExportPlan({ categories }) {
     const destination = await ensureClientExportRoot();
-    return buildPlan({ categories, destinations: [destination], protectClientExportRoot: false });
+    return buildPlan({
+      categories,
+      destinations: [destination],
+      protectClientExportRoot: false
+    });
   }
 
   async function getClientExportSetDirectory(jobId) {
@@ -1258,7 +1405,15 @@ function createBackupService(options = {}) {
       throw new Error('The manual export is outside its server-managed staging location.');
     }
     const manifestPath = path.join(realSetDirectory, 'manifest.json');
-    const manifestStat = await fsp.lstat(manifestPath);
+    let manifestStat;
+    try {
+      manifestStat = await fsp.lstat(manifestPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error('The manual export manifest is missing.');
+      }
+      throw error;
+    }
     if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
       throw new Error('The manual export manifest is not a regular file.');
     }
@@ -1276,6 +1431,9 @@ function createBackupService(options = {}) {
 
   async function collectClientExportFiles(jobId) {
     const setDirectory = await getClientExportSetDirectory(jobId);
+    const job = jobs.get(jobId);
+    if (!job) throw new Error('The verified manual export job details are unavailable for integrity verification.');
+    await validateBackupSetContents(job, job.drives[0], true);
     const files = [];
     const pending = [{ directory: setDirectory, relativeDirectory: '' }];
     while (pending.length) {
@@ -1390,6 +1548,9 @@ function createBackupService(options = {}) {
     }
 
     const pgDump = detectPgDump(databaseInfo.version);
+    const pgRestore = selectedTypes.includes('database') && databaseInfo.available
+      ? detectPgRestore(databaseInfo.version, pgDump)
+      : null;
     const warnings = [];
     const issues = [];
     const groups = [];
@@ -1411,6 +1572,7 @@ function createBackupService(options = {}) {
       categoryTotals.database.plannedBytes = estimate;
       if (!databaseInfo.available) issues.push(`Database metadata could not be read: ${databaseInfo.error}`);
       else if (!pgDump.available) issues.push(pgDump.error);
+      else if (!pgRestore?.available) issues.push(pgRestore?.error || 'Compatible pg_restore is unavailable.');
       groups.push({
         key: 'database:stocksite',
         label: `Database ${databaseInfo.name}`,
@@ -1419,7 +1581,7 @@ function createBackupService(options = {}) {
         estimatedSourceBytes: databaseInfo.sizeBytes,
         fileCount: 1,
         files: [],
-        outputRelativePath: 'Database/stocksite.dump',
+        outputRelativePath: 'Database/stocksite.backup',
         kind: 'database'
       });
     }
@@ -1572,7 +1734,8 @@ function createBackupService(options = {}) {
         dataDirectory: databaseInfo.dataDirectory || null,
         available: databaseInfo.available,
         metadataError: databaseInfo.error,
-        pgDump
+        pgDump,
+        pgRestore
       },
       sourceRoots,
       categories: categoryTotals,
@@ -1596,7 +1759,13 @@ function createBackupService(options = {}) {
         pgDump: (() => {
           const { executable, ...publicPgDump } = result.database.pgDump;
           return publicPgDump;
-        })()
+        })(),
+        pgRestore: result.database.pgRestore
+          ? (() => {
+              const { executable, ...publicPgRestore } = result.database.pgRestore;
+              return publicPgRestore;
+            })()
+          : null
       }
     };
   }
@@ -1858,11 +2027,12 @@ function createBackupService(options = {}) {
   async function launchAutomaticRun(schedule, runDate) {
     let started;
     try {
-      await testDestination(schedule.destination);
-      const folder = await getAutomaticFolderSelection(schedule, runDate);
+      const destination = await testDestination(schedule.destination);
+      const runSchedule = { ...schedule, destination: destination.path };
+      const folder = await getAutomaticFolderSelection(runSchedule, runDate);
       started = await createJob({
         categories: schedule.selectedTypes,
-        destinations: [schedule.destination],
+        destinations: [destination.path],
         automatic: { frequency: schedule.frequency, runDate, folder }
       });
     } catch (error) {
@@ -1945,6 +2115,47 @@ function createBackupService(options = {}) {
     }
   }
 
+  async function assertAutomaticDestinationStillSafe(job) {
+    if (!job?.automaticFolder) return;
+    const expectedDestination = job.plan.drives[0]?.path;
+    if (!expectedDestination) throw new Error('Automatic backup destination metadata is unavailable.');
+    let stat;
+    try {
+      stat = await fsp.lstat(expectedDestination);
+    } catch (error) {
+      throw new Error(`Automatic backup destination is no longer available: ${formatError(error)}`);
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('Automatic backup destination changed to an unsafe filesystem entry.');
+    }
+    const realDestination = await fsp.realpath(expectedDestination);
+    if (resolveComparablePath(realDestination) !== resolveComparablePath(expectedDestination)) {
+      throw new Error('Automatic backup destination changed after validation; refusing to write.');
+    }
+    if (
+      await pathsOverlapWithClientExportRoot(realDestination) ||
+      await pathsOverlapWithClientExportRoot(job.automaticFolder.root) ||
+      await pathsOverlapWithClientExportRoot(job.automaticFolder.targetPath)
+    ) {
+      throw new Error('Automatic backup destination now overlaps the server-managed Mac export staging location.');
+    }
+    for (const directoryPath of [job.automaticFolder.root, job.automaticFolder.targetPath]) {
+      try {
+        const directoryStat = await fsp.lstat(directoryPath);
+        if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+          throw new Error(`Automatic backup directory changed to an unsafe filesystem entry: ${directoryPath}`);
+        }
+        const realDirectory = await fsp.realpath(directoryPath);
+        const relative = path.relative(realDestination, realDirectory);
+        if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+          throw new Error(`Automatic backup directory escaped its validated destination: ${directoryPath}`);
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+  }
+
   async function hashFile(filePath) {
     const hash = crypto.createHash('sha256');
     let bytes = 0;
@@ -1957,6 +2168,7 @@ function createBackupService(options = {}) {
 
   async function copyFileVerified(job, group, file, drive, baseDirectory, checksumsStream, speedState) {
     const targetPath = path.join(baseDirectory, ...file.outputRelativePath.split('/'));
+    await assertAutomaticDestinationStillSafe(job);
     await ensureSafeTarget(baseDirectory, targetPath);
     const sourceStat = await fsp.lstat(file.sourcePath);
     if (!sourceStat.isFile() || sourceStat.isSymbolicLink() || sourceStat.size !== file.sizeBytes) {
@@ -2083,10 +2295,74 @@ function createBackupService(options = {}) {
     });
   }
 
+  async function validateCustomArchive(archivePath, pgRestore) {
+    if (!pgRestore?.available || !pgRestore.executable) {
+      throw new Error(pgRestore?.error || 'A compatible pg_restore executable is required to validate the database archive.');
+    }
+    await new Promise((resolve, reject) => {
+      let child;
+      let settled = false;
+      let stdoutBytes = 0;
+      let stdoutHeader = '';
+      let stderr = '';
+      let timeout;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (error) reject(error);
+        else resolve();
+      };
+      try {
+        child = spawnRestore(pgRestore.executable, ['--list', archivePath], {
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+      } catch (error) {
+        finish(new Error(`pg_restore --list could not be started: ${formatError(error)}`));
+        return;
+      }
+      timeout = setTimeout(() => {
+        child.kill();
+        finish(new Error(`pg_restore --list timed out after ${pgRestoreListTimeoutMs} ms while validating the database archive.`));
+      }, pgRestoreListTimeoutMs);
+      child.stdout?.on('data', (chunk) => {
+        stdoutBytes += chunk.length;
+        if (stdoutHeader.length < 32768) {
+          stdoutHeader += chunk.toString('utf8').slice(0, 32768 - stdoutHeader.length);
+        }
+      });
+      child.stderr?.on('data', (chunk) => {
+        stderr = `${stderr}${chunk.toString()}`.slice(-4000);
+      });
+      child.once('error', (error) => {
+        finish(new Error(`pg_restore --list could not be started: ${formatError(error)}`));
+      });
+      child.once('close', (code, signal) => {
+        if (code !== 0 || signal !== null) {
+          const reason = signal ? ` (${signal})` : ` with exit code ${code}`;
+          finish(new Error(`pg_restore --list failed${reason}${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
+          return;
+        }
+        if (
+          stdoutBytes === 0 ||
+          !/;\s*Archive created at\s+/i.test(stdoutHeader) ||
+          !/;\s*Dump Version:\s*\S+/i.test(stdoutHeader) ||
+          !/;\s*Format:\s*CUSTOM\b/i.test(stdoutHeader)
+        ) {
+          finish(new Error('pg_restore --list did not return a valid custom-format archive table-of-contents header.'));
+          return;
+        }
+        finish();
+      });
+    });
+  }
+
   async function runPgDump(job, group, drive, baseDirectory, checksumsStream, speedState) {
     const info = job.plan.database;
     const outputPath = path.join(baseDirectory, ...group.outputRelativePath.split('/'));
     const categoryKey = progressCategoryKey(group.category);
+    await assertAutomaticDestinationStillSafe(job);
     await ensureSafeTarget(baseDirectory, outputPath);
     await checkDriveCapacity(drive, drive.remainingPlannedBytes);
     await fsp.mkdir(path.dirname(outputPath), { recursive: true });
@@ -2154,13 +2430,15 @@ function createBackupService(options = {}) {
       });
       child.once('close', async (code, signal) => {
         clearInterval(progressTimer);
-        if (code !== 0) {
+        if (code !== 0 || signal !== null) {
           reject(new Error(`pg_dump failed${signal ? ` (${signal})` : ` with exit code ${code}`}${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
           return;
         }
         try {
-          const stat = await fsp.stat(outputPath);
-          if (!stat.isFile() || stat.size <= 0) throw new Error('pg_dump produced an empty or missing database dump.');
+          const stat = await fsp.lstat(outputPath);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 5) {
+            throw new Error('pg_dump produced an empty, unsafe, or incomplete custom-format database dump.');
+          }
           await checkDriveCapacity(drive, Math.max(0, drive.remainingPlannedBytes - stat.size));
           const dumpHandle = await fsp.open(outputPath, 'r');
           let dumpHeader;
@@ -2174,6 +2452,7 @@ function createBackupService(options = {}) {
           if (dumpHeader.toString('ascii') !== 'PGDMP') {
             throw new Error('Database dump does not have the PostgreSQL custom-format archive signature.');
           }
+          await validateCustomArchive(outputPath, job.plan.database.pgRestore);
           job.progress.stage = 'COPY_VERIFYING';
           job.verificationStatus = 'VERIFYING';
           const verified = await hashFile(outputPath);
@@ -2217,6 +2496,16 @@ function createBackupService(options = {}) {
   }
 
   async function writeManifest(job, statusOverride = job.status) {
+    const databaseGroup = job.plan.internalGroups.find((group) => group.kind === 'database');
+    const databaseMetadata = job.databaseResult
+      ? { ...job.databaseResult }
+      : {
+          name: job.plan.database.name,
+          serverVersion: job.plan.database.version,
+          pgDumpVersion: job.plan.database.pgDump.version,
+          estimatedBytes: job.plan.database.estimatedBytes,
+          verified: false
+        };
     const manifest = {
       format: 'GFXUNLIMIT-BACKUP-SET',
       formatVersion: 1,
@@ -2230,12 +2519,9 @@ function createBackupService(options = {}) {
       selectedTypes: job.selectedTypes,
       applicationVersion: job.applicationVersion,
       applicationCommit: job.applicationCommit,
-      database: job.databaseResult || {
-        name: job.plan.database.name,
-        serverVersion: job.plan.database.version,
-        pgDumpVersion: job.plan.database.pgDump.version,
-        estimatedBytes: job.plan.database.estimatedBytes,
-        verified: false
+      database: {
+        ...databaseMetadata,
+        relativePath: databaseGroup?.outputRelativePath || null
       },
       sourceRoots: job.plan.sourceRoots,
       destinationDrives: job.plan.drives.map((drive) => ({
@@ -2262,8 +2548,101 @@ function createBackupService(options = {}) {
       errors: job.errors
     };
     for (const drive of job.drives) {
+      await assertAutomaticDestinationStillSafe(job);
       const manifestPath = path.join(drive.setDirectory, 'manifest.json');
+      await ensureSafeTarget(drive.setDirectory, manifestPath);
       await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600 });
+    }
+  }
+
+  async function validateBackupSetContents(job, drive, manifestRequired = false) {
+    if (!job || !drive) throw new Error('Backup verification is missing job or destination metadata.');
+    const allocation = job.plan.drives.find((item) => item.driveNumber === drive.driveNumber);
+    if (!allocation) throw new Error(`Backup verification has no plan for drive ${drive.driveNumber}.`);
+    const groupKeys = new Set(allocation.groups.map((group) => group.key));
+    const databaseGroup = job.plan.internalGroups.find((group) => group.kind === 'database');
+    const expectedFiles = job.plan.internalGroups
+      .filter((group) => groupKeys.has(group.key))
+      .flatMap((group) => group.kind === 'database'
+        ? [group.outputRelativePath]
+        : group.files.map((file) => file.outputRelativePath));
+    if (!expectedFiles.length) throw new Error(`Backup drive ${drive.driveNumber} has no planned payload files.`);
+
+    const checksumsPath = path.join(drive.setDirectory, 'checksums.sha256');
+    let checksumStat;
+    try {
+      checksumStat = await fsp.lstat(checksumsPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') throw new Error(`Backup drive ${drive.driveNumber} is missing checksums.sha256.`);
+      throw error;
+    }
+    if (!checksumStat.isFile() || checksumStat.isSymbolicLink()) {
+      throw new Error(`Backup drive ${drive.driveNumber} has no regular checksum inventory.`);
+    }
+    const checksumEntries = new Map();
+    const checksumText = await fsp.readFile(checksumsPath, 'utf8');
+    for (const line of checksumText.split(/\r?\n/).filter(Boolean)) {
+      const match = /^([a-f0-9]{64}) (\d+) (.+)$/i.exec(line);
+      if (!match || checksumEntries.has(match[3])) {
+        throw new Error(`Backup drive ${drive.driveNumber} has a malformed or duplicate checksum entry.`);
+      }
+      const sizeBytes = Number(match[2]);
+      if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
+        throw new Error(`Backup drive ${drive.driveNumber} has an invalid checksum file size.`);
+      }
+      checksumEntries.set(match[3], { sha256: match[1].toLowerCase(), sizeBytes });
+    }
+
+    if (
+      checksumEntries.size !== expectedFiles.length ||
+      expectedFiles.some((relativePath) => !checksumEntries.has(relativePath)) ||
+      [...checksumEntries.keys()].some((relativePath) => !expectedFiles.includes(relativePath))
+    ) {
+      throw new Error(`Backup drive ${drive.driveNumber} is missing a required payload or checksum entry.`);
+    }
+
+    for (const relativePath of expectedFiles) {
+      const outputPath = path.join(drive.setDirectory, ...relativePath.split('/'));
+      let stat;
+      try {
+        stat = await fsp.lstat(outputPath);
+      } catch (error) {
+        if (error.code === 'ENOENT') throw new Error(`Backup is missing a required payload file: ${relativePath}`);
+        throw error;
+      }
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== checksumEntries.get(relativePath).sizeBytes) {
+        throw new Error(`Backup payload is missing or has an invalid file type or size: ${relativePath}`);
+      }
+      const actual = await hashFile(outputPath);
+      if (actual.bytes !== stat.size || actual.checksum !== checksumEntries.get(relativePath).sha256) {
+        throw new Error(`Backup payload checksum verification failed: ${relativePath}`);
+      }
+      if (databaseGroup?.outputRelativePath === relativePath) {
+        await validateCustomArchive(outputPath, job.plan.database.pgRestore);
+      }
+    }
+
+    if (manifestRequired) {
+      const manifestPath = path.join(drive.setDirectory, 'manifest.json');
+      const manifestStat = await fsp.lstat(manifestPath);
+      if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
+        throw new Error('The manual export manifest is not a regular file.');
+      }
+      const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
+      if (
+        manifest.format !== 'GFXUNLIMIT-BACKUP-SET' ||
+        manifest.backupSetId !== job.id ||
+        manifest.backupType !== 'MANUAL' ||
+        manifest.status !== 'SUCCESS' ||
+        manifest.verificationStatus !== 'VERIFIED' ||
+        manifest.totals?.files !== expectedFiles.length ||
+        manifest.database?.relativePath !== (databaseGroup?.outputRelativePath || null) ||
+        !Array.isArray(manifest.selectedTypes) ||
+        manifest.selectedTypes.length !== job.selectedTypes.length ||
+        job.selectedTypes.some((category) => !manifest.selectedTypes.includes(category))
+      ) {
+        throw new Error('The manual export manifest does not match the verified backup plan.');
+      }
     }
   }
 
@@ -2286,8 +2665,13 @@ function createBackupService(options = {}) {
             );
         return { ...drive, setDirectory, remainingPlannedBytes: drive.requiredBytes };
       });
-      if (job.automaticFolder) await prepareAutomaticFolder(job);
+      if (job.automaticFolder) {
+        await assertAutomaticDestinationStillSafe(job);
+        await prepareAutomaticFolder(job);
+        await assertAutomaticDestinationStillSafe(job);
+      }
       for (const drive of job.drives) {
+        await assertAutomaticDestinationStillSafe(job);
         await checkDriveCapacity(drive, drive.remainingPlannedBytes);
         if (!job.automaticFolder) {
           await fsp.mkdir(path.dirname(drive.setDirectory), { recursive: true });
@@ -2366,6 +2750,15 @@ function createBackupService(options = {}) {
             message: `Checksum inventory could not be finalized: ${formatError(error)}`,
             path: 'checksums.sha256'
           });
+        }
+      }
+      if (job.status === 'RUNNING') {
+        try {
+          for (const drive of job.drives) await validateBackupSetContents(job, drive);
+        } catch (error) {
+          job.status = 'FAILED';
+          job.verificationStatus = 'FAILED';
+          job.errors.push({ message: formatError(error), path: 'checksums.sha256' });
         }
       }
       job.completedAt = clock().toISOString();
@@ -2494,6 +2887,7 @@ function createBackupService(options = {}) {
 
   return {
     browseDestination,
+    browseAutomaticDestination,
     buildClientExportPlan,
     buildPlan,
     createJob,

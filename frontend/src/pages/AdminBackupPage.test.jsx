@@ -1,5 +1,5 @@
 import React from "react";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import axios from "axios";
 import AdminBackupPage from "./AdminBackupPage";
 
@@ -9,21 +9,23 @@ jest.mock("react-toastify", () => ({
 }));
 
 const exportPayloadPath = "Website-Code/backend/server.js";
+const exportDatabasePath = "Database/stocksite.backup";
 const exportPayload = "test";
 const exportPayloadSha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
-const exportChecksums = `${exportPayloadSha256} 4 ${exportPayloadPath}\n`;
+const exportChecksums = `${exportPayloadSha256} 4 ${exportDatabasePath}\n${exportPayloadSha256} 4 ${exportPayloadPath}\n`;
 const exportManifest = JSON.stringify({
   format: "GFXUNLIMIT-BACKUP-SET",
   backupSetId: "GFX-TEST",
   backupType: "MANUAL",
   status: "SUCCESS",
   verificationStatus: "VERIFIED",
-  selectedTypes: ["database"],
-  totals: { files: 1 }
+  selectedTypes: ["database", "websiteCode"],
+  totals: { files: 2 }
 });
 const exportContents = {
   "checksums.sha256": exportChecksums,
   "manifest.json": exportManifest,
+  [exportDatabasePath]: exportPayload,
   [exportPayloadPath]: exportPayload
 };
 const exportFiles = Object.entries(exportContents).map(([filePath, contents]) => ({
@@ -31,7 +33,7 @@ const exportFiles = Object.entries(exportContents).map(([filePath, contents]) =>
   sizeBytes: contents.length
 }));
 
-function makeBrowserDirectory(name = "MacBackups") {
+function makeBrowserDirectory(name = "MacBackups", beforeWrite = async () => {}) {
   const files = new Map();
   const directories = new Map();
   const makeFile = (filePath) => {
@@ -40,8 +42,9 @@ function makeBrowserDirectory(name = "MacBackups") {
       files.set(filePath, {
         async createWritable() {
           const chunks = [];
-          return {
+          const writer = {
             async write(chunk) {
+              await beforeWrite(filePath, chunk);
               chunks.push(typeof chunk === "string"
                 ? Uint8Array.from(chunk, (character) => character.charCodeAt(0))
                 : new Uint8Array(chunk));
@@ -55,7 +58,14 @@ function makeBrowserDirectory(name = "MacBackups") {
                 offset += chunk.length;
               }
             },
-            async abort() {}
+            async abort() {},
+            releaseLock() {}
+          };
+          return {
+            write: (...args) => writer.write(...args),
+            close: (...args) => writer.close(...args),
+            getWriter: () => writer,
+            async abort() { await writer.abort(); }
           };
         },
         async getFile() {
@@ -180,7 +190,7 @@ describe("AdminBackupPage", () => {
         clientExport: data?.destinationMode === "mac-local",
         verificationStatus: "VERIFIED",
         progress: { percent: 100 },
-        selectedTypes: ["database"],
+        selectedTypes: ["database", "websiteCode"],
         drives: []
       } });
       if (method === "put" && url.endsWith("/automatic")) return Promise.resolve({ data: { schedule: { configured: true, enabled: false, destination: "D:\\GFXunlimitBackups", selectedTypes: ["database", "websiteCode"], frequency: "daily", time: "02:00", timezone: "Asia/Kolkata", nextRun: null, lastRun: null } } });
@@ -302,7 +312,7 @@ describe("AdminBackupPage", () => {
   test("server folder browsing uses the backend browser and never sets the automatic destination", async () => {
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
     fireEvent.click(await screen.findByLabelText("Backup server"));
-    fireEvent.click(screen.getByRole("button", { name: "Browse server folders" }));
+    fireEvent.click(within(screen.getByLabelText("Selected server folder").closest("section")).getByRole("button", { name: "Browse server folders" }));
     expect(await screen.findByText("D:\\Backups")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "D:\\Backups" }));
     expect(await screen.findByText("Server location: D:\\Backups")).toBeInTheDocument();
@@ -315,20 +325,22 @@ describe("AdminBackupPage", () => {
     }));
   });
 
-  test("automatic Browse selects a local folder without changing the saved server destination", async () => {
+  test("automatic destination Browse uses only the server-side destination picker", async () => {
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
     const automaticDestination = await screen.findByLabelText("Automatic Backup Location");
     fireEvent.change(automaticDestination, { target: { value: "D:\\ExistingAutomaticBackup" } });
-    const picker = jest.fn().mockResolvedValue({ name: "LocalAutomaticBackups" });
-    Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: picker });
-
-    await act(async () => {
-      fireEvent.click(within(automaticDestination.parentElement).getByRole("button", { name: "Change" }));
-    });
-
-    expect(await screen.findByText("LocalAutomaticBackups")).toBeInTheDocument();
-    expect(automaticDestination).toHaveValue("D:\\ExistingAutomaticBackup");
-    expect(axios).not.toHaveBeenCalledWith(expect.objectContaining({ url: expect.stringContaining("/browse") }));
+    fireEvent.click(within(automaticDestination.closest("section")).getByRole("button", { name: "Browse server folders" }));
+    expect(await screen.findByText("D:\\Backups")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "D:\\Backups" }));
+    expect(await screen.findByText("Server location: D:\\Backups")).toBeInTheDocument();
+    const useServerFolderButtons = screen.getAllByRole("button", { name: "Use this server folder" });
+    fireEvent.click(useServerFolderButtons[useServerFolderButtons.length - 1]);
+    expect(automaticDestination).toHaveValue("D:\\Backups");
+    expect(window.showDirectoryPicker).not.toHaveBeenCalled();
+    expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+      method: "get",
+      url: "http://localhost:5000/admin/backup/automatic/browse"
+    }));
   });
 
   test("unsafe plan validation shows one actionable error and never starts the backup", async () => {
@@ -381,9 +393,19 @@ describe("AdminBackupPage", () => {
       return {
         ok: true,
         body: {
-          async pipeTo(writable) {
-            await writable.write(bytes);
-            await writable.close();
+          getReader() {
+            let offset = 0;
+            return {
+              async read() {
+                if (offset >= bytes.length) return { done: true };
+                const end = Math.min(bytes.length, offset + Math.max(1, Math.ceil(bytes.length / 2)));
+                const value = bytes.slice(offset, end);
+                offset = end;
+                await new Promise((resolve) => setTimeout(resolve, 5));
+                return { done: false, value };
+              },
+              releaseLock() {}
+            };
           }
         }
       };
@@ -407,10 +429,14 @@ describe("AdminBackupPage", () => {
     })));
     fireEvent.click(await screen.findByRole("button", { name: "Start Manual Backup" }));
     expect(screen.queryAllByRole("alert").map((element) => element.textContent)).toEqual([]);
+    await waitFor(() => expect(screen.getByLabelText("Mac-local transfer progress")).toHaveTextContent("Mac-local copy complete and verified"));
+    expect(screen.getByLabelText("Mac-local transfer progress")).toHaveTextContent(`${exportFiles.reduce((sum, file) => sum + file.sizeBytes, 0)} B / ${exportFiles.reduce((sum, file) => sum + file.sizeBytes, 0)} B written`);
+    expect(screen.getByLabelText("Mac-local transfer progress")).toHaveTextContent("4 / 4");
     expect(await screen.findByRole("button", { name: "Transferred to this computer" })).toBeDisabled();
     expect(global.fetch).toHaveBeenCalledTimes(exportFiles.length);
     const localPrefix = "GFXunlimit/Backup-Set-GFX-TEST/Drive-1/";
     expect(await directory.files.get(`${localPrefix}${exportPayloadPath}`).getFile().then((file) => file.text())).toBe(exportPayload);
+    expect(await directory.files.get(`${localPrefix}${exportDatabasePath}`).getFile().then((file) => file.text())).toBe(exportPayload);
     expect(JSON.parse(await directory.files.get(`${localPrefix}manifest.json`).getFile().then((file) => file.text())).verificationStatus).toBe("VERIFIED");
     expect(await directory.files.get(`${localPrefix}checksums.sha256`).getFile().then((file) => file.text())).toBe(exportChecksums);
     expect(axios).toHaveBeenCalledWith(expect.objectContaining({
@@ -422,6 +448,107 @@ describe("AdminBackupPage", () => {
       (request.url.endsWith("/plan") || request.url.endsWith("/start")) &&
       JSON.stringify(request.data).includes("MacBackups")
     ))).toBe(false);
+  });
+
+  test("manual Mac export fails closed and cleans up when the server file list omits the manifest", async () => {
+    const defaultImplementation = axios.getMockImplementation();
+    axios.mockImplementation((config) => (
+      config.method === "get" && /\/jobs\/[^/]+\/export$/.test(config.url)
+        ? Promise.resolve({ data: { files: exportFiles.filter((file) => file.path !== "manifest.json") } })
+        : defaultImplementation(config)
+    ));
+    const directory = makeBrowserDirectory();
+    Object.defineProperty(window, "showDirectoryPicker", {
+      configurable: true,
+      value: jest.fn().mockResolvedValue(directory)
+    });
+    global.fetch = jest.fn();
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Browse this computer" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Selected folder")).toHaveValue("MacBackups"));
+    fireEvent.click(screen.getAllByText("Test Connection")[0]);
+    await screen.findByText("Selected destination tested successfully.");
+    fireEvent.click(screen.getByRole("button", { name: "Build Complete Backup Plan" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start Manual Backup" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/invalid or incomplete file list/i);
+    await waitFor(() => expect(screen.getByLabelText("Mac-local transfer progress")).toHaveTextContent("Mac-local transfer failed"));
+    expect([...directory.files.keys()]).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Transferred to this computer" })).not.toBeInTheDocument();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("Mac-local byte progress waits for browser writes and refreshes while the response stream is paused", async () => {
+    let signalFirstPayloadWrite;
+    const firstPayloadWriteStarted = new Promise((resolve) => {
+      signalFirstPayloadWrite = resolve;
+    });
+    let releaseFirstPayloadWrite;
+    const firstPayloadWriteGate = new Promise((resolve) => {
+      releaseFirstPayloadWrite = resolve;
+    });
+    let releaseRemainingPayload;
+    const remainingPayloadGate = new Promise((resolve) => {
+      releaseRemainingPayload = resolve;
+    });
+    const directory = makeBrowserDirectory("MacBackups", async (filePath) => {
+      if (filePath.endsWith(exportPayloadPath)) {
+        signalFirstPayloadWrite();
+        await firstPayloadWriteGate;
+      }
+    });
+    Object.defineProperty(window, "showDirectoryPicker", {
+      configurable: true,
+      value: jest.fn().mockResolvedValue(directory)
+    });
+    global.fetch = jest.fn(async (url) => {
+      const filePath = new URL(url).searchParams.get("path");
+      const bytes = Uint8Array.from(exportContents[filePath], (character) => character.charCodeAt(0));
+      return {
+        ok: true,
+        body: {
+          getReader() {
+            let state = 0;
+            return {
+              async read() {
+                if (filePath !== exportPayloadPath) {
+                  if (state++ > 0) return { done: true };
+                  return { done: false, value: bytes };
+                }
+                if (state++ === 0) return { done: false, value: bytes.slice(0, 2) };
+                if (state === 2) {
+                  await remainingPayloadGate;
+                  return { done: false, value: bytes.slice(2) };
+                }
+                return { done: true };
+              },
+              releaseLock() {}
+            };
+          }
+        }
+      };
+    });
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Browse this computer" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Selected folder")).toHaveValue("MacBackups"));
+    fireEvent.click(screen.getAllByText("Test Connection")[0]);
+    await screen.findByText("Selected destination tested successfully.");
+    fireEvent.click(screen.getByRole("button", { name: "Build Complete Backup Plan" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start Manual Backup" }));
+
+    await firstPayloadWriteStarted;
+    const checksumBytes = exportChecksums.length;
+    const databaseBytes = exportContents[exportDatabasePath].length;
+    const totalBytes = exportFiles.reduce((total, file) => total + file.sizeBytes, 0);
+    const progress = await screen.findByRole("progressbar", { name: "Mac-local bytes written" });
+    expect(Number(progress.getAttribute("aria-valuenow"))).toBeCloseTo(((checksumBytes + databaseBytes) / totalBytes) * 100);
+
+    releaseFirstPayloadWrite();
+    await waitFor(() => {
+      expect(Number(progress.getAttribute("aria-valuenow"))).toBeGreaterThan((checksumBytes / totalBytes) * 100);
+    });
+    releaseRemainingPayload();
+    await waitFor(() => expect(screen.getByLabelText("Mac-local transfer progress")).toHaveTextContent("Mac-local copy complete and verified"));
   });
 
   test("failed local export removes the incomplete backup set and reports one actionable error", async () => {
@@ -437,9 +564,16 @@ describe("AdminBackupPage", () => {
       return {
         ok: true,
         body: {
-          async pipeTo(writable) {
-            await writable.write(bytes);
-            await writable.close();
+          getReader() {
+            let read = false;
+            return {
+              async read() {
+                if (read) return { done: true };
+                read = true;
+                return { done: false, value: bytes };
+              },
+              releaseLock() {}
+            };
           }
         }
       };
@@ -454,6 +588,7 @@ describe("AdminBackupPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start Manual Backup" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/checksum did not match/i);
+    await waitFor(() => expect(screen.getByLabelText("Mac-local transfer progress")).toHaveTextContent("Mac-local transfer failed"));
     expect([...directory.files.keys()].some((filePath) => filePath.startsWith("GFXunlimit/Backup-Set-GFX-TEST/"))).toBe(false);
     expect(screen.queryByRole("button", { name: "Transferred to this computer" })).not.toBeInTheDocument();
   });
@@ -478,5 +613,53 @@ describe("AdminBackupPage", () => {
         selectedTypes: ["database", "websiteCode"]
       })
     })));
+  });
+
+  test("Saved Schedule popup shows only the live persisted schedule, not unsaved edits or run history", async () => {
+    const defaultRequest = axios.getMockImplementation();
+    axios.mockImplementation((config) => {
+      if (config.method === "get" && config.url.endsWith("/automatic")) {
+        return Promise.resolve({ data: { schedule: {
+          configured: true,
+          enabled: true,
+          destination: "D:\\SavedBackups",
+          selectedTypes: ["database", "websiteCode"],
+          frequency: "daily",
+          time: "02:00",
+          weeklyDay: 0,
+          monthlyDay: 1,
+          timezone: "Asia/Kolkata",
+          nextRun: "2026-10-12T02:00:00.000Z",
+          lastRun: null
+        } } });
+      }
+      return defaultRequest(config);
+    });
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    const savedScheduleButton = await screen.findByRole("button", { name: "Saved Schedule" });
+
+    fireEvent.change(screen.getByLabelText("Frequency"), { target: { value: "weekly" } });
+    fireEvent.click(savedScheduleButton);
+
+    const details = screen.getByRole("dialog", { name: "Saved Automatic Backup Schedule" });
+    expect(details).toHaveTextContent("Frequency: daily");
+    expect(details).toHaveTextContent("Configured time: 02:00 am IST");
+    expect(details).toHaveTextContent("Backup types: Database, Website Code + .env");
+    expect(details).toHaveTextContent("Live automatic schedule");
+    expect(details).not.toHaveTextContent("schedule history");
+    expect(savedScheduleButton).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close saved schedules" }));
+    expect(screen.queryByRole("dialog", { name: "Saved Automatic Backup Schedule" })).not.toBeInTheDocument();
+    expect(savedScheduleButton).toHaveAttribute("aria-expanded", "false");
+  });
+
+  test("Saved Schedule popup excludes a disabled schedule", async () => {
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Saved Schedule" }));
+
+    expect(screen.getByRole("dialog", { name: "Saved Automatic Backup Schedule" }))
+      .toHaveTextContent("There are no live automatic backup schedules.");
+    expect(screen.queryByText("Live automatic schedule")).not.toBeInTheDocument();
   });
 });

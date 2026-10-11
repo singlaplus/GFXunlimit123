@@ -39,7 +39,7 @@ test('server Backup routes preserve Admin authorization', async () => {
   const adminHeaders = { 'x-test-admin': 'yes' };
 
   try {
-    for (const endpoint of ['/jobs/active', '/browse', '/jobs/GFX-TEST/export/file?path=manifest.json', '/automatic']) {
+    for (const endpoint of ['/jobs/active', '/browse', '/automatic/browse', '/jobs/GFX-TEST/export/file?path=manifest.json', '/automatic']) {
       assert.equal((await fetch(`${baseUrl}${endpoint}`)).status, 401);
     }
     const authorized = await fetch(`${baseUrl}/history`, { headers: adminHeaders });
@@ -70,6 +70,52 @@ test('server Backup routes preserve Admin authorization', async () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(stateDirectory, { recursive: true, force: true });
     fs.rmSync(destination, { recursive: true, force: true });
+  }
+});
+
+test('automatic destination browser hides Mac export staging and backend rejects staging destinations', async () => {
+  const parentDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-auto-browser-'));
+  const clientExportRoot = path.join(parentDirectory, 'manual-export-staging');
+  const serverDestination = path.join(parentDirectory, 'server-backups');
+  fs.mkdirSync(clientExportRoot);
+  fs.mkdirSync(serverDestination);
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-auto-browser-state-'));
+  const app = express();
+  app.use(express.json());
+  app.use('/admin/backup', createBackupRouter({
+    pool: { query: async () => ({ rows: [] }) },
+    serviceOptions: { stateDirectory, clientExportRoot, platform: 'win32' },
+    verifyAdmin: adminOnly
+  }));
+  const server = await listen(app);
+  const baseUrl = `http://127.0.0.1:${server.address().port}/admin/backup`;
+  const adminHeaders = { 'x-test-admin': 'yes' };
+
+  try {
+    const listingResponse = await fetch(`${baseUrl}/automatic/browse?path=${encodeURIComponent(parentDirectory)}`, {
+      headers: adminHeaders
+    });
+    assert.equal(listingResponse.status, 200);
+    const listing = await listingResponse.json();
+    assert.deepEqual(listing.directories.map((directory) => directory.path), [serverDestination]);
+
+    const stagingBrowse = await fetch(`${baseUrl}/automatic/browse?path=${encodeURIComponent(clientExportRoot)}`, {
+      headers: adminHeaders
+    });
+    assert.equal(stagingBrowse.status, 422);
+    assert.match((await stagingBrowse.json()).error, /not an automatic backup destination/);
+
+    const stagingTest = await fetch(`${baseUrl}/test-connection`, {
+      method: 'POST',
+      headers: { ...adminHeaders, 'content-type': 'application/json' },
+      body: JSON.stringify({ path: clientExportRoot })
+    });
+    assert.equal(stagingTest.status, 422);
+    assert.match((await stagingTest.json()).error, /protected production source/);
+  } finally {
+    await close(server);
+    fs.rmSync(parentDirectory, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
   }
 });
 
@@ -181,6 +227,17 @@ test('Mac Backup Center preserves the manual-local plan request and streams expo
               data: Readable.from([JSON.stringify({ ready: true, sourceRoots: { originalAssets: 'F:\\GFXunlimitAssets' } })])
             };
           }
+          if (options.url.endsWith('/jobs/GFX-test/export')) {
+            return {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+              data: Readable.from([JSON.stringify({ files: [
+                { path: 'Database/stocksite.backup', sizeBytes: 64 },
+                { path: 'checksums.sha256', sizeBytes: 128 },
+                { path: 'manifest.json', sizeBytes: 512 }
+              ] })])
+            };
+          }
           return {
             status: 200,
             headers: { 'content-type': 'application/octet-stream', 'content-length': '13' },
@@ -206,6 +263,13 @@ test('Mac Backup Center preserves the manual-local plan request and streams expo
     assert.deepEqual(upstreamRequests[0].data, { destinationMode: 'mac-local', categories: ['database'] });
     assert.equal(upstreamRequests[0].url, 'http://server.example:5000/admin/backup/plan');
 
+    const fileListResponse = await fetch(
+      `http://127.0.0.1:${server.address().port}/admin/backup/jobs/GFX-test/export`,
+      { headers: { 'x-test-admin': 'yes' } }
+    );
+    assert.equal(fileListResponse.status, 200);
+    assert.ok((await fileListResponse.json()).files.some((file) => file.path === 'manifest.json'));
+
     const exportResponse = await fetch(
       `http://127.0.0.1:${server.address().port}/admin/backup/jobs/GFX-test/export/file?path=manifest.json`,
       { headers: { 'x-test-admin': 'yes' } }
@@ -213,7 +277,7 @@ test('Mac Backup Center preserves the manual-local plan request and streams expo
     assert.equal(exportResponse.status, 200);
     assert.equal(exportResponse.headers.get('content-length'), '13');
     assert.equal(await exportResponse.text(), 'verified-data');
-    assert.match(upstreamRequests[1].url, /\/jobs\/GFX-test\/export\/file\?path=manifest\.json$/);
+    assert.match(upstreamRequests[2].url, /\/jobs\/GFX-test\/export\/file\?path=manifest\.json$/);
   } finally {
     await close(server);
   }

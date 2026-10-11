@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { sha256ReadableStream } from "../utils/streamSha256";
@@ -10,6 +10,12 @@ const BACKUP_CATEGORIES = [
   { key: "assetsAndThumbnails", title: "Assets + Thumbnails", description: "Production originals and the separate centralized thumbnail store." }
 ];
 const BACKUP_TIME_ZONE = "Asia/Kolkata";
+const LOCAL_EXPORT_COMPONENTS = [
+  { key: "database", label: "Database", directory: "Database" },
+  { key: "websiteCode", label: "Website Code + .env", directory: "Website-Code" },
+  { key: "originalAssets", label: "Original Assets", directory: "Assets" },
+  { key: "thumbnails", label: "Thumbnails", directory: "Thumbnails" }
+];
 
 const byteUnits = ["B", "KB", "MB", "GB", "TB", "PB"];
 
@@ -49,10 +55,13 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
   const [manualLocalFolder, setManualLocalFolder] = useState(null);
   const [manualServerPath, setManualServerPath] = useState("");
   const [manualServerBrowse, setManualServerBrowse] = useState(null);
-  const [automaticBrowseFolder, setAutomaticBrowseFolder] = useState(null);
+  const [automaticServerBrowse, setAutomaticServerBrowse] = useState(null);
   const [localExportBusy, setLocalExportBusy] = useState(false);
   const [localExportComplete, setLocalExportComplete] = useState(false);
-  const [localExportProgress, setLocalExportProgress] = useState("");
+  const [localExportProgress, setLocalExportProgress] = useState(null);
+  const localExportProgressRef = useRef(null);
+  const lastLocalProgressRenderRef = useRef(0);
+  const localProgressRenderTimerRef = useRef(null);
   const [manualLocalJobTarget, setManualLocalJobTarget] = useState(null);
   const [localExportAttemptedJobId, setLocalExportAttemptedJobId] = useState(null);
   const [automaticDestination, setAutomaticDestination] = useState("");
@@ -71,7 +80,15 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     nextRun: null,
     lastRun: null
   });
+  const [savedSchedule, setSavedSchedule] = useState(null);
+  const [showSavedSchedule, setShowSavedSchedule] = useState(false);
   const [scheduleMessage, setScheduleMessage] = useState("");
+
+  useEffect(() => () => {
+    if (localProgressRenderTimerRef.current !== null) {
+      clearTimeout(localProgressRenderTimerRef.current);
+    }
+  }, []);
 
   const palette = useMemo(() => ({
     surface: isDarkMode ? "#0f172a" : "#fff",
@@ -115,6 +132,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     const schedule = response.data?.schedule;
     if (schedule) {
       setAutomaticSchedule(schedule);
+      setSavedSchedule(schedule);
       setAutomaticDestination(schedule.destination || "");
     }
   }, [request]);
@@ -143,6 +161,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       setHistory(Array.isArray(historyResponse.data?.jobs) ? historyResponse.data.jobs : []);
       if (scheduleResponse.data?.schedule) {
         setAutomaticSchedule(scheduleResponse.data.schedule);
+        setSavedSchedule(scheduleResponse.data.schedule);
         setAutomaticDestination(scheduleResponse.data.schedule.destination || "");
       }
       setSources(sourceResponse.data?.sources || null);
@@ -320,7 +339,26 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
         : null);
       setLocalExportAttemptedJobId(null);
       setLocalExportComplete(false);
-      setLocalExportProgress("");
+      if (manualDestinationType === "mac-local") {
+        const initialExportProgress = {
+          status: "PREPARING",
+          bytesTransferred: 0,
+          totalBytes: null,
+          bytesRemaining: null,
+          speedBytesPerSecond: null,
+          etaSeconds: null,
+          currentFile: null,
+          filesCompleted: 0,
+          totalFiles: null,
+          components: []
+        };
+        localExportProgressRef.current = initialExportProgress;
+        lastLocalProgressRenderRef.current = 0;
+        setLocalExportProgress(initialExportProgress);
+      } else {
+        localExportProgressRef.current = null;
+        setLocalExportProgress(null);
+      }
       await refreshHistory();
       toast.info(manualDestinationType === "mac-local"
         ? "The server is preparing a verified manual backup for the selected computer folder."
@@ -345,6 +383,21 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     } catch (error) {
       setPageError(error.response?.data?.error || "Could not browse the backup server folders.");
       setManualServerBrowse(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const browseAutomaticServerPath = async (selectedPath = "") => {
+    setBusy(true);
+    setScheduleMessage("");
+    try {
+      const query = selectedPath ? `?path=${encodeURIComponent(selectedPath)}` : "";
+      const response = await request("get", `/automatic/browse${query}`);
+      setAutomaticServerBrowse(response.data);
+    } catch (error) {
+      setScheduleMessage(error.response?.data?.error || "Could not browse the server-managed automatic backup folders.");
+      setAutomaticServerBrowse(null);
     } finally {
       setBusy(false);
     }
@@ -388,7 +441,9 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
         destination: automaticDestination.trim(),
         enabled: automaticSchedule.enabled
       });
-      setAutomaticSchedule(response.data?.schedule || automaticSchedule);
+      const saved = response.data?.schedule || automaticSchedule;
+      setAutomaticSchedule(saved);
+      setSavedSchedule(saved);
       setAutomaticDrive(null);
       setAutomaticPlan(null);
       setScheduleMessage("Automatic backup schedule saved.");
@@ -402,32 +457,24 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     }
   };
 
-  const pickLocalFolder = async (selectionKey) => {
+  const pickLocalFolder = async () => {
     if (typeof window === "undefined" || typeof window.showDirectoryPicker !== "function") {
       const message = "Local folder selection is unavailable in this browser or context. Use a supported browser in a secure context.";
-      if (selectionKey === "automatic") setAutomaticBrowseFolder({ ...automaticBrowseFolder, error: message });
-      else setPageError(message);
+      setPageError(message);
       return;
     }
 
     try {
-      const directory = await window.showDirectoryPicker({
-        mode: selectionKey === "manual-local" ? "readwrite" : "read"
-      });
-      if (selectionKey === "automatic") {
-        setAutomaticBrowseFolder({ name: directory.name, handle: directory, error: "" });
-      } else {
-        setManualLocalFolder({ name: directory.name, handle: directory });
-        setTestedManualDestination(null);
-        setPlan(null);
-        setPageError("");
-        setLocalExportComplete(false);
-      }
+      const directory = await window.showDirectoryPicker({ mode: "readwrite" });
+      setManualLocalFolder({ name: directory.name, handle: directory });
+      setTestedManualDestination(null);
+      setPlan(null);
+      setPageError("");
+      setLocalExportComplete(false);
     } catch (error) {
       if (error?.name === "AbortError") return;
       const message = "Could not select a local folder. Check browser permissions and try again.";
-      if (selectionKey === "automatic") setAutomaticBrowseFolder({ ...automaticBrowseFolder, error: message });
-      else setPageError(message);
+      setPageError(message);
     }
   };
 
@@ -448,14 +495,49 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     setLocalExportComplete(false);
     let stagingParent = null;
     let createdSetName = null;
+    let transferStartedAt = null;
+    let transferredBytes = 0;
+    let completedFiles = 0;
+    const publishProgress = (progress, force = false) => {
+      localExportProgressRef.current = progress;
+      const now = Date.now();
+      const elapsed = now - lastLocalProgressRenderRef.current;
+      if (force || elapsed >= 250) {
+        if (localProgressRenderTimerRef.current !== null) {
+          clearTimeout(localProgressRenderTimerRef.current);
+          localProgressRenderTimerRef.current = null;
+        }
+        lastLocalProgressRenderRef.current = now;
+        setLocalExportProgress(progress);
+      } else if (localProgressRenderTimerRef.current === null) {
+        localProgressRenderTimerRef.current = setTimeout(() => {
+          localProgressRenderTimerRef.current = null;
+          lastLocalProgressRenderRef.current = Date.now();
+          setLocalExportProgress(localExportProgressRef.current);
+        }, 250 - elapsed);
+      }
+    };
     try {
+      publishProgress({
+        status: "PREPARING",
+        bytesTransferred: 0,
+        totalBytes: null,
+        bytesRemaining: null,
+        speedBytesPerSecond: null,
+        etaSeconds: null,
+        currentFile: "Checking Mac folder permission",
+        filesCompleted: 0,
+        totalFiles: null,
+        components: []
+      }, true);
       const permission = await directory.queryPermission({ mode: "readwrite" });
       const granted = permission === "granted"
         ? permission
         : await directory.requestPermission({ mode: "readwrite" });
-      if (granted !== "granted") throw new Error("Read/write permission for the selected Mac folder was not granted.");
+      if (granted !== "granted") throw new Error("Read/write permission expired or was not granted for the selected Mac folder.");
 
       const token = getAuthToken();
+      publishProgress({ ...localExportProgressRef.current, currentFile: "Loading verified export file list" }, true);
       const exportResponse = await request("get", `/jobs/${encodeURIComponent(exportJob.id)}/export`);
       const files = exportResponse.data?.files;
       if (!Array.isArray(files) || files.length < 3) throw new Error("The verified backup is missing its manifest, checksums, or backup data.");
@@ -463,6 +545,45 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       if (fileByPath.size !== files.length || !fileByPath.has("manifest.json") || !fileByPath.has("checksums.sha256")) {
         throw new Error("The verified backup has an invalid or incomplete file list.");
       }
+      const totalBytes = files.reduce((total, file) => {
+        const size = Number(file.sizeBytes);
+        if (!Number.isSafeInteger(size) || size < 0) {
+          throw new Error(`The server returned an invalid size for ${file.path || "a backup file"}.`);
+        }
+        const nextTotal = total + size;
+        if (!Number.isSafeInteger(nextTotal)) {
+          throw new Error("The server returned a backup whose total size cannot be measured safely.");
+        }
+        return nextTotal;
+      }, 0);
+      const selectedTypes = exportJob.selectedTypes || [];
+      const componentProgress = LOCAL_EXPORT_COMPONENTS.map((component) => {
+          const componentFiles = files.filter((file) => String(file.path || "").startsWith(`${component.directory}/`));
+          const selected = component.key === "originalAssets" || component.key === "thumbnails"
+            ? selectedTypes.includes("assetsAndThumbnails")
+            : selectedTypes.includes(component.key);
+          return {
+            ...component,
+            selected,
+            totalBytes: componentFiles.reduce((total, file) => total + Number(file.sizeBytes), 0),
+            bytesTransferred: 0,
+            totalFiles: componentFiles.length,
+            filesCompleted: 0,
+            status: selected ? componentFiles.length === 0 ? "COMPLETE" : "PENDING" : "NOT_SELECTED"
+          };
+        });
+      publishProgress({
+        status: "PREPARING",
+        bytesTransferred: 0,
+        totalBytes,
+        bytesRemaining: totalBytes,
+        speedBytesPerSecond: null,
+        etaSeconds: null,
+        currentFile: "Preparing selected folder",
+        filesCompleted: 0,
+        totalFiles: files.length,
+        components: componentProgress
+      }, true);
 
       const gfxDirectory = await directory.getDirectoryHandle("GFXunlimit", { create: true });
       const setName = `Backup-Set-${exportJob.id}`;
@@ -484,6 +605,11 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       ];
       let expectedChecksums = null;
       for (const [index, file] of orderedFiles.entries()) {
+        publishProgress({
+          ...localExportProgressRef.current,
+          status: transferredBytes > 0 ? "TRANSFERRING" : "PREPARING",
+          currentFile: file.path
+        }, true);
         const parts = String(file.path || "").split("/");
         if (!parts.length || parts.some((part) => !part || part === "." || part === ".." || part.includes("\\"))) {
           throw new Error("The server returned an unsafe backup file name.");
@@ -500,22 +626,74 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
             credentials: "include"
           }
         );
-        if (!response.ok || !response.body?.pipeTo) {
+        if (!response.ok || !response.body?.getReader) {
           throw new Error(response.ok
-            ? "Streaming this backup file is not supported by this browser."
+            ? "Readable streaming is not supported by this browser; no file bytes were written."
             : `The server could not transfer ${file.path}.`);
         }
         const writable = await fileHandle.createWritable();
+        const writer = writable.getWriter();
+        const reader = response.body.getReader();
+        const component = componentProgress.find(({ directory: prefix }) => file.path.startsWith(`${prefix}/`));
+        let currentFileBytes = 0;
         try {
-          await response.body.pipeTo(writable);
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            await writer.write(value);
+            if (transferStartedAt === null) transferStartedAt = Date.now();
+            currentFileBytes += value.byteLength;
+            transferredBytes += value.byteLength;
+            if (component) component.bytesTransferred += value.byteLength;
+            const elapsedSeconds = (Date.now() - transferStartedAt) / 1000;
+            const speedBytesPerSecond = elapsedSeconds >= 0.5
+              ? Math.round(transferredBytes / elapsedSeconds)
+              : null;
+            const bytesRemaining = Math.max(0, totalBytes - transferredBytes);
+            publishProgress({
+              status: "TRANSFERRING",
+              bytesTransferred: transferredBytes,
+              totalBytes,
+              bytesRemaining,
+              speedBytesPerSecond,
+              etaSeconds: speedBytesPerSecond > 0 ? Math.ceil(bytesRemaining / speedBytesPerSecond) : null,
+              currentFile: file.path,
+              currentFileBytes,
+              currentFileSize: Number(file.sizeBytes),
+              filesCompleted: completedFiles,
+              totalFiles: files.length,
+              components: componentProgress.map((item) => ({
+                ...item,
+                status: !item.selected
+                  ? "NOT_SELECTED"
+                  : item.filesCompleted === item.totalFiles
+                  ? "COMPLETE"
+                  : item.bytesTransferred > 0
+                    ? "TRANSFERRING"
+                    : "PENDING"
+              }))
+            });
+          }
+          await writer.close();
         } catch (error) {
-          await writable.abort().catch(() => {});
+          await reader.cancel(error).catch(() => {});
+          await writer.abort().catch(() => {});
           throw error;
+        } finally {
+          reader.releaseLock();
+          writer.releaseLock();
         }
         const writtenFile = await fileHandle.getFile();
         if (writtenFile.size !== Number(file.sizeBytes)) {
           throw new Error(`Transferred file size did not match the verified server copy: ${file.path}`);
         }
+        publishProgress({
+          ...localExportProgressRef.current,
+          status: "VERIFYING",
+          currentFile: file.path,
+          currentFileBytes: writtenFile.size,
+          currentFileSize: Number(file.sizeBytes)
+        }, true);
         if (file.path === "checksums.sha256") {
           expectedChecksums = new Map();
           const lines = (await writtenFile.text()).split(/\r?\n/).filter(Boolean);
@@ -562,9 +740,44 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
             throw new Error("The transferred backup manifest does not describe this verified manual backup.");
           }
         }
-        setLocalExportProgress(`Transferred ${index + 1} of ${files.length} files`);
+        completedFiles += 1;
+        if (component) component.filesCompleted += 1;
+        publishProgress({
+          ...localExportProgressRef.current,
+          status: index === orderedFiles.length - 1 ? "VERIFYING" : "TRANSFERRING",
+          bytesTransferred: transferredBytes,
+          bytesRemaining: Math.max(0, totalBytes - transferredBytes),
+          filesCompleted: completedFiles,
+          totalFiles: files.length,
+          components: componentProgress.map((item) => ({
+            ...item,
+            status: !item.selected
+              ? "NOT_SELECTED"
+              : item.filesCompleted === item.totalFiles
+              ? "COMPLETE"
+              : item.bytesTransferred > 0
+                ? "TRANSFERRING"
+                : "PENDING"
+          }))
+        }, true);
       }
 
+      publishProgress({
+        ...localExportProgressRef.current,
+        status: "COMPLETE",
+        bytesTransferred: totalBytes,
+        bytesRemaining: 0,
+        speedBytesPerSecond: transferredBytes > 0 && transferStartedAt !== null
+          ? Math.round(transferredBytes / Math.max(0.001, (Date.now() - transferStartedAt) / 1000))
+          : null,
+        etaSeconds: 0,
+        currentFile: "Manifest, file sizes, and SHA-256 checksums verified",
+        filesCompleted: files.length,
+        components: componentProgress.map((item) => ({
+          ...item,
+          status: item.selected ? "COMPLETE" : "NOT_SELECTED"
+        }))
+      }, true);
       setLocalExportComplete(true);
       toast.success("The manual backup was copied to the tested Mac folder and its checksums were verified.");
       try {
@@ -574,6 +787,11 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       }
     } catch (error) {
       const message = error.response?.data?.error || error.message || "The backup could not be transferred to this Mac.";
+      publishProgress({
+        ...(localExportProgressRef.current || {}),
+        status: "FAILED",
+        currentFile: localExportProgressRef.current?.currentFile || "Transfer failed"
+      }, true);
       if (stagingParent && createdSetName) {
         try {
           await stagingParent.removeEntry(createdSetName, { recursive: true });
@@ -800,7 +1018,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
                   setTestedManualDestination(null);
                   setPlan(null);
                   setPageError("");
-                  pickLocalFolder("manual-local");
+                  pickLocalFolder();
                 }}
                 disabled={busy || activeJob || localExportBusy}
                 style={buttonStyle()}
@@ -997,14 +1215,76 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
               >
                 {localExportBusy ? "Transferring to this computer..." : localExportComplete ? "Transferred to this computer" : "Transfer verified backup to this computer"}
               </button>
-              {localExportProgress && <span role="status">{localExportProgress}</span>}
+            </div>
+          )}
+          {job.backupType === "MANUAL" && job.clientExport === true && localExportProgress && (
+            <div aria-label="Mac-local transfer progress" style={{ display: "grid", gap: 10, padding: 12, border: `1px solid ${palette.border}`, borderRadius: 10, background: palette.panel }}>
+              <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                <strong>
+                  {localExportProgress.status === "PREPARING" ? "Preparing Mac-local transfer" :
+                    localExportProgress.status === "TRANSFERRING" ? "Transferring to this computer" :
+                      localExportProgress.status === "VERIFYING" ? "Verifying Mac-local files" :
+                        localExportProgress.status === "COMPLETE" ? "Mac-local copy complete and verified" : "Mac-local transfer failed"}
+                </strong>
+                <span>{localExportProgress.totalBytes == null
+                  ? "Mac bytes written: 0 (transfer has not started)"
+                  : `${formatBytes(localExportProgress.bytesTransferred)} / ${formatBytes(localExportProgress.totalBytes)} written`}</span>
+              </div>
+              {localExportProgress.totalBytes != null && (
+                <div role="progressbar" aria-label="Mac-local bytes written" aria-valuenow={localExportProgress.totalBytes > 0
+                  ? Math.min(100, (localExportProgress.bytesTransferred / localExportProgress.totalBytes) * 100)
+                  : localExportProgress.status === "COMPLETE" ? 100 : 0} aria-valuemin={0} aria-valuemax={100}
+                >
+                  <span style={{
+                    display: "block",
+                    height: 10,
+                    borderRadius: 99,
+                    background: "linear-gradient(90deg, #ed2224, #f97316)",
+                    width: `${localExportProgress.totalBytes > 0
+                      ? Math.min(100, (localExportProgress.bytesTransferred / localExportProgress.totalBytes) * 100)
+                      : localExportProgress.status === "COMPLETE" ? 100 : 0}%`
+                  }} />
+                </div>
+              )}
+              <div className="gfx-backup-progress-metrics">
+                <span>Bytes remaining <strong>{localExportProgress.bytesRemaining == null ? "Not measured yet" : formatBytes(localExportProgress.bytesRemaining)}</strong></span>
+                <span>Transfer speed <strong>{localExportProgress.speedBytesPerSecond == null ? "Measuring…" : `${formatBytes(localExportProgress.speedBytesPerSecond)}/s`}</strong></span>
+                <span>Estimated remaining <strong>{localExportProgress.etaSeconds == null ? "Not available yet" : formatDuration(localExportProgress.etaSeconds)}</strong></span>
+                <span>Files written and verified <strong>{localExportProgress.totalFiles == null
+                  ? "Not measured yet"
+                  : `${localExportProgress.filesCompleted} / ${localExportProgress.totalFiles} · ${Math.max(0, localExportProgress.totalFiles - localExportProgress.filesCompleted)} pending`}</strong></span>
+              </div>
+              <span style={{ color: palette.muted, overflowWrap: "anywhere" }}>
+                Current file/component: {localExportProgress.currentFile || "Waiting for server-side backup verification"}
+                {localExportProgress.currentFileSize != null && ` · ${formatBytes(localExportProgress.currentFileBytes || 0)} / ${formatBytes(localExportProgress.currentFileSize)}`}
+              </span>
+              {localExportProgress.components?.length > 0 && (
+                <div className="gfx-backup-subprogress-grid" aria-label="Mac-local component progress">
+                  {localExportProgress.components.map((component) => (
+                    <div className="gfx-backup-subprogress" key={component.key}>
+                      <div className="gfx-backup-progress-label">
+                        <strong>{component.label}</strong>
+                        <span>{component.status === "NOT_SELECTED" ? "Not selected" :
+                          component.status === "COMPLETE" ? "Complete" :
+                            component.status === "TRANSFERRING" ? "Transferring" :
+                              component.status === "VERIFYING" ? "Verifying" : "Pending"}</span>
+                      </div>
+                      <small>
+                        {component.selected
+                          ? `${formatBytes(component.bytesTransferred)} / ${formatBytes(component.totalBytes)} written · ${component.filesCompleted} / ${component.totalFiles} files · ${Math.max(0, component.totalFiles - component.filesCompleted)} pending`
+                          : "Not included in this backup"}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {(job.status === "RUNNING" || job.status === "SUCCESS") && (
             <>
               <div className="gfx-backup-overall-progress">
                 <div className="gfx-backup-progress-label">
-                  <strong>Overall backup progress</strong>
+                  <strong>{job.clientExport === true ? "Server staging progress (not yet written to this computer)" : "Overall backup progress"}</strong>
                   <span>{job.status === "SUCCESS" && job.verificationStatus === "VERIFIED" ? "100%" : `${Number(job.progress?.percent || 0).toFixed(1)}%`}</span>
                 </div>
                 <div role="progressbar" aria-label="Overall backup progress" aria-valuenow={job.status === "SUCCESS" && job.verificationStatus === "VERIFIED" ? 100 : Math.min(99.9, Number(job.progress?.percent || 0))} aria-valuemin={0} aria-valuemax={100} style={{ height: 11, borderRadius: 99, background: palette.panel, overflow: "hidden" }}>
@@ -1139,7 +1419,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
         <div className="gfx-backup-location" style={{ display: "grid", gap: 8 }}>
           <strong>Automatic Backup Location</strong>
           <p style={{ margin: 0, color: palette.muted, fontSize: 13 }}>
-            Browse selects a folder on this computer only. Automatic server-side backups cannot write to that browser-selected folder; the saved server destination remains unchanged.
+            Automatic backups run on the server and can write only to a tested server-managed path.
           </p>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             <input
@@ -1155,16 +1435,38 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
               placeholder="Select backup location"
               style={{ flex: "1 1 300px", minWidth: 0, boxSizing: "border-box", padding: "11px 12px", border: `1px solid ${palette.border}`, borderRadius: 9, background: palette.surface, color: palette.text }}
             />
-            <button type="button" onClick={() => pickLocalFolder("automatic")} disabled={busy || activeJob} style={buttonStyle()}>{automaticDestination ? "Change" : "Browse this computer"}</button>
+            <button type="button" onClick={() => browseAutomaticServerPath()} disabled={busy || activeJob} style={buttonStyle()}>
+              Browse server folders
+            </button>
             <button type="button" onClick={testAutomaticDestination} disabled={busy || activeJob || !automaticDestination} style={buttonStyle()}>Test Connection</button>
           </div>
-          {automaticBrowseFolder?.name && (
-            <div role="status" style={{ color: palette.muted, fontSize: 13 }}>
-              Local folder selected: <strong>{automaticBrowseFolder.name}</strong>. It is not the saved server destination and cannot be used by automatic backup jobs.
+          {automaticServerBrowse && (
+            <div style={{ display: "grid", gap: 6, padding: 10, border: `1px solid ${palette.border}`, borderRadius: 9, background: palette.panel }}>
+              {automaticServerBrowse.currentPath
+                ? <strong>Server location: {automaticServerBrowse.currentPath}</strong>
+                : <strong>Available server drives</strong>}
+              {automaticServerBrowse.parentPath && (
+                <button type="button" onClick={() => browseAutomaticServerPath(automaticServerBrowse.parentPath)} disabled={busy} style={buttonStyle()}>
+                  Up one folder
+                </button>
+              )}
+              {automaticServerBrowse.directories?.map((directory) => (
+                <button key={directory.path} type="button" onClick={() => browseAutomaticServerPath(directory.path)} disabled={busy} style={{ ...buttonStyle(), textAlign: "left" }}>
+                  {directory.name}
+                </button>
+              ))}
+              {automaticServerBrowse.currentPath && (
+                <button type="button" onClick={() => {
+                  setAutomaticDestination(automaticServerBrowse.currentPath);
+                  setAutomaticDrive(null);
+                  setAutomaticPlan(null);
+                  setScheduleMessage("");
+                }} disabled={busy || activeJob} style={buttonStyle()}>
+                  Use this server folder
+                </button>
+              )}
+              {!automaticServerBrowse.directories?.length && <small>No child folders found in this location.</small>}
             </div>
-          )}
-          {automaticBrowseFolder?.error && (
-            <div role="alert" style={{ color: "#b91c1c" }}>{automaticBrowseFolder.error}</div>
           )}
           {scheduleMessage && <div role="status" style={{ color: (automaticPlan?.ready || /saved/i.test(scheduleMessage)) ? "#15803d" : "#b91c1c" }}>{automaticPlan?.ready ? "✓ " : ""}{scheduleMessage}</div>}
           {automaticDrive && (
@@ -1268,8 +1570,53 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
           <span>Automatic Backups / YYYY-MM-DD / Database / Website-Code</span>
           <span>At 30 runs, the oldest complete folder for the selected frequency is renamed to the current run date and fully replaced.</span>
         </div>
-        <button className="gfx-backup-primary" type="button" onClick={saveSchedule} disabled={busy || activeJob || automaticSchedule.selectedTypes.length === 0} style={{ ...buttonStyle(true), width: "fit-content" }}>Save Schedule</button>
+        <div style={{ display: "flex", justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
+          <button className="gfx-backup-primary" type="button" onClick={saveSchedule} disabled={busy || activeJob || automaticSchedule.selectedTypes.length === 0} style={{ ...buttonStyle(true), width: "fit-content" }}>Save Schedule</button>
+          <button
+            type="button"
+            aria-expanded={showSavedSchedule}
+            aria-haspopup="dialog"
+            onClick={() => setShowSavedSchedule((visible) => !visible)}
+            style={buttonStyle()}
+          >
+            Saved Schedule
+          </button>
+        </div>
       </section>
+      {showSavedSchedule && (
+        <div
+          onClick={() => setShowSavedSchedule(false)}
+          style={{ position: "fixed", inset: 0, zIndex: 1400, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, background: "rgba(15, 23, 42, 0.65)" }}
+        >
+          <section
+            id="saved-schedule-details"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="saved-schedule-title"
+            onClick={(event) => event.stopPropagation()}
+            style={{ width: "min(720px, 100%)", maxHeight: "85vh", overflowY: "auto", display: "grid", gap: 14, padding: 20, border: `1px solid ${palette.border}`, borderRadius: 14, background: palette.surface, color: palette.text, boxShadow: "0 24px 60px rgba(15, 23, 42, 0.35)" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <h3 id="saved-schedule-title" style={{ margin: 0 }}>Saved Automatic Backup Schedule</h3>
+              <button type="button" aria-label="Close saved schedules" onClick={() => setShowSavedSchedule(false)} style={buttonStyle()}>Close</button>
+            </div>
+            {!savedSchedule ? (
+              <p style={{ color: palette.muted, margin: 0 }}>Live saved schedules are unavailable until the schedule has loaded.</p>
+            ) : !savedSchedule.enabled ? (
+              <p style={{ color: palette.muted, margin: 0 }}>There are no live automatic backup schedules.</p>
+            ) : (
+              <div style={{ display: "grid", gap: 8, padding: 12, border: `1px solid ${palette.border}`, borderRadius: 9, background: palette.panel }}>
+                <strong>Live automatic schedule</strong>
+                <span>Server destination: <strong style={{ overflowWrap: "anywhere" }}>{savedSchedule.destination || "Not configured"}</strong></span>
+                <span>Backup types: <strong>{(savedSchedule.selectedTypes || []).map((key) => BACKUP_CATEGORIES.find((item) => item.key === key)?.title || key).join(", ") || "None"}</strong></span>
+                <span>Frequency: <strong>{savedSchedule.frequency || "Unavailable"}</strong></span>
+                <span>Configured time: <strong>{formatScheduleTime(savedSchedule.time)}</strong></span>
+                <span>Next run: <strong>{formatScheduleDate(savedSchedule.nextRun)}</strong></span>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   );
 }

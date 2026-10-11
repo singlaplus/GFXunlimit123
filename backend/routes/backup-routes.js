@@ -102,6 +102,14 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
     }
   });
 
+  router.get('/automatic/browse', async (req, res) => {
+    try {
+      res.json(await service.browseAutomaticDestination(req.query.path || ''));
+    } catch (error) {
+      res.status(422).json({ error: error.message || 'Automatic backup destination folders could not be listed.' });
+    }
+  });
+
   router.post('/test-connection', async (req, res) => {
     try {
       const paths = Array.isArray(req.body?.destinations)
