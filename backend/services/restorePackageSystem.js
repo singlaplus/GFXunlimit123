@@ -35,6 +35,17 @@ const ARTIFACTS = [
   { id: 'packageManifest', filename: 'restore-package-manifest.json', label: 'Restore package metadata' },
   { id: 'packageChecksums', filename: 'checksums.sha256', label: 'Restore package SHA-256 checksums' }
 ];
+const HELPER_PACKAGE_FILES = [
+  'README.md',
+  'restore-wizard.html',
+  'restore-manifest.json',
+  'helper/.env.example',
+  'helper/package.json',
+  'helper/package-lock.json',
+  'helper/server.js',
+  'helper/start-macos.sh',
+  'helper/start-windows.cmd'
+];
 const PACKAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const PACKAGE_SIGNATURE_DOMAIN = 'STOCKSITE-RESTORE-PACKAGE-V1\n';
 const ACTIVE = new Set(['WAITING', 'RUNNING']);
@@ -144,12 +155,7 @@ function createRestorePackageService(options = {}) {
   });
 
   async function persist(job) {
-    const completed = job.tasks.filter(({ status }) => status === 'COMPLETED').length;
-    job.progress = {
-      completed,
-      total: job.tasks.length,
-      percent: job.tasks.length ? Math.floor(completed * 100 / job.tasks.length) : null
-    };
+    updateOverallProgress(job);
     await fsp.mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     const destination = jobStatePath(job.id);
     const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
@@ -198,6 +204,22 @@ function createRestorePackageService(options = {}) {
       ...FINAL_TASKS.map(({ id, name }) => makeTask({ id, name }))
     ];
     return tasks;
+  }
+
+  function updateOverallProgress(job) {
+    const finished = job.tasks.filter(({ status }) => status === 'COMPLETED').length;
+    const activeFraction = job.tasks
+      .filter(({ status, percent }) => ['RUNNING', 'FAILED'].includes(status) && Number.isFinite(percent))
+      .reduce((sum, task) => sum + Math.min(100, Math.max(0, task.percent)) / 100, 0);
+    job.progress = {
+      completed: finished,
+      total: job.tasks.length,
+      percent: !job.tasks.length
+        ? null
+        : finished === job.tasks.length
+          ? 100
+          : Math.min(99, Math.floor((finished + activeFraction) / job.tasks.length * 100))
+    };
   }
 
   function updateCollectionTasks(job, backupJob) {
@@ -251,12 +273,7 @@ function createRestorePackageService(options = {}) {
         }
       }
     }
-    const finished = job.tasks.filter(({ status }) => status === 'COMPLETED').length;
-    job.progress = {
-      completed: finished,
-      total: job.tasks.length,
-      percent: job.tasks.length ? Math.floor(finished / job.tasks.length * 100) : null
-    };
+    updateOverallProgress(job);
   }
 
   function setTask(job, id, status, operation, percent = null) {
@@ -266,9 +283,10 @@ function createRestorePackageService(options = {}) {
     task.operation = operation;
     task.percent = percent;
     job.currentOperation = operation;
+    updateOverallProgress(job);
   }
 
-  function runProcess(command, args, env, timeoutMs = 30 * 60 * 1000, onStdout = null) {
+  function runProcess(command, args, env, timeoutMs = 30 * 60 * 1000, onStdout = null, idleTimeoutMs = 0) {
     return new Promise((resolve, reject) => {
       let child;
       try {
@@ -283,35 +301,169 @@ function createRestorePackageService(options = {}) {
         return;
       }
       let stderr = '';
-      child.stderr?.on('data', (chunk) => { stderr = `${stderr}${chunk.toString('utf8')}`.slice(-6000); });
-      if (onStdout) child.stdout?.on('data', onStdout);
-      const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
-      child.once('error', (error) => {
+      let settled = false;
+      let timer;
+      let idleTimer;
+      const clearTimers = () => {
         clearTimeout(timer);
+        clearTimeout(idleTimer);
+      };
+      const failAndTerminate = (message) => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        let terminationFailure = '';
+        try {
+          if (!child.kill('SIGTERM')) terminationFailure = ' The archive process did not confirm termination.';
+        } catch (error) {
+          terminationFailure = ` The archive process could not be terminated: ${safeMessage(error)}`;
+        }
+        reject(new Error(`${message}${terminationFailure}`));
+      };
+      const resetIdleTimer = () => {
+        if (!idleTimeoutMs) return;
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          failAndTerminate(`Windows ZIP generation made no measurable progress for ${Math.ceil(idleTimeoutMs / 1000)} seconds; PowerShell was terminated. Check SERVER disk activity and source-file access before retrying.`);
+        }, idleTimeoutMs);
+      };
+      child.stderr?.on('data', (chunk) => { stderr = `${stderr}${chunk.toString('utf8')}`.slice(-6000); });
+      if (onStdout) {
+        child.stdout?.on('data', (chunk) => {
+          if (onStdout(chunk) === true) resetIdleTimer();
+        });
+      }
+      timer = setTimeout(() => {
+        failAndTerminate('Archive generation or validation exceeded the 30 minute time limit; the archive process was terminated.');
+      }, timeoutMs);
+      resetIdleTimer();
+      child.once('error', (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
         reject(new Error(`Archive utility could not be started: ${safeMessage(error)}`));
       });
       child.once('close', (code, signal) => {
-        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        clearTimers();
         if (code !== 0 || signal) {
-          const timedOut = signal === 'SIGTERM';
-          reject(new Error(timedOut
-            ? 'Archive generation or validation exceeded the 30 minute time limit.'
-            : `Archive utility failed${signal ? ` (${signal})` : ` with exit code ${code}`}${stderr.trim() ? `: ${safeMessage(stderr.trim())}` : ''}`));
+          reject(new Error(`Archive utility failed${signal ? ` (${signal})` : ` with exit code ${code}`}${stderr.trim() ? `: ${safeMessage(stderr.trim())}` : ''}`));
         } else resolve();
       });
     });
   }
 
-  async function createDataArchive(sourceDirectory, outputFile, expectedFileCount, expectedBytes) {
+  async function createDataArchive(sourceDirectory, outputFile, expectedFileCount, expectedBytes, onProgress = () => {}, persistProgress = async () => {}) {
     if (platform === 'win32') {
       const command = options.powershellPath || 'powershell.exe';
-      const script = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.IO.Compression; Add-Type -AssemblyName System.IO.Compression.FileSystem; $src=[IO.Path]::GetFullPath($env:RESTORE_PACKAGE_SOURCE).TrimEnd('\\'); $zip=[IO.Compression.ZipFile]::Open($env:RESTORE_PACKAGE_OUTPUT,[IO.Compression.ZipArchiveMode]::Create); try { $files=Get-ChildItem -LiteralPath $src -Force -Recurse -File; if($files.Count -ne [int]$env:RESTORE_PACKAGE_EXPECTED_COUNT){throw 'Source file count changed'}; $bytes=0; $seen=@{}; foreach($f in $files){$rel=$f.FullName.Substring($src.Length+1).Replace('\\','/'); if([string]::IsNullOrWhiteSpace($rel) -or $rel.StartsWith('/') -or $rel.Split('/') -contains '..' -or $seen.ContainsKey($rel)){throw 'Unsafe or duplicate archive path'}; $seen[$rel]=$true; $bytes+=$f.Length; $entry=$zip.CreateEntry($rel,[IO.Compression.CompressionLevel]::Optimal); $input=[IO.File]::OpenRead($f.FullName); $output=$entry.Open(); try{$input.CopyTo($output)}finally{$output.Dispose();$input.Dispose()} }; if($bytes -ne [long]$env:RESTORE_PACKAGE_EXPECTED_BYTES){throw 'Source byte total changed'} } finally {$zip.Dispose()}; $check=[IO.Compression.ZipFile]::OpenRead($env:RESTORE_PACKAGE_OUTPUT); try { if($check.Entries.Count -ne [int]$env:RESTORE_PACKAGE_EXPECTED_COUNT){throw 'Archive file count mismatch'}; $sum=0; foreach($e in $check.Entries){if($e.FullName.StartsWith('/') -or $e.FullName.Split('/') -contains '..'){throw 'Unsafe archive entry'}; $sum+=$e.Length; $s=$e.Open();try{$s.CopyTo([IO.Stream]::Null)}finally{$s.Dispose()}}; if($sum -ne [long]$env:RESTORE_PACKAGE_EXPECTED_BYTES){throw 'Archive byte total mismatch'} } finally {$check.Dispose()}";
-      await runProcess(command, ['-NoProfile', '-NonInteractive', '-Command', script], {
-        RESTORE_PACKAGE_SOURCE: sourceDirectory,
-        RESTORE_PACKAGE_OUTPUT: outputFile,
-        RESTORE_PACKAGE_EXPECTED_COUNT: String(expectedFileCount),
-        RESTORE_PACKAGE_EXPECTED_BYTES: String(expectedBytes)
-      });
+      const script = String.raw`$ErrorActionPreference='Stop'
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$src=[IO.Path]::GetFullPath($env:RESTORE_PACKAGE_SOURCE).TrimEnd('\')
+$expectedCount=[int]$env:RESTORE_PACKAGE_EXPECTED_COUNT
+$expectedBytes=[long]$env:RESTORE_PACKAGE_EXPECTED_BYTES
+$progressBytes=4MB
+$buffer=New-Object byte[] (256KB)
+function Write-PackageProgress([string]$phase,[int]$files,[long]$bytes) {
+  [Console]::Out.WriteLine("STOCKSITE_PROGRESS|$phase|$files|$bytes")
+}
+$files=Get-ChildItem -LiteralPath $src -Force -Recurse -File
+if($files.Count -ne $expectedCount){throw 'Source file count changed'}
+Write-PackageProgress 'create' 0 0
+$zip=[IO.Compression.ZipFile]::Open($env:RESTORE_PACKAGE_OUTPUT,[IO.Compression.ZipArchiveMode]::Create)
+$bytes=0
+$filesDone=0
+$seen=@{}
+try {
+  foreach($f in $files) {
+    $rel=$f.FullName.Substring($src.Length+1).Replace('\','/')
+    if([string]::IsNullOrWhiteSpace($rel) -or $rel.StartsWith('/') -or $rel -match '^[A-Za-z]:' -or $rel.Split('/') -contains '..' -or $seen.ContainsKey($rel)){throw 'Unsafe or duplicate archive path'}
+    $seen[$rel]=$true
+    $entry=$zip.CreateEntry($rel,[IO.Compression.CompressionLevel]::Optimal)
+    $input=[IO.File]::OpenRead($f.FullName)
+    $output=$entry.Open()
+    try {
+      while(($read=$input.Read($buffer,0,$buffer.Length)) -gt 0) {
+        $output.Write($buffer,0,$read)
+        $bytes+=$read
+        if($bytes -ge $progressBytes) {
+          Write-PackageProgress 'create' $filesDone $bytes
+          $progressBytes=$bytes+4MB
+        }
+      }
+    } finally {$output.Dispose();$input.Dispose()}
+    $filesDone++
+    Write-PackageProgress 'create' $filesDone $bytes
+  }
+  if($bytes -ne $expectedBytes){throw 'Source byte total changed'}
+} finally {$zip.Dispose()}
+$check=[IO.Compression.ZipFile]::OpenRead($env:RESTORE_PACKAGE_OUTPUT)
+try {
+  if($check.Entries.Count -ne $expectedCount){throw 'Archive file count mismatch'}
+  $sum=0
+  $verifiedFiles=0
+  $progressBytes=4MB
+  Write-PackageProgress 'verify' 0 0
+  foreach($e in $check.Entries) {
+    if($e.FullName.StartsWith('/') -or $e.FullName.Contains('\') -or $e.FullName -match '^[A-Za-z]:' -or $e.FullName.Split('/') -contains '..'){throw 'Unsafe archive entry'}
+    $s=$e.Open()
+    try {
+      while(($read=$s.Read($buffer,0,$buffer.Length)) -gt 0) {
+        $sum+=$read
+        if($sum -ge $progressBytes) {
+          Write-PackageProgress 'verify' $verifiedFiles $sum
+          $progressBytes=$sum+4MB
+        }
+      }
+    } finally {$s.Dispose()}
+    $verifiedFiles++
+    Write-PackageProgress 'verify' $verifiedFiles $sum
+  }
+  if($sum -ne $expectedBytes){throw 'Archive byte total mismatch'}
+} finally {$check.Dispose()}`;
+      let progressBuffer = '';
+      let progressPersistence = Promise.resolve();
+      let progressPersistenceError = null;
+      let lastProgressPersistAt = 0;
+      const queueProgressPersist = (force = false) => {
+        const now = Date.now();
+        if (!force && now - lastProgressPersistAt < 1000) return;
+        lastProgressPersistAt = now;
+        progressPersistence = progressPersistence.then(persistProgress);
+        progressPersistence = progressPersistence.catch((error) => {
+          progressPersistenceError ||= error;
+        });
+      };
+      try {
+        await runProcess(command, ['-NoProfile', '-NonInteractive', '-Command', script], {
+          RESTORE_PACKAGE_SOURCE: sourceDirectory,
+          RESTORE_PACKAGE_OUTPUT: outputFile,
+          RESTORE_PACKAGE_EXPECTED_COUNT: String(expectedFileCount),
+          RESTORE_PACKAGE_EXPECTED_BYTES: String(expectedBytes)
+        }, options.archiveTimeoutMs || 30 * 60 * 1000, (chunk) => {
+          progressBuffer += chunk.toString('utf8');
+          const lines = progressBuffer.split(/\r?\n/);
+          progressBuffer = lines.pop() || '';
+          let receivedProgress = false;
+          for (const line of lines) {
+            const match = /^STOCKSITE_PROGRESS\|(create|verify)\|(\d+)\|(\d+)$/.exec(line);
+            if (!match) continue;
+            receivedProgress = true;
+            onProgress({
+              phase: match[1],
+              filesCompleted: Number(match[2]),
+              bytesCompleted: Number(match[3])
+            });
+            queueProgressPersist();
+          }
+          return receivedProgress;
+        }, options.archiveIdleTimeoutMs || 2 * 60 * 1000);
+      } finally {
+        queueProgressPersist(true);
+        await progressPersistence;
+      }
+      if (progressPersistenceError) throw progressPersistenceError;
     } else if (platform === 'darwin') {
       await runProcess(options.dittoPath || '/usr/bin/ditto', ['-c', '-k', '--norsrc', sourceDirectory, outputFile], {});
       await runProcess(options.unzipPath || '/usr/bin/unzip', ['-t', outputFile], {}, 30 * 60 * 1000);
@@ -391,31 +543,22 @@ function createRestorePackageService(options = {}) {
 
   async function buildHelperZip(outputPath) {
     const zip = new AdmZip();
-    const pending = [{ source: restoreWizardRoot, relative: '' }];
-    while (pending.length) {
-      const current = pending.pop();
-      const entries = await fsp.readdir(current.source, { withFileTypes: true });
-      for (const entry of entries) {
-        if (
-          entry.name === 'node_modules' ||
-          ['.git', '.vscode', '.DS_Store', 'Thumbs.db', 'desktop.ini'].includes(entry.name) ||
-          (/^\.env(?:$|[.-])/i.test(entry.name) && entry.name !== '.env.example')
-        ) continue;
-        const source = path.join(current.source, entry.name);
-        const relative = path.posix.join(current.relative, entry.name);
-        if (entry.isSymbolicLink()) throw new Error(`Restore helper package contains a symbolic link: ${relative}`);
-        if (entry.isDirectory()) pending.push({ source, relative });
-        else if (entry.isFile()) zip.addLocalFile(source, path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative));
-        else throw new Error(`Restore helper package contains an unsupported entry: ${relative}`);
+    for (const relative of HELPER_PACKAGE_FILES) {
+      const source = path.join(restoreWizardRoot, ...relative.split('/'));
+      const stat = await fsp.lstat(source);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw new Error(`Required Restore helper setup file is missing or unsafe: ${relative}`);
       }
+      zip.addLocalFile(source, path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative));
     }
     zip.writeZip(outputPath);
     const stat = await fsp.lstat(outputPath);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 22) throw new Error('Restore helper ZIP is empty or unsafe.');
     const verified = new AdmZip(outputPath);
-    if (!verified.getEntries().some((entry) => entry.entryName.endsWith('server.js')) ||
-        !verified.getEntries().some((entry) => entry.entryName.endsWith('restore-manifest.json'))) {
-      throw new Error('Restore helper ZIP is missing the helper server or bundled manifest.');
+    const entries = verified.getEntries().map((entry) => entry.entryName).sort();
+    if (entries.length !== HELPER_PACKAGE_FILES.length ||
+        HELPER_PACKAGE_FILES.some((relative) => !entries.includes(relative))) {
+      throw new Error('Restore helper ZIP does not contain exactly the required setup files.');
     }
     return { path: outputPath, sizeBytes: stat.size };
   }
@@ -538,12 +681,26 @@ function createRestorePackageService(options = {}) {
     ]) {
       setTask(job, definition.id, 'RUNNING', `Creating ${definition.filename}; archive size is not yet known`);
       await persist(job);
+      const archiveEntries = sourcePayloadEntries.filter(({ path: item }) => item.startsWith(`${definition.source}/`));
+      const archiveBytes = archiveEntries.reduce((sum, entry) => sum + entry.sizeBytes, 0);
       const archive = await createDataArchive(
         path.join(outputRoot, `Backup-Set-${job.backupJobId}`, 'Drive-1', definition.source),
         path.join(destination, definition.filename),
-        sourcePayloadEntries.filter(({ path: item }) => item.startsWith(`${definition.source}/`)).length,
-        sourcePayloadEntries.filter(({ path: item }) => item.startsWith(`${definition.source}/`))
-          .reduce((sum, entry) => sum + entry.sizeBytes, 0)
+        archiveEntries.length,
+        archiveBytes,
+        ({ phase, filesCompleted, bytesCompleted }) => {
+          const task = job.tasks.find(({ id }) => id === definition.id);
+          task.filesCompleted = filesCompleted;
+          task.filesTotal = archiveEntries.length;
+          task.bytesCompleted = bytesCompleted;
+          task.bytesTotal = archiveBytes;
+          const phaseLabel = phase === 'verify' ? 'Verifying archive' : 'Compressing files';
+          task.percent = Math.min(99, Math.floor((phase === 'verify' ? 50 : 0) + (archiveBytes ? bytesCompleted / archiveBytes * 50 : 50)));
+          task.operation = `${phaseLabel}: ${filesCompleted}/${archiveEntries.length} files, ${bytesCompleted}/${archiveBytes} bytes`;
+          job.currentOperation = `${definition.filename}: ${task.operation}`;
+          updateOverallProgress(job);
+        },
+        () => persist(job)
       );
       await verifyExportFilesUnchanged(
         job.backupJobId,
@@ -555,6 +712,7 @@ function createRestorePackageService(options = {}) {
       task.status = 'COMPLETED';
       task.percent = 100;
       task.operation = 'Created and structurally checked';
+      updateOverallProgress(job);
     }
     setTask(job, 'wizard', 'RUNNING', 'Writing standalone HTML wizard');
     await persist(job);

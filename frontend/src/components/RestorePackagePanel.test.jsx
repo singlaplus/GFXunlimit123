@@ -75,7 +75,7 @@ describe("RestorePackagePanel", () => {
     expect(screen.queryByText(/verified downloads/i)).not.toBeInTheDocument();
   });
 
-  it("returns a stale failed job to the explicit encrypted-configuration approval flow", async () => {
+  it("keeps the approval flow fresh when a previous job is failed", async () => {
     window.sessionStorage.setItem("stocksite-restore-package-job", "GFX-restore-failed");
     axios.mockImplementation(({ method, url }) => {
       if (method === "get" && url.endsWith("/restore-package/jobs/GFX-restore-failed")) {
@@ -89,10 +89,17 @@ describe("RestorePackagePanel", () => {
 
     render(<RestorePackagePanel apiBaseUrl="http://localhost:5000" getAuthToken={() => "test-token"} />);
 
-    expect(await screen.findByRole("checkbox")).toBeInTheDocument();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/previous package job failed and remains recorded/i);
-    expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBeNull();
+    expect(await screen.findByRole("checkbox")).not.toBeChecked();
     expect(screen.getByRole("button", { name: "START" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Resume or inspect previous package/i })).toBeInTheDocument();
+    expect(axios).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Resume or inspect previous package/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/previous package job failed .* remains recorded/i);
+    expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBeNull();
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "START" })).toBeDisabled();
+    expect(screen.queryByRole("progressbar", { name: "Package preparation progress" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: "START" }));
@@ -105,7 +112,7 @@ describe("RestorePackagePanel", () => {
     expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBe("GFX-restore-new");
   });
 
-  it("keeps an active server job available to resume after page refresh", async () => {
+  it("opens fresh after refresh and resumes an active server job only on request", async () => {
     window.sessionStorage.setItem("stocksite-restore-package-job", "GFX-restore-active");
     axios.mockResolvedValue({
       data: {
@@ -121,9 +128,41 @@ describe("RestorePackagePanel", () => {
     });
 
     const { unmount } = render(<RestorePackagePanel apiBaseUrl="http://localhost:5000" getAuthToken={() => "test-token"} />);
+    expect(await screen.findByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "START" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Resume or inspect previous package/i })).toBeInTheDocument();
+    expect(axios).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Resume or inspect previous package/i }));
     expect(await screen.findByText("Collecting verified sources")).toBeInTheDocument();
     expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBe("GFX-restore-active");
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     unmount();
+  });
+
+  it("returns a persisted RUNNING job marked stale after backend restart to fresh approval", async () => {
+    window.sessionStorage.setItem("stocksite-restore-package-job", "GFX-restore-after-restart");
+    axios.mockResolvedValue({
+      data: {
+        job: {
+          id: "GFX-restore-after-restart",
+          status: "FAILED",
+          error: "The SERVER restarted before package generation finished.",
+          tasks: []
+        }
+      }
+    });
+
+    render(<RestorePackagePanel apiBaseUrl="http://localhost:5000" getAuthToken={() => "test-token"} />);
+    expect(await screen.findByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "START" })).toBeDisabled();
+    expect(screen.queryByText(/Package preparation progress/i)).not.toBeInTheDocument();
+    expect(axios).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Resume or inspect previous package/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/previous package job failed .* remains recorded/i);
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "START" })).toBeDisabled();
+    expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBeNull();
   });
 });

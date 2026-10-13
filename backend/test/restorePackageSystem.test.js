@@ -173,12 +173,21 @@ test('restore package preparation consumes a verified backup set and exposes onl
     const helperZip = await service.openArtifact(backupId, 'helperZip');
     const helperPath = path.join(outputRoot, `Restore-Package-${backupId}`, helperZip.filename);
     const entries = new AdmZip(helperPath).getEntries().map((entry) => entry.entryName);
-    assert.ok(entries.some((entry) => entry.endsWith('helper/server.js')));
-    assert.ok(entries.some((entry) => entry.endsWith('helper/start-macos.sh')));
-    assert.ok(entries.some((entry) => entry.endsWith('helper/start-windows.cmd')));
-    assert.ok(entries.some((entry) => entry.endsWith('helper/package.json')));
-    assert.ok(entries.some((entry) => entry.endsWith('helper/package-lock.json')));
-    assert.ok(entries.some((entry) => entry.endsWith('restore-manifest.json')));
+    assert.deepEqual(entries.sort(), [
+      'README.md',
+      'helper/.env.example',
+      'helper/package-lock.json',
+      'helper/package.json',
+      'helper/server.js',
+      'helper/start-macos.sh',
+      'helper/start-windows.cmd',
+      'restore-manifest.json',
+      'restore-wizard.html'
+    ]);
+    assert.ok(!entries.some((entry) =>
+      ['stocksite.backup', 'website-code.zip', 'original-assets.zip', 'thumbnails.zip', 'server.test.js']
+        .includes(path.posix.basename(entry))
+    ), 'the helper ZIP contains setup files only, not payloads or test fixtures');
     for (const archiveName of ['website-code.zip', 'original-assets.zip', 'thumbnails.zip']) {
       const archivePath = path.join(outputRoot, `Restore-Package-${backupId}`, archiveName);
       const archiveEntries = new AdmZip(archivePath).getEntries().map((entry) => entry.entryName);
@@ -398,6 +407,19 @@ test('restore package preparation consumes a verified backup set and exposes onl
     assert.doesNotMatch(standaloneWizard, /source folder/);
     const validated = await helper.validateConfiguration(validationInput);
     assert.equal(validated.destinations.databaseName, 'stocksite_restore_test');
+    assert.deepEqual(validated.sources, {
+      databaseFile: await fsp.realpath(validationInput.sources.databaseFile),
+      websiteArchive: await fsp.realpath(validationInput.sources.websiteArchive),
+      assetsArchive: await fsp.realpath(validationInput.sources.assetsArchive),
+      thumbnailsArchive: await fsp.realpath(validationInput.sources.thumbnailsArchive)
+    }, 'the helper accepts separately supplied payload files selected from the package folder');
+    const missingArchivePath = path.join(packageDirectory, 'thumbnails.zip.missing-test');
+    await fsp.rename(validationInput.sources.thumbnailsArchive, missingArchivePath);
+    try {
+      await assert.rejects(helper.validateConfiguration(validationInput), /Thumbnail ZIP was not found at the entered path/);
+    } finally {
+      await fsp.rename(missingArchivePath, validationInput.sources.thumbnailsArchive);
+    }
     const wrongPortHelper = createRestoreHelper({
       environment: {
         RESTORE_HELPER_TOKEN: 'test-only-token-long-enough-for-helper-validation',
@@ -965,17 +987,106 @@ test('restore package generation rejects malformed and broadly readable signing 
 
 test('Windows ZIP generation loads both compression assemblies and verifies archive inventory and paths', async () => {
   const source = await fsp.readFile(path.resolve(__dirname, '../services/restorePackageSystem.js'), 'utf8');
-  const scriptLine = source.split(/\r?\n/).find((line) => line.includes('const script =') && line.includes('ZipFile]::Open'));
+  const scriptStart = source.indexOf('const script = String.raw`');
+  const scriptEnd = source.indexOf('`;', scriptStart);
+  const script = source.slice(scriptStart, scriptEnd);
 
-  assert.ok(scriptLine, 'Windows PowerShell ZIP script is present');
-  const zipApi = scriptLine.indexOf('[IO.Compression.ZipFile]');
+  assert.ok(scriptStart >= 0 && scriptEnd > scriptStart, 'Windows PowerShell ZIP script is present');
+  const zipApi = script.indexOf('[IO.Compression.ZipFile]');
   assert.ok(zipApi > 0, 'PowerShell script uses ZipFile APIs');
-  assert.ok(scriptLine.indexOf('Add-Type -AssemblyName System.IO.Compression;') < zipApi);
-  assert.ok(scriptLine.indexOf('Add-Type -AssemblyName System.IO.Compression.FileSystem;') < zipApi);
-  assert.match(scriptLine, /Source file count changed/);
-  assert.match(scriptLine, /Source byte total changed/);
-  assert.match(scriptLine, /Archive file count mismatch/);
-  assert.match(scriptLine, /Archive byte total mismatch/);
-  assert.match(scriptLine, /Unsafe or duplicate archive path/);
-  assert.match(scriptLine, /Unsafe archive entry/);
+  assert.ok(script.indexOf('Add-Type -AssemblyName System.IO.Compression;') < zipApi);
+  assert.ok(script.indexOf('Add-Type -AssemblyName System.IO.Compression.FileSystem;') < zipApi);
+  assert.match(script, /Source file count changed/);
+  assert.match(script, /Source byte total changed/);
+  assert.match(script, /Archive file count mismatch/);
+  assert.match(script, /Archive byte total mismatch/);
+  assert.match(script, /Unsafe or duplicate archive path/);
+  assert.match(script, /Unsafe archive entry/);
+  assert.match(script, /Write-PackageProgress 'create'/);
+  assert.match(script, /Write-PackageProgress 'verify'/);
+  assert.match(script, /\$input\.Read\(\$buffer/);
+  assert.match(script, /\$s\.Read\(\$buffer/);
+});
+
+test('stalled Windows ZIP subprocess fails the package job instead of leaving it RUNNING', async () => {
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), 'stocksite-restore-package-zip-timeout-'));
+  const backupId = 'GFX-restore-package-zip-timeout';
+  const outputRoot = path.join(temporary, 'exports', 'GFXunlimit');
+  const sourceRoot = path.join(outputRoot, `Backup-Set-${backupId}`, 'Drive-1');
+  const payloads = {
+    'Database/stocksite.backup': Buffer.from('PGDMP-test'),
+    'Website-Code/site.js': Buffer.from('module.exports = true;'),
+    'Assets/user/original.dat': Buffer.from('asset'),
+    'Thumbnails/user/thumb.dat': Buffer.from('thumb')
+  };
+  const manifest = Buffer.from(JSON.stringify({
+    format: 'GFXUNLIMIT-BACKUP-SET',
+    backupSetId: backupId,
+    status: 'SUCCESS',
+    verificationStatus: 'VERIFIED',
+    environmentFilesEncrypted: true
+  }));
+  const checksums = Buffer.from(Object.entries(payloads)
+    .map(([relativePath, content]) =>
+      `${crypto.createHash('sha256').update(content).digest('hex')} ${content.length} ${relativePath}`)
+    .join('\n') + '\n');
+  const sourceFiles = new Map();
+  for (const [relativePath, content] of Object.entries({
+    ...payloads,
+    'manifest.json': manifest,
+    'checksums.sha256': checksums
+  })) {
+    sourceFiles.set(relativePath, await write(sourceRoot, relativePath, content));
+  }
+  let child;
+  const service = createRestorePackageService({
+    backupService: {
+      async createJob() { return { id: backupId }; },
+      async getJob() { return { id: backupId, status: 'SUCCESS', verificationStatus: 'VERIFIED', progress: {} }; },
+      async getClientExportFiles() {
+        return [...sourceFiles].map(([relativePath, filePath]) => ({
+          path: relativePath,
+          sizeBytes: fs.statSync(filePath).size
+        }));
+      },
+      async openClientExportFile(_id, relativePath) {
+        const filePath = sourceFiles.get(relativePath);
+        const stat = await fsp.stat(filePath);
+        return { stream: fs.createReadStream(filePath), sizeBytes: stat.size };
+      }
+    },
+    outputRoot,
+    stateDirectory: path.join(temporary, 'state'),
+    restoreWizardRoot: path.resolve(__dirname, '../../restore-wizard'),
+    packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY,
+    platform: 'win32',
+    archiveIdleTimeoutMs: 25,
+    statfs: async () => ({ bavail: 1024 * 1024, bsize: 1024 }),
+    spawn: () => {
+      child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {
+        child.wasTerminated = true;
+        return true;
+      };
+      setTimeout(() => child.stdout.emit('data', Buffer.from('STOCKSITE_PROGRESS|create|0|20\n')), 10);
+      return child;
+    },
+    pollIntervalMs: 1
+  });
+
+  try {
+    await service.start({ includeEncryptedEnvironmentFiles: true });
+    const job = await waitFor(service, backupId);
+    assert.equal(job.status, 'FAILED');
+    assert.match(job.error, /Windows ZIP generation made no measurable progress/);
+    assert.equal(child.wasTerminated, true);
+    const websiteTask = job.tasks.find(({ id }) => id === 'websiteCode');
+    assert.equal(websiteTask.bytesCompleted, 20);
+    assert.equal(websiteTask.filesTotal, 1);
+    assert.ok(job.progress.percent > 44, `measured archive work advances overall workflow progress beyond completed stages; got ${job.progress.percent}`);
+  } finally {
+    await fsp.rm(temporary, { recursive: true, force: true });
+  }
 });

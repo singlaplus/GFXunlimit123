@@ -29,6 +29,8 @@ function bytesLabel(bytes) {
 
 export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
   const [job, setJob] = useState(null);
+  const [previousJobId, setPreviousJobId] = useState(null);
+  const [checkingPreviousJob, setCheckingPreviousJob] = useState(false);
   const [busy, setBusy] = useState(false);
   const [authorizeEncryptedConfiguration, setAuthorizeEncryptedConfiguration] = useState(false);
   const [error, setError] = useState("");
@@ -51,23 +53,8 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
 
   useEffect(() => {
     const savedId = window.sessionStorage.getItem(STORAGE_KEY);
-    if (!savedId) return;
-    let active = true;
-    request("get", `/restore-package/jobs/${encodeURIComponent(savedId)}`)
-      .then((response) => {
-        if (!active) return;
-        const savedJob = response.data?.job || null;
-        if (savedJob?.status === "FAILED") {
-          window.sessionStorage.removeItem(STORAGE_KEY);
-          setAuthorizeEncryptedConfiguration(false);
-          setError("The previous package job failed and remains recorded on the SERVER. Review its status before starting a new package.");
-          return;
-        }
-        setJob(savedJob);
-      })
-      .catch(() => { if (active) window.sessionStorage.removeItem(STORAGE_KEY); });
-    return () => { active = false; };
-  }, [request]);
+    if (savedId) setPreviousJobId(savedId);
+  }, []);
 
   useEffect(() => {
     if (!job?.id || job.status !== "RUNNING") return undefined;
@@ -98,6 +85,7 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
       const started = response.data?.job;
       if (!started?.id) throw new Error("The server did not return a restore package job ID.");
       window.sessionStorage.setItem(STORAGE_KEY, started.id);
+      setPreviousJobId(started.id);
       setJob(started);
     } catch (requestError) {
       setError(requestError.response?.data?.error || requestError.message || "Restore package preparation could not be started.");
@@ -106,8 +94,34 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
     }
   };
 
+  const resumePreviousJob = async () => {
+    if (!previousJobId) return;
+    setCheckingPreviousJob(true);
+    setError("");
+    try {
+      const response = await refresh(previousJobId);
+      const savedJob = response.data?.job || null;
+      if (!savedJob) throw new Error("The previous restore package job was not found.");
+      if (savedJob.status === "FAILED") {
+        window.sessionStorage.removeItem(STORAGE_KEY);
+        setPreviousJobId(null);
+        setAuthorizeEncryptedConfiguration(false);
+        setError(savedJob.error
+          ? `The previous package job failed (${savedJob.error}) and remains recorded on the SERVER. You can start a new package.`
+          : "The previous package job failed and remains recorded on the SERVER. You can start a new package.");
+        return;
+      }
+      setJob(savedJob);
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || requestError.message || "The previous package job status could not be loaded.");
+    } finally {
+      setCheckingPreviousJob(false);
+    }
+  };
+
   const prepareAnotherPackage = () => {
     setJob(null);
+    setPreviousJobId(null);
     setAuthorizeEncryptedConfiguration(false);
     setError("");
     setDownloadMessage("");
@@ -170,6 +184,14 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
     <section aria-label="Restore package generator" className="gfx-backup-section gfx-restore-package">
       {!job && (
         <div style={{ display: "grid", justifyItems: "center", gap: 16, padding: "32px 16px", textAlign: "center" }}>
+          {previousJobId && (
+            <div role="status">
+              <p>A previous package job is linked to this tab. Checking will not cancel a live job; the SERVER may mark a job left RUNNING by a restart as failed and clean up its incomplete output.</p>
+              <button type="button" onClick={resumePreviousJob} disabled={checkingPreviousJob}>
+                {checkingPreviousJob ? "Checking…" : "Resume or inspect previous package"}
+              </button>
+            </div>
+          )}
           <h3 style={{ margin: 0 }}>Prepare Stocksite restoration package</h3>
           <p style={{ maxWidth: 660, margin: 0, color: "var(--backup-muted)" }}>
             START asks the configured SERVER backup engine to validate PostgreSQL, website code, original asset, and thumbnail sources, then prepare individually downloadable, verified restore artifacts. Source paths and credentials are read only from server configuration.
