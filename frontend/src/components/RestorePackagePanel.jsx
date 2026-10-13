@@ -54,7 +54,17 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
     if (!savedId) return;
     let active = true;
     request("get", `/restore-package/jobs/${encodeURIComponent(savedId)}`)
-      .then((response) => { if (active) setJob(response.data?.job || null); })
+      .then((response) => {
+        if (!active) return;
+        const savedJob = response.data?.job || null;
+        if (savedJob?.status === "FAILED") {
+          window.sessionStorage.removeItem(STORAGE_KEY);
+          setAuthorizeEncryptedConfiguration(false);
+          setError("The previous package job failed and remains recorded on the SERVER. Review its status before starting a new package.");
+          return;
+        }
+        setJob(savedJob);
+      })
       .catch(() => { if (active) window.sessionStorage.removeItem(STORAGE_KEY); });
     return () => { active = false; };
   }, [request]);
@@ -94,6 +104,14 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const prepareAnotherPackage = () => {
+    setJob(null);
+    setAuthorizeEncryptedConfiguration(false);
+    setError("");
+    setDownloadMessage("");
+    window.sessionStorage.removeItem(STORAGE_KEY);
   };
 
   const download = async (artifact) => {
@@ -222,7 +240,16 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
               <p className="gfx-backup-measurement">The website-code archive contains encrypted environment-file payloads. Keep the decryption key separate; it is not included in the package.</p>
             </section>
           )}
-          {job.status === "FAILED" && <button type="button" className="gfx-backup-primary" onClick={start} disabled={busy}>{busy ? "Retrying…" : "Retry package preparation"}</button>}
+          {job.status === "FAILED" && (
+            <button type="button" className="gfx-backup-primary" onClick={prepareAnotherPackage}>
+              Prepare a new package
+            </button>
+          )}
+          {job.status === "READY" && (
+            <button type="button" className="gfx-backup-primary" onClick={prepareAnotherPackage}>
+              Prepare another package
+            </button>
+          )}
           {downloadMessage && <p role="status">{downloadMessage}</p>}
         </div>
       )}

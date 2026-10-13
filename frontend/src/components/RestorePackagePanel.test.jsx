@@ -74,4 +74,56 @@ describe("RestorePackagePanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/ASSETS_ROOT must be configured on SERVER/i);
     expect(screen.queryByText(/verified downloads/i)).not.toBeInTheDocument();
   });
+
+  it("returns a stale failed job to the explicit encrypted-configuration approval flow", async () => {
+    window.sessionStorage.setItem("stocksite-restore-package-job", "GFX-restore-failed");
+    axios.mockImplementation(({ method, url }) => {
+      if (method === "get" && url.endsWith("/restore-package/jobs/GFX-restore-failed")) {
+        return Promise.resolve({ data: { job: { id: "GFX-restore-failed", status: "FAILED" } } });
+      }
+      if (method === "post" && url.endsWith("/restore-package/start")) {
+        return Promise.resolve({ data: { job: { id: "GFX-restore-new", status: "RUNNING", tasks: [] } } });
+      }
+      return Promise.reject(new Error(`Unexpected request: ${method} ${url}`));
+    });
+
+    render(<RestorePackagePanel apiBaseUrl="http://localhost:5000" getAuthToken={() => "test-token"} />);
+
+    expect(await screen.findByRole("checkbox")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/previous package job failed and remains recorded/i);
+    expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBeNull();
+    expect(screen.getByRole("button", { name: "START" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "START" }));
+    await waitFor(() => {
+      expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+        method: "post",
+        data: { includeEncryptedEnvironmentFiles: true }
+      }));
+    });
+    expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBe("GFX-restore-new");
+  });
+
+  it("keeps an active server job available to resume after page refresh", async () => {
+    window.sessionStorage.setItem("stocksite-restore-package-job", "GFX-restore-active");
+    axios.mockResolvedValue({
+      data: {
+        job: {
+          id: "GFX-restore-active",
+          status: "RUNNING",
+          currentOperation: "Collecting verified sources",
+          tasks: [],
+          progress: { percent: 30 },
+          artifacts: []
+        }
+      }
+    });
+
+    const { unmount } = render(<RestorePackagePanel apiBaseUrl="http://localhost:5000" getAuthToken={() => "test-token"} />);
+    expect(await screen.findByText("Collecting verified sources")).toBeInTheDocument();
+    expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBe("GFX-restore-active");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    unmount();
+  });
 });

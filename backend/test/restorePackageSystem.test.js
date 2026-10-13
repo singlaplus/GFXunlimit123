@@ -962,3 +962,20 @@ test('restore package generation rejects malformed and broadly readable signing 
     await fsp.rm(temporary, { recursive: true, force: true });
   }
 });
+
+test('Windows ZIP generation loads both compression assemblies and verifies archive inventory and paths', async () => {
+  const source = await fsp.readFile(path.resolve(__dirname, '../services/restorePackageSystem.js'), 'utf8');
+  const scriptLine = source.split(/\r?\n/).find((line) => line.includes('const script =') && line.includes('ZipFile]::Open'));
+
+  assert.ok(scriptLine, 'Windows PowerShell ZIP script is present');
+  const zipApi = scriptLine.indexOf('[IO.Compression.ZipFile]');
+  assert.ok(zipApi > 0, 'PowerShell script uses ZipFile APIs');
+  assert.ok(scriptLine.indexOf('Add-Type -AssemblyName System.IO.Compression;') < zipApi);
+  assert.ok(scriptLine.indexOf('Add-Type -AssemblyName System.IO.Compression.FileSystem;') < zipApi);
+  assert.match(scriptLine, /Source file count changed/);
+  assert.match(scriptLine, /Source byte total changed/);
+  assert.match(scriptLine, /Archive file count mismatch/);
+  assert.match(scriptLine, /Archive byte total mismatch/);
+  assert.match(scriptLine, /Unsafe or duplicate archive path/);
+  assert.match(scriptLine, /Unsafe archive entry/);
+});
