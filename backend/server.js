@@ -14071,7 +14071,7 @@ if (require.main === module) {
       process.exitCode = 1;
       return;
     }
-    app.listen(PORT, "0.0.0.0", () => {
+    app.listen(PORT, process.env.HOST || "0.0.0.0", () => {
       console.log(`Server running on port ${PORT}`);
     });
   })();

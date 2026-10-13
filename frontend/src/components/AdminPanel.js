@@ -16,7 +16,6 @@ import AdminEmailTemplates from "../pages/AdminEmailTemplates";
 import AdminEmailQueue from "../pages/AdminEmailQueue";
 import AdminNotificationRules from "../pages/AdminNotificationRules";
 import AdminEmailAnalytics from "../pages/AdminEmailAnalytics";
-import RestorePage from "../pages/RestorePage";
 import AdminBackupPage from "../pages/AdminBackupPage";
 import TaxMailSMTPSettings from "./TaxMailSMTPSettings";
 import TaxMailTemplates from "./TaxMailTemplates";
@@ -688,6 +687,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const isControlsTab = tabParam === "controls";
   const isAdminDashboardTab = tabParam === "admin_dashboard";
   const isBackupTab = tabParam === "backup";
+  const isRestoreTab = tabParam === "restore";
   const isEmptyAdminBodyTab = tabParam === "restore";
   const isLiveAssetsTab = tabParam === "live-assets";
   const isRejectedAssetsView = !tabParam && statusFilter === "rejected";
@@ -5223,11 +5223,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         </div>
       ) : isDailyReportSettingsRouteOpen ? (
         renderDailyReportSettingsContent()
-      ) : isBackupTab ? (
+      ) : isBackupTab || isRestoreTab ? (
         <AdminBackupPage
           isDarkMode={isDarkMode}
           apiBaseUrl={API_BASE_URL}
           getAuthToken={getEffectiveAuthToken}
+          restoreMode={isRestoreTab}
         />
       ) : isContributorDetailsTab ? (
         <div style={{ display: "grid", gap: "16px", width: "100%" }}>
@@ -6036,8 +6037,6 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             )}
           </div>
         </div>
-      ) : isEmptyAdminBodyTab ? (
-        <RestorePage />
       ) : isControlsTaxFormsTab ? (
         <>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "flex-end", width: "100%", margin: "0 0 12px" }}>

@@ -786,10 +786,28 @@ describe("AdminPanel collection controls", () => {
 
     render(<AdminPanel />);
 
-    expect(await screen.findByText(/GFX Backup/i)).toBeInTheDocument();
-    expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+    expect(await screen.findByText(/Backup Center/i)).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Backup categories")).getAllByRole("checkbox")).toHaveLength(3);
     expect(screen.queryByText(/incremental/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Build Complete Backup Plan/i })).toBeInTheDocument();
+  });
+
+  it("renders the restore wizard inside the admin backup page when the restore tab is selected", async () => {
+    useLocation.mockReturnValue({ search: "?tab=restore" });
+    axios.mockImplementation(({ method, url }) => {
+      if (method === "get" && url.endsWith("/jobs/active")) return Promise.resolve({ data: { job: null } });
+      if (method === "get" && url.endsWith("/history")) return Promise.resolve({ data: { jobs: [] } });
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText(/Restore Center/i)).toBeInTheDocument();
+    const restorePanel = screen.getByRole("region", { name: /restore package generator/i });
+    expect(within(restorePanel).getByRole("button", { name: "START" })).toBeInTheDocument();
+    expect(within(restorePanel).getByRole("heading", { name: /prepare stocksite restoration package/i })).toBeInTheDocument();
+    expect(within(restorePanel).getAllByRole("button")).toHaveLength(1);
+    expect(screen.queryByText(/GFX Backup/i)).not.toBeInTheDocument();
   });
 
   it("shows a dedicated daily reports control card in the controls tab", async () => {

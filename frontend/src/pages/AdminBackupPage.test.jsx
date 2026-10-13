@@ -708,4 +708,65 @@ describe("AdminBackupPage", () => {
       .toHaveTextContent("There are no live automatic backup schedules.");
     expect(screen.queryByText("Live automatic schedule")).not.toBeInTheDocument();
   });
+
+  test("Saved Schedule Edit loads the selected schedule into the editor", async () => {
+    const defaultRequest = axios.getMockImplementation();
+    axios.mockImplementation((config) => {
+      if (config.method === "get" && config.url.endsWith("/automatic")) {
+        const schedules = [
+          { id: "daily", enabled: true, destination: "D:\\Daily", selectedTypes: ["database"], frequency: "daily", time: "02:00", nextRun: "2026-10-12T02:00:00.000Z" },
+          { id: "weekly", enabled: true, destination: "D:\\Weekly", selectedTypes: ["websiteCode"], frequency: "weekly", time: "03:00", nextRun: "2026-10-13T03:00:00.000Z" }
+        ];
+        return Promise.resolve({ data: { schedules, schedule: { ...schedules[0], schedules } } });
+      }
+      return defaultRequest(config);
+    });
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    await screen.findByRole("button", { name: "Saved Schedule" });
+    fireEvent.click(screen.getByRole("button", { name: "Saved Schedule" }));
+    const cards = screen.getByRole("dialog", { name: "Saved Automatic Backup Schedule" });
+    fireEvent.click(within(cards).getAllByRole("button", { name: "Edit" })[1]);
+
+    expect(screen.queryByRole("dialog", { name: "Saved Automatic Backup Schedule" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Automatic Backup Location")).toHaveValue("D:\\Weekly");
+    expect(screen.getByLabelText("Frequency")).toHaveValue("weekly");
+    expect(screen.getByLabelText("Time (IST)")).toHaveValue("03:00");
+  });
+
+  test("Saved Schedule Delete removes only the confirmed selected schedule", async () => {
+    const defaultRequest = axios.getMockImplementation();
+    const schedules = [
+      { id: "daily", enabled: true, destination: "D:\\Daily", selectedTypes: ["database"], frequency: "daily", time: "02:00", nextRun: "2026-10-12T02:00:00.000Z" },
+      { id: "weekly", enabled: true, destination: "D:\\Weekly", selectedTypes: ["websiteCode"], frequency: "weekly", time: "03:00", nextRun: "2026-10-13T03:00:00.000Z" }
+    ];
+    axios.mockImplementation((config) => {
+      if (config.method === "get" && config.url.endsWith("/automatic")) {
+        return Promise.resolve({ data: { schedules, schedule: { ...schedules[0], schedules } } });
+      }
+      if (config.method === "put" && config.url.endsWith("/automatic")) {
+        expect(config.data.schedules.map((schedule) => schedule.id)).not.toContain("daily");
+        const remaining = [schedules[1]];
+        return Promise.resolve({ data: { schedules: remaining, schedule: { ...remaining[0], schedules: remaining } } });
+      }
+      return defaultRequest(config);
+    });
+    const confirm = jest.spyOn(window, "confirm").mockReturnValue(true);
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    await screen.findByRole("button", { name: "Saved Schedule" });
+    fireEvent.click(screen.getByRole("button", { name: "Saved Schedule" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getAllByRole("button", { name: "Delete" })[0]);
+
+    await waitFor(() => expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+      method: "put",
+      url: "http://localhost:5000/admin/backup/automatic",
+      data: {
+        schedules: [expect.objectContaining({ id: "weekly" })]
+      }
+    })));
+    expect(confirm).toHaveBeenCalled();
+    expect(await screen.findByText("Live automatic schedule 1")).toBeInTheDocument();
+    expect(screen.queryByText("Live automatic schedule 2")).not.toBeInTheDocument();
+    expect(screen.getByText("D:\\Weekly")).toBeInTheDocument();
+    confirm.mockRestore();
+  });
 });

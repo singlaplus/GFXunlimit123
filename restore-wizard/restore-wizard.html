@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Stocksite Restore Wizard</title>
+  <style>
+    :root{font:16px system-ui,sans-serif;color:#172033;background:#f1f5f9}body{margin:0;padding:24px}.card{max-width:900px;margin:auto;background:white;border:1px solid #dbe3ed;border-radius:16px;padding:24px;box-shadow:0 12px 36px #0f172a12}label{display:grid;gap:6px;font-weight:650;margin:12px 0}input,textarea{box-sizing:border-box;width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px}textarea{font:inherit;resize:vertical}button{padding:11px 16px;border:0;border-radius:8px;background:#1d4ed8;color:white;font-weight:750;cursor:pointer}button:disabled{opacity:.55}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px}.muted{color:#64748b}.error{color:#b91c1c}progress{width:100%;height:18px}.approval{border:2px solid #d97706;background:#fffbeb;border-radius:10px;padding:16px;margin:16px 0}.approval dl{display:grid;grid-template-columns:minmax(140px,auto) 1fr;gap:8px}.approval dt{font-weight:700}.approval dd{margin:0;overflow-wrap:anywhere}.secondary{background:#475569}.report{border:1px solid #cbd5e1;border-radius:10px;padding:16px;margin:16px 0}
+  </style>
+</head>
+<body>
+<main class="card">
+  <h1>Stocksite Restore Wizard</h1>
+  <p id="platform" class="muted">Detecting operating system…</p>
+  <p id="originNote" class="muted"></p>
+  <p>This wizard runs on the Developer computer or the selected Windows/macOS restore target. The SERVER supplies only authenticated package downloads; the trusted local helper performs local work and never runs remote manifest commands. Database credentials belong in the helper's local environment, not in this page. Each consequential local restore action pauses for its own approval; approving one action does not approve the next.</p>
+  <p class="error"><strong>Secret warning:</strong> the website archive may contain encrypted production `.env` configuration because an administrator authorized its inclusion. The helper will not decrypt or install it. Configure new environment-specific credentials locally; reusing production credentials can grant this computer production access.</p>
+  <details>
+    <summary>Set up the local helper (Windows or macOS)</summary>
+    <ol>
+      <li>Use supported 64-bit Windows 11 desktop build 26200 or newer (25H2+). Install x64 Node.js 22 or newer on an active/maintenance LTS line from <a href="https://nodejs.org/en/download" target="_blank" rel="noopener noreferrer">nodejs.org</a>, keeping npm enabled. Separately install PostgreSQL 18 or newer with its local server plus <code>psql</code> and <code>pg_restore</code> from the <a href="https://www.postgresql.org/download/windows/" target="_blank" rel="noopener noreferrer">official PostgreSQL Windows download page</a>. Do not use Windows 10, Windows Server, older Windows 11 builds, or ARM Node as a supported target. Review each installer and publisher yourself; the helper never downloads or launches installers, bypasses UAC, starts services, or requests elevation. Reopen PowerShell after installation and use <strong>Check this PC</strong> to recheck.</li>
+      <li>Open Windows Services, start the PostgreSQL 18 service, then open pgAdmin and connect to this local server. Under <strong>Login/Group Roles → Create → Login/Group Role</strong>, create a login role named <code>stocksite_local</code> with a new local password. Under <strong>Databases → Create → Database</strong>, create a database also named <code>stocksite_local</code> and set its Owner to that role. If either name already exists, choose a new unused name for both. The helper later verifies that this role can connect, owns the selected database, and that the database is empty; it never creates, drops, or overwrites database objects.</li>
+      <li>Download the unchanged source files <code>stocksite.backup</code>, <code>website-code.zip</code>, <code>original-assets.zip</code>, <code>thumbnails.zip</code>, <code>restore-package-manifest.json</code>, and <code>checksums.sha256</code> into one private folder. Download and extract <code>stocksite-restore-helper.zip</code> separately to a user-owned folder. Keep the downloaded package originals unchanged.</li>
+      <li>In File Explorer, open the extracted helper folder, click its address bar, type <code>powershell</code>, and press Enter. Run <code>npm ci --ignore-scripts</code>. Copy <code>.env.example</code> to <code>.env</code> without overwriting any existing file. To generate a random token without displaying it, run <code>$b=New-Object byte[] 32; $r=[Security.Cryptography.RandomNumberGenerator]::Create(); $r.GetBytes($b); Set-Clipboard ([Convert]::ToBase64String($b)); $r.Dispose(); Write-Host 'Random token copied; paste it only into helper/.env.'</code>, then replace the example <code>RESTORE_HELPER_TOKEN</code> value in the private <code>.env</code> using Notepad and clear the clipboard with <code>Set-Clipboard -Value ''</code>. Never paste the token into a command, URL, or shared file. In File Explorer, right-click the helper folder and <code>.env</code>, choose <strong>Properties → Security</strong>, and ensure only your trusted Windows account can read them. The helper does not configure Windows ACLs.</li>
+      <li>Run <code>start-windows.cmd</code> from that helper folder. Keep its terminal open. Open <code>http://127.0.0.1:43127/</code> and enter the helper token. Under <strong>Local setup</strong>, enter the loopback host, PostgreSQL port, role name/password, matching empty database name, and free Stocksite port. Enter the independently trusted Ed25519 public key, unless already configured in helper/.env. The form keeps the database password in helper memory only and does not write it to helper/.env. Use <strong>Check this PC</strong> and resolve every required failed check before continuing.</li>
+      <li>Do not use a <code>file://</code> URL for helper API operations. The helper binds only to loopback, rejects remote database hosts, and generates a cryptographically secure local-only JWT secret if one was not explicitly configured.</li>
+    </ol>
+  </details>
+  <label>Helper address<input id="helper" value="http://127.0.0.1:43127"></label>
+  <label>Local helper token<input id="token" type="password" autocomplete="off"></label>
+  <button id="manifestButton" type="button">Load trusted software manifest</button>
+  <p class="muted">Manifest links are informational. The helper will not silently install software or elevate privileges.</p>
+  <ul id="software"></ul>
+  <section aria-labelledby="readinessHeading">
+    <h2 id="readinessHeading">Fresh PC readiness</h2>
+    <p class="muted">This read-only check inspects Windows version and architecture, Node.js/npm, PostgreSQL client tools, the configured loopback PostgreSQL connection and server version, the Windows PostgreSQL service, and the application port. pg_dump is reported for completeness but is not needed to restore a package. A client tool alone is not treated as a running database server. This check never installs software, starts services, creates roles/databases, or changes system settings.</p>
+    <button id="prerequisitesButton" type="button">Check this PC</button>
+    <ul id="prerequisites" aria-live="polite"></ul>
+  </section>
+  <section aria-labelledby="configurationHeading">
+    <h2 id="configurationHeading">Local setup · PostgreSQL and trust</h2>
+    <p class="muted">Create the role and database first using pgAdmin on this PC: under <strong>Login/Group Roles</strong>, create a login role (suggested name <code>stocksite_local</code>) and give it a new local password. Under <strong>Databases</strong>, create a new database (suggested name <code>stocksite_local</code>) and set its Owner to that same role. Do not reuse an existing database or a website/production login. If these names already exist, choose new unique names. The helper verifies the configured role can connect, owns the selected empty database, and reaches PostgreSQL 18+ on loopback. It never creates, drops, or overwrites database objects.</p>
+    <p class="muted">The signing public key is not a password, but it is a trust decision: obtain the base64 Ed25519 SPKI DER key through a trusted channel independent of the downloaded package. Never accept a key merely because it came inside the package.</p>
+    <label>Local database host<input id="databaseHost" value="127.0.0.1" autocomplete="off"></label>
+    <label>Local PostgreSQL port<input id="databasePort" value="5432" inputmode="numeric" autocomplete="off"></label>
+    <label>Dedicated local role<input id="databaseUser" value="stocksite_local" autocomplete="off"></label>
+    <label>Role password<input id="databasePassword" type="password" autocomplete="new-password"></label>
+    <label>New empty database name<input id="databaseName" value="stocksite_local" autocomplete="off"></label>
+    <label>Local Stocksite port<input id="applicationPort" value="5001" inputmode="numeric" autocomplete="off"></label>
+    <label>Trusted package Ed25519 public key (base64 SPKI DER)<textarea id="packageSigningPublicKey" rows="3" autocomplete="off" spellcheck="false"></textarea></label>
+    <p class="muted">The password and public key are sent only to the authenticated loopback helper and kept in helper memory for this run; they are not written to helper/.env, returned in responses, logged, or stored in this browser. The helper creates a fresh local-only JWT secret automatically. To use a key already configured in helper/.env, leave the public-key field blank.</p>
+    <button id="configureButton" type="button">Save local settings in helper memory</button>
+    <p id="configurationStatus" role="status" aria-live="polite"></p>
+  </section>
+  <h2>Step 1 · Sources</h2>
+  <p class="muted">Enter the native Windows or macOS paths to the four verified package artifacts. Keep the database backup, package manifest, checksum file, and all three ZIP archives together. Browsers do not expose a selected file's native path to this local helper, so path entry is the supported fallback. The helper verifies package checksums and inventories before extracting the website, originals, and thumbnails into private staging folders. The database source must be a PostgreSQL custom-format .backup file.</p>
+  <label>PostgreSQL .backup file<input id="databaseFile" autocomplete="off" placeholder="Example: C:\StocksitePackage\stocksite.backup"></label>
+  <label>Website code ZIP<input id="websiteArchive" autocomplete="off" placeholder="Example: C:\StocksitePackage\website-code.zip"></label>
+  <label>Original assets ZIP<input id="assetsArchive" autocomplete="off" placeholder="Example: C:\StocksitePackage\original-assets.zip"></label>
+  <label>Thumbnails ZIP<input id="thumbnailsArchive" autocomplete="off" placeholder="Example: C:\StocksitePackage\thumbnails.zip"></label>
+  <h2>Step 2 · Destinations</h2>
+  <p class="muted">Select new, non-overlapping folders and an already-created, empty PostgreSQL database. The helper refuses existing destination folders and non-empty database targets. Source/schema compatibility is not established; normal Stocksite backend startup may run database initialization/migrations and requires lifecycle schema migrations 028–030 to be present. Use only a disposable local database.</p>
+  <label>Website code destination folder<input id="websiteDestination" autocomplete="off"></label>
+  <label>Original assets destination folder<input id="assetsDestination" autocomplete="off"></label>
+  <label>Thumbnail destination folder<input id="thumbnailsDestination" autocomplete="off"></label>
+  <p class="muted">Enter full local folder paths (for example <code>C:\Stocksite-Restore\site</code>). Paths with spaces are supported; check the drive letter and each folder name carefully. The helper checks that each destination does not already exist, paths do not overlap, and there is enough free space before extraction. Role/database creation, service startup, Windows ACL review, and software installation remain manual steps; the helper reports specific next actions when a check fails.</p>
+  <button id="validateButton" type="button">Validate sources and destinations</button>
+  <div id="review" hidden>
+    <h2>Step 3 · Review and authorize</h2>
+    <pre id="reviewText"></pre>
+    <label><input id="authorize" type="checkbox"> Start read-only validation and the guided restore. Each database, extraction, configuration, dependency, build, and backend-start action will ask separately before it runs.</label>
+    <label>Type the confirmation shown below<input id="confirmation" autocomplete="off"></label>
+    <button id="startButton" type="button" disabled>START GUIDED RESTORE</button>
+  </div>
+  <section id="progress" hidden>
+    <h2>Step 4 · Restore progress</h2>
+    <p id="jobStatus"></p><p id="elapsed"></p><progress id="bar" max="100" value="0"></progress>
+    <button id="cancelButton" type="button" hidden>Cancel restore</button>
+    <section id="approvalPanel" class="approval" aria-live="assertive" hidden>
+      <h3 id="approvalTitle"></h3>
+      <p id="approvalWhy"></p>
+      <dl>
+        <dt>Source</dt><dd id="approvalSource"></dd>
+        <dt>Destination</dt><dd id="approvalDestination"></dd>
+        <dt>Impact</dt><dd id="approvalImpact"></dd>
+        <dt>Administrator permission</dt><dd id="approvalAdmin"></dd>
+      </dl>
+      <p>Approve only this action. Later actions require separate approval. Cancel stops the remaining restore. If database restore has started or a destination was promoted, the final status may be PARTIAL; those resources are not deleted. Only this operation's private temporary staging folders are cleaned up.</p>
+      <button id="approveActionButton" type="button">Approve this action</button>
+      <button id="denyActionButton" class="secondary" type="button">Cancel this action and restore</button>
+    </section>
+    <ul id="tasks"></ul><pre id="logs"></pre>
+    <section id="finalReport" class="report" hidden>
+      <h3>Restore report</h3>
+      <ul id="reportItems"></ul>
+    </section>
+    <a id="launchLink" hidden target="_blank" rel="noopener noreferrer">Open restored Stocksite</a>
+  </section>
+  <p id="message" role="status"></p>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const platform = /Win/.test(navigator.userAgent) ? 'Windows' : /Mac/.test(navigator.userAgent) ? 'macOS' : 'unsupported OS';
+  $('platform').textContent = `Detected platform: ${platform}. The helper checks prerequisites but does not install software or elevate privileges.`;
+  $('originNote').textContent = location.protocol === 'file:'
+    ? 'For browser security, run the local helper and open this wizard at http://127.0.0.1:43127/; a file:// page cannot access the protected helper API.'
+    : 'This page runs from the local helper. API requests stay on loopback.';
+  let validation = null;
+  let activeJob = null;
+  let pollTimer = null;
+  let cancellationPending = false;
+  $('prerequisitesButton').onclick = async () => {
+    const list = $('prerequisites');
+    $('prerequisitesButton').disabled = true;
+    list.replaceChildren();
+    try {
+      const result = await call('GET', '/api/prerequisites');
+      $('platform').textContent = `Helper platform: ${result.prerequisites.platform}. Missing software is not installed automatically.`;
+      for (const check of result.prerequisites.checks) {
+        const item = document.createElement('li');
+        item.dataset.status = check.status;
+        item.append(document.createTextNode(`${check.name}: ${check.status.toUpperCase()} — ${check.message}`));
+        if (check.downloadUrl) {
+          const link = document.createElement('a');
+          link.href = check.downloadUrl;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = ' Official download';
+          item.append(link);
+        }
+        if (check.action) item.append(document.createTextNode(` Next action: ${check.action}`));
+        if (check.services?.length) {
+          item.append(document.createTextNode(` (${check.services.map(({name,status}) => `${name}: ${status}`).join(', ')})`));
+        }
+        list.append(item);
+      }
+    } catch (error) {
+      $('message').textContent = error.message;
+      $('message').className = 'error';
+    } finally {
+      $('prerequisitesButton').disabled = false;
+    }
+  };
+  function helperBase() {
+    const value = $('helper').value.trim().replace(/\/+$/, '');
+    if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(value)) throw new Error('Helper must use an HTTP loopback address and explicit port.');
+    if ($('token').value.length < 32) throw new Error('Enter the helper token of at least 32 characters.');
+    return value;
+  }
+  async function call(method, endpoint, body) {
+    const response = await fetch(`${helperBase()}${endpoint}`, {
+      method, headers: { Authorization: `Bearer ${$('token').value}`, ...(body ? {'Content-Type':'application/json'} : {}) },
+      ...(body ? {body: JSON.stringify(body)} : {})
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Helper returned HTTP ${response.status}.`);
+    return payload;
+  }
+  function configuration() {
+    return {
+      sources: {databaseFile:$('databaseFile').value,websiteArchive:$('websiteArchive').value,assetsArchive:$('assetsArchive').value,thumbnailsArchive:$('thumbnailsArchive').value},
+      destinations: {databaseName:$('databaseName').value,websiteDestination:$('websiteDestination').value,assetsDestination:$('assetsDestination').value,thumbnailsDestination:$('thumbnailsDestination').value}
+    };
+  }
+  $('configureButton').onclick = async () => {
+    const button = $('configureButton');
+    const status = $('configurationStatus');
+    button.disabled = true;
+    status.textContent = 'Validating local settings without saving them to disk…';
+    status.className = '';
+    try {
+      const result = await call('POST', '/api/configure', {
+        databaseHost: $('databaseHost').value,
+        databasePort: $('databasePort').value,
+        databaseUser: $('databaseUser').value,
+        databasePassword: $('databasePassword').value,
+        databaseName: $('databaseName').value,
+        applicationPort: $('applicationPort').value,
+        packageSigningPublicKey: $('packageSigningPublicKey').value
+      });
+      $('databasePassword').value = '';
+      $('packageSigningPublicKey').value = '';
+      status.textContent = `Settings held in helper memory. JWT secret mode: ${result.configuration.jwtSecretMode}. Run “Check this PC” to verify the PostgreSQL service, role, empty database, tools, and ports.`;
+    } catch (error) {
+      status.textContent = error.message;
+      status.className = 'error';
+    } finally {
+      button.disabled = false;
+    }
+  };
+  $('manifestButton').onclick = async () => {
+    try {
+      const result = await call('GET','/api/manifest');
+      $('software').replaceChildren(...result.manifest.software.map((item) => {
+        const li = document.createElement('li');
+        li.append(document.createTextNode(`${item.name} ${item.version} · ${item.required ? 'required' : 'optional'} · ${item.osCompatibility.join(', ')} · `));
+        const link = document.createElement('a');
+        link.href = item.directDownloadUrl || item.officialDownloadSource;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = item.directDownloadUrl ? 'Verified direct download' : 'Official download page';
+        li.append(link);
+        return li;
+      }));
+      $('message').textContent = `Trusted manifest source: ${result.source}${result.fallbackReason ? ` — ${result.fallbackReason}` : ''}`;
+    } catch (error) { $('message').textContent = error.message; $('message').className = 'error'; }
+  };
+  $('validateButton').onclick = async () => {
+    try {
+      const result = await call('POST','/api/validate',configuration());
+      validation = result.validation;
+      $('reviewText').textContent = JSON.stringify(validation,null,2) + `\n\nType: RESTORE ${validation.destinations.databaseName}`;
+      $('review').hidden = false;
+      $('message').textContent = 'Validation passed. Review all sources and destinations before authorizing.';
+      $('message').className = '';
+    } catch (error) { $('message').textContent = error.message; $('message').className = 'error'; }
+  };
+  $('authorize').onchange = $('confirmation').oninput = () => {
+    $('startButton').disabled = !validation || !$('authorize').checked || $('confirmation').value !== `RESTORE ${validation.destinations.databaseName}`;
+  };
+  $('startButton').onclick = async () => {
+    try {
+      const result = await call('POST','/api/start',{configuration:configuration(),restoreAuthorized:$('authorize').checked,confirmation:$('confirmation').value});
+      cancellationPending = false;
+      activeJob = result.job;
+      window.sessionStorage.setItem('stocksite-restore-helper-job', activeJob.id);
+      $('progress').hidden = false;
+      await poll();
+    } catch (error) { $('message').textContent = error.message; $('message').className = 'error'; }
+  };
+  $('cancelButton').onclick = async () => {
+    if (!activeJob || !['WAITING', 'RUNNING'].includes(activeJob.status)) return;
+    const databaseTask = activeJob.tasks.find(({ id }) => id === 'restore-postgresql-custom-archive');
+    const databaseMayBePartial = activeJob.partialState || ['INSTALLING', 'FAILED'].includes(databaseTask?.status);
+    const warning = databaseMayBePartial
+      ? 'Cancel this restore? The target database may be partially restored. Do not retry into it; use a newly created, verified empty database. The helper will not delete data.'
+      : 'Cancel this restore? Any already completed database restore or extracted files will remain. The helper will not delete the database or destination data.';
+    if (!window.confirm(warning)) return;
+    $('cancelButton').disabled = true;
+    try {
+      const result = await call('POST', `/api/jobs/${encodeURIComponent(activeJob.id)}/cancel`);
+      cancellationPending = true;
+      activeJob = result.job;
+      $('message').textContent = 'Cancellation requested. Keep the helper running while it stops the current operation.';
+      $('message').className = '';
+      await poll();
+    } catch (error) {
+      $('message').textContent = error.message;
+      $('message').className = 'error';
+    } finally {
+      $('cancelButton').disabled = cancellationPending;
+    }
+  };
+  async function poll() {
+    if (!activeJob) return;
+    clearTimeout(pollTimer);
+    try {
+      const result = await call('GET',`/api/jobs/${encodeURIComponent(activeJob.id)}`);
+      activeJob = result.job;
+      $('jobStatus').textContent = `${activeJob.status} · ${activeJob.progress.completed} complete · ${activeJob.progress.failed} failed · ${activeJob.progress.pending} pending`;
+      $('cancelButton').hidden = cancellationPending || !['WAITING', 'RUNNING'].includes(activeJob.status);
+      $('cancelButton').disabled = cancellationPending || activeJob.status === 'WAITING';
+      $('elapsed').textContent = `Elapsed: ${Math.floor((activeJob.elapsedMs || 0) / 1000)} seconds${activeJob.etaSeconds ? ` · Estimated remaining: ${Math.ceil(activeJob.etaSeconds)} seconds` : ''}`;
+      $('bar').value = activeJob.progress.percent || 0;
+      const approval = activeJob.awaitingApproval;
+      $('approvalPanel').hidden = !approval || cancellationPending;
+      if (approval) {
+        $('approvalTitle').textContent = `Approval required: ${approval.title}`;
+        $('approvalWhy').textContent = approval.why;
+        $('approvalSource').textContent = approval.source;
+        $('approvalDestination').textContent = approval.destination;
+        $('approvalImpact').textContent = approval.impact;
+        $('approvalAdmin').textContent = approval.administratorPermission;
+      }
+      $('tasks').replaceChildren(...[...(activeJob.softwareTasks||[]),...(activeJob.tasks||[])].map((task) => {
+        const li = document.createElement('li');
+        const progress = Number.isFinite(task.percent) ? ` · ${task.percent}%` : '';
+        const bytes = Number.isFinite(task.bytesTotal) ? ` · ${task.bytesCompleted || 0}/${task.bytesTotal} bytes` : '';
+        const files = Number.isFinite(task.filesTotal) ? ` · ${task.filesCompleted || 0}/${task.filesTotal} files` : '';
+        li.textContent = `${task.name || task.softwareName}: ${task.status}${progress}${bytes}${files} — ${task.operation || ''}${task.error ? ` (${task.error})` : ''}`;
+        return li;
+      }));
+      $('logs').textContent = (activeJob.logs||[]).map(({at,message}) => `${at} ${message}`).join('\n');
+      const report = activeJob.finalReport;
+      $('finalReport').hidden = !report;
+      if (report) {
+        const rows = [
+          ...report.completed.map(({ name }) => `Completed: ${name}`),
+          ...report.failed.map(({ name, error }) => `Failed: ${name} — ${error}`),
+          ...report.skipped.map(({ name, operation }) => `Skipped: ${name} — ${operation}`),
+          ...report.cancelledOrNotStarted.map(({ name, status }) => `${status === 'WAITING' ? 'Not started' : 'Cancelled'}: ${name}`),
+          ...report.notVerified.map((stage) => `Not verified: ${stage}`),
+          ...report.recoveryInstructions.map((instruction) => `Recovery: ${instruction}`)
+        ];
+        $('reportItems').replaceChildren(...rows.map((text) => {
+          const item = document.createElement('li');
+          item.textContent = text;
+          return item;
+        }));
+      }
+      if (['WAITING','RUNNING'].includes(activeJob.status)) {
+        pollTimer = setTimeout(poll,1000);
+      } else {
+        window.sessionStorage.removeItem('stocksite-restore-helper-job');
+        if (activeJob.status === 'COMPLETED' && activeJob.launchAvailable && activeJob.launchUrl) {
+          $('launchLink').href = activeJob.launchUrl;
+          $('launchLink').hidden = false;
+          $('message').textContent = 'Restore completed. Backend, database, and frontend health checks passed.';
+          $('message').className = '';
+        } else {
+          $('launchLink').hidden = true;
+          $('message').textContent = activeJob.error || 'Restore did not complete. Review the failed task before choosing a new empty target.';
+          $('message').className = 'error';
+        }
+        async function decideApproval(approved) {
+          if (!activeJob?.awaitingApproval || cancellationPending) return;
+          const buttons = [$('approveActionButton'), $('denyActionButton')];
+          buttons.forEach((button) => { button.disabled = true; });
+          try {
+            const result = await call('POST', `/api/jobs/${encodeURIComponent(activeJob.id)}/approval`, {
+              actionId: activeJob.awaitingApproval.actionId,
+              approved
+            });
+            if (!approved) cancellationPending = true;
+            activeJob = result.job;
+            $('message').textContent = approved
+              ? 'This action was approved. The helper will recheck its safety conditions before it runs.'
+              : 'This action was declined. No further actions will run; completed database or destination work remains, while temporary staging folders may be cleaned up.';
+            $('message').className = approved ? '' : 'error';
+            await poll();
+          } catch (error) {
+            $('message').textContent = error.message;
+            $('message').className = 'error';
+          } finally {
+            buttons.forEach((button) => { button.disabled = false; });
+          }
+        }
+        $('approveActionButton').onclick = () => void decideApproval(true);
+        $('denyActionButton').onclick = () => void decideApproval(false);
+      }
+    } catch (error) { $('message').textContent = error.message; $('message').className = 'error'; }
+  }
+  const savedJobId = window.sessionStorage.getItem('stocksite-restore-helper-job');
+  if (savedJobId) {
+    activeJob = {id: savedJobId};
+    $('progress').hidden = false;
+    void poll();
+  }
+</script>
+</body>
+</html>

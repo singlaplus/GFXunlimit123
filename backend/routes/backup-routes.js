@@ -1,9 +1,11 @@
 const express = require('express');
 const axios = require('axios');
+const os = require('node:os');
 const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
 const { getAssetServerHttpOrigin } = require('../config');
 const { createBackupService } = require('../services/backupSystem');
+const { createRestorePackageService } = require('../services/restorePackageSystem');
 
 function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {} }) {
   const router = express.Router();
@@ -56,8 +58,27 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
           }
         });
 
+        if (
+          response.status === 404 &&
+          upstreamUrl.pathname.startsWith('/admin/backup/restore-package/') &&
+          response.headers?.['x-stocksite-error-code'] === 'RESTORE_PACKAGE_ENDPOINT_NOT_FOUND'
+        ) {
+          response.data?.destroy?.();
+          return res.status(503).json({
+            error: 'Restore package endpoints are not available on the configured SERVER. Update the SERVER backend to a version that supports restore-package routes; no package job was started.'
+          });
+        }
+
         res.status(response.status);
-        for (const header of ['content-type', 'content-length', 'content-disposition', 'cache-control', 'etag']) {
+        for (const header of [
+          'content-type',
+          'content-length',
+          'content-disposition',
+          'cache-control',
+          'etag',
+          'x-content-type-options',
+          'referrer-policy'
+        ]) {
           const value = response.headers?.[header];
           if (value) res.setHeader(header, value);
         }
@@ -84,6 +105,15 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
     ...serviceOptions,
     database: pool,
     projectRoot: projectRoot || path.resolve(__dirname, '../..')
+  });
+  const restorePackages = createRestorePackageService({
+    ...(serviceOptions.restorePackageOptions || {}),
+    backupService: service,
+    stateDirectory: path.join(serviceOptions.stateDirectory || path.resolve(__dirname, '..', 'backup-system'), 'restore-packages'),
+    outputRoot: path.join(
+      serviceOptions.clientExportRoot || path.join(os.tmpdir(), 'gfxunlimit-manual-backup-exports'),
+      'GFXunlimit'
+    ),
   });
 
   router.get('/sources', async (req, res) => {
@@ -164,6 +194,71 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
     }
   });
 
+  router.post('/restore-package/start', async (req, res) => {
+    try {
+      if (req.body?.includeEncryptedEnvironmentFiles !== true) {
+        return res.status(400).json({ error: 'Explicit administrator authorization is required before encrypted .env configuration can be included.' });
+      }
+      res.status(202).json({ job: await restorePackages.start({ includeEncryptedEnvironmentFiles: true }) });
+    } catch (error) {
+      res.status(409).json({ error: error.message || 'Restore package preparation could not be started.' });
+    }
+  });
+
+  router.get('/restore-package/jobs/:id', async (req, res) => {
+    if (!/^[A-Za-z0-9-]{1,120}$/.test(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid restore package job ID.' });
+    }
+    try {
+      const job = await restorePackages.getJob(req.params.id);
+      if (!job) return res.status(404).json({ error: 'Restore package job not found.' });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ job });
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Restore package status could not be loaded.' });
+    }
+  });
+
+  router.get('/restore-package/jobs/:id/artifacts/:artifactId', async (req, res) => {
+    if (!/^[A-Za-z0-9-]{1,120}$/.test(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid restore package job ID.' });
+    }
+    try {
+      const artifact = await restorePackages.openArtifact(req.params.id, req.params.artifactId);
+      res.status(200);
+      res.type('application/octet-stream');
+      res.setHeader('Content-Length', String(artifact.sizeBytes));
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${artifact.filename}"; filename*=UTF-8''${encodeURIComponent(artifact.filename)}`
+      );
+      artifact.stream.on('error', (error) => {
+        if (res.headersSent) res.destroy(error);
+        else res.status(500).json({ error: 'Restore package artifact transfer failed.' });
+      });
+      await pipeline(artifact.stream, res);
+    } catch (error) {
+      if (res.headersSent) {
+        res.destroy(error);
+        return;
+      }
+      res.status(404).json({ error: error.message || 'Verified restore package artifact is unavailable.' });
+    }
+  });
+
+  router.all('/restore-package/start', (req, res) => {
+    res.status(405).json({ error: 'Method not allowed for restore package start endpoint.' });
+  });
+  router.all('/restore-package/jobs/:id', (req, res) => {
+    res.status(405).json({ error: 'Method not allowed for restore package job endpoint.' });
+  });
+  router.all('/restore-package/jobs/:id/artifacts/:artifactId', (req, res) => {
+    res.status(405).json({ error: 'Method not allowed for restore package artifact endpoint.' });
+  });
+
   router.get('/automatic', async (req, res) => {
     try {
       const result = await service.getAutomaticSchedule();
@@ -181,6 +276,18 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
       res.json({ ...result, schedule: result, schedules: result.schedules || [result] });
     } catch (error) {
       res.status(422).json({ error: error.message || 'Automatic backup schedule could not be saved.' });
+    }
+  });
+
+  router.delete('/automatic/:id', async (req, res) => {
+    if (!/^[a-zA-Z0-9-]{1,100}$/.test(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid automatic backup schedule ID.' });
+    }
+    try {
+      const result = await service.deleteAutomaticSchedule(req.params.id);
+      res.json({ ...result, schedule: result, schedules: result.schedules || [] });
+    } catch (error) {
+      res.status(409).json({ error: error.message || 'Automatic backup schedule could not be deleted.' });
     }
   });
 
@@ -257,6 +364,14 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
     } catch (error) {
       res.status(500).json({ error: error.message || 'Backup history could not be loaded.' });
     }
+  });
+
+  router.use('/restore-package', (req, res) => {
+    res.setHeader('X-Stocksite-Error-Code', 'RESTORE_PACKAGE_ENDPOINT_NOT_FOUND');
+    res.status(404).json({
+      code: 'RESTORE_PACKAGE_ENDPOINT_NOT_FOUND',
+      error: 'Restore package endpoint not found.'
+    });
   });
 
   router.use((req, res) => {

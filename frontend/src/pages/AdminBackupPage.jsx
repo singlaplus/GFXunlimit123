@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
+import RestorePackagePanel from "../components/RestorePackagePanel";
 import { sha256ReadableStream } from "../utils/streamSha256";
 import "./AdminBackupPage.css";
 
@@ -41,7 +42,7 @@ function statusColor(status) {
   return "#64748b";
 }
 
-export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }) {
+export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, restoreMode = false }) {
   const [categories, setCategories] = useState(BACKUP_CATEGORIES.map(({ key }) => key));
   const [testedManualDestination, setTestedManualDestination] = useState(null);
   const [plan, setPlan] = useState(null);
@@ -156,6 +157,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
   }, [refreshHistory, refreshSchedule, request]);
 
   useEffect(() => {
+    if (restoreMode) return undefined;
     let active = true;
     Promise.all([
       request("get", "/jobs/active"),
@@ -191,7 +193,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
       if (active) setPageError(error.response?.data?.error || "Could not load backup status and history.");
     });
     return () => { active = false; };
-  }, [request]);
+  }, [request, restoreMode]);
 
   useEffect(() => {
     if (!job?.id || job.status !== "RUNNING") return undefined;
@@ -510,6 +512,50 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     setAutomaticDrive(null);
     setAutomaticPlan(null);
     setScheduleMessage("");
+  };
+
+  const editAutomaticSchedule = (schedule) => {
+    selectAutomaticSchedule(schedule.id);
+    setShowSavedSchedule(false);
+  };
+
+  const deleteAutomaticSchedule = async (schedule) => {
+    if (typeof window !== "undefined" && !window.confirm(`Delete the ${schedule.frequency} automatic backup schedule?`)) return;
+    setBusy(true);
+    setScheduleMessage("");
+    try {
+      const schedulesToSave = savedSchedules.filter((entry) => entry.id !== schedule.id);
+      const response = await request("put", "/automatic", { schedules: schedulesToSave });
+      const result = response.data?.schedule;
+      const schedules = response.data?.schedules || result?.schedules || [];
+      const persisted = schedules.map((entry, index) => ({ ...entry, id: entry.id || `legacy-schedule-${index + 1}` }));
+      setSavedSchedules(persisted);
+      if (automaticSchedule.id === schedule.id) {
+        const selected = persisted[0] || {
+          ...automaticSchedule,
+          id: "new-schedule",
+          configured: false,
+          enabled: false,
+          destination: "",
+          lastRun: null,
+          lastRunSlot: "",
+          pendingRun: null
+        };
+        setAutomaticSchedule(selected);
+        setSelectedScheduleId(selected.id);
+        setAutomaticDestination(selected.destination || "");
+      }
+      setAutomaticDrive(null);
+      setAutomaticPlan(null);
+      setScheduleMessage("Automatic backup schedule deleted.");
+      if (persisted.length === 0) setShowSavedSchedule(false);
+    } catch (error) {
+      const message = error.response?.data?.error || "Automatic backup schedule could not be deleted.";
+      setScheduleMessage(message);
+      toast.error(message);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const pickLocalFolder = async () => {
@@ -941,6 +987,25 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
     color: palette.text
   };
 
+  if (restoreMode) {
+    return (
+      <div className={`gfx-backup ${isDarkMode ? "gfx-backup--dark" : ""}`} style={{ display: "grid", gap: 18, color: palette.text }}>
+        <header className="gfx-backup-hero">
+          <div className="gfx-backup-hero__copy">
+            <span className="gfx-backup-eyebrow"><span className="gfx-backup-live-dot" /> ADMINISTRATOR · RECOVERY</span>
+            <h2>Restore Center</h2>
+            <p>Restore a full Stocksite environment from a verified backup set and local sources.</p>
+          </div>
+          <div className="gfx-backup-hero__aside">
+            <span className="gfx-backup-hero__icon" aria-hidden="true">↺</span>
+            <span><strong>Safe restore workflow</strong><small>Requires explicit source, destination, and manifest validation</small></span>
+          </div>
+        </header>
+        <RestorePackagePanel apiBaseUrl={apiBaseUrl} getAuthToken={getAuthToken} />
+      </div>
+    );
+  }
+
   return (
     <div className={`gfx-backup ${isDarkMode ? "gfx-backup--dark" : ""}`} style={{ display: "grid", gap: 18, color: palette.text }}>
       <header className="gfx-backup-hero">
@@ -951,7 +1016,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
         </div>
         <div className="gfx-backup-hero__aside">
           <span className="gfx-backup-hero__icon" aria-hidden="true">↻</span>
-          <span><strong>Server-side protection</strong><small>Runs on PC2, even when you leave this page</small></span>
+          <span><strong>Server-side protection</strong><small>Runs on server, even when you leave this page</small></span>
         </div>
       </header>
       <section className="gfx-backup-section gfx-backup-sources" style={sectionStyle}>
@@ -1453,7 +1518,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <div>
             <h3 style={{ margin: "0 0 5px" }}>Automatic Backup</h3>
-            <p style={{ margin: 0, color: palette.muted }}>The PC2 server runs complete backups on schedule. Closing this page will not stop an automatic job.</p>
+            <p style={{ margin: 0, color: palette.muted }}>The server runs complete backups on schedule. Closing this page will not stop an automatic job.</p>
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
             <input
@@ -1691,6 +1756,10 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken }
                     <span>Frequency: <strong>{schedule.frequency || "Unavailable"}</strong></span>
                     <span>Configured time: <strong>{formatScheduleTime(schedule.time)}</strong></span>
                     <span>Next run: <strong>{formatScheduleDate(schedule.nextRun)}</strong></span>
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                      <button type="button" disabled={busy || activeJob} onClick={() => editAutomaticSchedule(schedule)} style={buttonStyle()}>Edit</button>
+                      <button type="button" disabled={busy || activeJob} onClick={() => deleteAutomaticSchedule(schedule)} style={buttonStyle()}>Delete</button>
+                    </div>
                   </div>
                 ))}
               </div>

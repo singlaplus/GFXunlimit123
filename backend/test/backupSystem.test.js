@@ -29,8 +29,13 @@ function makeProjectRoot() {
   }
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '1.2.3' }));
   fs.writeFileSync(path.join(root, 'package-lock.json'), '{}');
+  fs.writeFileSync(path.join(root, 'README.md'), '# Stocksite setup\n');
+  fs.writeFileSync(path.join(root, '.npmrc'), 'audit=false\n');
   fs.writeFileSync(path.join(root, '.env'), 'DATABASE_PASSWORD=backup-private-value\n');
+  fs.writeFileSync(path.join(root, '.env.local'), 'LOCAL_TOKEN=another-private-value\n');
+  fs.writeFileSync(path.join(root, '.env.example'), 'DATABASE_PASSWORD=replace-me\n');
   fs.writeFileSync(path.join(root, 'backend', '.env'), 'JWT_SECRET=backend-private-value\n');
+  fs.writeFileSync(path.join(root, 'backend', '.env.example'), 'JWT_SECRET=replace-me\n');
   fs.writeFileSync(path.join(root, 'backend', 'server.js'), 'module.exports = true;\n');
   fs.writeFileSync(path.join(root, 'backend', 'uploads-sample.log'), 'runtime log\n');
   fs.writeFileSync(path.join(root, 'frontend', 'package.json'), '{"name":"frontend"}');
@@ -42,6 +47,11 @@ function makeProjectRoot() {
   fs.writeFileSync(path.join(root, 'GFX-Aanav', 'config.json'), '{}');
   fs.mkdirSync(path.join(root, 'backend', 'node_modules'));
   fs.writeFileSync(path.join(root, 'backend', 'node_modules', 'ignored.js'), 'ignored');
+  fs.writeFileSync(path.join(root, 'backend', 'Thumbs.db'), 'os metadata');
+  fs.writeFileSync(path.join(root, 'backend', 'desktop.ini'), 'os metadata');
+  fs.writeFileSync(path.join(root, 'backend', 'credentials.json'), '{"apiToken":"do-not-package"}\n');
+  fs.writeFileSync(path.join(root, 'backend', 'runtime-config.json'), '{"apiToken":"DO_NOT_PACKAGE_SECRET_VALUE"}\n');
+  fs.writeFileSync(path.join(root, 'backend', '.npmrc'), '//registry.example/:_authToken=do-not-package\n');
   return root;
 }
 
@@ -175,6 +185,8 @@ test('backup category validation accepts only the three complete categories', ()
   ]);
   assert.throws(() => normalizeCategories(['incremental']), /Backup categories/);
   assert.equal(isEnvironmentFile('backend/.env.production'), true);
+  assert.equal(isEnvironmentFile('.env.example'), false);
+  assert.equal(isEnvironmentFile('backend/.env.template.local'), false);
   assert.equal(isEnvironmentFile('backend/settings.json'), false);
 });
 
@@ -387,6 +399,9 @@ test('multiple automatic schedules persist independently and retain the legacy p
     const loaded = await restartedService.getAutomaticSchedule();
     assert.deepEqual(loaded.schedules.map((schedule) => schedule.id), ['daily-database', 'weekly-code']);
     assert.equal(loaded.schedules[1].frequency, 'weekly');
+    const afterDelete = await restartedService.deleteAutomaticSchedule('daily-database');
+    assert.deepEqual(afterDelete.schedules.map((schedule) => schedule.id), ['weekly-code']);
+    await assert.rejects(restartedService.deleteAutomaticSchedule('missing-schedule'), /not found/);
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(stateDirectory, { recursive: true, force: true });
@@ -478,10 +493,10 @@ test('source metrics measure database metadata, Website Code including .env, and
   try {
     const sources = await service.getSourceMetrics();
     assert.equal(sources.database.currentBytes, 1024);
-    assert.equal(sources.websiteCode.available, true);
+    assert.equal(sources.websiteCode.available, true, sources.websiteCode.error);
     const codePlan = await service.buildPlan({ categories: ['websiteCode'], destinations: [destination] });
     assert.equal(sources.websiteCode.currentBytes, codePlan.categories.websiteCode.estimatedBytes);
-    assert.equal(sources.websiteCode.encryptedEnvironmentFiles, 2);
+    assert.equal(sources.websiteCode.encryptedEnvironmentFiles, 3);
     assert.ok(sources.websiteCode.currentBytes >= fs.statSync(path.join(projectRoot, '.env')).size);
     assert.equal(sources.assets.originalBytes, Buffer.byteLength('asset-size'));
     assert.equal(sources.assets.thumbnailBytes, Buffer.byteLength('thumb'));
@@ -643,13 +658,26 @@ test('complete Website Code plan preserves paths and encrypts .env files', async
   const service = makeService({ projectRoot, stateDirectory: path.join(os.tmpdir(), `gfx-backup-state-${Date.now()}`) });
   try {
     const plan = await service.buildPlan({ categories: ['websiteCode'], destinations: [destination] });
-    assert.equal(plan.ready, true);
+    assert.equal(plan.ready, true, plan.issues.join('\n'));
     assert.equal(plan.categories.websiteCode.files > 0, true);
     assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/backend/server.js'));
     assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/frontend/src/App.js'));
     assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/frontend/scripts/sync-fonts.js'));
     assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/GFX-Aanav/config.json'));
+    assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/README.md'));
+    assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/.npmrc'));
+    assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/.env.local' && file.encrypted));
+    assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/.env.example' && !file.encrypted));
+    assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/backend/.env.example' && !file.encrypted));
+    assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/frontend/package-lock.json'));
     assert.ok(plan.internalGroups[0].files.every((file) => !file.sourcePath.includes(`${path.sep}node_modules${path.sep}`)));
+    assert.ok(plan.internalGroups[0].files.every((file) => !['Thumbs.db', 'desktop.ini'].includes(path.basename(file.sourcePath))));
+    assert.ok(plan.internalGroups[0].files.every((file) => ![
+      'Website-Code/backend/credentials.json',
+      'Website-Code/backend/runtime-config.json',
+      'Website-Code/backend/.npmrc'
+    ].includes(file.outputRelativePath)));
+    assert.ok(plan.internalGroups[0].files.some((file) => file.outputRelativePath === 'Website-Code/.npmrc'));
     assert.ok(plan.internalGroups[0].files.filter((file) => file.encrypted).length >= 2);
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });

@@ -7,6 +7,7 @@
     "start": "node startup/bootstrap.js",
     "dev": "node startup/bootstrap.js",
     "test": "node --test test/*.test.js",
+    "test:restore-postgres18": "node --test test/restorePostgres18.integration.test.js",
     "migrate:otp": "node scripts/ensure-otp-columns.js"
   },
   "keywords": [],

@@ -24,13 +24,24 @@ const SCHEDULE_FREQUENCIES = new Set(['daily', 'weekly', 'monthly']);
 const WEEK_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const EXCLUDED_CODE_NAMES = new Set([
   '.git', 'node_modules', 'build', 'dist', 'coverage', 'backup', 'backups',
-  'tmp', 'temp', '.cache', 'cache', 'logs', 'log', 'uploads', '.DS_Store',
-  '.upload-staging', 'dump.rdb', 'backup-system'
+  'tmp', 'temp', '.cache', 'cache', 'logs', 'log', 'uploads', '.ds_store', 'thumbs.db', 'desktop.ini',
+  '.upload-staging', 'dump.rdb', 'backup-system', '.ssh', '.aws', '.azure', '.gnupg', '.secrets', '.vscode'
 ]);
 const ROOT_CODE_FILES = [
   'package.json',
   'package-lock.json',
+  'README.md',
+  'BACKEND_SETUP_GUIDE.md',
+  'GETTING_STARTED.md',
+  'SETUP_GUIDE.md',
+  'THUMBNAIL_QUICKSTART.md',
+  '.npmrc',
+  '.nvmrc',
+  '.node-version',
   '.env',
+  '.env.example',
+  '.env.sample',
+  '.env.template',
   '.gitattributes',
   '.gitignore',
   'setup.js',
@@ -40,7 +51,42 @@ const ROOT_CODE_FILES = [
 const CODE_DIRECTORIES = ['backend', 'frontend', 'scripts', 'GFX-Aanav'];
 
 function isEnvironmentFile(filePath) {
-  return /^\.env(?:$|[.-])/i.test(path.posix.basename(String(filePath).replace(/\\/g, '/')));
+  const name = path.posix.basename(String(filePath).replace(/\\/g, '/'));
+  return /^\.env(?:$|[.-])/i.test(name) &&
+    !/^\.env\.(?:example|sample|template)(?:$|[.-])/i.test(name);
+}
+
+const PRIVATE_FILE_NAMES = new Set([
+  'id_rsa', 'id_ed25519', 'credentials.json', 'secrets.json', 'tokens.json',
+  'credentials.yaml', 'credentials.yml', 'secrets.yaml', 'secrets.yml', 'tokens.yaml', 'tokens.yml'
+]);
+
+async function isPrivateCodeFile(filePath) {
+  const name = path.basename(filePath).toLowerCase();
+  if (PRIVATE_FILE_NAMES.has(name) || /\.(?:pem|p12|pfx|key|jks|keystore)$/i.test(name)) return true;
+  if (name === '.npmrc') {
+    const contents = await fs.promises.readFile(filePath, 'utf8');
+    if (/^\s*(?:\/\/[^:\s]+\/?:)?(?:_authToken|_password|_auth)\s*=/im.test(contents) ||
+        /^\s*[^#\r\n]*:_authToken\s*=/im.test(contents)) return true;
+  }
+  if (/\.(?:conf|config|json|yaml|yml|toml|ini)$/i.test(name)) {
+    const stat = await fs.promises.stat(filePath);
+    if (stat.size > 4 * 1024 * 1024) throw new Error(`Configuration file is too large for safe credential inspection: ${name}`);
+    const contents = await fs.promises.readFile(filePath, 'utf8');
+    const assignments = contents.matchAll(/(?:password|passwd|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key|authorization)\s*["']?\s*[:=]\s*["']?([A-Za-z0-9_./+=-]{8,})/ig);
+    for (const [, value] of assignments) {
+      if (!/^(?:process\.env|env\(|\$\{|your[-_]|change[-_]|replace[-_]|example|placeholder|dummy|test[-_]?)/i.test(value)) return true;
+    }
+  }
+  if (!/\.(?:crt|cer|txt)$/i.test(name)) return false;
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const prefix = Buffer.alloc(512);
+    const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0);
+    return /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(prefix.subarray(0, bytesRead).toString('ascii'));
+  } finally {
+    await handle.close();
+  }
 }
 
 function normalizeCategories(categories) {
@@ -531,7 +577,26 @@ function createBackupService(options = {}) {
   }
 
   async function saveAutomaticSchedule(input) {
-    return saveAutomaticSchedules([input]);
+    const schedules = await readAutomaticSchedule();
+    const scheduleId = input?.id || schedules[0]?.id || 'default';
+    return saveAutomaticSchedules([
+      ...schedules.filter((schedule) => schedule.id !== scheduleId),
+      { ...input, id: scheduleId }
+    ]);
+  }
+
+  async function deleteAutomaticSchedule(scheduleId) {
+    const schedules = await readAutomaticSchedule();
+    const schedule = schedules.find((entry) => entry.id === scheduleId);
+    if (!schedule) throw new Error('Automatic backup schedule was not found.');
+    if (schedule.pendingRun || [...jobs.values()].some((job) =>
+      job.automaticScheduleId === scheduleId && job.status === 'RUNNING'
+    )) {
+      throw new Error('Cannot delete an automatic schedule while its backup run is queued or active.');
+    }
+    const remaining = schedules.filter((entry) => entry.id !== scheduleId);
+    await persistAutomaticSchedule(remaining);
+    return publicAutomaticSchedule(remaining);
   }
 
   async function getTreeBytes(rootPath) {
@@ -924,10 +989,13 @@ function createBackupService(options = {}) {
       const entries = await fsp.readdir(current.absolutePath, { withFileTypes: true });
       entries.sort((left, right) => left.name.localeCompare(right.name));
       for (const entry of entries) {
-        if (optionsForTree.code && EXCLUDED_CODE_NAMES.has(entry.name)) continue;
-        if (optionsForTree.excludeStaging && entry.name === '.upload-staging') continue;
         const absolutePath = path.join(current.absolutePath, entry.name);
         const relativePath = path.posix.join(current.relativePath, entry.name);
+        if (optionsForTree.code && EXCLUDED_CODE_NAMES.has(entry.name.toLowerCase())) {
+          optionsForTree.exclusions?.push({ path: relativePath, reason: 'Excluded by the documented generated/runtime/editor/OS/private-data policy.' });
+          continue;
+        }
+        if (optionsForTree.excludeStaging && entry.name === '.upload-staging') continue;
         const stat = await fsp.lstat(absolutePath);
         if (stat.isSymbolicLink()) {
           throw new Error(`Backup source contains a symbolic link and cannot be copied safely: ${relativePath}`);
@@ -935,7 +1003,14 @@ function createBackupService(options = {}) {
         if (stat.isDirectory()) {
           pending.push({ absolutePath, relativePath });
         } else if (stat.isFile()) {
-          if (optionsForTree.code && /(?:\.log|\.tmp|\.temp)$/i.test(entry.name)) continue;
+          if (optionsForTree.code && /(?:\.log|\.tmp|\.temp)$/i.test(entry.name)) {
+            optionsForTree.exclusions?.push({ path: relativePath, reason: 'Generated log or temporary file.' });
+            continue;
+          }
+          if (optionsForTree.code && !isEnvironmentFile(relativePath) && await isPrivateCodeFile(absolutePath)) {
+            optionsForTree.exclusions?.push({ path: relativePath, reason: 'Private key or credential file excluded by the secret-handling policy.' });
+            continue;
+          }
           result.push({
             sourcePath: absolutePath,
             relativePath,
@@ -950,7 +1025,7 @@ function createBackupService(options = {}) {
     return result;
   }
 
-  async function collectWebsiteFiles() {
+  async function collectWebsiteFiles(exclusions = []) {
     const files = [];
     const rootEntries = await fsp.readdir(projectRoot);
     const rootEnvironmentFiles = rootEntries.filter((name) => isEnvironmentFile(name));
@@ -958,6 +1033,12 @@ function createBackupService(options = {}) {
       throw new Error('Website Code allowlist requires the project root package.json.');
     }
     const rootAllowlist = [...new Set([...ROOT_CODE_FILES, ...rootEnvironmentFiles])];
+    const approvedRootEntries = new Set([...rootAllowlist, ...CODE_DIRECTORIES]);
+    for (const name of rootEntries) {
+      if (!approvedRootEntries.has(name)) {
+        exclusions.push({ path: name, reason: 'Outside the approved Stocksite source/configuration roots or an explicitly excluded root item.' });
+      }
+    }
     for (const name of rootAllowlist) {
       const absolutePath = path.join(projectRoot, name);
       let stat;
@@ -971,6 +1052,10 @@ function createBackupService(options = {}) {
       }
       if (stat.isSymbolicLink() || !stat.isFile()) {
         throw new Error(`Website Code allowlisted path is not a regular file: ${name}`);
+      }
+      if (!isEnvironmentFile(name) && await isPrivateCodeFile(absolutePath)) {
+        exclusions.push({ path: name, reason: 'Private key or credential file excluded by the secret-handling policy.' });
+        continue;
       }
       files.push({
         sourcePath: absolutePath,
@@ -992,10 +1077,15 @@ function createBackupService(options = {}) {
       }
       if (name === 'frontend') {
         const frontendEntries = await fsp.readdir(absolutePath);
+        const frontendConfigurationFiles = frontendEntries.filter((entry) =>
+          /^(?:babel|webpack|vite|jest|eslint|prettier|postcss|tailwind|tsconfig|jsconfig|browserslist)(?:[.-]|$)/i.test(entry)
+        );
         const frontendFiles = [...new Set([
           'package.json',
           'package-lock.json',
           'babel.config.json',
+          ...frontendConfigurationFiles,
+          ...frontendEntries.filter((entry) => entry.startsWith('.') && !EXCLUDED_CODE_NAMES.has(entry.toLowerCase())),
           ...frontendEntries.filter((entry) => isEnvironmentFile(entry))
         ])];
         for (const frontendFile of frontendFiles) {
@@ -1004,6 +1094,10 @@ function createBackupService(options = {}) {
             const fileStat = await fsp.lstat(filePath);
             if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
               throw new Error(`Website Code allowlisted path is not a regular file: frontend/${frontendFile}`);
+            }
+            if (!isEnvironmentFile(frontendFile) && await isPrivateCodeFile(filePath)) {
+              exclusions.push({ path: `frontend/${frontendFile}`, reason: 'Private key or credential file excluded by the secret-handling policy.' });
+              continue;
             }
             files.push({
               sourcePath: filePath,
@@ -1023,11 +1117,30 @@ function createBackupService(options = {}) {
           if (!subStat.isDirectory() || subStat.isSymbolicLink()) {
             throw new Error(`Required Website Code source is missing: frontend/${subdirectory}`);
           }
-          files.push(...await collectTree(subdirectoryPath, `${name}/${subdirectory}`, { code: true }));
+          files.push(...await collectTree(subdirectoryPath, `${name}/${subdirectory}`, { code: true, exclusions }));
+        }
+        for (const hiddenDirectory of frontendEntries.filter((entry) =>
+          entry.startsWith('.') && !EXCLUDED_CODE_NAMES.has(entry.toLowerCase())
+        )) {
+          const hiddenPath = path.join(absolutePath, hiddenDirectory);
+          const hiddenStat = await fsp.lstat(hiddenPath);
+          if (hiddenStat.isDirectory() && !hiddenStat.isSymbolicLink()) {
+            files.push(...await collectTree(hiddenPath, `${name}/${hiddenDirectory}`, { code: true, exclusions }));
+          }
+        }
+        const scannedFrontendEntries = new Set([
+          ...frontendFiles,
+          'src', 'public', 'scripts',
+          ...frontendEntries.filter((entry) => entry.startsWith('.') && !EXCLUDED_CODE_NAMES.has(entry.toLowerCase()))
+        ]);
+        for (const entry of frontendEntries) {
+          if (!scannedFrontendEntries.has(entry)) {
+            exclusions.push({ path: `frontend/${entry}`, reason: 'Outside the required frontend source, package, and runtime configuration files.' });
+          }
         }
         continue;
       }
-      files.push(...await collectTree(absolutePath, name, { code: true }));
+      files.push(...await collectTree(absolutePath, name, { code: true, exclusions }));
     }
     const relativePaths = new Set();
     for (const file of files) {
@@ -1039,7 +1152,7 @@ function createBackupService(options = {}) {
     if (!files.some((file) => file.encrypted)) {
       throw new Error('Website Code backup requires at least one .env file; none was found in the allowlisted project roots.');
     }
-    return files;
+    return { files, exclusions };
   }
 
   async function collectGroupedFiles(root, optionsForTree = {}) {
@@ -1123,9 +1236,10 @@ function createBackupService(options = {}) {
     const websiteMetrics = websiteResult.status === 'fulfilled'
       ? {
           available: true,
-          currentBytes: websiteResult.value.reduce((sum, file) => sum + file.sizeBytes, 0),
-          files: websiteResult.value.length,
-          encryptedEnvironmentFiles: websiteResult.value.filter((file) => file.encrypted).length,
+          currentBytes: websiteResult.value.files.reduce((sum, file) => sum + file.sizeBytes, 0),
+          files: websiteResult.value.files.length,
+          encryptedEnvironmentFiles: websiteResult.value.files.filter((file) => file.encrypted).length,
+          excludedFiles: websiteResult.value.exclusions,
           error: null
         }
       : { available: false, currentBytes: null, files: 0, encryptedEnvironmentFiles: 0, error: formatError(websiteResult.reason) };
@@ -1593,6 +1707,7 @@ function createBackupService(options = {}) {
     const warnings = [];
     const issues = [];
     const groups = [];
+    const websiteExclusions = [];
     const categoryTotals = {
       database: { estimatedBytes: databaseInfo.sizeBytes, plannedBytes: 0, files: 1 },
       websiteCode: { estimatedBytes: 0, plannedBytes: 0, files: 0 },
@@ -1632,7 +1747,8 @@ function createBackupService(options = {}) {
         issues.push(formatError(error));
       }
       try {
-        const websiteFiles = await collectWebsiteFiles();
+        const websiteScan = await collectWebsiteFiles(websiteExclusions);
+        const websiteFiles = websiteScan.files;
         const sourceBytes = websiteFiles.reduce((sum, file) => sum + file.sizeBytes, 0);
         const plannedBytes = websiteFiles.reduce((sum, file) => sum + file.sizeBytes + (file.encrypted ? ENV_OVERHEAD_BYTES : 0), 0);
         categoryTotals.websiteCode = { estimatedBytes: sourceBytes, plannedBytes, files: websiteFiles.length };
@@ -1777,6 +1893,7 @@ function createBackupService(options = {}) {
         pgRestore
       },
       sourceRoots,
+      websiteExclusions,
       categories: categoryTotals,
       totalRequiredBytes,
       filesTotal: groups.reduce((sum, group) => sum + group.fileCount, 0),
@@ -2586,6 +2703,7 @@ function createBackupService(options = {}) {
         relativePath: databaseGroup?.outputRelativePath || null
       },
       sourceRoots: job.plan.sourceRoots,
+      websiteCodeExclusions: job.plan.websiteExclusions || [],
       destinationDrives: job.plan.drives.map((drive) => ({
         driveNumber: drive.driveNumber,
         path: job.clientExport ? 'Mac-local export' : drive.path,
@@ -2957,6 +3075,7 @@ function createBackupService(options = {}) {
     getClientExportFiles,
     getActiveJob,
     getAutomaticSchedule,
+    deleteAutomaticSchedule,
     getHistory,
     getJob,
     openClientExportFile,

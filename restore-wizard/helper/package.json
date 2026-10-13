@@ -1,0 +1,12 @@
+{
+  "name": "stocksite-restore-helper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local-only Stocksite restore helper",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "yauzl": "3.4.0"
+  }
+}
