@@ -1679,13 +1679,35 @@ function createBackupService(options = {}) {
         const expectedInventoryMap = validExpectedInventory
           ? new Map(expectedInventory.map(({ path: relativePath, sizeBytes }) => [relativePath, sizeBytes]))
           : new Map();
-        if (
-          !validExpectedInventory ||
-          expectedInventoryMap.size !== expectedInventory.length ||
-          files.length !== expectedInventoryMap.size ||
-          files.some(({ path: relativePath, sizeBytes }) => expectedInventoryMap.get(relativePath) !== sizeBytes)
-        ) {
-          throw new Error('Verified source inventory changed while packaging.');
+        const inventoryDifferences = [];
+        const describeDifference = (description) => {
+          if (inventoryDifferences.length < 12) inventoryDifferences.push(description);
+        };
+        if (!validExpectedInventory) {
+          describeDifference('The initial inventory contains an invalid path or size field.');
+        } else {
+          for (const [relativePath, initialSize] of expectedInventoryMap) {
+            const current = available.get(relativePath);
+            if (!current) describeDifference(`Missing since initial inventory: ${relativePath}`);
+            else if (current.sizeBytes !== initialSize) {
+              describeDifference(`Size changed: ${relativePath} (initial ${initialSize} bytes, current ${current.sizeBytes} bytes)`);
+            }
+          }
+          for (const [relativePath, current] of available) {
+            if (!expectedInventoryMap.has(relativePath)) {
+              describeDifference(`Added since initial inventory: ${relativePath} (${current.sizeBytes} bytes)`);
+            }
+          }
+          if (expectedInventoryMap.size !== expectedInventory.length) {
+            describeDifference('The initial inventory contains duplicate paths.');
+          }
+          if (available.size !== files.length) {
+            describeDifference('The current inventory contains duplicate paths.');
+          }
+        }
+        if (inventoryDifferences.length) {
+          const totalDifferences = inventoryDifferences.length >= 12 ? ' (additional differences omitted)' : '';
+          throw new Error(`Verified source inventory changed while packaging: ${inventoryDifferences.join('; ')}${totalDifferences}`);
         }
         const expectedPaths = new Set();
         const totalBytes = expectedEntries.reduce((sum, entry) => sum + Number(entry?.sizeBytes || 0), 0);

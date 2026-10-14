@@ -648,7 +648,7 @@ Write-PackageVerified $verifiedFiles $sum`;
     return { path: outputPath, sizeBytes: stat.size };
   }
 
-  async function verifyExportFilesUnchanged(jobId, entries, checksums, onProgress = () => {}) {
+  async function verifyExportFilesUnchanged(jobId, entries, checksums, onProgress = () => {}, initialInventory = entries) {
     if (typeof backupService.verifyClientExportFiles === 'function') {
       const expectedEntries = entries.map(({ path: relativePath, sizeBytes }) => ({
         path: relativePath,
@@ -660,7 +660,7 @@ Write-PackageVerified $verifiedFiles $sum`;
         expectedEntries,
         onProgress,
         {
-          expectedInventory: entries,
+          expectedInventory: initialInventory,
           idleTimeoutMs: options.sourceVerificationIdleTimeoutMs ?? 2 * 60 * 1000,
           timeoutMs: options.sourceVerificationTimeoutMs ?? 30 * 60 * 1000
         }
@@ -872,7 +872,8 @@ Write-PackageVerified $verifiedFiles $sum`;
               verificationPersistenceError ||= error;
             });
           }
-        }
+        },
+        entries
       );
       let verificationPersistTimer;
       try {

@@ -820,6 +820,23 @@ test('Mac-local manual export stages only a verified backup set and automatic jo
     assert.equal(verificationProgress[0].filesCompleted, 1);
     assert.equal(verificationProgress[0].path, 'Website-Code/backend/server.js');
     await assert.rejects(service.openClientExportFile(started.id, '../../package.json'), /Invalid manual export file path/);
+    const transientPath = path.join(
+      clientExportRoot,
+      'GFXunlimit',
+      `Backup-Set-${started.id}`,
+      'Drive-1',
+      'Website-Code/backend/generated.tmp'
+    );
+    fs.writeFileSync(transientPath, 'generated');
+    await assert.rejects(
+      service.verifyClientExportFiles(started.id, [{
+        path: 'Website-Code/backend/server.js',
+        sizeBytes: expectedSource.length,
+        sha256: crypto.createHash('sha256').update(expectedSource).digest('hex')
+      }], () => {}, { expectedInventory: exportResult }),
+      /Added since initial inventory: Website-Code\/backend\/generated\.tmp \(9 bytes\)/
+    );
+    fs.unlinkSync(transientPath);
     fs.writeFileSync(
       path.join(clientExportRoot, 'GFXunlimit', `Backup-Set-${started.id}`, 'Drive-1', 'Website-Code/backend/server.js'),
       body.replace('true', 'fals')

@@ -99,8 +99,13 @@ test('restore package preparation consumes a verified backup set and exposes onl
       const stat = await fsp.stat(sourcePath);
       return { stream: fs.createReadStream(sourcePath), sizeBytes: stat.size };
     },
-    async verifyClientExportFiles(_id, expectedEntries, onProgress) {
+    async verifyClientExportFiles(_id, expectedEntries, onProgress, verificationOptions) {
       sourceVerificationCalls += 1;
+      assert.deepEqual(
+        new Set(verificationOptions.expectedInventory.map(({ path }) => path)),
+        new Set(Object.keys(payloads)),
+        'the later source check uses the original full inventory including the manifest and checksum file'
+      );
       let bytesCompleted = 0;
       const bytesTotal = expectedEntries.reduce((sum, entry) => sum + entry.sizeBytes, 0);
       for (let index = 0; index < expectedEntries.length; index += 1) {
