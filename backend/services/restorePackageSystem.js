@@ -48,6 +48,7 @@ const HELPER_PACKAGE_FILES = [
 ];
 const PACKAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const PACKAGE_SIGNATURE_DOMAIN = 'STOCKSITE-RESTORE-PACKAGE-V1\n';
+const WINDOWS_RESTORE_TEMP_ROOT = 'D:\\GFXTemp';
 const ACTIVE = new Set(['WAITING', 'RUNNING']);
 const CODE_EXCLUSION_POLICY = [
   { pattern: '.git/**', reason: 'Local Git metadata and history are not needed to install or run the application.' },
@@ -88,12 +89,25 @@ function makeTask({ id, name, status = 'WAITING' }) {
   return { id, name, status, operation: status === 'WAITING' ? 'Waiting' : '', percent: null, filesCompleted: null, filesTotal: null, bytesCompleted: 0, bytesTotal: null, error: null };
 }
 
+function getDefaultRestoreTemporaryRoot(platform = process.platform) {
+  return platform === 'win32'
+    ? WINDOWS_RESTORE_TEMP_ROOT
+    : path.join(os.tmpdir(), 'gfxunlimit-restore-temp');
+}
+
 function createRestorePackageService(options = {}) {
   const backupService = options.backupService;
   if (!backupService) throw new Error('The verified backup service is required for restore package generation.');
   const platform = options.platform || process.platform;
   const stateDirectory = path.resolve(options.stateDirectory || path.join(os.tmpdir(), 'stocksite-restore-package-state'));
-  const outputRoot = path.resolve(options.outputRoot || path.join(os.tmpdir(), 'gfxunlimit-manual-backup-exports', 'GFXunlimit'));
+  const temporaryRoot = path.resolve(options.temporaryRoot || getDefaultRestoreTemporaryRoot(platform));
+  const clientExportRoot = path.resolve(options.clientExportRoot || (platform === 'win32'
+    ? temporaryRoot
+    : path.join(os.tmpdir(), 'gfxunlimit-manual-backup-exports')));
+  const outputRoot = path.resolve(options.outputRoot || path.join(clientExportRoot, 'GFXunlimit'));
+  const sourceExportRoot = path.resolve(options.sourceExportRoot || (
+    options.clientExportRoot ? path.join(clientExportRoot, 'GFXunlimit') : outputRoot
+  ));
   const restoreWizardRoot = path.resolve(options.restoreWizardRoot || path.resolve(__dirname, '../../restore-wizard'));
   const spawnProcess = options.spawn || spawn;
   const getFilesystemCapacity = options.statfs || ((directory) => fsp.statfs(directory));
@@ -164,6 +178,15 @@ function createRestorePackageService(options = {}) {
 
   const jobStatePath = (id) => path.join(stateDirectory, `${id}.json`);
   const jobOutputPath = (id) => path.join(outputRoot, `Restore-Package-${id}`);
+  const jobWorkspacePath = (id) => path.join(temporaryRoot, `Restore-Package-Work-${id}`);
+  const sourceExportSetPath = (id) => path.join(sourceExportRoot, `Backup-Set-${id}`);
+  async function ensureTemporaryRoot() {
+    await fsp.mkdir(temporaryRoot, { recursive: true });
+    const stat = await fsp.lstat(temporaryRoot);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('The configured Restore Package temporary base is not a safe directory.');
+    }
+  }
   const publicJob = (job) => ({
     id: job.id,
     status: job.status,
@@ -757,7 +780,7 @@ Write-PackageVerified $verifiedFiles $sum`;
   }
 
   async function generateArtifacts(job, signer) {
-    const destination = jobOutputPath(job.id);
+    const destination = jobWorkspacePath(job.id);
     const entries = await backupService.getClientExportFiles(job.backupJobId);
     const filePaths = new Set(entries.map(({ path: relativePath }) => relativePath));
     const requiredPaths = ['Database/stocksite.backup', 'manifest.json', 'checksums.sha256'];
@@ -796,7 +819,7 @@ Write-PackageVerified $verifiedFiles $sum`;
       .reduce((sum, entry) => sum + Number(entry.sizeBytes || 0), 0);
     const databaseBytes = entries.find(({ path: relativePath }) => relativePath === 'Database/stocksite.backup').sizeBytes;
     const requiredArchiveBytes = archiveSourceBytes + databaseBytes + Math.max(16 * 1024 * 1024, Math.ceil(archiveSourceBytes * 0.05));
-    const capacity = await getFilesystemCapacity(outputRoot);
+    const capacity = await getFilesystemCapacity(temporaryRoot);
     const availableBytes = Number(capacity.bavail ?? capacity.bfree) * Number(capacity.bsize);
     if (!Number.isFinite(availableBytes) || availableBytes < requiredArchiveBytes) {
       throw new Error(`Insufficient SERVER staging space for package generation: approximately ${Math.ceil(requiredArchiveBytes)} bytes are required for archives and verification, but ${Math.max(0, Math.floor(availableBytes || 0))} bytes are available.`);
@@ -827,7 +850,7 @@ Write-PackageVerified $verifiedFiles $sum`;
       const archiveEntries = sourcePayloadEntries.filter(({ path: item }) => item.startsWith(`${definition.source}/`));
       const archiveBytes = archiveEntries.reduce((sum, entry) => sum + entry.sizeBytes, 0);
       const archive = await createDataArchive(
-        path.join(outputRoot, `Backup-Set-${job.backupJobId}`, 'Drive-1', definition.source),
+        path.join(sourceExportSetPath(job.backupJobId), 'Drive-1', definition.source),
         path.join(destination, definition.filename),
         archiveEntries.length,
         archiveBytes,
@@ -1172,6 +1195,16 @@ Write-PackageVerified $verifiedFiles $sum`;
       if (!artifact) throw new Error(`Required restore package artifact was not generated: ${id}`);
       return { id, filename, label, sizeBytes: artifact.sizeBytes, ready: true, downloadUrl: `/admin/backup/restore-package/jobs/${encodeURIComponent(job.id)}/artifacts/${encodeURIComponent(id)}` };
     });
+    await fsp.mkdir(outputRoot, { recursive: true, mode: 0o700 });
+    const finalOutputPath = jobOutputPath(job.id);
+    try {
+      await fsp.lstat(finalOutputPath);
+      throw new Error('A restore package output already exists for this job; refusing to overwrite it.');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    await fsp.rename(destination, finalOutputPath);
+    job.outputCreated = false;
     setTask(job, 'ready', 'COMPLETED', 'All verified artifacts are available to authorized administrators', 100);
     job.status = 'READY';
     job.completedAt = new Date().toISOString();
@@ -1180,6 +1213,7 @@ Write-PackageVerified $verifiedFiles $sum`;
   }
 
   async function run(job, signer) {
+    let sourceCleanupSafe = true;
     try {
       const categoryTasks = PACKAGE_CATEGORIES.map(({ id }) => id);
       while (true) {
@@ -1217,6 +1251,7 @@ Write-PackageVerified $verifiedFiles $sum`;
         currentOperation: 'Restore package generation failed.',
         tasks: job.tasks.map((task) => ({ ...task }))
       };
+      sourceCleanupSafe = error.processTerminated !== false;
       const running = failedJob.tasks.find(({ status }) => status === 'RUNNING');
       if (running) {
         running.status = 'FAILED';
@@ -1226,7 +1261,7 @@ Write-PackageVerified $verifiedFiles $sum`;
       if (error.processTerminated === false) {
         failedJob.error += ' Partial package output was retained because PowerShell termination could not be confirmed.';
       } else if (job.outputCreated) {
-        const outputPath = jobOutputPath(job.id);
+        const outputPath = jobWorkspacePath(job.id);
         try {
           const stat = await fsp.lstat(outputPath);
           if (stat.isDirectory() && !stat.isSymbolicLink()) await fsp.rm(outputPath, { recursive: true, force: false });
@@ -1256,6 +1291,25 @@ Write-PackageVerified $verifiedFiles $sum`;
         clearTimeout(persistenceTimer);
       }
     } finally {
+      if (sourceCleanupSafe && typeof backupService.deleteClientExport === 'function') {
+        try {
+          await backupService.deleteClientExport(job.backupJobId);
+        } catch (error) {
+          console.error('Could not remove this Restore Package job source snapshot:', safeMessage(error));
+        }
+      }
+      const workspacePath = jobWorkspacePath(job.id);
+      try {
+        const stat = await fsp.lstat(workspacePath);
+        if (stat.isDirectory() && !stat.isSymbolicLink()) {
+          const [root, candidate] = await Promise.all([fsp.realpath(temporaryRoot), fsp.realpath(workspacePath)]);
+          if (path.relative(root, candidate) === path.basename(workspacePath)) {
+            await fsp.rm(candidate, { recursive: true, force: false });
+          }
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') console.error('Could not remove this Restore Package job temporary workspace:', safeMessage(error));
+      }
       if (activeJobId === job.id) activeJobId = null;
     }
   }
@@ -1273,6 +1327,7 @@ Write-PackageVerified $verifiedFiles $sum`;
     }
     const signer = await packageSigner();
     await pruneExpiredPackages();
+    await ensureTemporaryRoot();
     const backupJob = await createBackupJobAfterFinalization({
       categories: ['database', 'websiteCode', 'assetsAndThumbnails'],
       destinationMode: 'mac-local'
@@ -1288,6 +1343,7 @@ Write-PackageVerified $verifiedFiles $sum`;
       tasks: initializeTasks(),
       artifacts: [],
       includeEncryptedEnvironmentFiles: true,
+      outputCreated: false,
       error: null
     };
     activeJobId = job.id;
@@ -1316,7 +1372,7 @@ Write-PackageVerified $verifiedFiles $sum`;
           activeTask.error = saved.error;
         }
         if (saved.outputCreated === true) {
-          const outputPath = jobOutputPath(id);
+          const outputPath = jobWorkspacePath(id);
           try {
             const stat = await fsp.lstat(outputPath);
             if (stat.isDirectory() && !stat.isSymbolicLink()) {
@@ -1363,4 +1419,4 @@ Write-PackageVerified $verifiedFiles $sum`;
   return { start, getJob, openArtifact };
 }
 
-module.exports = { createRestorePackageService };
+module.exports = { createRestorePackageService, getDefaultRestoreTemporaryRoot };

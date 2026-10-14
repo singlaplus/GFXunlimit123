@@ -12,12 +12,20 @@ const path = require('node:path');
 const { Readable } = require('node:stream');
 const AdmZip = require('adm-zip');
 const { test } = require('node:test');
-const { createRestorePackageService } = require('../services/restorePackageSystem');
+const {
+  createRestorePackageService,
+  getDefaultRestoreTemporaryRoot
+} = require('../services/restorePackageSystem');
 const { createRestoreHelper, promoteStagedDirectory } = require('../../restore-wizard/helper/server');
 const PACKAGE_SIGNING_KEY_PAIR = crypto.generateKeyPairSync('ed25519');
 const PACKAGE_SIGNING_PRIVATE_KEY = PACKAGE_SIGNING_KEY_PAIR.privateKey.export({ type: 'pkcs8', format: 'pem' });
 const PACKAGE_SIGNING_PUBLIC_KEY = PACKAGE_SIGNING_KEY_PAIR.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
 const UNRELATED_SIGNING_KEY_PAIR = crypto.generateKeyPairSync('ed25519');
+
+test('Restore Package uses D:\\GFXTemp on Windows and a native temporary base on macOS', () => {
+  assert.equal(getDefaultRestoreTemporaryRoot('win32'), 'D:\\GFXTemp');
+  assert.equal(getDefaultRestoreTemporaryRoot('darwin'), path.join(os.tmpdir(), 'gfxunlimit-restore-temp'));
+});
 
 async function write(root, relativePath, content) {
   const file = path.join(root, ...relativePath.split('/'));
@@ -1201,6 +1209,7 @@ test('stalled Windows ZIP verification terminates PowerShell and persists FAILED
       }
     },
     outputRoot,
+    temporaryRoot: path.join(temporary, 'GFX Temp Root'),
     stateDirectory,
     restoreWizardRoot: path.resolve(__dirname, '../../restore-wizard'),
     packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY,
@@ -1248,7 +1257,8 @@ test('Windows ZIP verification cannot remain RUNNING after process exit without 
     'GFX-restore-package-drain-2',
     'GFX-restore-package-drain-3'
   ];
-  const outputRoot = path.join(temporary, 'exports', 'GFXunlimit');
+  const temporaryRoot = path.join(temporary, 'GFX Temp Root');
+  const outputRoot = path.join(temporaryRoot, 'GFXunlimit');
   const stateDirectory = path.join(temporary, 'state');
   const byJob = new Map();
   const basePayloads = {
@@ -1283,6 +1293,8 @@ test('Windows ZIP verification cannot remain RUNNING after process exit without 
   }
 
   const children = [];
+  const processPaths = [];
+  const deletedSourceJobs = [];
   let createCalls = 0;
   const service = createRestorePackageService({
     backupService: {
@@ -1304,9 +1316,15 @@ test('Windows ZIP verification cannot remain RUNNING after process exit without 
         const filePath = byJob.get(id).get(relativePath);
         const stat = await fsp.stat(filePath);
         return { stream: fs.createReadStream(filePath), sizeBytes: stat.size };
+      },
+      async deleteClientExport(id) {
+        deletedSourceJobs.push(id);
+        await fsp.rm(path.join(outputRoot, `Backup-Set-${id}`), { recursive: true, force: false });
       }
     },
     outputRoot,
+    temporaryRoot,
+    clientExportRoot: temporaryRoot,
     stateDirectory,
     restoreWizardRoot: path.resolve(__dirname, '../../restore-wizard'),
     packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY,
@@ -1328,6 +1346,10 @@ test('Windows ZIP verification cannot remain RUNNING after process exit without 
         return true;
       };
       children.push(child);
+      processPaths.push({
+        source: spawnOptions.env.RESTORE_PACKAGE_SOURCE,
+        output: spawnOptions.env.RESTORE_PACKAGE_OUTPUT
+      });
       const fileCount = spawnOptions.env.RESTORE_PACKAGE_EXPECTED_COUNT;
       const byteCount = spawnOptions.env.RESTORE_PACKAGE_EXPECTED_BYTES;
       if (children.length >= 3) {
@@ -1376,6 +1398,19 @@ test('Windows ZIP verification cannot remain RUNNING after process exit without 
     const ready = await waitFor(service, verifiedRetry.id);
     assert.equal(ready.status, 'READY', ready.error);
     assert.equal(ready.progress.percent, 100);
+    assert.ok(processPaths.every(({ source, output }) =>
+      source.includes('GFX Temp Root') && output.includes('GFX Temp Root')),
+    'source and PowerShell archive paths preserve spaces through environment arguments');
+    assert.equal(new Set(processPaths.map(({ output }) => output)).size, processPaths.length,
+      'every archive process gets a job-specific output path');
+    assert.deepEqual(deletedSourceJobs, ids, 'only the completed package jobs source snapshots are cleaned');
+    assert.equal(fs.existsSync(temporaryRoot), true, 'job cleanup never removes the configured base directory');
+    for (const id of ids) {
+      assert.equal(fs.existsSync(path.join(temporaryRoot, `Restore-Package-Work-${id}`)), false);
+      assert.equal(fs.existsSync(path.join(outputRoot, `Backup-Set-${id}`)), false);
+    }
+    assert.equal(fs.existsSync(path.join(outputRoot, `Restore-Package-${ids[2]}`)), true,
+      'the completed package remains available outside the temporary work directory');
   } finally {
     await fsp.rm(temporary, { recursive: true, force: true });
   }

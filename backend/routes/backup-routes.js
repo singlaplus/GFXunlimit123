@@ -1,11 +1,10 @@
 const express = require('express');
 const axios = require('axios');
-const os = require('node:os');
 const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
 const { getAssetServerHttpOrigin } = require('../config');
-const { createBackupService } = require('../services/backupSystem');
-const { createRestorePackageService } = require('../services/restorePackageSystem');
+const { createBackupService, getDefaultClientExportRoot } = require('../services/backupSystem');
+const { createRestorePackageService, getDefaultRestoreTemporaryRoot } = require('../services/restorePackageSystem');
 
 function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {} }) {
   const router = express.Router();
@@ -101,19 +100,23 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
     return router;
   }
 
+  const platform = serviceOptions.platform || process.platform;
+  const temporaryRoot = serviceOptions.temporaryRoot || getDefaultRestoreTemporaryRoot(platform);
+  const clientExportRoot = serviceOptions.clientExportRoot || getDefaultClientExportRoot(platform);
+  const stateDirectory = serviceOptions.stateDirectory || path.resolve(__dirname, '..', 'backup-system');
   const service = createBackupService({
     ...serviceOptions,
+    clientExportRoot,
     database: pool,
     projectRoot: projectRoot || path.resolve(__dirname, '../..')
   });
   const restorePackages = createRestorePackageService({
     ...(serviceOptions.restorePackageOptions || {}),
     backupService: service,
-    stateDirectory: path.join(serviceOptions.stateDirectory || path.resolve(__dirname, '..', 'backup-system'), 'restore-packages'),
-    outputRoot: path.join(
-      serviceOptions.clientExportRoot || path.join(os.tmpdir(), 'gfxunlimit-manual-backup-exports'),
-      'GFXunlimit'
-    ),
+    stateDirectory: path.join(stateDirectory, 'restore-packages'),
+    temporaryRoot,
+    clientExportRoot,
+    outputRoot: serviceOptions.restorePackageOptions?.outputRoot || path.join(clientExportRoot, 'GFXunlimit')
   });
 
   router.get('/sources', async (req, res) => {

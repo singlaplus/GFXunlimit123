@@ -6,10 +6,12 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { PassThrough, Writable } = require('node:stream');
 const { test } = require('node:test');
+
 const {
   SAFETY_RATIO,
   assertSafeDestination,
   createBackupService,
+  getDefaultClientExportRoot,
   getFsCapacity,
   getLocalDateKey,
   getNextScheduleDate,
@@ -21,6 +23,11 @@ const {
   planLogicalGroups,
   selectRollingFolder
 } = require('../services/backupSystem');
+
+test('Windows backup exports default to D:\\GFXTemp while macOS keeps a native temp path', () => {
+  assert.equal(getDefaultClientExportRoot('win32'), 'D:\\GFXTemp');
+  assert.equal(getDefaultClientExportRoot('darwin'), path.join(os.tmpdir(), 'gfxunlimit-manual-backup-exports'));
+});
 
 function makeProjectRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-project-'));
@@ -850,8 +857,14 @@ test('Mac-local manual export stages only a verified backup set and automatic jo
       /changed while packaging/
     );
 
+    const siblingExport = path.join(clientExportRoot, 'GFXunlimit', 'Backup-Set-preserve-this');
+    fs.mkdirSync(siblingExport);
+    fs.writeFileSync(path.join(siblingExport, 'marker.txt'), 'preserve');
     await service.deleteClientExport(started.id);
     await assert.rejects(service.getClientExportFiles(started.id), /no longer available/);
+    assert.equal(fs.existsSync(clientExportRoot), true, 'job cleanup preserves the configured export base');
+    assert.equal(fs.readFileSync(path.join(siblingExport, 'marker.txt'), 'utf8'), 'preserve',
+      'job cleanup preserves other job-owned export directories');
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(stateDirectory, { recursive: true, force: true });

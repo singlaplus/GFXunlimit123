@@ -19,6 +19,7 @@ const AUTOMATIC_RETENTION_LIMIT = 30;
 const PG_TOOL_VERSION_TIMEOUT_MS = 10000;
 const PG_RESTORE_LIST_TIMEOUT_MS = 60000;
 const CLIENT_EXPORT_RETENTION_MS = 24 * 60 * 60 * 1000;
+const WINDOWS_RESTORE_TEMP_ROOT = 'D:\\GFXTemp';
 const SCHEDULE_TIMEZONE = 'Asia/Kolkata';
 const SCHEDULE_FREQUENCIES = new Set(['daily', 'weekly', 'monthly']);
 const WEEK_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -409,12 +410,18 @@ function formatError(error) {
   return error && typeof error.message === 'string' ? error.message : String(error);
 }
 
+function getDefaultClientExportRoot(platform = process.platform) {
+  return platform === 'win32'
+    ? WINDOWS_RESTORE_TEMP_ROOT
+    : path.join(os.tmpdir(), 'gfxunlimit-manual-backup-exports');
+}
+
 function createBackupService(options = {}) {
   const fileSystem = options.fs || fs;
   const fsp = options.fsp || fileSystem.promises;
   const projectRoot = path.resolve(options.projectRoot || path.resolve(__dirname, '../..'));
   const stateDirectory = path.resolve(options.stateDirectory || path.join(__dirname, '..', STATE_DIR_NAME));
-  const clientExportRoot = path.resolve(options.clientExportRoot || path.join(os.tmpdir(), 'gfxunlimit-manual-backup-exports'));
+  const clientExportRoot = path.resolve(options.clientExportRoot || getDefaultClientExportRoot(options.platform || process.platform));
   const database = options.database;
   const environment = options.environment || process.env;
   const storageRoots = getAssetStorageRoots(environment);
@@ -1794,7 +1801,17 @@ function createBackupService(options = {}) {
 
   async function deleteClientExport(jobId) {
     const setDirectory = await getClientExportSetDirectory(jobId);
-    await fsp.rm(setDirectory, { recursive: true, force: false });
+    const setRoot = path.dirname(setDirectory);
+    const stat = await fsp.lstat(setRoot);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('The Restore Package source snapshot is not a safe job-owned directory.');
+    }
+    const [root, candidate] = await Promise.all([fsp.realpath(clientExportRoot), fsp.realpath(setRoot)]);
+    const expectedRelative = path.join('GFXunlimit', `Backup-Set-${jobId}`);
+    if (path.relative(root, candidate) !== expectedRelative || path.isAbsolute(path.relative(root, candidate))) {
+      throw new Error('The Restore Package source snapshot is outside its job-owned staging directory.');
+    }
+    await fsp.rm(candidate, { recursive: true, force: false });
   }
 
   async function buildPlan({
@@ -3240,6 +3257,7 @@ module.exports = {
   SAFETY_RATIO,
   assertSafeDestination,
   createBackupService,
+  getDefaultClientExportRoot,
   getFsCapacity,
   getLocalDateKey,
   getNextScheduleDate,
