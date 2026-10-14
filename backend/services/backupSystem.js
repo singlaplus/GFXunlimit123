@@ -1582,11 +1582,11 @@ function createBackupService(options = {}) {
     return realSetDirectory;
   }
 
-  async function collectClientExportFiles(jobId) {
+  async function collectClientExportFiles(jobId, validateContents = true) {
     const setDirectory = await getClientExportSetDirectory(jobId);
     const job = jobs.get(jobId);
     if (!job) throw new Error('The verified manual export job details are unavailable for integrity verification.');
-    await validateBackupSetContents(job, job.drives[0], true);
+    if (validateContents) await validateBackupSetContents(job, job.drives[0], true);
     const files = [];
     const pending = [{ directory: setDirectory, relativeDirectory: '' }];
     while (pending.length) {
@@ -1646,6 +1646,128 @@ function createBackupService(options = {}) {
       sizeBytes: stat.size,
       stream: handle.createReadStream()
     };
+  }
+
+  async function verifyClientExportFiles(jobId, expectedEntries, onProgress = () => {}, verificationOptions = {}) {
+    if (!Array.isArray(expectedEntries) || typeof onProgress !== 'function') {
+      throw new Error('Manual export integrity verification received an invalid file inventory.');
+    }
+    const idleTimeoutMs = verificationOptions.idleTimeoutMs ?? 2 * 60 * 1000;
+    const timeoutMs = verificationOptions.timeoutMs ?? 30 * 60 * 1000;
+    let timedOut = false;
+    let activeStream = null;
+    let rejectTimeout;
+    const timeoutError = new Error(`Manual export integrity verification exceeded its ${Math.ceil(timeoutMs / 60_000)} minute time limit.`);
+    const timeoutPromise = new Promise((_, reject) => { rejectTimeout = reject; });
+    const hardTimer = setTimeout(() => {
+      timedOut = true;
+      activeStream?.destroy(timeoutError);
+      rejectTimeout(timeoutError);
+    }, timeoutMs);
+    try {
+      const verification = (async () => {
+        const { files, setDirectory } = await collectClientExportFiles(jobId, false);
+        if (timedOut) throw timeoutError;
+        const available = new Map(files.map((file) => [file.path, file]));
+        const expectedInventory = verificationOptions.expectedInventory || expectedEntries;
+        const validExpectedInventory = Array.isArray(expectedInventory) && expectedInventory.every((entry) =>
+          entry && typeof entry.path === 'string' && entry.path &&
+          !entry.path.includes('\\') &&
+          !entry.path.split('/').some((segment) => !segment || segment === '.' || segment === '..') &&
+          Number.isSafeInteger(entry.sizeBytes) && entry.sizeBytes >= 0
+        );
+        const expectedInventoryMap = validExpectedInventory
+          ? new Map(expectedInventory.map(({ path: relativePath, sizeBytes }) => [relativePath, sizeBytes]))
+          : new Map();
+        if (
+          !validExpectedInventory ||
+          expectedInventoryMap.size !== expectedInventory.length ||
+          files.length !== expectedInventoryMap.size ||
+          files.some(({ path: relativePath, sizeBytes }) => expectedInventoryMap.get(relativePath) !== sizeBytes)
+        ) {
+          throw new Error('Verified source inventory changed while packaging.');
+        }
+        const expectedPaths = new Set();
+        const totalBytes = expectedEntries.reduce((sum, entry) => sum + Number(entry?.sizeBytes || 0), 0);
+        let bytesVerified = 0;
+
+        for (let index = 0; index < expectedEntries.length; index += 1) {
+          const expected = expectedEntries[index];
+          if (
+            !expected || typeof expected.path !== 'string' || !expected.path ||
+            expected.path.includes('\\') ||
+            expected.path.split('/').some((segment) => !segment || segment === '.' || segment === '..') ||
+            expectedPaths.has(expected.path) ||
+            !/^[a-f0-9]{64}$/i.test(expected.sha256) ||
+            !Number.isSafeInteger(expected.sizeBytes) || expected.sizeBytes < 0
+          ) {
+            throw new Error('Manual export integrity verification received an invalid or duplicate source entry.');
+          }
+          expectedPaths.add(expected.path);
+          const inventoryEntry = available.get(expected.path);
+          if (!inventoryEntry || inventoryEntry.sizeBytes !== expected.sizeBytes) {
+            throw new Error(`Verified source inventory changed while packaging: ${expected.path}`);
+          }
+
+          const absolutePath = path.join(setDirectory, ...expected.path.split('/'));
+          const canonicalPath = await fsp.realpath(absolutePath);
+          const relativeCanonicalPath = path.relative(setDirectory, canonicalPath);
+          if (relativeCanonicalPath !== expected.path.split('/').join(path.sep) || path.isAbsolute(relativeCanonicalPath)) {
+            throw new Error('Manual export source path changed or escaped its verified backup set.');
+          }
+          const handle = await fsp.open(canonicalPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+          let stream;
+          let idleTimer;
+          const hash = crypto.createHash('sha256');
+          let fileBytes = 0;
+          try {
+            const stat = await handle.stat();
+            if (!stat.isFile() || stat.size !== expected.sizeBytes) {
+              throw new Error(`Manual export file changed after verification: ${expected.path}`);
+            }
+            stream = handle.createReadStream({ autoClose: false });
+            activeStream = stream;
+            const resetIdleTimer = () => {
+              clearTimeout(idleTimer);
+              idleTimer = setTimeout(() => {
+                stream.destroy(new Error(`Manual export checksum verification made no progress for ${Math.ceil(idleTimeoutMs / 1000)} seconds: ${expected.path}`));
+              }, idleTimeoutMs);
+            };
+            stream.on('data', resetIdleTimer);
+            resetIdleTimer();
+            for await (const chunk of stream) {
+              hash.update(chunk);
+              fileBytes += chunk.length;
+            }
+          } finally {
+            clearTimeout(idleTimer);
+            if (stream) {
+              stream.removeAllListeners('data');
+              stream.destroy();
+            }
+            if (activeStream === stream) activeStream = null;
+            await handle.close().catch(() => {});
+          }
+          if (timedOut) throw timeoutError;
+          if (fileBytes !== expected.sizeBytes || hash.digest('hex') !== expected.sha256.toLowerCase()) {
+            throw new Error(`Verified source file changed while packaging: ${expected.path}`);
+          }
+          bytesVerified += fileBytes;
+          await onProgress({
+            filesCompleted: index + 1,
+            filesTotal: expectedEntries.length,
+            bytesCompleted: bytesVerified,
+            bytesTotal: totalBytes,
+            path: expected.path
+          });
+        }
+        return { filesVerified: expectedEntries.length, bytesVerified, totalBytes };
+      })();
+      return await Promise.race([verification, timeoutPromise]);
+    } finally {
+      clearTimeout(hardTimer);
+      activeStream?.destroy();
+    }
   }
 
   async function deleteClientExport(jobId) {
@@ -3079,6 +3201,7 @@ function createBackupService(options = {}) {
     getHistory,
     getJob,
     openClientExportFile,
+    verifyClientExportFiles,
     publicPlan,
     testDestination,
     testDriveSet,

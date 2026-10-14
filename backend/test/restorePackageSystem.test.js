@@ -77,6 +77,7 @@ test('restore package preparation consumes a verified backup set and exposes onl
     sourceFiles.set(relative, await write(setDirectory, relative, content));
   }
 
+  let sourceVerificationCalls = 0;
   const backupService = {
     async createJob() {
       return { id: backupId, status: 'RUNNING' };
@@ -97,6 +98,29 @@ test('restore package preparation consumes a verified backup set and exposes onl
       if (!sourcePath) throw new Error('Missing verified source file.');
       const stat = await fsp.stat(sourcePath);
       return { stream: fs.createReadStream(sourcePath), sizeBytes: stat.size };
+    },
+    async verifyClientExportFiles(_id, expectedEntries, onProgress) {
+      sourceVerificationCalls += 1;
+      let bytesCompleted = 0;
+      const bytesTotal = expectedEntries.reduce((sum, entry) => sum + entry.sizeBytes, 0);
+      for (let index = 0; index < expectedEntries.length; index += 1) {
+        const expected = expectedEntries[index];
+        const sourcePath = sourceFiles.get(expected.path);
+        if (!sourcePath) throw new Error(`Missing verified source file: ${expected.path}`);
+        const content = await fsp.readFile(sourcePath);
+        if (
+          content.length !== expected.sizeBytes ||
+          crypto.createHash('sha256').update(content).digest('hex') !== expected.sha256
+        ) throw new Error(`Verified source file changed while packaging: ${expected.path}`);
+        bytesCompleted += content.length;
+        onProgress({
+          filesCompleted: index + 1,
+          filesTotal: expectedEntries.length,
+          bytesCompleted,
+          bytesTotal,
+          path: expected.path
+        });
+      }
     }
   };
   const spawnMock = (executable, args) => {
@@ -139,6 +163,7 @@ test('restore package preparation consumes a verified backup set and exposes onl
     ]);
     assert.equal(completed.artifacts.length, 10);
     assert.ok(completed.tasks.every((task) => task.status === 'COMPLETED'));
+    assert.equal(sourceVerificationCalls, 3, 'source integrity is rechecked once per data archive');
     const packageManifest = JSON.parse(await fsp.readFile(path.join(outputRoot, `Restore-Package-${backupId}`, 'restore-package-manifest.json'), 'utf8'));
     assert.equal(Object.hasOwn(packageManifest, 'packageSigningPublicKey'), false);
     assert.equal(packageManifest.schema, 'stocksite.restore-package-manifest');
@@ -1111,10 +1136,12 @@ test('Windows ZIP generation loads both compression assemblies and verifies arch
   assert.match(script, /Unsafe archive entry/);
   assert.match(script, /Write-PackageProgress 'create'/);
   assert.match(script, /Write-PackageProgress 'verify'/);
+  assert.match(script, /Write-PackageVerified \$verifiedFiles \$sum/);
   assert.match(script, /\$input\.Read\(\$buffer/);
   assert.match(script, /\$s\.Read\(\$buffer/);
   assert.match(source, /archiveTimeoutMs \|\| 30 \* 60 \* 1000/);
   assert.match(source, /archiveIdleTimeoutMs \|\| 2 \* 60 \* 1000/);
+  assert.match(source, /archiveOutputDrainTimeoutMs \?\? 10_000/);
   assert.match(source, /requestTermination\('SIGKILL'\)/);
   assert.match(source, /archiveProgressPersistTimeoutMs \?\? 10_000/);
 });
@@ -1181,8 +1208,8 @@ test('stalled Windows ZIP verification terminates PowerShell and persists FAILED
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
       child.kill = (signal) => {
-        terminationSignals.push(signal);
-        if (signal === 'SIGKILL') process.nextTick(() => child.emit('close', null, signal));
+        terminationSignals.push(signal || 'default');
+        if (terminationSignals.length === 2) process.nextTick(() => child.emit('close', null, null));
         return true;
       };
       setTimeout(() => child.stdout.emit('data', Buffer.from('STOCKSITE_PROGRESS|verify|1|20\n')), 10);
@@ -1196,7 +1223,7 @@ test('stalled Windows ZIP verification terminates PowerShell and persists FAILED
     const job = await waitFor(service, backupId);
     assert.equal(job.status, 'FAILED');
     assert.match(job.error, /Windows ZIP generation made no measurable progress/);
-    assert.deepEqual(terminationSignals, ['SIGTERM', 'SIGKILL']);
+    assert.deepEqual(terminationSignals, ['default', 'default']);
     const websiteTask = job.tasks.find(({ id }) => id === 'websiteCode');
     assert.equal(websiteTask.bytesCompleted, 20);
     assert.equal(websiteTask.filesTotal, 1);
@@ -1204,6 +1231,146 @@ test('stalled Windows ZIP verification terminates PowerShell and persists FAILED
     const persistedJob = JSON.parse(await fsp.readFile(path.join(stateDirectory, `${backupId}.json`), 'utf8'));
     assert.equal(persistedJob.status, 'FAILED');
     assert.equal(persistedJob.tasks.find(({ id }) => id === 'websiteCode').filesCompleted, 1);
+  } finally {
+    await fsp.rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('Windows ZIP verification cannot remain RUNNING after process exit without stream close and retry remains available', async () => {
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), 'stocksite-restore-package-zip-drain-'));
+  const ids = [
+    'GFX-restore-package-drain-1',
+    'GFX-restore-package-drain-2',
+    'GFX-restore-package-drain-3'
+  ];
+  const outputRoot = path.join(temporary, 'exports', 'GFXunlimit');
+  const stateDirectory = path.join(temporary, 'state');
+  const byJob = new Map();
+  const basePayloads = {
+    'Database/stocksite.backup': Buffer.from('PGDMP-test'),
+    'Website-Code/site.js': Buffer.from('module.exports = true;'),
+    'Assets/user/original.dat': Buffer.from('asset'),
+    'Thumbnails/user/thumb.dat': Buffer.from('thumb')
+  };
+
+  for (const id of ids) {
+    const root = path.join(outputRoot, `Backup-Set-${id}`, 'Drive-1');
+    const payloads = {
+      ...basePayloads,
+      'manifest.json': Buffer.from(JSON.stringify({
+        format: 'GFXUNLIMIT-BACKUP-SET',
+        backupSetId: id,
+        status: 'SUCCESS',
+        verificationStatus: 'VERIFIED',
+        environmentFilesEncrypted: true
+      }))
+    };
+    payloads['checksums.sha256'] = Buffer.from(Object.entries(payloads)
+      .filter(([relativePath]) => relativePath !== 'manifest.json')
+      .map(([relativePath, content]) =>
+        `${crypto.createHash('sha256').update(content).digest('hex')} ${content.length} ${relativePath}`)
+      .join('\n') + '\n');
+    const files = new Map();
+    for (const [relativePath, content] of Object.entries(payloads)) {
+      files.set(relativePath, await write(root, relativePath, content));
+    }
+    byJob.set(id, files);
+  }
+
+  const children = [];
+  let createCalls = 0;
+  const service = createRestorePackageService({
+    backupService: {
+      async createJob() {
+        const id = ids[createCalls];
+        createCalls += 1;
+        return { id };
+      },
+      async getJob(id) {
+        return { id, status: 'SUCCESS', verificationStatus: 'VERIFIED', progress: {} };
+      },
+      async getClientExportFiles(id) {
+        return [...byJob.get(id)].map(([relativePath, filePath]) => ({
+          path: relativePath,
+          sizeBytes: fs.statSync(filePath).size
+        }));
+      },
+      async openClientExportFile(id, relativePath) {
+        const filePath = byJob.get(id).get(relativePath);
+        const stat = await fsp.stat(filePath);
+        return { stream: fs.createReadStream(filePath), sizeBytes: stat.size };
+      }
+    },
+    outputRoot,
+    stateDirectory,
+    restoreWizardRoot: path.resolve(__dirname, '../../restore-wizard'),
+    packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY,
+    platform: 'win32',
+    archiveIdleTimeoutMs: 5000,
+    archiveOutputDrainTimeoutMs: 20,
+    archiveTerminationGraceMs: 10,
+    statfs: async () => ({ bavail: 1024 * 1024, bsize: 1024 }),
+    spawn: (_command, _args, spawnOptions) => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdout.destroyed = false;
+      child.stderr.destroyed = false;
+      child.stdout.destroy = function destroy() { this.destroyed = true; };
+      child.stderr.destroy = function destroy() { this.destroyed = true; };
+      child.kill = () => {
+        child.wasKilled = true;
+        return true;
+      };
+      children.push(child);
+      const fileCount = spawnOptions.env.RESTORE_PACKAGE_EXPECTED_COUNT;
+      const byteCount = spawnOptions.env.RESTORE_PACKAGE_EXPECTED_BYTES;
+      if (children.length >= 3) {
+        const zip = new AdmZip();
+        zip.addLocalFolder(spawnOptions.env.RESTORE_PACKAGE_SOURCE);
+        zip.writeZip(spawnOptions.env.RESTORE_PACKAGE_OUTPUT);
+      }
+      process.nextTick(() => {
+        const output =
+          `STOCKSITE_PROGRESS|create|${fileCount}|${byteCount}\n` +
+          `STOCKSITE_PROGRESS|verify|${fileCount}|${byteCount}\n`;
+        const verified = children.length !== 2
+          ? `${output}STOCKSITE_ARCHIVE_VERIFIED|${fileCount}|${byteCount}\n`
+          : output;
+        child.stdout.emit('data', Buffer.from(verified));
+        if (children.length === 1) child.emit('exit', 0, null);
+        else child.emit('close', 0, null);
+      });
+      return child;
+    },
+    pollIntervalMs: 1
+  });
+
+  try {
+    const first = await service.start({ includeEncryptedEnvironmentFiles: true });
+    const failed = await waitFor(service, first.id);
+    assert.equal(failed.status, 'FAILED');
+    assert.match(failed.error, /output streams did not close/);
+    assert.equal(failed.tasks.find(({ id }) => id === 'websiteCode').filesCompleted, 1);
+    assert.equal(children[0].wasKilled, undefined, 'an already-exited child must not be killed again');
+    assert.equal(children[0].stdout.destroyed, true);
+    assert.equal(children[0].stderr.destroyed, true);
+    const saved = JSON.parse(await fsp.readFile(path.join(stateDirectory, `${first.id}.json`), 'utf8'));
+    assert.equal(saved.status, 'FAILED');
+
+    const retry = await service.start({ includeEncryptedEnvironmentFiles: true });
+    assert.equal(retry.id, ids[1]);
+    assert.equal(retry.status, 'RUNNING');
+    assert.equal(createCalls, 2);
+    const retryResult = await waitFor(service, retry.id);
+    assert.equal(retryResult.status, 'FAILED');
+    assert.match(retryResult.error, /without confirming completed archive integrity verification/);
+
+    const verifiedRetry = await service.start({ includeEncryptedEnvironmentFiles: true });
+    assert.equal(verifiedRetry.id, ids[2]);
+    const ready = await waitFor(service, verifiedRetry.id);
+    assert.equal(ready.status, 'READY', ready.error);
+    assert.equal(ready.progress.percent, 100);
   } finally {
     await fsp.rm(temporary, { recursive: true, force: true });
   }

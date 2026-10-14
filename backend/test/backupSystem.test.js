@@ -805,7 +805,33 @@ test('Mac-local manual export stages only a verified backup set and automatic jo
     let body = '';
     for await (const chunk of file.stream) body += chunk.toString();
     assert.equal(body, 'module.exports = true;\n');
+    const expectedSource = Buffer.from(body);
+    const verificationProgress = [];
+    const verification = await service.verifyClientExportFiles(started.id, [{
+      path: 'Website-Code/backend/server.js',
+      sizeBytes: expectedSource.length,
+      sha256: crypto.createHash('sha256').update(expectedSource).digest('hex')
+    }], (progress) => verificationProgress.push(progress), { expectedInventory: exportResult });
+    assert.deepEqual(verification, {
+      filesVerified: 1,
+      bytesVerified: expectedSource.length,
+      totalBytes: expectedSource.length
+    });
+    assert.equal(verificationProgress[0].filesCompleted, 1);
+    assert.equal(verificationProgress[0].path, 'Website-Code/backend/server.js');
     await assert.rejects(service.openClientExportFile(started.id, '../../package.json'), /Invalid manual export file path/);
+    fs.writeFileSync(
+      path.join(clientExportRoot, 'GFXunlimit', `Backup-Set-${started.id}`, 'Drive-1', 'Website-Code/backend/server.js'),
+      body.replace('true', 'fals')
+    );
+    await assert.rejects(
+      service.verifyClientExportFiles(started.id, [{
+        path: 'Website-Code/backend/server.js',
+        sizeBytes: expectedSource.length,
+        sha256: crypto.createHash('sha256').update(expectedSource).digest('hex')
+      }], () => {}, { expectedInventory: exportResult }),
+      /changed while packaging/
+    );
 
     await service.deleteClientExport(started.id);
     await assert.rejects(service.getClientExportFiles(started.id), /no longer available/);

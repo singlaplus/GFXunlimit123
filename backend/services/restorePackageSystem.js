@@ -331,12 +331,16 @@ function createRestorePackageService(options = {}) {
       let idleTimer;
       let terminationTimer;
       let escalationTimer;
+      let outputDrainTimer;
       let terminationMessage = '';
+      let terminationIssue = '';
+      let exitObserved = false;
       const clearTimers = () => {
         clearTimeout(timer);
         clearTimeout(idleTimer);
         clearTimeout(terminationTimer);
         clearTimeout(escalationTimer);
+        clearTimeout(outputDrainTimer);
       };
       const rejectProcessError = (message, processTerminated) => {
         const error = new Error(message);
@@ -345,10 +349,16 @@ function createRestorePackageService(options = {}) {
       };
       const requestTermination = (signal) => {
         try {
-          if (!child.kill(signal)) return ' The archive process did not confirm the termination request.';
+          const requested = platform === 'win32' ? child.kill() : child.kill(signal);
+          if (!requested) return ' The archive process did not confirm the termination request.';
           return '';
         } catch (error) {
           return ` The archive process could not be terminated: ${safeMessage(error)}`;
+        }
+      };
+      const destroyOutputStreams = () => {
+        for (const stream of [child.stdout, child.stderr]) {
+          if (stream && !stream.destroyed && typeof stream.destroy === 'function') stream.destroy();
         }
       };
       const failAndTerminate = (message) => {
@@ -356,17 +366,17 @@ function createRestorePackageService(options = {}) {
         terminationMessage = message;
         clearTimeout(timer);
         clearTimeout(idleTimer);
-        requestTermination('SIGTERM');
+        terminationIssue = requestTermination('SIGTERM');
         const terminationGraceMs = options.archiveTerminationGraceMs ?? 5000;
         terminationTimer = setTimeout(() => {
           if (settled) return;
-          requestTermination('SIGKILL');
+          terminationIssue += requestTermination('SIGKILL');
           escalationTimer = setTimeout(() => {
-            if (settled) return;
+            if (settled || exitObserved) return;
             settled = true;
             clearTimers();
             rejectProcessError(
-              `${terminationMessage} Archive process exit could not be confirmed.`,
+              `${terminationMessage}${terminationIssue} Archive process exit could not be confirmed.`,
               false
             );
           }, terminationGraceMs);
@@ -396,6 +406,24 @@ function createRestorePackageService(options = {}) {
         clearTimers();
         rejectProcessError(`Archive utility could not be started: ${safeMessage(error)}`, !child.pid);
       });
+      child.once('exit', (code, signal) => {
+        exitObserved = true;
+        clearTimeout(timer);
+        clearTimeout(idleTimer);
+        clearTimeout(terminationTimer);
+        clearTimeout(escalationTimer);
+        outputDrainTimer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          clearTimers();
+          destroyOutputStreams();
+          const exitDescription = signal ? `signal ${signal}` : `exit code ${code}`;
+          rejectProcessError(
+            `${terminationMessage || `Archive process exited with ${exitDescription}, but its output streams did not close within ${Math.ceil((options.archiveOutputDrainTimeoutMs ?? 10_000) / 1000)} seconds.`}${terminationIssue}`,
+            true
+          );
+        }, options.archiveOutputDrainTimeoutMs ?? 10_000);
+      });
       child.once('close', (code, signal) => {
         if (settled) return;
         settled = true;
@@ -424,6 +452,9 @@ $progressBytes=4MB
 $buffer=New-Object byte[] (256KB)
 function Write-PackageProgress([string]$phase,[int]$files,[long]$bytes) {
   [Console]::Out.WriteLine("STOCKSITE_PROGRESS|$phase|$files|$bytes")
+}
+function Write-PackageVerified([int]$files,[long]$bytes) {
+  [Console]::Out.WriteLine("STOCKSITE_ARCHIVE_VERIFIED|$files|$bytes")
 }
 $files=Get-ChildItem -LiteralPath $src -Force -Recurse -File
 if($files.Count -ne $expectedCount){throw 'Source file count changed'}
@@ -478,8 +509,10 @@ try {
     Write-PackageProgress 'verify' $verifiedFiles $sum
   }
   if($sum -ne $expectedBytes){throw 'Archive byte total mismatch'}
-} finally {$check.Dispose()}`;
+} finally {$check.Dispose()}
+Write-PackageVerified $verifiedFiles $sum`;
       let progressBuffer = '';
+      let archiveVerified = false;
       let progressPersistence = Promise.resolve();
       let progressPersistenceError = null;
       let lastProgressPersistAt = 0;
@@ -519,14 +552,21 @@ try {
           let receivedProgress = false;
           for (const line of lines) {
             const match = /^STOCKSITE_PROGRESS\|(create|verify)\|(\d+)\|(\d+)$/.exec(line);
-            if (!match) continue;
-            receivedProgress = true;
-            onProgress({
-              phase: match[1],
-              filesCompleted: Number(match[2]),
-              bytesCompleted: Number(match[3])
-            });
-            queueProgressPersist();
+            if (match) {
+              receivedProgress = true;
+              onProgress({
+                phase: match[1],
+                filesCompleted: Number(match[2]),
+                bytesCompleted: Number(match[3])
+              });
+              queueProgressPersist();
+              continue;
+            }
+            const verification = /^STOCKSITE_ARCHIVE_VERIFIED\|(\d+)\|(\d+)$/.exec(line);
+            if (verification) {
+              archiveVerified = Number(verification[1]) === expectedFileCount &&
+                Number(verification[2]) === expectedBytes;
+            }
           }
           return receivedProgress;
         }, options.archiveIdleTimeoutMs || 2 * 60 * 1000);
@@ -547,6 +587,9 @@ try {
         throw archiveError;
       }
       if (progressPersistenceError) throw progressPersistenceError;
+      if (!archiveVerified) {
+        throw new Error('Windows ZIP process exited without confirming completed archive integrity verification.');
+      }
     } else if (platform === 'darwin') {
       await runProcess(options.dittoPath || '/usr/bin/ditto', ['-c', '-k', '--norsrc', sourceDirectory, outputFile], {});
       await runProcess(options.unzipPath || '/usr/bin/unzip', ['-t', outputFile], {}, 30 * 60 * 1000);
@@ -605,7 +648,24 @@ try {
     return { path: outputPath, sizeBytes: stat.size };
   }
 
-  async function verifyExportFilesUnchanged(jobId, entries, checksums) {
+  async function verifyExportFilesUnchanged(jobId, entries, checksums, onProgress = () => {}) {
+    if (typeof backupService.verifyClientExportFiles === 'function') {
+      const expectedEntries = entries.map(({ path: relativePath, sizeBytes }) => ({
+        path: relativePath,
+        sizeBytes,
+        sha256: checksums.get(relativePath)?.sha256
+      }));
+      return backupService.verifyClientExportFiles(
+        jobId,
+        expectedEntries,
+        onProgress,
+        {
+          expectedInventory: entries,
+          idleTimeoutMs: options.sourceVerificationIdleTimeoutMs ?? 2 * 60 * 1000,
+          timeoutMs: options.sourceVerificationTimeoutMs ?? 30 * 60 * 1000
+        }
+      );
+    }
     for (const entry of entries) {
       const expected = checksums.get(entry.path);
       if (!expected || expected.sizeBytes !== entry.sizeBytes) {
@@ -785,16 +845,55 @@ try {
         },
         () => persist(job)
       );
+      const task = job.tasks.find(({ id }) => id === definition.id);
+      setTask(job, definition.id, 'RUNNING', `Archive structure verified; checking ${archiveEntries.length} source checksums`, 99);
+      await persist(job);
+      let lastVerificationPersistAt = 0;
+      let verificationPersistence = Promise.resolve();
+      let verificationPersistenceError = null;
       await verifyExportFilesUnchanged(
         job.backupJobId,
         sourcePayloadEntries.filter(({ path: item }) => item.startsWith(`${definition.source}/`)),
-        sourceChecksums
+        sourceChecksums,
+        ({ filesCompleted, filesTotal, bytesCompleted, bytesTotal, path: relativePath }) => {
+          task.filesCompleted = filesCompleted;
+          task.filesTotal = filesTotal;
+          task.bytesCompleted = bytesCompleted;
+          task.bytesTotal = bytesTotal;
+          task.percent = 99;
+          task.operation = `Rechecking source checksums: ${filesCompleted}/${filesTotal} files, ${bytesCompleted}/${bytesTotal} bytes`;
+          task.currentPath = relativePath;
+          job.currentOperation = `${definition.filename}: ${task.operation}`;
+          updateOverallProgress(job);
+          if (Date.now() - lastVerificationPersistAt >= 1000) {
+            lastVerificationPersistAt = Date.now();
+            verificationPersistence = verificationPersistence.then(() => persist(job));
+            verificationPersistence = verificationPersistence.catch((error) => {
+              verificationPersistenceError ||= error;
+            });
+          }
+        }
       );
+      let verificationPersistTimer;
+      try {
+        await Promise.race([
+          verificationPersistence,
+          new Promise((_, reject) => {
+            verificationPersistTimer = setTimeout(
+              () => reject(new Error('Source checksum progress could not be persisted within the allowed time.')),
+              options.sourceVerificationPersistTimeoutMs ?? 10_000
+            );
+          })
+        ]);
+      } finally {
+        clearTimeout(verificationPersistTimer);
+      }
+      if (verificationPersistenceError) throw verificationPersistenceError;
       artifactMap.set(definition.id, archive);
-      const task = job.tasks.find(({ id }) => id === definition.id);
       task.status = 'COMPLETED';
       task.percent = 100;
-      task.operation = 'Created and structurally checked';
+      task.currentPath = null;
+      task.operation = 'Archive and source checksums verified';
       updateOverallProgress(job);
     }
     setTask(job, 'wizard', 'RUNNING', 'Writing standalone HTML wizard');
