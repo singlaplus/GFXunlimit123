@@ -938,6 +938,113 @@ test('restore package requires explicit authorization before requesting a source
   assert.equal(createCalls, 0);
 });
 
+test('a confirmed failed restore package does not block starting a new package', async () => {
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), 'stocksite-restore-package-retry-'));
+  let createAttempts = 0;
+  let acceptedJobs = 0;
+  let activeJobReads = 0;
+  const backupService = {
+    async createJob() {
+      createAttempts += 1;
+      if (createAttempts === 2) {
+        throw new Error('A backup job is already running. Wait for it to finish before starting another.');
+      }
+      acceptedJobs += 1;
+      return { id: `GFX-restore-package-retry-${acceptedJobs}` };
+    },
+    async getJob(id) {
+      return { id, status: 'FAILED', errors: [{ message: 'Synthetic source failure.' }] };
+    },
+    async getActiveJob() {
+      activeJobReads += 1;
+      return activeJobReads === 1 ? { id: 'GFX-restore-package-retry-1', status: 'FAILED' } : null;
+    }
+  };
+  const service = createRestorePackageService({
+    backupService,
+    outputRoot: path.join(temporary, 'output'),
+    stateDirectory: path.join(temporary, 'state'),
+    packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY,
+    pollIntervalMs: 1
+  });
+
+  try {
+    const failed = await service.start({ includeEncryptedEnvironmentFiles: true });
+    assert.equal((await waitFor(service, failed.id)).status, 'FAILED');
+
+    const retry = await service.start({ includeEncryptedEnvironmentFiles: true });
+    assert.equal(retry.id, 'GFX-restore-package-retry-2');
+    assert.equal(retry.status, 'RUNNING');
+    assert.equal(createAttempts, 3);
+    assert.equal(acceptedJobs, 2);
+    assert.equal(activeJobReads, 2);
+    assert.equal((await waitFor(service, retry.id)).status, 'FAILED');
+    assert.equal((await service.getJob(failed.id)).status, 'FAILED');
+  } finally {
+    await fsp.rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('a still-active backup job keeps the backup duplicate-job guard in force', async () => {
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), 'stocksite-restore-package-active-backup-'));
+  let createCalls = 0;
+  const service = createRestorePackageService({
+    backupService: {
+      async createJob() {
+        createCalls += 1;
+        throw new Error('A backup job is already running. Wait for it to finish before starting another.');
+      },
+      async getActiveJob() {
+        return { id: 'GFX-backup-still-running', status: 'RUNNING' };
+      }
+    },
+    outputRoot: path.join(temporary, 'output'),
+    stateDirectory: path.join(temporary, 'state'),
+    packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY
+  });
+
+  try {
+    await assert.rejects(
+      service.start({ includeEncryptedEnvironmentFiles: true }),
+      /A backup job is already running/
+    );
+    assert.equal(createCalls, 1);
+  } finally {
+    await fsp.rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('a genuinely active restore package rejects a duplicate start', async () => {
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), 'stocksite-restore-package-duplicate-'));
+  const backupId = 'GFX-restore-package-active-guard';
+  let statusReads = 0;
+  const service = createRestorePackageService({
+    backupService: {
+      async createJob() { return { id: backupId }; },
+      async getJob() {
+        statusReads += 1;
+        return { id: backupId, status: statusReads === 1 ? 'RUNNING' : 'FAILED', progress: {} };
+      }
+    },
+    outputRoot: path.join(temporary, 'output'),
+    stateDirectory: path.join(temporary, 'state'),
+    packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY,
+    pollIntervalMs: 1
+  });
+
+  try {
+    const active = await service.start({ includeEncryptedEnvironmentFiles: true });
+    assert.equal(active.status, 'RUNNING');
+    await assert.rejects(
+      service.start({ includeEncryptedEnvironmentFiles: true }),
+      /A restore package is already being prepared/
+    );
+    assert.equal((await waitFor(service, backupId)).status, 'FAILED');
+  } finally {
+    await fsp.rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test('restore package generation refuses to create a backup when signing is not configured', async () => {
   let createCalls = 0;
   const service = createRestorePackageService({
@@ -1006,12 +1113,17 @@ test('Windows ZIP generation loads both compression assemblies and verifies arch
   assert.match(script, /Write-PackageProgress 'verify'/);
   assert.match(script, /\$input\.Read\(\$buffer/);
   assert.match(script, /\$s\.Read\(\$buffer/);
+  assert.match(source, /archiveTimeoutMs \|\| 30 \* 60 \* 1000/);
+  assert.match(source, /archiveIdleTimeoutMs \|\| 2 \* 60 \* 1000/);
+  assert.match(source, /requestTermination\('SIGKILL'\)/);
+  assert.match(source, /archiveProgressPersistTimeoutMs \?\? 10_000/);
 });
 
-test('stalled Windows ZIP subprocess fails the package job instead of leaving it RUNNING', async () => {
+test('stalled Windows ZIP verification terminates PowerShell and persists FAILED state', async () => {
   const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), 'stocksite-restore-package-zip-timeout-'));
   const backupId = 'GFX-restore-package-zip-timeout';
   const outputRoot = path.join(temporary, 'exports', 'GFXunlimit');
+  const stateDirectory = path.join(temporary, 'state');
   const sourceRoot = path.join(outputRoot, `Backup-Set-${backupId}`, 'Drive-1');
   const payloads = {
     'Database/stocksite.backup': Buffer.from('PGDMP-test'),
@@ -1039,6 +1151,7 @@ test('stalled Windows ZIP subprocess fails the package job instead of leaving it
     sourceFiles.set(relativePath, await write(sourceRoot, relativePath, content));
   }
   let child;
+  const terminationSignals = [];
   const service = createRestorePackageService({
     backupService: {
       async createJob() { return { id: backupId }; },
@@ -1056,21 +1169,23 @@ test('stalled Windows ZIP subprocess fails the package job instead of leaving it
       }
     },
     outputRoot,
-    stateDirectory: path.join(temporary, 'state'),
+    stateDirectory,
     restoreWizardRoot: path.resolve(__dirname, '../../restore-wizard'),
     packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY,
     platform: 'win32',
     archiveIdleTimeoutMs: 25,
+    archiveTerminationGraceMs: 10,
     statfs: async () => ({ bavail: 1024 * 1024, bsize: 1024 }),
     spawn: () => {
       child = new EventEmitter();
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
-      child.kill = () => {
-        child.wasTerminated = true;
+      child.kill = (signal) => {
+        terminationSignals.push(signal);
+        if (signal === 'SIGKILL') process.nextTick(() => child.emit('close', null, signal));
         return true;
       };
-      setTimeout(() => child.stdout.emit('data', Buffer.from('STOCKSITE_PROGRESS|create|0|20\n')), 10);
+      setTimeout(() => child.stdout.emit('data', Buffer.from('STOCKSITE_PROGRESS|verify|1|20\n')), 10);
       return child;
     },
     pollIntervalMs: 1
@@ -1081,11 +1196,14 @@ test('stalled Windows ZIP subprocess fails the package job instead of leaving it
     const job = await waitFor(service, backupId);
     assert.equal(job.status, 'FAILED');
     assert.match(job.error, /Windows ZIP generation made no measurable progress/);
-    assert.equal(child.wasTerminated, true);
+    assert.deepEqual(terminationSignals, ['SIGTERM', 'SIGKILL']);
     const websiteTask = job.tasks.find(({ id }) => id === 'websiteCode');
     assert.equal(websiteTask.bytesCompleted, 20);
     assert.equal(websiteTask.filesTotal, 1);
     assert.ok(job.progress.percent > 44, `measured archive work advances overall workflow progress beyond completed stages; got ${job.progress.percent}`);
+    const persistedJob = JSON.parse(await fsp.readFile(path.join(stateDirectory, `${backupId}.json`), 'utf8'));
+    assert.equal(persistedJob.status, 'FAILED');
+    assert.equal(persistedJob.tasks.find(({ id }) => id === 'websiteCode').filesCompleted, 1);
   } finally {
     await fsp.rm(temporary, { recursive: true, force: true });
   }

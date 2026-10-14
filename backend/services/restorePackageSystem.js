@@ -134,6 +134,31 @@ function createRestorePackageService(options = {}) {
     const keyId = crypto.createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex').slice(0, 24);
     return { privateKey, keyId };
   }
+  async function createBackupJobAfterFinalization(jobOptions) {
+    try {
+      return await backupService.createJob(jobOptions);
+    } catch (error) {
+      if (
+        error.message !== 'A backup job is already running. Wait for it to finish before starting another.' ||
+        typeof backupService.getActiveJob !== 'function'
+      ) {
+        throw error;
+      }
+      const activeBackupJob = await backupService.getActiveJob();
+      if (!activeBackupJob || ACTIVE.has(activeBackupJob.status)) throw error;
+
+      const timeoutMs = options.backupJobFinalizationTimeoutMs ?? 30_000;
+      const pollIntervalMs = options.backupJobFinalizationPollMs ?? 100;
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const currentBackupJob = await backupService.getActiveJob();
+        if (!currentBackupJob) return backupService.createJob(jobOptions);
+        if (ACTIVE.has(currentBackupJob.status)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+      throw new Error('The previous backup job has finished with a terminal status, but the SERVER is still finalizing it. Wait briefly before starting a new restore package.');
+    }
+  }
   const jobs = new Map();
   let activeJobId = null;
 
@@ -304,21 +329,48 @@ function createRestorePackageService(options = {}) {
       let settled = false;
       let timer;
       let idleTimer;
+      let terminationTimer;
+      let escalationTimer;
+      let terminationMessage = '';
       const clearTimers = () => {
         clearTimeout(timer);
         clearTimeout(idleTimer);
+        clearTimeout(terminationTimer);
+        clearTimeout(escalationTimer);
+      };
+      const rejectProcessError = (message, processTerminated) => {
+        const error = new Error(message);
+        error.processTerminated = processTerminated;
+        reject(error);
+      };
+      const requestTermination = (signal) => {
+        try {
+          if (!child.kill(signal)) return ' The archive process did not confirm the termination request.';
+          return '';
+        } catch (error) {
+          return ` The archive process could not be terminated: ${safeMessage(error)}`;
+        }
       };
       const failAndTerminate = (message) => {
-        if (settled) return;
-        settled = true;
-        clearTimers();
-        let terminationFailure = '';
-        try {
-          if (!child.kill('SIGTERM')) terminationFailure = ' The archive process did not confirm termination.';
-        } catch (error) {
-          terminationFailure = ` The archive process could not be terminated: ${safeMessage(error)}`;
-        }
-        reject(new Error(`${message}${terminationFailure}`));
+        if (settled || terminationMessage) return;
+        terminationMessage = message;
+        clearTimeout(timer);
+        clearTimeout(idleTimer);
+        requestTermination('SIGTERM');
+        const terminationGraceMs = options.archiveTerminationGraceMs ?? 5000;
+        terminationTimer = setTimeout(() => {
+          if (settled) return;
+          requestTermination('SIGKILL');
+          escalationTimer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            clearTimers();
+            rejectProcessError(
+              `${terminationMessage} Archive process exit could not be confirmed.`,
+              false
+            );
+          }, terminationGraceMs);
+        }, terminationGraceMs);
       };
       const resetIdleTimer = () => {
         if (!idleTimeoutMs) return;
@@ -339,16 +391,21 @@ function createRestorePackageService(options = {}) {
       resetIdleTimer();
       child.once('error', (error) => {
         if (settled) return;
+        if (terminationMessage) return;
         settled = true;
         clearTimers();
-        reject(new Error(`Archive utility could not be started: ${safeMessage(error)}`));
+        rejectProcessError(`Archive utility could not be started: ${safeMessage(error)}`, !child.pid);
       });
       child.once('close', (code, signal) => {
         if (settled) return;
         settled = true;
         clearTimers();
+        if (terminationMessage) {
+          rejectProcessError(terminationMessage, true);
+          return;
+        }
         if (code !== 0 || signal) {
-          reject(new Error(`Archive utility failed${signal ? ` (${signal})` : ` with exit code ${code}`}${stderr.trim() ? `: ${safeMessage(stderr.trim())}` : ''}`));
+          rejectProcessError(`Archive utility failed${signal ? ` (${signal})` : ` with exit code ${code}`}${stderr.trim() ? `: ${safeMessage(stderr.trim())}` : ''}`, true);
         } else resolve();
       });
     });
@@ -426,6 +483,19 @@ try {
       let progressPersistence = Promise.resolve();
       let progressPersistenceError = null;
       let lastProgressPersistAt = 0;
+      const waitForProgressPersistence = async () => {
+        let timeout;
+        try {
+          await Promise.race([
+            progressPersistence,
+            new Promise((_, reject) => {
+              timeout = setTimeout(() => reject(new Error('Archive progress could not be persisted within the allowed time.')), options.archiveProgressPersistTimeoutMs ?? 10_000);
+            })
+          ]);
+        } finally {
+          clearTimeout(timeout);
+        }
+      };
       const queueProgressPersist = (force = false) => {
         const now = Date.now();
         if (!force && now - lastProgressPersistAt < 1000) return;
@@ -435,6 +505,7 @@ try {
           progressPersistenceError ||= error;
         });
       };
+      let archiveError = null;
       try {
         await runProcess(command, ['-NoProfile', '-NonInteractive', '-Command', script], {
           RESTORE_PACKAGE_SOURCE: sourceDirectory,
@@ -459,9 +530,21 @@ try {
           }
           return receivedProgress;
         }, options.archiveIdleTimeoutMs || 2 * 60 * 1000);
+      } catch (error) {
+        archiveError = error;
       } finally {
         queueProgressPersist(true);
-        await progressPersistence;
+        try {
+          await waitForProgressPersistence();
+        } catch (error) {
+          progressPersistenceError ||= error;
+        }
+      }
+      if (archiveError) {
+        if (progressPersistenceError) {
+          archiveError.message += ` ${safeMessage(progressPersistenceError)}`;
+        }
+        throw archiveError;
       }
       if (progressPersistenceError) throw progressPersistenceError;
     } else if (platform === 'darwin') {
@@ -1026,28 +1109,52 @@ try {
       await generateArtifacts(job, signer);
       await persist(job);
     } catch (error) {
-      job.status = 'FAILED';
-      job.error = safeMessage(error);
-      job.completedAt = new Date().toISOString();
-      job.currentOperation = 'Restore package generation failed.';
-      const running = job.tasks.find(({ status }) => status === 'RUNNING');
+      const failedJob = {
+        ...job,
+        status: 'FAILED',
+        error: safeMessage(error),
+        completedAt: new Date().toISOString(),
+        currentOperation: 'Restore package generation failed.',
+        tasks: job.tasks.map((task) => ({ ...task }))
+      };
+      const running = failedJob.tasks.find(({ status }) => status === 'RUNNING');
       if (running) {
         running.status = 'FAILED';
-        running.error = job.error;
+        running.error = failedJob.error;
         running.operation = 'Failed';
       }
-      if (job.outputCreated) {
+      if (error.processTerminated === false) {
+        failedJob.error += ' Partial package output was retained because PowerShell termination could not be confirmed.';
+      } else if (job.outputCreated) {
         const outputPath = jobOutputPath(job.id);
         try {
           const stat = await fsp.lstat(outputPath);
           if (stat.isDirectory() && !stat.isSymbolicLink()) await fsp.rm(outputPath, { recursive: true, force: false });
         } catch (cleanupError) {
           if (cleanupError.code !== 'ENOENT') {
-            job.error += ` Temporary package cleanup failed: ${safeMessage(cleanupError)}`;
+            failedJob.error += ` Temporary package cleanup failed: ${safeMessage(cleanupError)}`;
           }
         }
       }
-      await persist(job).catch((persistError) => console.error('Could not persist failed restore package status:', safeMessage(persistError)));
+      Object.assign(job, failedJob);
+      let persistenceTimer;
+      try {
+        await Promise.race([
+          persist(failedJob),
+          new Promise((_, reject) => {
+            persistenceTimer = setTimeout(
+              () => reject(new Error('Failed restore package status could not be persisted within the allowed time.')),
+              options.failedJobPersistTimeoutMs ?? 10_000
+            );
+          })
+        ]);
+      } catch (persistError) {
+        failedJob.error += ` ${safeMessage(persistError)}`;
+        job.error = failedJob.error;
+        console.error('Could not persist failed restore package status:', safeMessage(persistError));
+      } finally {
+        clearTimeout(persistenceTimer);
+      }
     } finally {
       if (activeJobId === job.id) activeJobId = null;
     }
@@ -1057,10 +1164,16 @@ try {
     if (includeEncryptedEnvironmentFiles !== true) {
       throw new Error('Explicit administrator authorization is required to include encrypted .env configuration in the access-controlled restore package.');
     }
-    if (activeJobId) throw new Error('A restore package is already being prepared. Wait for it to finish.');
+    if (activeJobId) {
+      const activeJob = jobs.get(activeJobId);
+      if (!activeJob || ACTIVE.has(activeJob.status)) {
+        throw new Error('A restore package is already being prepared. Wait for it to finish.');
+      }
+      activeJobId = null;
+    }
     const signer = await packageSigner();
     await pruneExpiredPackages();
-    const backupJob = await backupService.createJob({
+    const backupJob = await createBackupJobAfterFinalization({
       categories: ['database', 'websiteCode', 'assetsAndThumbnails'],
       destinationMode: 'mac-local'
     });
