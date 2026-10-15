@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
 const { getAssetServerHttpOrigin } = require('../config');
@@ -8,7 +9,79 @@ const { createRestorePackageService, getDefaultRestoreTemporaryRoot } = require(
 
 function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {} }) {
   const router = express.Router();
-  router.use(verifyAdmin);
+  const artifactDownloadTickets = new Map();
+  const artifactDownloadTicketTtlMs = 60 * 1000;
+  const maxArtifactDownloadTickets = 1000;
+
+  function getArtifactDownloadTicket(req) {
+    const queryIndex = req.originalUrl.indexOf('?');
+    if (queryIndex < 0) return null;
+    return new URLSearchParams(req.originalUrl.slice(queryIndex + 1)).get('ticket');
+  }
+
+  function getTicketBindingCookieName(ticket) {
+    const digest = crypto.createHash('sha256').update(ticket).digest('hex');
+    return `stocksite_restore_download_${digest}`;
+  }
+
+  function getCookieValue(cookieHeader, name) {
+    for (const cookie of String(cookieHeader || '').split(';')) {
+      const separator = cookie.indexOf('=');
+      if (separator >= 0 && cookie.slice(0, separator).trim() === name) {
+        return cookie.slice(separator + 1).trim();
+      }
+    }
+    return null;
+  }
+
+  function ticketBindingCookieHeader(cookieHeader, ticket) {
+    const name = getTicketBindingCookieName(ticket);
+    const value = getCookieValue(cookieHeader, name);
+    return value === null ? undefined : `${name}=${value}`;
+  }
+
+  function removeTicketBindingCookies(cookieHeader) {
+    const cookies = String(cookieHeader || '')
+      .split(';')
+      .map((cookie) => cookie.trim())
+      .filter((cookie) => cookie && !cookie.startsWith('stocksite_restore_download_'));
+    return cookies.length ? cookies.join('; ') : undefined;
+  }
+
+  function ticketBindingMatches(expectedDigest, proof) {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(proof || '')) return false;
+    const actualDigest = crypto.createHash('sha256').update(proof).digest();
+    const expected = Buffer.from(expectedDigest, 'hex');
+    return expected.length === actualDigest.length && crypto.timingSafeEqual(expected, actualDigest);
+  }
+
+  router.use((req, res, next) => {
+    const isArtifactDownload = /^\/restore-package\/jobs\/[A-Za-z0-9-]{1,120}\/artifacts\/[A-Za-z0-9-]{1,120}$/.test(req.path);
+    const isArtifactTicket = /^\/restore-package\/jobs\/[A-Za-z0-9-]{1,120}\/artifacts\/[A-Za-z0-9-]{1,120}\/download-ticket$/.test(req.path);
+    if (isArtifactDownload || isArtifactTicket) {
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+    }
+    const hasTicketedArtifactGet =
+      isArtifactDownload &&
+      req.method === 'GET' &&
+      /^[A-Za-z0-9_-]{43}$/.test(getArtifactDownloadTicket(req) || '');
+    if (!hasTicketedArtifactGet && req.headers.cookie) {
+      req.headers.cookie = removeTicketBindingCookies(req.headers.cookie);
+    }
+    if (hasTicketedArtifactGet && !req.headers.authorization) {
+      return next();
+    }
+    if (
+      isArtifactDownload &&
+      !req.headers.authorization &&
+      ['GET', 'HEAD'].includes(req.method) &&
+      req.cookies?.authToken
+    ) {
+      req.headers.authorization = `Bearer ${req.cookies.authToken}`;
+    }
+    return verifyAdmin(req, res, next);
+  });
 
   if ((serviceOptions.platform || process.platform) === 'darwin') {
     const environment = serviceOptions.environment || process.env;
@@ -40,6 +113,14 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
           return res.status(400).json({ error: 'Invalid Backup Center request.' });
         }
 
+        const ticketedArtifactGet =
+          req.method === 'GET' &&
+          /^\/restore-package\/jobs\/[A-Za-z0-9-]{1,120}\/artifacts\/[A-Za-z0-9-]{1,120}$/.test(req.path) &&
+          /^[A-Za-z0-9_-]{43}$/.test(getArtifactDownloadTicket(req) || '');
+        const forwardedCookie = ticketedArtifactGet
+          ? ticketBindingCookieHeader(req.headers.cookie, getArtifactDownloadTicket(req))
+          : removeTicketBindingCookies(req.headers.cookie);
+
         response = await httpClient.request({
           method: req.method,
           url: upstreamUrl.toString(),
@@ -51,7 +132,7 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
           validateStatus: () => true,
           headers: {
             ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}),
-            ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
+            ...(forwardedCookie ? { cookie: forwardedCookie } : {}),
             ...(req.headers['content-type'] ? { 'content-type': req.headers['content-type'] } : {}),
             ...(req.headers.accept ? { accept: req.headers.accept } : {})
           }
@@ -80,6 +161,18 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
         ]) {
           const value = response.headers?.[header];
           if (value) res.setHeader(header, value);
+        }
+        if (
+          response.headers?.['set-cookie'] &&
+          (
+            (
+              req.method === 'POST' &&
+              /^\/restore-package\/jobs\/[A-Za-z0-9-]{1,120}\/artifacts\/[A-Za-z0-9-]{1,120}\/download-ticket$/.test(req.path)
+            ) ||
+            (req.method === 'GET' && ticketedArtifactGet)
+          )
+        ) {
+          res.setHeader('Set-Cookie', response.headers['set-cookie']);
         }
         await pipeline(response.data, res);
       } catch (_error) {
@@ -222,11 +315,114 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
     }
   });
 
+  router.head('/restore-package/jobs/:id/artifacts/:artifactId', async (req, res) => {
+    if (!/^[A-Za-z0-9-]{1,120}$/.test(req.params.id)) {
+      return res.status(400).end();
+    }
+    try {
+      const artifact = await restorePackages.openArtifact(req.params.id, req.params.artifactId);
+      artifact.stream.destroy();
+      res.type('application/octet-stream');
+      res.setHeader('Content-Length', String(artifact.sizeBytes));
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${artifact.filename}"; filename*=UTF-8''${encodeURIComponent(artifact.filename)}`
+      );
+      return res.status(200).end();
+    } catch (error) {
+      return res.status(404).end();
+    }
+  });
+
+  router.post('/restore-package/jobs/:id/artifacts/:artifactId/download-ticket', async (req, res) => {
+    const userId = req.user?.id;
+    const sessionId = req.user?.sessionId;
+    if (!userId || typeof sessionId !== 'string' || !sessionId) {
+      return res.status(401).json({ error: 'A valid administrator session is required to authorize this download.' });
+    }
+    if (!/^[A-Za-z0-9-]{1,120}$/.test(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid restore package job ID.' });
+    }
+    try {
+      const artifact = await restorePackages.openArtifact(req.params.id, req.params.artifactId);
+      artifact.stream.destroy();
+
+      const now = Date.now();
+      for (const [key, ticket] of artifactDownloadTickets) {
+        if (ticket.expiresAt <= now) artifactDownloadTickets.delete(key);
+      }
+      if (artifactDownloadTickets.size >= maxArtifactDownloadTickets) {
+        return res.status(503).json({ error: 'Too many pending artifact downloads. Wait briefly and retry.' });
+      }
+
+      const token = crypto.randomBytes(32).toString('base64url');
+      const digest = crypto.createHash('sha256').update(token).digest('hex');
+      const bindingProof = crypto.randomBytes(32).toString('base64url');
+      const bindingCookieName = getTicketBindingCookieName(token);
+      const artifactPath = `${req.baseUrl}${req.path.replace(/\/download-ticket$/, '')}`;
+      artifactDownloadTickets.set(digest, {
+        jobId: req.params.id,
+        artifactId: req.params.artifactId,
+        userId: String(userId),
+        sessionId,
+        bindingProofDigest: crypto.createHash('sha256').update(bindingProof).digest('hex'),
+        expiresAt: now + artifactDownloadTicketTtlMs
+      });
+      res.cookie(bindingCookieName, bindingProof, {
+        httpOnly: true,
+        secure: (serviceOptions.environment || process.env).NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: artifactPath,
+        maxAge: artifactDownloadTicketTtlMs
+      });
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      return res.status(201).json({
+        ticket: token,
+        filename: artifact.filename,
+        sizeBytes: artifact.sizeBytes
+      });
+    } catch (error) {
+      return res.status(404).json({ error: error.message || 'Verified restore package artifact is unavailable.' });
+    }
+  });
+
   router.get('/restore-package/jobs/:id/artifacts/:artifactId', async (req, res) => {
     if (!/^[A-Za-z0-9-]{1,120}$/.test(req.params.id)) {
       return res.status(400).json({ error: 'Invalid restore package job ID.' });
     }
     try {
+      const ticket = getArtifactDownloadTicket(req);
+      if (ticket) {
+        const digest = crypto.createHash('sha256').update(ticket).digest('hex');
+        const issued = artifactDownloadTickets.get(digest);
+        const bindingCookieName = getTicketBindingCookieName(ticket);
+        const bindingProof = getCookieValue(req.headers.cookie, bindingCookieName);
+        if (
+          !issued ||
+          issued.expiresAt <= Date.now() ||
+          issued.jobId !== req.params.id ||
+          issued.artifactId !== req.params.artifactId ||
+          !ticketBindingMatches(issued.bindingProofDigest, bindingProof) ||
+          (req.user && (
+            String(req.user.id) !== issued.userId ||
+            req.user.sessionId !== issued.sessionId
+          ))
+        ) {
+          return res.status(403).json({ error: 'This artifact download authorization is invalid, expired, or already used. Request a new download.' });
+        }
+        artifactDownloadTickets.delete(digest);
+        const artifactPath = `${req.baseUrl}${req.path}`;
+        res.clearCookie(bindingCookieName, {
+          httpOnly: true,
+          secure: (serviceOptions.environment || process.env).NODE_ENV === 'production',
+          sameSite: 'strict',
+          path: artifactPath
+        });
+      }
       const artifact = await restorePackages.openArtifact(req.params.id, req.params.artifactId);
       res.status(200);
       res.type('application/octet-stream');

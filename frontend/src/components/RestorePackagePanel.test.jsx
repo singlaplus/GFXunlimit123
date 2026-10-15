@@ -6,9 +6,17 @@ import RestorePackagePanel from "./RestorePackagePanel";
 jest.mock("axios", () => jest.fn());
 
 describe("RestorePackagePanel", () => {
+  const originalFetch = global.fetch;
+
   beforeEach(() => {
     axios.mockReset();
     window.sessionStorage.clear();
+    global.fetch = jest.fn();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
   });
 
   it("starts a real authenticated package job and shows its verified downloads", async () => {
@@ -60,10 +68,115 @@ describe("RestorePackagePanel", () => {
         data: { includeEncryptedEnvironmentFiles: true }
       }));
     });
-    expect(await within(panel).findByRole("button", { name: /Download PostgreSQL database backup/i })).toBeInTheDocument();
+    const downloadButton = await within(panel).findByRole("button", { name: /Download PostgreSQL database backup/i });
     expect(within(panel).getByText(/Restore package is ready for authorized download/i)).toBeInTheDocument();
     expect(within(panel).getByText(/5\/5 files/i)).toBeInTheDocument();
     expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBe("GFX-restore-test");
+
+    expect(within(panel).getByText(/This verified file has not been requested/i)).toBeInTheDocument();
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ticket: "a".repeat(43), filename: "stocksite.backup", sizeBytes: 200 })
+    });
+    let clickedDownloadUrl;
+    let clickedReferrerPolicy;
+    const anchorClick = jest.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () {
+      clickedDownloadUrl = this.href;
+      clickedReferrerPolicy = this.referrerPolicy;
+    });
+    fireEvent.click(downloadButton);
+    expect(await within(panel).findByText(/browser's Downloads panel/i)).toBeInTheDocument();
+    const [ticketUrl, ticketRequest] = global.fetch.mock.calls[0];
+    expect(ticketUrl).toBe("http://localhost:5000/admin/backup/restore-package/jobs/GFX-restore-test/artifacts/database/download-ticket");
+    expect(ticketRequest.method).toBe("POST");
+    expect(ticketRequest.headers.Authorization).toBe("Bearer test-token");
+    expect(ticketRequest.credentials).toBe("include");
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(clickedDownloadUrl).toContain("?ticket=");
+    expect(clickedDownloadUrl).not.toContain("test-token");
+    expect(clickedReferrerPolicy).toBe("no-referrer");
+    fireEvent.click(within(panel).getByRole("button", { name: /I see this file completed in Downloads/i }));
+    expect(within(panel).getByText(/You confirmed stocksite\.backup is complete/i)).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: /Prepare another package/i }));
+    expect(within(panel).getByRole("checkbox")).not.toBeChecked();
+    expect(window.sessionStorage.getItem("stocksite-restore-package-job")).toBeNull();
+  });
+
+  it("shows a failed artifact download and allows a retry without buffering the artifact", async () => {
+    const readyJob = {
+      id: "GFX-download-failure",
+      status: "READY",
+      progress: { percent: 100 },
+      tasks: [],
+      artifacts: [{
+        id: "originalAssets",
+        label: "Original assets archive",
+        filename: "original-assets.zip",
+        sizeBytes: 815 * 1024 * 1024,
+        downloadUrl: "/admin/backup/restore-package/jobs/GFX-download-failure/artifacts/originalAssets"
+      }]
+    };
+    axios.mockResolvedValue({ data: { job: readyJob } });
+    global.fetch
+      .mockResolvedValueOnce({ ok: false, status: 503, headers: { get: () => null } })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ticket: "b".repeat(43),
+          filename: "original-assets.zip",
+          sizeBytes: 815 * 1024 * 1024
+        })
+      });
+    const anchorClick = jest.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+
+    window.sessionStorage.setItem("stocksite-restore-package-job", readyJob.id);
+    render(<RestorePackagePanel apiBaseUrl="http://localhost:5000" getAuthToken={() => "test-token"} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Resume or inspect previous package/i }));
+    const download = await screen.findByRole("button", { name: /Download Original assets archive/i });
+    fireEvent.click(download);
+    expect(await screen.findByText(/The server could not prepare this file \(HTTP 503\)/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Retry Original assets archive/i }));
+    expect(await screen.findByText(/browser's Downloads panel/i)).toBeInTheDocument();
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(global.fetch.mock.calls.every(([, options]) => options.method === "POST")).toBe(true);
+  });
+
+  it("prevents duplicate artifact requests while the download is being checked", async () => {
+    const readyJob = {
+      id: "GFX-download-lock",
+      status: "READY",
+      progress: { percent: 100 },
+      tasks: [],
+      artifacts: [{
+        id: "database",
+        label: "PostgreSQL database backup",
+        filename: "stocksite.backup",
+        sizeBytes: 20,
+        downloadUrl: "/admin/backup/restore-package/jobs/GFX-download-lock/artifacts/database"
+      }]
+    };
+    axios.mockResolvedValue({ data: { job: readyJob } });
+    let releaseTicket;
+    global.fetch.mockReturnValue(new Promise((resolve) => { releaseTicket = resolve; }));
+    const anchorClick = jest.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    window.sessionStorage.setItem("stocksite-restore-package-job", readyJob.id);
+    render(<RestorePackagePanel apiBaseUrl="http://localhost:5000" getAuthToken={() => "test-token"} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Resume or inspect previous package/i }));
+    const button = await screen.findByRole("button", { name: /Download PostgreSQL database backup/i });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(button).toBeDisabled();
+
+    releaseTicket({
+      ok: true,
+      json: async () => ({ ticket: "c".repeat(43), filename: "stocksite.backup", sizeBytes: 20 })
+    });
+    expect(await screen.findByText(/browser's Downloads panel/i)).toBeInTheDocument();
+    expect(anchorClick).toHaveBeenCalledTimes(1);
   });
 
   it("reports configured-source errors returned by the server without claiming success", async () => {

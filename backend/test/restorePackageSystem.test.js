@@ -445,9 +445,12 @@ test('restore package preparation consumes a verified backup set and exposes onl
     assert.match(standaloneWizard, /websiteArchive/);
     assert.match(standaloneWizard, /assetsArchive/);
     assert.match(standaloneWizard, /thumbnailsArchive/);
-    assert.match(standaloneWizard, /Local setup · PostgreSQL and trust/);
+    assert.match(standaloneWizard, /Step 1 · Choose the computer that will receive Stocksite/);
+    assert.match(standaloneWizard, /This tool prepares a separate local Stocksite restore on a computer you choose/);
+    assert.match(standaloneWizard, /id="targetPlatform"/);
     assert.match(standaloneWizard, /\/api\/configure/);
     assert.match(standaloneWizard, /not written to helper\/\.env/);
+    assert.match(standaloneWizard, /Do not trust a key just because it is included in the downloaded files/);
     assert.doesNotMatch(standaloneWizard, /source folder/);
     const validated = await helper.validateConfiguration(validationInput);
     assert.equal(validated.destinations.databaseName, 'stocksite_restore_test');

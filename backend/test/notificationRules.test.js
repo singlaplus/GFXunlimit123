@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+require('./helpers/blockPostgres');
 const { normalizeRecipients, resolveNotificationEventKey, buildNotificationEmailContent } = require('../email/notificationRules');
 const { isCollectionAwareLiveAsset } = require('../email/routes');
 const { resolveEventDeliveryPolicy } = require('../messaging');

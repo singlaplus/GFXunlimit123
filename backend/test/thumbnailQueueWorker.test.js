@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+require('./helpers/blockPostgres');
 const pool = require('../db');
 const assetThumbnails = require('../utils/assetThumbnails');
 const thumbnailQueue = require('../thumbnail-queue-worker');

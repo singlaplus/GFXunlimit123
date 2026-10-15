@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+require('./helpers/blockPostgres');
 const AiProcessor = require('../thumbnail-engine/ai-processor');
 
 test('AI processor renders PostScript Illustrator files server-side', async () => {

@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const crypto = require('node:crypto');
 const express = require('express');
 const { Readable } = require('node:stream');
 const { test } = require('node:test');
@@ -103,6 +104,367 @@ test('server Backup routes preserve Admin authorization', async () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(stateDirectory, { recursive: true, force: true });
     fs.rmSync(destination, { recursive: true, force: true });
+  }
+});
+
+test('restore artifact HEAD confirms a browser-managed attachment without sending its body', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-restore-artifact-head-'));
+  const id = 'GFX-head-download-test';
+  const stateDirectory = path.join(root, 'state');
+  const outputRoot = path.join(root, 'outputs');
+  const artifactDirectory = path.join(outputRoot, `Restore-Package-${id}`);
+  const artifactBytes = Buffer.from('synthetic verified backup');
+  fs.mkdirSync(path.join(stateDirectory, 'restore-packages'), { recursive: true });
+  fs.mkdirSync(artifactDirectory, { recursive: true });
+  fs.writeFileSync(path.join(artifactDirectory, 'stocksite.backup'), artifactBytes);
+  const now = new Date().toISOString();
+  fs.writeFileSync(path.join(stateDirectory, 'restore-packages', `${id}.json`), JSON.stringify({
+    id,
+    status: 'READY',
+    startedAt: now,
+    completedAt: now,
+    progress: { completed: 1, total: 1, percent: 100 },
+    tasks: [],
+    artifacts: [{
+      id: 'database',
+      filename: 'stocksite.backup',
+      label: 'PostgreSQL database backup',
+      sizeBytes: artifactBytes.length,
+      ready: true
+    }]
+  }));
+  const app = express();
+  app.use('/admin/backup', createBackupRouter({
+    pool: { query: async () => ({ rows: [] }) },
+    projectRoot: root,
+    serviceOptions: {
+      stateDirectory,
+      clientExportRoot: path.join(root, 'client-exports'),
+      temporaryRoot: path.join(root, 'temporary'),
+      platform: 'win32',
+      restorePackageOptions: { outputRoot }
+    },
+    verifyAdmin: adminOnly
+  }));
+  const server = await listen(app);
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${server.address().port}/admin/backup/restore-package/jobs/${id}/artifacts/database`,
+      { method: 'HEAD', headers: { 'x-test-admin': 'yes' } }
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-disposition'), 'attachment; filename="stocksite.backup"; filename*=UTF-8\'\'stocksite.backup');
+    assert.equal(response.headers.get('content-length'), String(artifactBytes.length));
+    assert.equal(await response.text(), '');
+  } finally {
+    await close(server);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('artifact download tickets are authenticated, session-bound, artifact-scoped, and single-use', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-restore-artifact-ticket-'));
+  const id = 'GFX-ticket-download-test';
+  const stateDirectory = path.join(root, 'state');
+  const outputRoot = path.join(root, 'outputs');
+  const artifactDirectory = path.join(outputRoot, `Restore-Package-${id}`);
+  const artifactBytes = Buffer.from('synthetic verified backup');
+  fs.mkdirSync(path.join(stateDirectory, 'restore-packages'), { recursive: true });
+  fs.mkdirSync(artifactDirectory, { recursive: true });
+  fs.writeFileSync(path.join(artifactDirectory, 'stocksite.backup'), artifactBytes);
+  const now = new Date().toISOString();
+  fs.writeFileSync(path.join(stateDirectory, 'restore-packages', `${id}.json`), JSON.stringify({
+    id,
+    status: 'READY',
+    startedAt: now,
+    completedAt: now,
+    progress: { completed: 1, total: 1, percent: 100 },
+    tasks: [],
+    artifacts: [{
+      id: 'database',
+      filename: 'stocksite.backup',
+      label: 'PostgreSQL database backup',
+      sizeBytes: artifactBytes.length,
+      ready: true
+    }]
+  }));
+  const app = express();
+  app.use(express.json());
+  const routeEnvironment = { NODE_ENV: 'production' };
+  app.use('/admin/backup', createBackupRouter({
+    pool: { query: async () => ({ rows: [] }) },
+    projectRoot: root,
+    serviceOptions: {
+      stateDirectory,
+      clientExportRoot: path.join(root, 'client-exports'),
+      temporaryRoot: path.join(root, 'temporary'),
+      environment: routeEnvironment,
+      platform: 'win32',
+      restorePackageOptions: { outputRoot }
+    },
+    verifyAdmin(req, res, next) {
+      const identities = {
+        'Bearer admin-token': { id: 23, sessionId: 'session-23' },
+        'Bearer other-session': { id: 23, sessionId: 'session-other' }
+      };
+      const identity = identities[req.headers.authorization];
+      if (!identity) return res.status(401).json({ error: 'Admin only' });
+      req.user = identity;
+      return next();
+    }
+  }));
+  const server = await listen(app);
+  const artifactUrl = `http://127.0.0.1:${server.address().port}/admin/backup/restore-package/jobs/${id}/artifacts/database`;
+
+  try {
+    const unauthorizedIssue = await fetch(`${artifactUrl}/download-ticket`, { method: 'POST' });
+    assert.equal(unauthorizedIssue.status, 401);
+    assert.equal(unauthorizedIssue.headers.get('cache-control'), 'private, no-store');
+    assert.equal(unauthorizedIssue.headers.get('referrer-policy'), 'no-referrer');
+
+    const bindingCookies = new Map();
+    const fetchWithBinding = (url, options = {}) => {
+      const ticket = new URL(url).searchParams.get('ticket');
+      const headers = { ...options.headers };
+      if (ticket && bindingCookies.has(ticket)) headers.Cookie = bindingCookies.get(ticket);
+      return fetch(url, { ...options, headers });
+    };
+    let lastIssuedCookie;
+    const issueTicket = async () => {
+      const response = await fetch(`${artifactUrl}/download-ticket`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer admin-token' }
+      });
+      assert.equal(response.status, 201);
+      assert.equal(response.headers.get('cache-control'), 'private, no-store');
+      const result = await response.json();
+      assert.match(result.ticket, /^[A-Za-z0-9_-]{43}$/);
+      assert.equal(result.filename, 'stocksite.backup');
+      assert.equal(result.sizeBytes, artifactBytes.length);
+      const setCookie = response.headers.get('set-cookie');
+      assert.match(setCookie, /HttpOnly/i);
+      if (routeEnvironment.NODE_ENV === 'production') {
+        assert.match(setCookie, /; Secure(?:;|$)/i);
+      } else {
+        assert.doesNotMatch(setCookie, /;\s*Secure(?:;|$)/i);
+      }
+      assert.match(setCookie, /SameSite=Strict/i);
+      assert.match(setCookie, /Max-Age=60/i);
+      assert.doesNotMatch(setCookie, /;\s*Domain=/i);
+      assert.ok(setCookie.includes(`Path=${new URL(artifactUrl).pathname};`));
+      lastIssuedCookie = setCookie;
+      bindingCookies.set(result.ticket, setCookie.split(';', 1)[0]);
+      return result.ticket;
+    };
+
+    const firstAuthorization = await issueTicket();
+    const anonymousWithoutProof = await fetch(`${artifactUrl}?ticket=${firstAuthorization}`);
+    assert.equal(anonymousWithoutProof.status, 403, 'a ticket without its HttpOnly binding proof cannot authorize an anonymous download');
+    assert.equal(anonymousWithoutProof.headers.get('cache-control'), 'private, no-store');
+    assert.equal(anonymousWithoutProof.headers.get('referrer-policy'), 'no-referrer');
+    const headWithTicket = await fetch(`${artifactUrl}?ticket=${firstAuthorization}`, { method: 'HEAD' });
+    assert.equal(headWithTicket.status, 401, 'tickets authorize only GET');
+    const otherArtifact = await fetchWithBinding(`${artifactUrl.replace('/database', '/websiteCode')}?ticket=${firstAuthorization}`);
+    assert.equal(otherArtifact.status, 403, 'ticket cannot be transferred to another artifact');
+    assert.equal(otherArtifact.headers.get('cache-control'), 'private, no-store');
+    assert.equal(otherArtifact.headers.get('referrer-policy'), 'no-referrer');
+    const firstDownload = await fetchWithBinding(`${artifactUrl}?ticket=${firstAuthorization}`);
+    assert.equal(firstDownload.status, 200, 'a wrong-artifact attempt must not consume the correctly bound ticket');
+    assert.equal(firstDownload.headers.get('cache-control'), 'private, no-store');
+    assert.equal(firstDownload.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(Buffer.from(await firstDownload.arrayBuffer()).toString(), artifactBytes.toString());
+
+    const sessionBoundTicket = await issueTicket();
+    const wrongSession = await fetchWithBinding(`${artifactUrl}?ticket=${sessionBoundTicket}`, {
+      headers: { Authorization: 'Bearer other-session' }
+    });
+    assert.equal(wrongSession.status, 403, 'a different authenticated session cannot use the ticket');
+
+    const validTicket = await issueTicket();
+    const simultaneousDownloads = await Promise.all([
+      fetchWithBinding(`${artifactUrl}?ticket=${validTicket}`),
+      fetchWithBinding(`${artifactUrl}?ticket=${validTicket}`)
+    ]);
+    assert.deepEqual(
+      simultaneousDownloads.map((response) => response.status).sort(),
+      [200, 403],
+      'concurrent redemption must allow exactly one request'
+    );
+    const download = simultaneousDownloads.find((response) => response.status === 200);
+    assert.equal(download.status, 200);
+    assert.equal(download.headers.get('content-length'), String(artifactBytes.length));
+    assert.equal(download.headers.get('cache-control'), 'private, no-store');
+    assert.equal(download.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(Buffer.from(await download.arrayBuffer()).toString(), artifactBytes.toString());
+    await Promise.all(simultaneousDownloads.filter((response) => response.status !== 200).map((response) => response.arrayBuffer()));
+    const reused = await fetchWithBinding(`${artifactUrl}?ticket=${validTicket}`);
+    assert.equal(reused.status, 403);
+
+    const originalDateNow = Date.now;
+    try {
+      let currentTime = originalDateNow();
+      Date.now = () => currentTime;
+      const expiredTicket = await issueTicket();
+      currentTime += 60 * 1000 + 1;
+      const expired = await fetchWithBinding(`${artifactUrl}?ticket=${expiredTicket}`);
+      assert.equal(expired.status, 403, 'an expired ticket cannot authorize a download');
+      assert.equal(expired.headers.get('cache-control'), 'private, no-store');
+      assert.equal(expired.headers.get('referrer-policy'), 'no-referrer');
+    } finally {
+      Date.now = originalDateNow;
+    }
+
+    const mutation = await fetch(
+      `http://127.0.0.1:${server.address().port}/admin/backup/restore-package/start?ticket=${validTicket}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ includeEncryptedEnvironmentFiles: true })
+      }
+    );
+    assert.equal(mutation.status, 401, 'download tickets cannot authorize package mutations');
+    routeEnvironment.NODE_ENV = 'development';
+    await issueTicket();
+    assert.doesNotMatch(lastIssuedCookie, /;\s*Secure(?:;|$)/i, 'local development remains usable over HTTP');
+  } finally {
+    await close(server);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Mac Backup Center proxies the one-time artifact GET without granting general unauthenticated access', async () => {
+  const upstreamRequests = [];
+  const ticket = 't'.repeat(43);
+  const bindingCookieName = `stocksite_restore_download_${crypto.createHash('sha256').update(ticket).digest('hex')}`;
+  const bindingCookie = `${bindingCookieName}=proof-value-that-is-never-in-a-url`;
+  const app = express();
+  app.use((req, _res, next) => {
+    req.cookies = { authToken: 'stale-browser-session' };
+    next();
+  });
+  app.use('/admin/backup', createBackupRouter({
+    pool: { query: async () => { throw new Error('local DB must not be queried'); } },
+    serviceOptions: {
+      platform: 'darwin',
+      environment: { PC2_ASSET_SERVER_URL: 'http://server.example:5000' },
+      httpClient: {
+        async request(options) {
+          upstreamRequests.push(options);
+          if (options.method === 'POST') {
+            return {
+              status: 201,
+              headers: {
+                'content-type': 'application/json',
+                'set-cookie': `${bindingCookie}; Path=/admin/backup${artifactPath}; HttpOnly; SameSite=Strict; Max-Age=60`
+              },
+              data: Readable.from([JSON.stringify({ ticket })])
+            };
+          }
+          return {
+            status: 200,
+            headers: {
+              'content-type': 'application/octet-stream',
+              'content-length': '7',
+              'content-disposition': 'attachment; filename="file.zip"',
+              'set-cookie': `${bindingCookieName}=; Path=/admin/backup${artifactPath}; HttpOnly; SameSite=Strict; Max-Age=0`
+            },
+            data: Readable.from(['zipdata'])
+          };
+        }
+      }
+    },
+    verifyAdmin(req, res, next) {
+      if (req.headers.authorization !== 'Bearer admin-token') {
+        return res.status(401).json({ error: 'Admin only' });
+      }
+      return next();
+    }
+  }));
+  const server = await listen(app);
+  const baseUrl = `http://127.0.0.1:${server.address().port}/admin/backup`;
+  const artifactPath = '/restore-package/jobs/GFX-proxy-ticket/artifacts/database';
+
+  try {
+    const ticketIssue = await fetch(`${baseUrl}${artifactPath}/download-ticket`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer admin-token' }
+    });
+    assert.equal(ticketIssue.status, 201);
+    assert.equal((await ticketIssue.json()).ticket, ticket);
+    assert.match(ticketIssue.headers.get('set-cookie'), /HttpOnly/i);
+
+    const anonymousArtifact = await fetch(`${baseUrl}${artifactPath}`);
+    assert.equal(anonymousArtifact.status, 401);
+    const anonymousMutation = await fetch(`${baseUrl}/restore-package/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ includeEncryptedEnvironmentFiles: true })
+    });
+    assert.equal(anonymousMutation.status, 401);
+
+    const download = await fetch(`${baseUrl}${artifactPath}?ticket=${ticket}`, {
+      headers: { Cookie: `${bindingCookie}; authToken=unrelated-auth-cookie` }
+    });
+    assert.equal(download.status, 200);
+    assert.equal(await download.text(), 'zipdata');
+    assert.match(download.headers.get('set-cookie'), /Max-Age=0/i, 'the proxy preserves the binding-cookie clear response');
+    assert.equal(upstreamRequests.length, 2);
+    assert.equal(upstreamRequests[0].method, 'POST');
+    assert.equal(upstreamRequests[0].headers.authorization, 'Bearer admin-token');
+    assert.equal(upstreamRequests[1].method, 'GET');
+    assert.equal(upstreamRequests[1].url, `http://server.example:5000/admin/backup${artifactPath}?ticket=${ticket}`);
+    assert.equal(upstreamRequests[1].headers.authorization, undefined);
+    assert.equal(upstreamRequests[1].headers.cookie, bindingCookie, 'the proxy forwards only the path-scoped proof cookie on ticketed artifact GET');
+  } finally {
+    await close(server);
+  }
+});
+
+test('Backup artifact read-only requests accept the existing browser session cookie but mutations still require headers', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-restore-artifact-cookie-'));
+  const app = express();
+  app.use((req, _res, next) => {
+    req.cookies = { authToken: 'browser-session-token' };
+    next();
+  });
+  app.use('/admin/backup', createBackupRouter({
+    pool: { query: async () => ({ rows: [] }) },
+    projectRoot: root,
+    serviceOptions: {
+      stateDirectory: path.join(root, 'state'),
+      clientExportRoot: path.join(root, 'client-exports'),
+      temporaryRoot: path.join(root, 'temporary'),
+      platform: 'win32'
+    },
+    verifyAdmin(req, res, next) {
+      if (req.headers.authorization !== 'Bearer browser-session-token') {
+        return res.status(401).json({ error: 'Admin only' });
+      }
+      return next();
+    }
+  }));
+  const server = await listen(app);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}/admin/backup`;
+    const head = await fetch(`${baseUrl}/restore-package/jobs/missing/artifacts/database`, {
+      method: 'HEAD',
+      headers: { Cookie: 'authToken=browser-session-token' }
+    });
+    assert.equal(head.status, 404, 'authorized HEAD reaches artifact lookup');
+    const mutation = await fetch(`${baseUrl}/restore-package/start`, {
+      method: 'POST',
+      headers: {
+        Cookie: 'authToken=browser-session-token',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ includeEncryptedEnvironmentFiles: true })
+    });
+    assert.equal(mutation.status, 401, 'cookie-only requests cannot start a package');
+  } finally {
+    await close(server);
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

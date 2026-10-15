@@ -39,7 +39,7 @@ function createAdminVerifier({ pool, jwtSecret, verifyToken, logger = console })
         return res.status(403).json('Admin access only');
       }
 
-      req.user = { id: decoded.user };
+      req.user = { id: decoded.user, sessionId: decoded.sid };
       return next();
     } catch (error) {
       logger.error(error);

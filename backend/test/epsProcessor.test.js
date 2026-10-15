@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+require('./helpers/blockPostgres');
 const { EventEmitter } = require('node:events');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs/promises');

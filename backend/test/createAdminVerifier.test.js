@@ -27,7 +27,7 @@ function createVerifier(user, observed = {}) {
     jwtSecret: 'test-secret',
     verifyToken(token) {
       if (token !== 'valid-token') throw new Error('Invalid token');
-      return { user: 23 };
+      return { user: 23, sid: 'session-23' };
     },
     logger: { log() {}, error() {} },
   });
@@ -44,6 +44,7 @@ test('admin verifier allows an active administrator and attaches the authenticat
 
   assert.equal(nextCalled, true);
   assert.equal(req.user.id, 23);
+  assert.equal(req.user.sessionId, 'session-23');
   assert.equal(observed.userId, 23);
   assert.equal(res.statusCode, 200);
 });

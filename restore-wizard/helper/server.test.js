@@ -1017,7 +1017,24 @@ test('local helper serves the wizard and enforces authenticated restore actions'
   try {
     const html = await fetch(`${baseUrl}/`);
     assert.equal(html.status, 200);
-    assert.match(await html.text(), /Stocksite Restore Wizard/);
+    const wizardHtml = await html.text();
+    assert.match(wizardHtml, /Stocksite Restore Wizard/);
+    assert.match(wizardHtml, /This tool prepares a separate local Stocksite restore on a computer you choose/);
+    assert.match(wizardHtml, /id="targetPlatform"/);
+    assert.match(wizardHtml, /Choose Windows or macOS/);
+    assert.match(wizardHtml, /function detectHostPlatform/);
+    assert.match(wizardHtml, /id="wizardSteps" hidden/);
+    assert.match(wizardHtml, /The computer used to download this page is only a hint/);
+    assert.match(wizardHtml, /id="databaseFileHelp"/);
+    assert.match(wizardHtml, /id="packageSigningPublicKeyHelp"/);
+    assert.match(wizardHtml, /must be independently configured|separate trusted channel/i);
+    assert.match(wizardHtml, /only a hint; it does not choose the target/i);
+    assert.match(wizardHtml, /\/api\/configure/);
+    assert.match(wizardHtml, /\/api\/validate/);
+    assert.match(wizardHtml, /\/api\/start/);
+    assert.match(wizardHtml, /Approve this action/);
+    assert.match(wizardHtml, /The helper does not decrypt or apply those settings/);
+    assert.equal((wizardHtml.match(/id="platform"/g) || []).length, 1);
 
     const unauthorized = await fetch(`${baseUrl}/api/manifest`);
     assert.equal(unauthorized.status, 401);

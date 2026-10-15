@@ -6,75 +6,162 @@
   <meta name="referrer" content="no-referrer">
   <title>Stocksite Restore Wizard</title>
   <style>
-    :root{font:16px system-ui,sans-serif;color:#172033;background:#f1f5f9}body{margin:0;padding:24px}.card{max-width:900px;margin:auto;background:white;border:1px solid #dbe3ed;border-radius:16px;padding:24px;box-shadow:0 12px 36px #0f172a12}label{display:grid;gap:6px;font-weight:650;margin:12px 0}input,textarea{box-sizing:border-box;width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px}textarea{font:inherit;resize:vertical}button{padding:11px 16px;border:0;border-radius:8px;background:#1d4ed8;color:white;font-weight:750;cursor:pointer}button:disabled{opacity:.55}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px}.muted{color:#64748b}.error{color:#b91c1c}progress{width:100%;height:18px}.approval{border:2px solid #d97706;background:#fffbeb;border-radius:10px;padding:16px;margin:16px 0}.approval dl{display:grid;grid-template-columns:minmax(140px,auto) 1fr;gap:8px}.approval dt{font-weight:700}.approval dd{margin:0;overflow-wrap:anywhere}.secondary{background:#475569}.report{border:1px solid #cbd5e1;border-radius:10px;padding:16px;margin:16px 0}
+    :root{font:16px system-ui,sans-serif;color:#172033;background:#f1f5f9}body{margin:0;padding:24px}.card{max-width:900px;margin:auto;background:white;border:1px solid #dbe3ed;border-radius:16px;padding:24px;box-shadow:0 12px 36px #0f172a12}label{display:grid;gap:6px;font-weight:650;margin:12px 0}input,textarea,select{box-sizing:border-box;width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px}textarea{font:inherit;resize:vertical}button{padding:11px 16px;border:0;border-radius:8px;background:#1d4ed8;color:white;font-weight:750;cursor:pointer}button:disabled{opacity:.55}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px}.muted{color:#64748b}.error{color:#b91c1c}progress{width:100%;height:18px}.approval{border:2px solid #d97706;background:#fffbeb;border-radius:10px;padding:16px;margin:16px 0}.approval dl{display:grid;grid-template-columns:minmax(140px,auto) 1fr;gap:8px}.approval dt{font-weight:700}.approval dd{margin:0;overflow-wrap:anywhere}.secondary{background:#475569}.report,.step{border:1px solid #cbd5e1;border-radius:10px;padding:16px;margin:16px 0}.step h2{margin-top:0}.field-help{font-weight:400;color:#475569}.platform-instructions[hidden]{display:none}
   </style>
 </head>
 <body>
 <main class="card">
   <h1>Stocksite Restore Wizard</h1>
-  <p id="platform" class="muted">Detecting operating system…</p>
   <p id="originNote" class="muted"></p>
-  <p>This wizard runs on the Developer computer or the selected Windows/macOS restore target. The SERVER supplies only authenticated package downloads; the trusted local helper performs local work and never runs remote manifest commands. Database credentials belong in the helper's local environment, not in this page. Each consequential local restore action pauses for its own approval; approving one action does not approve the next.</p>
-  <p class="error"><strong>Secret warning:</strong> the website archive may contain encrypted production `.env` configuration because an administrator authorized its inclusion. The helper will not decrypt or install it. Configure new environment-specific credentials locally; reusing production credentials can grant this computer production access.</p>
-  <details>
-    <summary>Set up the local helper (Windows or macOS)</summary>
+  <p><strong>This tool prepares a separate local Stocksite restore on a computer you choose. It does not automatically install software or overwrite your existing website.</strong></p>
+  <p>The helper performs checks and approved restore actions on the computer where it is running. Each important action asks for separate approval. It never decrypts or installs production <code>.env</code> credentials.</p>
+  <p class="error"><strong>Important:</strong> the website archive may contain encrypted production settings because an administrator approved including them. The helper does not decrypt or apply those settings. You must configure new local credentials. Reusing production credentials may connect this computer to production systems.</p>
+  <section class="step" aria-labelledby="targetHeading">
+    <h2 id="targetHeading">Step 1 · Choose the computer that will receive Stocksite</h2>
+    <p id="platform" class="muted">Checking this computer…</p>
+    <label for="targetPlatform">Restore target operating system
+      <select id="targetPlatform" required>
+        <option value="">Choose Windows or macOS</option>
+        <option value="Windows">Windows</option>
+        <option value="macOS">macOS</option>
+      </select>
+    </label>
+    <p id="targetHelp" role="status" aria-live="polite">Choose the operating system of the computer where Stocksite will be restored. The computer used to download this page is only a hint; it does not choose the target for you.</p>
+  </section>
+  <div id="wizardSteps" hidden>
+  <section class="step" aria-labelledby="prepareHeading">
+    <h2 id="prepareHeading">Step 2 · Prepare the chosen computer and package files</h2>
+    <p><strong>What you need:</strong> the restore package files, a local helper folder, Node.js, and PostgreSQL. <strong>Why:</strong> the helper checks the files and guides the restore; it does not install system software or create your database.</p>
+    <p><strong>Simple terms:</strong> Node.js is the program that runs the helper and website tools. PostgreSQL is the database software. A database is where Stocksite stores its records.</p>
+    <p><strong>What the helper can do:</strong> check package signatures, checksums, paths, computer requirements, and database safety; then, only after your separate approvals, restore the database, extract to new folders, configure local settings, install the site's project dependencies, build the website, and start its backend. <strong>What you must do manually:</strong> install Node.js/PostgreSQL, start PostgreSQL, create the new role/database, protect the helper token, and review any operating-system permission prompts.</p>
     <ol>
-      <li>Use supported 64-bit Windows 11 desktop build 26200 or newer (25H2+). Install x64 Node.js 22 or newer on an active/maintenance LTS line from <a href="https://nodejs.org/en/download" target="_blank" rel="noopener noreferrer">nodejs.org</a>, keeping npm enabled. Separately install PostgreSQL 18 or newer with its local server plus <code>psql</code> and <code>pg_restore</code> from the <a href="https://www.postgresql.org/download/windows/" target="_blank" rel="noopener noreferrer">official PostgreSQL Windows download page</a>. Do not use Windows 10, Windows Server, older Windows 11 builds, or ARM Node as a supported target. Review each installer and publisher yourself; the helper never downloads or launches installers, bypasses UAC, starts services, or requests elevation. Reopen PowerShell after installation and use <strong>Check this PC</strong> to recheck.</li>
-      <li>Open Windows Services, start the PostgreSQL 18 service, then open pgAdmin and connect to this local server. Under <strong>Login/Group Roles → Create → Login/Group Role</strong>, create a login role named <code>stocksite_local</code> with a new local password. Under <strong>Databases → Create → Database</strong>, create a database also named <code>stocksite_local</code> and set its Owner to that role. If either name already exists, choose a new unused name for both. The helper later verifies that this role can connect, owns the selected database, and that the database is empty; it never creates, drops, or overwrites database objects.</li>
-      <li>Download the unchanged source files <code>stocksite.backup</code>, <code>website-code.zip</code>, <code>original-assets.zip</code>, <code>thumbnails.zip</code>, <code>restore-package-manifest.json</code>, and <code>checksums.sha256</code> into one private folder. Download and extract <code>stocksite-restore-helper.zip</code> separately to a user-owned folder. Keep the downloaded package originals unchanged.</li>
-      <li>In File Explorer, open the extracted helper folder, click its address bar, type <code>powershell</code>, and press Enter. Run <code>npm ci --ignore-scripts</code>. Copy <code>.env.example</code> to <code>.env</code> without overwriting any existing file. To generate a random token without displaying it, run <code>$b=New-Object byte[] 32; $r=[Security.Cryptography.RandomNumberGenerator]::Create(); $r.GetBytes($b); Set-Clipboard ([Convert]::ToBase64String($b)); $r.Dispose(); Write-Host 'Random token copied; paste it only into helper/.env.'</code>, then replace the example <code>RESTORE_HELPER_TOKEN</code> value in the private <code>.env</code> using Notepad and clear the clipboard with <code>Set-Clipboard -Value ''</code>. Never paste the token into a command, URL, or shared file. In File Explorer, right-click the helper folder and <code>.env</code>, choose <strong>Properties → Security</strong>, and ensure only your trusted Windows account can read them. The helper does not configure Windows ACLs.</li>
-      <li>Run <code>start-windows.cmd</code> from that helper folder. Keep its terminal open. Open <code>http://127.0.0.1:43127/</code> and enter the helper token. Under <strong>Local setup</strong>, enter the loopback host, PostgreSQL port, role name/password, matching empty database name, and free Stocksite port. Enter the independently trusted Ed25519 public key, unless already configured in helper/.env. The form keeps the database password in helper memory only and does not write it to helper/.env. Use <strong>Check this PC</strong> and resolve every required failed check before continuing.</li>
-      <li>Do not use a <code>file://</code> URL for helper API operations. The helper binds only to loopback, rejects remote database hosts, and generates a cryptographically secure local-only JWT secret if one was not explicitly configured.</li>
+      <li>On Windows, use supported 64-bit Windows 11 desktop build 26200 or newer (25H2+) and x64 Node.js 22+ on an active or maintenance LTS line. On macOS, install a currently supported Node.js LTS release for your Mac's processor. Get Node.js from <a href="https://nodejs.org/en/download" target="_blank" rel="noopener noreferrer">nodejs.org</a>.</li>
+      <li>Install PostgreSQL 18 or newer on the chosen computer, including the local server and <code>psql</code>/<code>pg_restore</code> tools. Use the official <a href="https://www.postgresql.org/download/" target="_blank" rel="noopener noreferrer">PostgreSQL downloads</a>. The helper does not install PostgreSQL, start its service, or create roles/databases.</li>
+      <li>Keep <code>stocksite.backup</code>, <code>website-code.zip</code>, <code>original-assets.zip</code>, <code>thumbnails.zip</code>, <code>restore-package-manifest.json</code>, and <code>checksums.sha256</code> together in a private folder. Extract <code>stocksite-restore-helper.zip</code> into a separate folder. Do not rename or edit package files.</li>
+      <li>Open a terminal in the extracted helper folder and run <code>npm ci --ignore-scripts</code>. Copy <code>.env.example</code> to <code>.env</code> without overwriting an existing file. Replace the example <code>RESTORE_HELPER_TOKEN</code> with a new random value at least 32 characters long. Keep it private. The helper does not configure or verify Windows permissions.</li>
+      <li>Start the helper with <code>start-windows.cmd</code> or <code>./start-macos.sh</code>, whichever matches the chosen computer. Keep its terminal window open. Open <code>http://127.0.0.1:43127/</code> in the browser on that same computer.</li>
     </ol>
-  </details>
-  <label>Helper address<input id="helper" value="http://127.0.0.1:43127"></label>
-  <label>Local helper token<input id="token" type="password" autocomplete="off"></label>
+    <p><strong>Next:</strong> check the computer, then create a new local login role and an empty database owned by that role. The helper verifies these are safe to use but does not create them.</p>
+    <p class="platform-instructions" data-target="Windows" hidden><strong>Windows manual setup:</strong> use pgAdmin to create a new login role and a new empty database owned by that role; start PostgreSQL from Windows Services if needed. Review installer publishers yourself. The helper never requests elevation or changes Windows permissions.</p>
+    <p class="platform-instructions" data-target="macOS" hidden><strong>macOS manual setup:</strong> use the PostgreSQL installer or package manager you trust to install and start a local PostgreSQL 18+ server, then use pgAdmin or <code>psql</code> to create a new login role and empty database owned by that role. The helper does not install or start services.</p>
+    <p><strong>Next:</strong> enter the helper address and token, then use “Check this computer”.</p>
+  </section>
+  <label>Helper address
+    <input id="helper" value="http://127.0.0.1:43127" aria-describedby="helperHelp">
+    <span id="helperHelp" class="field-help">Where to find it: use the address shown in the helper's terminal. Keep the address on this computer (127.0.0.1 or localhost); do not enter a website/server address.</span>
+  </label>
+  <label>Private helper token
+    <input id="token" type="password" autocomplete="off" aria-describedby="tokenHelp">
+    <span id="tokenHelp" class="field-help">Where to find it: the <code>RESTORE_HELPER_TOKEN</code> setting you created in the helper folder's private <code>.env</code> file. Do not share or paste it into a URL.</span>
+  </label>
   <button id="manifestButton" type="button">Load trusted software manifest</button>
   <p class="muted">Manifest links are informational. The helper will not silently install software or elevate privileges.</p>
   <ul id="software"></ul>
   <section aria-labelledby="readinessHeading">
-    <h2 id="readinessHeading">Fresh PC readiness</h2>
-    <p class="muted">This read-only check inspects Windows version and architecture, Node.js/npm, PostgreSQL client tools, the configured loopback PostgreSQL connection and server version, the Windows PostgreSQL service, and the application port. pg_dump is reported for completeness but is not needed to restore a package. A client tool alone is not treated as a running database server. This check never installs software, starts services, creates roles/databases, or changes system settings.</p>
-    <button id="prerequisitesButton" type="button">Check this PC</button>
+    <h2 id="readinessHeading">Step 3 · Check the chosen computer</h2>
+    <p class="muted">You need Node.js, npm, PostgreSQL 18+, its command-line tools, a running local PostgreSQL server, and an available Stocksite port. This check explains missing or incompatible items. It only reads information; it never installs software, starts services, creates roles/databases, or changes settings.</p>
+    <button id="prerequisitesButton" type="button">Check this computer</button>
     <ul id="prerequisites" aria-live="polite"></ul>
+    <p><strong>Next:</strong> follow the “Next action” shown for each missing or unsupported requirement. Once the checks are ready, verify the local database settings below.</p>
   </section>
   <section aria-labelledby="configurationHeading">
-    <h2 id="configurationHeading">Local setup · PostgreSQL and trust</h2>
-    <p class="muted">Create the role and database first using pgAdmin on this PC: under <strong>Login/Group Roles</strong>, create a login role (suggested name <code>stocksite_local</code>) and give it a new local password. Under <strong>Databases</strong>, create a new database (suggested name <code>stocksite_local</code>) and set its Owner to that same role. Do not reuse an existing database or a website/production login. If these names already exist, choose new unique names. The helper verifies the configured role can connect, owns the selected empty database, and reaches PostgreSQL 18+ on loopback. It never creates, drops, or overwrites database objects.</p>
-    <p class="muted">The signing public key is not a password, but it is a trust decision: obtain the base64 Ed25519 SPKI DER key through a trusted channel independent of the downloaded package. Never accept a key merely because it came inside the package.</p>
-    <label>Local database host<input id="databaseHost" value="127.0.0.1" autocomplete="off"></label>
-    <label>Local PostgreSQL port<input id="databasePort" value="5432" inputmode="numeric" autocomplete="off"></label>
-    <label>Dedicated local role<input id="databaseUser" value="stocksite_local" autocomplete="off"></label>
-    <label>Role password<input id="databasePassword" type="password" autocomplete="new-password"></label>
-    <label>New empty database name<input id="databaseName" value="stocksite_local" autocomplete="off"></label>
-    <label>Local Stocksite port<input id="applicationPort" value="5001" inputmode="numeric" autocomplete="off"></label>
-    <label>Trusted package Ed25519 public key (base64 SPKI DER)<textarea id="packageSigningPublicKey" rows="3" autocomplete="off" spellcheck="false"></textarea></label>
-    <p class="muted">The password and public key are sent only to the authenticated loopback helper and kept in helper memory for this run; they are not written to helper/.env, returned in responses, logged, or stored in this browser. The helper creates a fresh local-only JWT secret automatically. To use a key already configured in helper/.env, leave the public-key field blank.</p>
-    <button id="configureButton" type="button">Save local settings in helper memory</button>
+    <h2 id="configurationHeading">Step 4 · Connect to your new local database and verify package trust</h2>
+    <p class="muted"><strong>Required manual setup:</strong> before filling this in, create a new PostgreSQL login role with a new local password, then create a new empty database owned by that role. Do not select an existing Stocksite or production database. The helper checks the connection, database ownership and emptiness; it never creates, drops, or overwrites database objects.</p>
+    <p class="muted"><strong>Trusted public key</strong> means a public verification key that you receive separately from this package through a trusted channel. It proves the package signer is the expected signer. Do not trust a key just because it is included in the downloaded files.</p>
+    <label>Local database host
+      <input id="databaseHost" value="127.0.0.1" autocomplete="off" aria-describedby="databaseHostHelp">
+      <span id="databaseHostHelp" class="field-help">Use <code>127.0.0.1</code> for this computer. Remote database servers are blocked.</span>
+    </label>
+    <label>PostgreSQL port
+      <input id="databasePort" value="5432" inputmode="numeric" autocomplete="off" aria-describedby="databasePortHelp">
+      <span id="databasePortHelp" class="field-help">Usually <code>5432</code>. Find the port in the local PostgreSQL installer or pgAdmin server connection settings.</span>
+    </label>
+    <label>New local login role
+      <input id="databaseUser" value="stocksite_local" autocomplete="off" aria-describedby="databaseUserHelp">
+      <span id="databaseUserHelp" class="field-help">Enter the role name you created manually in pgAdmin or with <code>psql</code>. Use a new local-only role, not a production login.</span>
+    </label>
+    <label>New local role password
+      <input id="databasePassword" type="password" autocomplete="new-password" aria-describedby="databasePasswordHelp">
+      <span id="databasePasswordHelp" class="field-help">Enter the password you chose when creating that role. It is sent to the loopback helper for this run only.</span>
+    </label>
+    <label>New empty database name
+      <input id="databaseName" value="stocksite_local" autocomplete="off" aria-describedby="databaseNameHelp">
+      <span id="databaseNameHelp" class="field-help">Enter the database you created and assigned to the role above. Choose a new, empty database; never use an existing site database.</span>
+    </label>
+    <label>Local Stocksite port
+      <input id="applicationPort" value="5001" inputmode="numeric" autocomplete="off" aria-describedby="applicationPortHelp">
+      <span id="applicationPortHelp" class="field-help">Usually <code>5001</code>. The helper checks that the port is free; choose another unused port if it is occupied.</span>
+    </label>
+    <label>Trusted package Ed25519 public key (base64)
+      <textarea id="packageSigningPublicKey" rows="3" autocomplete="off" spellcheck="false" aria-describedby="packageSigningPublicKeyHelp"></textarea>
+      <span id="packageSigningPublicKeyHelp" class="field-help">Where to find it: ask the trusted administrator who signed the package, using a separate trusted channel. It is not a private key or password. Leave blank only if the same trusted key was independently configured in helper/.env.</span>
+    </label>
+    <p class="muted">The password and public key are sent only to the authenticated loopback helper and kept in helper memory for this run. They are not written to helper/.env, returned in responses, logged, or stored in this browser. The helper creates a fresh local-only application secret; it does not reuse production credentials.</p>
+    <details><summary>Technical details · connection and signature checks</summary><p>The helper accepts loopback PostgreSQL hosts only. It verifies PostgreSQL 18+, that the selected role owns the target database, and that the target contains no user objects. Package signatures use Ed25519. The independently trusted public key is encoded as SPKI DER in base64.</p></details>
+    <button id="configureButton" type="button">Check and keep settings in helper memory</button>
     <p id="configurationStatus" role="status" aria-live="polite"></p>
+    <p><strong>Next:</strong> enter the four package file paths and check that the package files match their signed inventory.</p>
   </section>
-  <h2>Step 1 · Sources</h2>
-  <p class="muted">Enter the native Windows or macOS paths to the four verified package artifacts. Keep the database backup, package manifest, checksum file, and all three ZIP archives together. Browsers do not expose a selected file's native path to this local helper, so path entry is the supported fallback. The helper verifies package checksums and inventories before extracting the website, originals, and thumbnails into private staging folders. The database source must be a PostgreSQL custom-format .backup file.</p>
-  <label>PostgreSQL .backup file<input id="databaseFile" autocomplete="off" placeholder="Example: C:\StocksitePackage\stocksite.backup"></label>
-  <label>Website code ZIP<input id="websiteArchive" autocomplete="off" placeholder="Example: C:\StocksitePackage\website-code.zip"></label>
-  <label>Original assets ZIP<input id="assetsArchive" autocomplete="off" placeholder="Example: C:\StocksitePackage\original-assets.zip"></label>
-  <label>Thumbnails ZIP<input id="thumbnailsArchive" autocomplete="off" placeholder="Example: C:\StocksitePackage\thumbnails.zip"></label>
-  <h2>Step 2 · Destinations</h2>
-  <p class="muted">Select new, non-overlapping folders and an already-created, empty PostgreSQL database. The helper refuses existing destination folders and non-empty database targets. Source/schema compatibility is not established; normal Stocksite backend startup may run database initialization/migrations and requires lifecycle schema migrations 028–030 to be present. Use only a disposable local database.</p>
-  <label>Website code destination folder<input id="websiteDestination" autocomplete="off"></label>
-  <label>Original assets destination folder<input id="assetsDestination" autocomplete="off"></label>
-  <label>Thumbnail destination folder<input id="thumbnailsDestination" autocomplete="off"></label>
-  <p class="muted">Enter full local folder paths (for example <code>C:\Stocksite-Restore\site</code>). Paths with spaces are supported; check the drive letter and each folder name carefully. The helper checks that each destination does not already exist, paths do not overlap, and there is enough free space before extraction. Role/database creation, service startup, Windows ACL review, and software installation remain manual steps; the helper reports specific next actions when a check fails.</p>
-  <button id="validateButton" type="button">Validate sources and destinations</button>
+  <section class="step" aria-labelledby="sourceHeading">
+  <h2 id="sourceHeading">Step 5 · Find the four package files</h2>
+  <p class="muted">A <strong>local folder</strong> is a folder on the restore computer, such as <code>C:\StocksitePackage</code> or <code>/Users/you/StocksitePackage</code>. In File Explorer or Finder, locate the downloaded files and copy their full paths below. Keep all package files together and unchanged. The helper reads the manifest and checksum file from the same folder, then checks signatures, file checksums, and ZIP contents before using them. A checksum is a file fingerprint used to detect changes.</p>
+  <label>Database backup · <code>stocksite.backup</code>
+    <input id="databaseFile" autocomplete="off" placeholder="Example: C:\StocksitePackage\stocksite.backup" aria-describedby="databaseFileHelp">
+    <span id="databaseFileHelp" class="field-help">Where to find it: the private package folder. In File Explorer/Finder, use Copy as path / Copy Path. Must be the included PostgreSQL custom backup.</span>
+  </label>
+  <label>Website source archive · <code>website-code.zip</code>
+    <input id="websiteArchive" autocomplete="off" placeholder="Example: C:\StocksitePackage\website-code.zip" aria-describedby="websiteArchiveHelp">
+    <span id="websiteArchiveHelp" class="field-help">Where to find it: the same folder as the database backup. This archive may contain encrypted settings; the helper never decrypts or applies production credentials.</span>
+  </label>
+  <label>Original pictures and files · <code>original-assets.zip</code>
+    <input id="assetsArchive" autocomplete="off" placeholder="Example: C:\StocksitePackage\original-assets.zip" aria-describedby="assetsArchiveHelp">
+    <span id="assetsArchiveHelp" class="field-help">Where to find it: the same private package folder. It can be large; leave free disk space for the archive and extracted copy.</span>
+  </label>
+  <label>Thumbnails archive · <code>thumbnails.zip</code>
+    <input id="thumbnailsArchive" autocomplete="off" placeholder="Example: C:\StocksitePackage\thumbnails.zip" aria-describedby="thumbnailsArchiveHelp">
+    <span id="thumbnailsArchiveHelp" class="field-help">Where to find it: the same private package folder.</span>
+  </label>
+  <details><summary>Technical details · package verification</summary><p>The helper requires the separate <code>restore-package-manifest.json</code> and <code>checksums.sha256</code> alongside these files. It checks the trusted Ed25519 signature, file sizes, SHA-256 values, safe ZIP paths, and the archive inventory. Missing, changed, or incompatible files are rejected; they are not silently skipped.</p></details>
+  <p><strong>Next:</strong> choose three new folders where the helper can create the restored site files.</p>
+  </section>
+  <section class="step" aria-labelledby="destinationHeading">
+  <h2 id="destinationHeading">Step 6 · Choose new, empty destination folders</h2>
+  <p class="muted">The helper will create the folders you choose. Do not select an existing website, asset store, or folder with files you need. The three paths must not overlap. For safety, use a disposable local database and brand-new folders. Normal application startup may run local database initialization/migrations; full source/schema compatibility is not guaranteed.</p>
+  <label>New website code folder
+    <input id="websiteDestination" autocomplete="off" placeholder="Example: C:\Stocksite-Restore\site" aria-describedby="websiteDestinationHelp">
+    <span id="websiteDestinationHelp" class="field-help">Where to find this: choose a new path in File Explorer/Finder, for example <code>C:\Stocksite-Restore\site</code> or <code>/Users/you/Stocksite-Restore/site</code>. It must not already exist.</span>
+  </label>
+  <label>New original assets folder
+    <input id="assetsDestination" autocomplete="off" placeholder="Example: C:\Stocksite-Restore\assets" aria-describedby="assetsDestinationHelp">
+    <span id="assetsDestinationHelp" class="field-help">Choose another new folder, for example <code>C:\Stocksite-Restore\assets</code>. Do not use a folder containing current production or personal files.</span>
+  </label>
+  <label>New thumbnails folder
+    <input id="thumbnailsDestination" autocomplete="off" placeholder="Example: C:\Stocksite-Restore\thumbnails" aria-describedby="thumbnailsDestinationHelp">
+    <span id="thumbnailsDestinationHelp" class="field-help">Choose a third new folder, for example <code>C:\Stocksite-Restore\thumbnails</code>. Paths containing spaces are supported.</span>
+  </label>
+  <p class="muted">The helper checks that folders do not already exist, paths do not overlap, and enough disk space is available. If a check fails, read the message above and correct the named field; the helper does not overwrite existing folders.</p>
+  <button id="validateButton" type="button">Check package files and destinations</button>
+  <p><strong>Next:</strong> review the preflight results and restore plan before authorizing any action.</p>
+  </section>
   <div id="review" hidden>
-    <h2>Step 3 · Review and authorize</h2>
+    <section class="step">
+    <h2>Step 7 · Preflight checklist and approval</h2>
+    <p>Before you continue, confirm each item. Validation must pass, and each later action will still ask for separate approval.</p>
+    <ul>
+      <li>The selected target computer and helper platform match.</li>
+      <li>PostgreSQL is local, version 18 or newer, and the target database is new, empty, and owned by the role you entered.</li>
+      <li>The package files are unchanged and the independent signing public key is trusted.</li>
+      <li>The three destination folders are new, separate, and have enough free space.</li>
+      <li>You understand that the helper will not decrypt or install production environment credentials.</li>
+    </ul>
     <pre id="reviewText"></pre>
     <label><input id="authorize" type="checkbox"> Start read-only validation and the guided restore. Each database, extraction, configuration, dependency, build, and backend-start action will ask separately before it runs.</label>
     <label>Type the confirmation shown below<input id="confirmation" autocomplete="off"></label>
     <button id="startButton" type="button" disabled>START GUIDED RESTORE</button>
+    </section>
   </div>
   <section id="progress" hidden>
-    <h2>Step 4 · Restore progress</h2>
+    <h2>Step 8 · Restore progress</h2>
     <p id="jobStatus"></p><p id="elapsed"></p><progress id="bar" max="100" value="0"></progress>
     <button id="cancelButton" type="button" hidden>Cancel restore</button>
     <section id="approvalPanel" class="approval" aria-live="assertive" hidden>
@@ -97,12 +184,71 @@
     </section>
     <a id="launchLink" hidden target="_blank" rel="noopener noreferrer">Open restored Stocksite</a>
   </section>
+  </div>
   <p id="message" role="status"></p>
 </main>
 <script>
   const $ = (id) => document.getElementById(id);
-  const platform = /Win/.test(navigator.userAgent) ? 'Windows' : /Mac/.test(navigator.userAgent) ? 'macOS' : 'unsupported OS';
-  $('platform').textContent = `Detected platform: ${platform}. The helper checks prerequisites but does not install software or elevate privileges.`;
+  function normalizePlatform(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (['win32', 'win64', 'windows'].includes(normalized) || /\bwindows(?:\s|$)/i.test(normalized)) {
+      return 'Windows';
+    }
+    if (
+      ['darwin', 'macos', 'macintel', 'macppc', 'macarm'].includes(normalized) ||
+      /\bmacintosh\b|\bmac os(?: x)?\b/i.test(normalized)
+    ) {
+      return 'macOS';
+    }
+    return null;
+  }
+  function detectHostPlatform() {
+    return normalizePlatform(navigator.userAgentData?.platform) ||
+      normalizePlatform(navigator.platform) ||
+      normalizePlatform(navigator.userAgent);
+  }
+  const detectedHostPlatform = detectHostPlatform();
+  const targetPlatform = $('targetPlatform');
+  const workflow = $('wizardSteps');
+  let checkedHelperPlatform = null;
+  $('platform').textContent = detectedHostPlatform
+    ? `This browser appears to be on ${detectedHostPlatform}. This is only a hint; you must choose the computer that will receive the restore below.`
+    : 'This browser could not reliably identify its computer. Choose the operating system of the restore target below.';
+  targetPlatform.addEventListener('change', () => {
+    workflow.hidden = !targetPlatform.value;
+    checkedHelperPlatform = null;
+    validation = null;
+    $('review').hidden = true;
+    $('prerequisites').replaceChildren();
+    $('configurationStatus').textContent = '';
+    $('authorize').checked = false;
+    $('confirmation').value = '';
+    $('startButton').disabled = true;
+    for (const item of document.querySelectorAll('[data-target]')) {
+      item.hidden = item.dataset.target !== targetPlatform.value;
+    }
+    const packageFolder = targetPlatform.value === 'Windows'
+      ? 'C:\\StocksitePackage'
+      : '/Users/you/StocksitePackage';
+    for (const [id, filename] of [
+      ['databaseFile', 'stocksite.backup'],
+      ['websiteArchive', 'website-code.zip'],
+      ['assetsArchive', 'original-assets.zip'],
+      ['thumbnailsArchive', 'thumbnails.zip']
+    ]) {
+      $(id).placeholder = `${packageFolder}${targetPlatform.value === 'Windows' ? '\\' : '/'}${filename}`;
+    }
+    for (const [id, folder] of [
+      ['websiteDestination', 'site'],
+      ['assetsDestination', 'assets'],
+      ['thumbnailsDestination', 'thumbnails']
+    ]) {
+      $(id).placeholder = `${targetPlatform.value === 'Windows' ? 'C:\\Stocksite-Restore' : '/Users/you/Stocksite-Restore'}${targetPlatform.value === 'Windows' ? '\\' : '/'}${folder}`;
+    }
+    $('targetHelp').textContent = targetPlatform.value
+      ? `Selected restore target: ${targetPlatform.value}. The helper must also run on a ${targetPlatform.value} computer; the download computer does not choose this for you.`
+      : 'Choose the operating system of the computer where Stocksite will be restored. The computer used to download this page is only a hint; it does not choose the target for you.';
+  });
   $('originNote').textContent = location.protocol === 'file:'
     ? 'For browser security, run the local helper and open this wizard at http://127.0.0.1:43127/; a file:// page cannot access the protected helper API.'
     : 'This page runs from the local helper. API requests stay on loopback.';
@@ -113,10 +259,19 @@
   $('prerequisitesButton').onclick = async () => {
     const list = $('prerequisites');
     $('prerequisitesButton').disabled = true;
+    checkedHelperPlatform = null;
     list.replaceChildren();
     try {
       const result = await call('GET', '/api/prerequisites');
-      $('platform').textContent = `Helper platform: ${result.prerequisites.platform}. Missing software is not installed automatically.`;
+      checkedHelperPlatform = normalizePlatform(result.prerequisites.platform);
+      $('platform').textContent = `Helper is running on ${checkedHelperPlatform || result.prerequisites.platform}. The helper checks prerequisites but does not install system software or elevate privileges.`;
+      if (targetPlatform.value && checkedHelperPlatform !== targetPlatform.value) {
+        const warning = document.createElement('li');
+        warning.dataset.status = 'unsupported';
+        warning.setAttribute('role', 'alert');
+        warning.textContent = `The selected target is ${targetPlatform.value}, but the helper is running on ${checkedHelperPlatform || result.prerequisites.platform}. Start the helper on the selected target computer before continuing.`;
+        list.append(warning);
+      }
       for (const check of result.prerequisites.checks) {
         const item = document.createElement('li');
         item.dataset.status = check.status;
@@ -170,6 +325,11 @@
     status.textContent = 'Validating local settings without saving them to disk…';
     status.className = '';
     try {
+      if (!targetPlatform.value) throw new Error('Choose Windows or macOS as the restore target before configuring the helper.');
+      if (!checkedHelperPlatform) throw new Error('Use “Check this computer” first so the helper platform can be verified.');
+      if (checkedHelperPlatform !== targetPlatform.value) {
+        throw new Error(`The helper is running on ${checkedHelperPlatform}; select that target or start the helper on the chosen ${targetPlatform.value} computer.`);
+      }
       const result = await call('POST', '/api/configure', {
         databaseHost: $('databaseHost').value,
         databasePort: $('databasePort').value,
@@ -208,6 +368,11 @@
   };
   $('validateButton').onclick = async () => {
     try {
+      if (!targetPlatform.value) throw new Error('Choose the restore target operating system first.');
+      if (!checkedHelperPlatform) throw new Error('Use “Check this computer” first so the helper platform can be verified.');
+      if (checkedHelperPlatform !== targetPlatform.value) {
+        throw new Error(`The helper is running on ${checkedHelperPlatform}; start it on the selected ${targetPlatform.value} computer before validating.`);
+      }
       const result = await call('POST','/api/validate',configuration());
       validation = result.validation;
       $('reviewText').textContent = JSON.stringify(validation,null,2) + `\n\nType: RESTORE ${validation.destinations.databaseName}`;

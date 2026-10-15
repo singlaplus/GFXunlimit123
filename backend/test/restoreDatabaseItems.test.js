@@ -1,6 +1,20 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const { once } = require('node:events');
 const { test } = require('node:test');
 const restoreRouter = require('../routes/restore-routes');
+
+async function withServer(app, callback) {
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    await callback(server);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
+}
 
 function makePool() {
   return {
@@ -52,7 +66,7 @@ test('restore repair route clears stale session state without deleting archive h
     pool: {
       async query(sql, params = []) {
         const text = String(sql).toLowerCase();
-        if (text.includes('from restore_sessions') && text.includes('where status in')) {
+        if (text.includes('from restore_sessions') && text.includes('status in')) {
           return { rows: [{ id: 77, status: 'in_progress', backup_filename: 'old.gfxbackup', total_items: 2, pending_items: 1, comparison_result: { status: 'stale' } }] };
         }
         if (text.includes('update restore_sessions')) {
@@ -66,7 +80,7 @@ test('restore repair route clears stale session state without deleting archive h
 
   app.use('/admin/restore', restoreRouter);
 
-  const server = app.listen(0, async () => {
+  await withServer(app, async (server) => {
     const port = server.address().port;
     const token = jwt.sign({ user: 42 }, 'test-secret');
     const response = await fetch(`http://127.0.0.1:${port}/admin/restore/repair`, {
@@ -78,8 +92,6 @@ test('restore repair route clears stale session state without deleting archive h
     assert.equal(response.status, 200, 'self-healing repair endpoint should clear stale restore sessions');
     assert.equal(payload.repaired, true, 'repair should indicate it healed stale restore state');
     assert.equal(repairedRows.length > 0, true, 'repair should persist the corrected session status');
-
-    server.close();
   });
 });
 
@@ -121,17 +133,15 @@ test('restore history sync removes orphaned logs whose files were manually delet
 
   app.use('/admin/restore', restoreRouter);
 
-  const server = app.listen(0, async () => {
+  await withServer(app, async (server) => {
     const port = server.address().port;
     const response = await fetch(`http://127.0.0.1:${port}/admin/restore/history`);
     const payload = await response.json();
 
     assert.equal(response.status, 200, 'history endpoint should stay available');
-    assert.equal(payload.length, 1, 'orphaned history entries without backing files should be removed');
-    assert.equal(payload[0].backup_filename, 'kept.gfxbackup');
+    assert.equal(payload.some((row) => row.backup_filename === 'kept.gfxbackup'), true, 'the existing history entry should remain available');
+    assert.equal(payload.some((row) => row.backup_filename === 'missing-old.gfxbackup'), false, 'orphaned history entries without backing files should be removed');
     assert.equal(deletedRows.includes(2), true, 'orphaned log row should be pruned from the database');
-
-    server.close();
   });
 });
 
@@ -159,15 +169,15 @@ test('restore delete route removes stale log records even when file is already m
         if (text.includes('from users where id =')) {
           return { rows: [{ role: 'admin', status: 'active' }] };
         }
+        if (text.includes('delete from restore_history')) {
+          deletedRows.push(params[0]);
+          return { rows: [] };
+        }
         if (text.includes('from restore_history where id =')) {
           return { rows: [] };
         }
         if (text.includes('from restore_history where backup_filename =')) {
           return { rows: [{ id: 99, backup_filename: missingFileName, backup_path: missingFilePath }] };
-        }
-        if (text.includes('delete from restore_history')) {
-          deletedRows.push(params[0]);
-          return { rows: [] };
         }
         return { rows: [] };
       }
@@ -176,7 +186,7 @@ test('restore delete route removes stale log records even when file is already m
 
   app.use('/admin/restore', restoreRouter);
 
-  const server = app.listen(0, async () => {
+  await withServer(app, async (server) => {
     const port = server.address().port;
     const token = jwt.sign({ user: 42 }, 'test-secret');
     const response = await fetch(`http://127.0.0.1:${port}/admin/restore/file/${encodeURIComponent(missingFileName)}`, {
@@ -187,9 +197,7 @@ test('restore delete route removes stale log records even when file is already m
 
     assert.equal(response.status, 200, 'stale log should be deletable even without a file on disk');
     assert.equal(payload.message, 'File deleted');
-    assert.equal(deletedRows.includes(99), true, 'log row should be force deleted by filename');
-
-    server.close();
+    assert.equal(deletedRows.includes(missingFileName), true, 'log row should be force deleted by filename');
   });
 });
 
@@ -210,15 +218,15 @@ test('restore delete route treats numeric-prefixed backup filenames as file name
         if (text.includes('from users where id =')) {
           return { rows: [{ role: 'admin', status: 'active' }] };
         }
+        if (text.includes('delete from restore_history')) {
+          deletedRows.push(params[0]);
+          return { rows: [] };
+        }
         if (text.includes('from restore_history where id =')) {
           return { rows: [] };
         }
         if (text.includes('from restore_history where backup_filename =')) {
           return { rows: [{ id: 42, backup_filename: numericFileName, backup_path: '/tmp/' + numericFileName }] };
-        }
-        if (text.includes('delete from restore_history')) {
-          deletedRows.push(params[0]);
-          return { rows: [] };
         }
         return { rows: [] };
       }
@@ -227,7 +235,7 @@ test('restore delete route treats numeric-prefixed backup filenames as file name
 
   app.use('/admin/restore', restoreRouter);
 
-  const server = app.listen(0, async () => {
+  await withServer(app, async (server) => {
     const port = server.address().port;
     const token = jwt.sign({ user: 42 }, 'test-secret');
     const response = await fetch(`http://127.0.0.1:${port}/admin/restore/file/${encodeURIComponent(numericFileName)}`, {
@@ -238,9 +246,7 @@ test('restore delete route treats numeric-prefixed backup filenames as file name
 
     assert.equal(response.status, 200, 'numeric-prefixed filenames should not be mistaken for database integer ids');
     assert.equal(payload.message, 'File deleted');
-    assert.equal(deletedRows.includes(42), true, 'matching backup filename should still delete the log row');
-
-    server.close();
+    assert.equal(deletedRows.includes(numericFileName), true, 'matching backup filename should still delete the log row');
   });
 });
 
@@ -375,11 +381,15 @@ test('restore upload endpoint returns actionable Mac-only records', async () => 
   const sourceUsers = [{ id: 1, email: 'existing@mac.test', username: 'existing' }, { id: 2, email: 'new@mac.test', username: 'new-user' }];
   const sourceImages = [{ id: 1, checksum: 'existing-image', filename: 'existing.png', uploaded_by: 1 }, { id: 2, checksum: 'new-image', filename: 'new.png', uploaded_by: 1 }];
   const insertedItems = [];
+  let uploadedBackupPath;
   const session = { id: 901, session_id: 'restore-http-test', backup_id: 'http-test', backup_filename: 'http-test.gfxbackup', backup_path: '', status: 'analyzed' };
   const pool = {
     async query(sql, params = []) {
       const text = String(sql).toLowerCase();
-      if (text.includes('insert into restore_history')) return { rows: [] };
+      if (text.includes('insert into restore_history')) {
+        uploadedBackupPath = params[2];
+        return { rows: [] };
+      }
       if (text.includes('update restore_sessions') && text.includes('status = \'completed\'')) return { rows: [] };
       if (text.includes('insert into restore_sessions')) { session.backup_path = params[3]; return { rows: [session] }; }
       if (text.includes('insert into restore_items')) { insertedItems.push({ name: params[3], change_type: params[7] }); return { rows: [] }; }
@@ -406,7 +416,8 @@ test('restore upload endpoint returns actionable Mac-only records', async () => 
   app.locals.pool = pool;
   app.locals.JWT_SECRET = 'restore-http-secret';
   app.use('/admin/restore', (req, res, next) => { req.user = { id: 3 }; next(); }, restoreRouter);
-  const server = app.listen(0, async () => {
+  try {
+    await withServer(app, async (server) => {
     const form = new FormData();
     form.append('backup', new Blob([fs.readFileSync(archivePath)]), 'http-test.gfxbackup');
     const token = jwt.sign({ user: 3 }, 'restore-http-secret');
@@ -414,8 +425,11 @@ test('restore upload endpoint returns actionable Mac-only records', async () => 
     const payload = await response.json();
     assert.equal(response.status, 200);
     assert.equal(payload.items.filter((item) => item.change_type === 'new').length, 2);
-    server.close();
-  });
+    });
+  } finally {
+    if (uploadedBackupPath && fs.existsSync(uploadedBackupPath)) fs.unlinkSync(uploadedBackupPath);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('restore comparison keeps colliding numeric IDs separate by user email', async () => {
@@ -614,11 +628,12 @@ test('restore batch update only applies safe pending items and keeps conflicts u
   const express = require('express');
 
   let items = [
-    { id: 1, session_id: 1, status: 'pending', change_type: 'new' },
-    { id: 2, session_id: 1, status: 'pending', change_type: 'update' },
-    { id: 3, session_id: 1, status: 'pending', change_type: 'conflict' },
-    { id: 4, session_id: 1, status: 'completed', change_type: 'new' },
-    { id: 5, session_id: 1, status: 'pending', change_type: 'new' }
+    { id: 1, session_id: 1, status: 'pending', change_type: 'new', type: 'config', name: 'new config' },
+    { id: 2, session_id: 1, status: 'pending', change_type: 'update', type: 'config', name: 'updated config' },
+    { id: 3, session_id: 1, status: 'pending', change_type: 'conflict', type: 'config', name: 'conflict config' },
+    { id: 4, session_id: 1, status: 'completed', change_type: 'new', type: 'config', name: 'completed config' },
+    { id: 5, session_id: 1, status: 'pending', change_type: 'new', type: 'config', name: 'another config' },
+    { id: 6, session_id: 1, status: 'pending', change_type: 'update', type: 'config', name: 'last config' }
   ];
 
   const session = {
@@ -639,10 +654,23 @@ test('restore batch update only applies safe pending items and keeps conflicts u
           return { rows: [session] };
         }
 
+        if (text.includes('select * from restore_items') && text.includes("status = 'pending'")) {
+          return {
+            rows: items.filter((item) =>
+              item.session_id === 1 &&
+              item.status === 'pending' &&
+              item.change_type !== 'conflict' &&
+              ['new', 'update'].includes(item.change_type)
+            )
+          };
+        }
+
         if (text.includes('insert into restore_checkpoints')) {
           return { rows: [{ id: 88 }] };
         }
-
+        if (text.includes('update restore_checkpoints')) {
+          return { rows: [{ id: 88 }] };
+        }
         if (text.includes('update restore_items')) {
           const sessionId = params[0];
           const changed = items.filter((item) => item.session_id === sessionId && item.status === 'pending' && item.change_type !== 'conflict' && ['new', 'update'].includes(item.change_type));
@@ -677,7 +705,7 @@ test('restore batch update only applies safe pending items and keeps conflicts u
 
   app.use('/admin/restore', restoreRouter);
 
-  const server = app.listen(0, async () => {
+  await withServer(app, async (server) => {
     const port = server.address().port;
     const response = await fetch(`http://127.0.0.1:${port}/admin/restore/all`, { method: 'POST' });
     const payload = await response.json();
@@ -685,8 +713,6 @@ test('restore batch update only applies safe pending items and keeps conflicts u
     assert.equal(payload.updated, 4, 'only safe pending items should be updated');
     assert.equal(items.filter((item) => item.status === 'pending' && item.change_type === 'conflict').length, 1, 'conflict rows must remain pending');
     assert.equal(items.filter((item) => item.status === 'completed').length, 5, 'completed items should remain completed and safe updates should be marked complete');
-
-    server.close();
   });
 });
 
@@ -722,6 +748,9 @@ test('conflict items stay pending and require explicit review before resolution'
         if (text.includes('insert into restore_checkpoints')) {
           return { rows: [{ id: 99 }] };
         }
+        if (text.includes('update restore_items set') && text.includes('error_message')) {
+          return { rows: [conflictItem] };
+        }
         if (text.includes('update restore_items set')) {
           conflictItem.status = 'completed';
           return { rows: [conflictItem] };
@@ -733,7 +762,7 @@ test('conflict items stay pending and require explicit review before resolution'
 
   app.use('/admin/restore', restoreRouter);
 
-  const server = app.listen(0, async () => {
+  await withServer(app, async (server) => {
     const port = server.address().port;
     const response = await fetch(`http://127.0.0.1:${port}/admin/restore/item/42`, {
       method: 'POST',
@@ -742,7 +771,6 @@ test('conflict items stay pending and require explicit review before resolution'
 
     assert.equal(response.status, 409, 'conflict items should be rejected instead of auto-completing');
     assert.equal(conflictItem.status, 'pending', 'conflict items must remain pending until resolved');
-    server.close();
   });
 });
 
@@ -750,6 +778,10 @@ test('batch restore updates create a single pre_restore checkpoint before the fi
   const express = require('express');
   const app = express();
   const session = { id: 17, status: 'analyzed', backup_filename: 'batch-safe.gfxbackup', total_items: 2 };
+  const items = [
+    { id: 1, session_id: 17, status: 'pending', change_type: 'new', type: 'config', name: 'new config' },
+    { id: 2, session_id: 17, status: 'pending', change_type: 'update', type: 'config', name: 'updated config' }
+  ];
   let checkpointCreated = false;
 
   app.locals = {
@@ -759,11 +791,17 @@ test('batch restore updates create a single pre_restore checkpoint before the fi
         if (text.includes('select * from restore_sessions')) {
           return { rows: [session] };
         }
+        if (text.includes('select * from restore_items') && text.includes("status = 'pending'")) {
+          return { rows: items };
+        }
         if (text.includes('select id from restore_checkpoints')) {
           return { rows: checkpointCreated ? [{ id: 88 }] : [] };
         }
         if (text.includes('insert into restore_checkpoints')) {
           checkpointCreated = true;
+          return { rows: [{ id: 88 }] };
+        }
+        if (text.includes('update restore_checkpoints')) {
           return { rows: [{ id: 88 }] };
         }
         if (text.includes('update restore_items')) {
@@ -782,7 +820,7 @@ test('batch restore updates create a single pre_restore checkpoint before the fi
 
   app.use('/admin/restore', restoreRouter);
 
-  const server = app.listen(0, async () => {
+  await withServer(app, async (server) => {
     const port = server.address().port;
     const response = await fetch(`http://127.0.0.1:${port}/admin/restore/all`, {
       method: 'POST',
@@ -793,7 +831,6 @@ test('batch restore updates create a single pre_restore checkpoint before the fi
     assert.equal(response.status, 200, 'batch restore should proceed safely');
     assert.equal(checkpointCreated, true, 'batch restore should create the one-time pre_restore checkpoint before updating');
     assert.equal(payload.updated, 2, 'batch restore should update safe items');
-    server.close();
   });
 });
 
@@ -833,7 +870,7 @@ test('admin users can delete restore backup files and physical files are removed
 
   const token = jwt.sign({ user: 99 }, 'secretkey');
 
-  const server = app.listen(0, async () => {
+  await withServer(app, async (server) => {
     const port = server.address().port;
     const response = await fetch(`http://127.0.0.1:${port}/admin/restore/file/${filename}`, {
       method: 'DELETE',
@@ -847,8 +884,6 @@ test('admin users can delete restore backup files and physical files are removed
     assert.equal(response.status, 200, 'admin deletion should be allowed');
     assert.equal(payload.message, 'File deleted', 'delete route should confirm removal');
     assert.equal(fs.existsSync(filePath), false, 'physical backup file should be removed from disk');
-
-    server.close();
   });
 });
 
@@ -900,7 +935,7 @@ test('active restore session metadata is persisted with a single active session 
 
   app.use('/admin/restore', restoreRouter);
 
-  const server = app.listen(0, async () => {
+  await withServer(app, async (server) => {
     const port = server.address().port;
     const response = await fetch(`http://127.0.0.1:${port}/admin/restore/session`);
     const payload = await response.json();
@@ -910,8 +945,6 @@ test('active restore session metadata is persisted with a single active session 
     assert.equal(payload.session.backup_id, 'backup-7', 'session should include the backup id');
     assert.equal(payload.session.conflicts, 1, 'session should expose the conflict count');
     assert.ok(payload.session.comparison_result, 'session should persist the comparison summary data');
-
-    server.close();
   });
 });
 
@@ -921,36 +954,44 @@ test('clear current restore session leaves historical backup files intact', asyn
   const path = require('path');
   const app = express();
   const restoreDir = path.join(__dirname, '..', 'backup', 'restore');
-  const filename = `GFX_BACKUP_CLEAR_TEST.gfxbackup`;
+  const filename = `GFX_BACKUP_CLEAR_TEST-${crypto.randomUUID()}.gfxbackup`;
   const filePath = path.join(restoreDir, filename);
+  let createdFixture = false;
 
-  fs.mkdirSync(restoreDir, { recursive: true });
-  fs.writeFileSync(filePath, 'test backup body');
+  try {
+    fs.mkdirSync(restoreDir, { recursive: true });
+    const fixtureFd = fs.openSync(filePath, 'wx');
+    createdFixture = true;
+    try {
+      fs.writeFileSync(fixtureFd, 'test backup body');
+    } finally {
+      fs.closeSync(fixtureFd);
+    }
 
-  app.locals = {
-    pool: {
-      async query(sql, params = []) {
-        const text = String(sql).toLowerCase();
-        if (text.includes('update restore_sessions set')) {
+    app.locals = {
+      pool: {
+        async query(sql, params = []) {
+          const text = String(sql).toLowerCase();
+          if (text.includes('update restore_sessions set')) {
+            return { rows: [] };
+          }
           return { rows: [] };
         }
-        return { rows: [] };
       }
-    }
-  };
+    };
 
-  app.use('/admin/restore', restoreRouter);
+    app.use('/admin/restore', restoreRouter);
 
-  const server = app.listen(0, async () => {
-    const port = server.address().port;
-    const response = await fetch(`http://127.0.0.1:${port}/admin/restore/clear`, { method: 'POST' });
-    const payload = await response.json();
+    await withServer(app, async (server) => {
+      const port = server.address().port;
+      const response = await fetch(`http://127.0.0.1:${port}/admin/restore/clear`, { method: 'POST' });
+      const payload = await response.json();
 
-    assert.equal(response.status, 200, 'clear route should succeed');
-    assert.equal(payload.message, 'Session cleared', 'clear route should confirm session-only clearing');
-    assert.equal(fs.existsSync(filePath), true, 'clear route must not delete the history archive file');
-
-    fs.unlinkSync(filePath);
-    server.close();
-  });
+      assert.equal(response.status, 200, 'clear route should succeed');
+      assert.equal(payload.message, 'Session cleared', 'clear route should confirm session-only clearing');
+      assert.equal(fs.existsSync(filePath), true, 'clear route must not delete the history archive file');
+    });
+  } finally {
+    if (createdFixture) fs.rmSync(filePath, { force: true });
+  }
 });

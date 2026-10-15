@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+require('./helpers/blockPostgres');
 const { once } = require('node:events');
 const express = require('express');
 const { Readable } = require('node:stream');

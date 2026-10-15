@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+require('./helpers/blockPostgres');
 const http = require('node:http');
 const fs = require('node:fs/promises');
 const os = require('node:os');

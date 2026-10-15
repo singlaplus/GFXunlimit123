@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 
 const STORAGE_KEY = "stocksite-restore-package-job";
@@ -34,7 +34,8 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
   const [busy, setBusy] = useState(false);
   const [authorizeEncryptedConfiguration, setAuthorizeEncryptedConfiguration] = useState(false);
   const [error, setError] = useState("");
-  const [downloadMessage, setDownloadMessage] = useState("");
+  const [downloadStates, setDownloadStates] = useState({});
+  const downloadLocks = useRef(new Set());
 
   const request = useCallback((method, endpoint, data) => {
     const token = getAuthToken();
@@ -77,7 +78,7 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
   const start = async () => {
     setBusy(true);
     setError("");
-    setDownloadMessage("");
+    setDownloadStates({});
     try {
       const response = await request("post", "/restore-package/start", {
         includeEncryptedEnvironmentFiles: authorizeEncryptedConfiguration
@@ -124,51 +125,77 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
     setPreviousJobId(null);
     setAuthorizeEncryptedConfiguration(false);
     setError("");
-    setDownloadMessage("");
+    setDownloadStates({});
     window.sessionStorage.removeItem(STORAGE_KEY);
   };
 
   const download = async (artifact) => {
-    setDownloadMessage("");
+    if (downloadLocks.current.has(artifact.id)) return;
+    downloadLocks.current.add(artifact.id);
+    setDownloadStates((current) => ({
+      ...current,
+      [artifact.id]: {
+        status: "Waiting",
+        message: `Checking that ${artifact.label} is available for download.`
+      }
+    }));
     try {
       const token = getAuthToken();
-      const response = await fetch(`${apiBaseUrl}${artifact.downloadUrl}`, {
+      const response = await fetch(`${apiBaseUrl}${artifact.downloadUrl}/download-ticket`, {
+        method: "POST",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: "include"
       });
-      if (!response.ok || !response.body) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || `Artifact download failed (HTTP ${response.status}).`);
+      if (!response.ok) {
+        throw new Error(
+          response.status === 401 || response.status === 403
+            ? "Your administrator browser session could not authorize this download. Sign in again, then retry."
+            : `The server could not prepare this file (HTTP ${response.status}). Retry or contact an administrator.`
+        );
       }
-      let writable;
-      if (typeof window.showSaveFilePicker === "function") {
-        const file = await window.showSaveFilePicker({ suggestedName: artifact.filename });
-        writable = await file.createWritable();
-        const reader = response.body.getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            await writable.write(value);
-          }
-          await writable.close();
-        } catch (streamError) {
-          await writable.abort().catch(() => {});
-          throw streamError;
+      const authorization = await response.json();
+      if (
+        typeof authorization.ticket !== "string" ||
+        !/^[A-Za-z0-9_-]{43}$/.test(authorization.ticket) ||
+        authorization.filename !== artifact.filename ||
+        Number(authorization.sizeBytes) !== artifact.sizeBytes
+      ) {
+        throw new Error("The server did not confirm a valid one-time authorization for the expected file. No download was started.");
+      }
+
+      const downloadUrl = new URL(`${apiBaseUrl}${artifact.downloadUrl}`);
+      downloadUrl.searchParams.set("ticket", authorization.ticket);
+      const link = document.createElement("a");
+      link.href = downloadUrl.toString();
+      link.download = artifact.filename;
+      link.rel = "noopener noreferrer";
+      link.referrerPolicy = "no-referrer";
+      link.click();
+      setDownloadStates((current) => ({
+        ...current,
+        [artifact.id]: {
+          status: "Download started",
+          message: `The browser is handling ${artifact.filename}. Check the browser's Downloads panel; this page cannot observe native download progress or completion.`
         }
-      } else {
-        const blob = await response.blob();
-        const link = document.createElement("a");
-        const objectUrl = URL.createObjectURL(blob);
-        link.href = objectUrl;
-        link.download = artifact.filename;
-        link.click();
-        URL.revokeObjectURL(objectUrl);
-      }
-      setDownloadMessage(`${artifact.label} downloaded.`);
+      }));
     } catch (downloadError) {
-      setDownloadMessage(downloadError.message || "Artifact download failed.");
+      setDownloadStates((current) => ({
+        ...current,
+        [artifact.id]: {
+          status: "Failed",
+          message: downloadError.message || "The download could not be started. Retry the download."
+        }
+      }));
+    } finally {
+      downloadLocks.current.delete(artifact.id);
     }
+  };
+
+  const updateDownloadStatus = (artifactId, status, message) => {
+    setDownloadStates((current) => ({
+      ...current,
+      [artifactId]: { status, message }
+    }));
   };
 
   const tasks = useMemo(() => job?.tasks || [], [job?.tasks]);
@@ -254,11 +281,53 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
           {job.status === "READY" && (
             <section aria-label="Verified restore package downloads" style={{ display: "grid", gap: 8 }}>
               <h4 style={{ margin: 0 }}>Verified downloads</h4>
-              {job.artifacts.map((artifact) => (
-                <button key={artifact.id} type="button" onClick={() => download(artifact)} style={{ textAlign: "left" }}>
-                  Download {artifact.label} · {bytesLabel(artifact.sizeBytes)}
-                </button>
-              ))}
+              {job.artifacts.map((artifact) => {
+                const downloadState = downloadStates[artifact.id] || {
+                  status: "Waiting",
+                  message: "This verified file has not been requested."
+                };
+                return (
+                  <div key={artifact.id} style={{ display: "grid", gap: 5, padding: "10px 0", borderBottom: "1px solid var(--backup-muted, #dbe3ed)" }}>
+                    <strong>{artifact.label} · {bytesLabel(artifact.sizeBytes)}</strong>
+                    <button
+                      type="button"
+                      onClick={() => download(artifact)}
+                      disabled={downloadLocks.current.has(artifact.id) || downloadState.status === "Download started"}
+                      style={{ textAlign: "left" }}
+                    >
+                      {downloadState.status === "Failed" ? `Retry ${artifact.label}` : `Download ${artifact.label}`}
+                    </button>
+                    <p role="status" aria-live="polite" style={{ margin: 0 }}>
+                      <strong>{downloadState.status}:</strong> {downloadState.message}
+                    </p>
+                    {downloadState.status === "Download started" && (
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => updateDownloadStatus(
+                            artifact.id,
+                            "Download complete",
+                            `You confirmed ${artifact.filename} is complete in the browser's Downloads panel.`
+                          )}
+                        >
+                          I see this file completed in Downloads
+                        </button>
+                        <button
+                          type="button"
+                          className="gfx-backup-secondary"
+                          onClick={() => updateDownloadStatus(
+                            artifact.id,
+                            "Failed",
+                            `The browser reported a problem with ${artifact.filename}. Retry the download.`
+                          )}
+                        >
+                          Report download failed
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               <p className="gfx-backup-measurement">The website-code archive contains encrypted environment-file payloads. Keep the decryption key separate; it is not included in the package.</p>
             </section>
           )}
@@ -272,7 +341,6 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
               Prepare another package
             </button>
           )}
-          {downloadMessage && <p role="status">{downloadMessage}</p>}
         </div>
       )}
       {error && <p role="alert" style={{ color: "#b91c1c" }}>{error}</p>}

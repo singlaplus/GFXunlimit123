@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+require('./helpers/blockPostgres');
 const { clearConversationVisibilityForParticipants } = require('../messaging.js');
 
 test('new replies clear prior hidden flags for both conversation participants', async () => {

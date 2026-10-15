@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+require('./helpers/blockPostgres');
 
 const { normalizeAdminInboxReadState, isAdminInboxCreditRequestRow } = require('../messaging');
 
