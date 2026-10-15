@@ -710,7 +710,12 @@ Write-PackageVerified $verifiedFiles $sum`;
   async function buildHelperZip(outputPath) {
     const zip = new AdmZip();
     for (const relative of HELPER_PACKAGE_FILES) {
-      const source = path.join(restoreWizardRoot, ...relative.split('/'));
+      const source = path.resolve(restoreWizardRoot, ...relative.split('/'));
+      const sourceRelative = path.relative(restoreWizardRoot, source);
+      if (!sourceRelative || sourceRelative === '..' ||
+          sourceRelative.startsWith(`..${path.sep}`) || path.isAbsolute(sourceRelative)) {
+        throw new Error(`Required Restore helper setup path is outside its source directory: ${relative}`);
+      }
       const stat = await fsp.lstat(source);
       if (!stat.isFile() || stat.isSymbolicLink()) {
         throw new Error(`Required Restore helper setup file is missing or unsafe: ${relative}`);

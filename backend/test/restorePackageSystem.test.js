@@ -222,6 +222,12 @@ test('restore package preparation consumes a verified backup set and exposes onl
       'restore-manifest.json',
       'restore-wizard.html'
     ]);
+    const helperArchive = new AdmZip(helperPath);
+    assert.equal(
+      helperArchive.readAsText('helper/.env.example'),
+      await fsp.readFile(path.resolve(__dirname, '../../restore-wizard/helper/.env.example'), 'utf8'),
+      'the helper ZIP includes the required environment template at its documented package path'
+    );
     assert.ok(!entries.some((entry) =>
       ['stocksite.backup', 'website-code.zip', 'original-assets.zip', 'thumbnails.zip', 'server.test.js']
         .includes(path.posix.basename(entry))
