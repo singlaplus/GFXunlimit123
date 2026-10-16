@@ -10,6 +10,7 @@ const { spawn } = require('node:child_process');
 const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
 const readline = require('node:readline');
+const { writeJsonAtomically } = require('../utils/atomicJsonFile');
 
 const PACKAGE_CATEGORIES = [
   { id: 'database', name: 'Generate and validate the PostgreSQL backup', backupCategory: 'database', backupLabel: 'Database' },
@@ -174,7 +175,9 @@ function createRestorePackageService(options = {}) {
     }
   }
   const jobs = new Map();
+  const persistenceQueues = new Map();
   let activeJobId = null;
+  let startInProgress = false;
 
   const jobStatePath = (id) => path.join(stateDirectory, `${id}.json`);
   const jobOutputPath = (id) => path.join(outputRoot, `Restore-Package-${id}`);
@@ -203,12 +206,18 @@ function createRestorePackageService(options = {}) {
   });
 
   async function persist(job) {
-    updateOverallProgress(job);
-    await fsp.mkdir(stateDirectory, { recursive: true, mode: 0o700 });
-    const destination = jobStatePath(job.id);
-    const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
-    await fsp.writeFile(temporary, JSON.stringify(job), { mode: 0o600 });
-    await fsp.rename(temporary, destination);
+    const previous = persistenceQueues.get(job.id) || Promise.resolve();
+    const current = previous.catch(() => {}).then(async () => {
+      updateOverallProgress(job);
+      await fsp.mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+      await writeJsonAtomically(jobStatePath(job.id), job, { platform });
+    });
+    persistenceQueues.set(job.id, current);
+    try {
+      await current;
+    } finally {
+      if (persistenceQueues.get(job.id) === current) persistenceQueues.delete(job.id);
+    }
   }
 
   async function pruneExpiredPackages() {
@@ -1319,7 +1328,19 @@ Write-PackageVerified $verifiedFiles $sum`;
     }
   }
 
-  async function start({ includeEncryptedEnvironmentFiles } = {}) {
+  async function start(options = {}) {
+    if (startInProgress) {
+      throw new Error('A restore package is already being prepared. Wait for it to finish.');
+    }
+    startInProgress = true;
+    try {
+      return await startPackage(options);
+    } finally {
+      startInProgress = false;
+    }
+  }
+
+  async function startPackage({ includeEncryptedEnvironmentFiles } = {}) {
     if (includeEncryptedEnvironmentFiles !== true) {
       throw new Error('Explicit administrator authorization is required to include encrypted .env configuration in the access-controlled restore package.');
     }
@@ -1337,6 +1358,12 @@ Write-PackageVerified $verifiedFiles $sum`;
       categories: ['database', 'websiteCode', 'assetsAndThumbnails'],
       destinationMode: 'mac-local'
     });
+    try {
+      await fsp.lstat(jobStatePath(backupJob.id));
+      throw new Error('A restore package state file already exists for this job; refusing to overwrite it.');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
     const job = {
       id: backupJob.id,
       backupJobId: backupJob.id,

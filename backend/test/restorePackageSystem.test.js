@@ -1092,6 +1092,95 @@ test('a genuinely active restore package rejects a duplicate start', async () =>
   }
 });
 
+test('restore package start refuses to overwrite an existing job state file', async () => {
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), 'stocksite-restore-package-state-collision-'));
+  const stateDirectory = path.join(temporary, 'state');
+  const jobId = 'GFX-existing-package-state';
+  const statePath = path.join(stateDirectory, `${jobId}.json`);
+  const existingState = {
+    id: jobId,
+    backupJobId: jobId,
+    status: 'READY',
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    tasks: [],
+    artifacts: [{ id: 'packageManifest', filename: 'restore-package-manifest.json' }]
+  };
+  await fsp.mkdir(stateDirectory, { recursive: true });
+  await fsp.writeFile(statePath, JSON.stringify(existingState));
+  let backupJobsCreated = 0;
+  const service = createRestorePackageService({
+    backupService: {
+      async createJob() {
+        backupJobsCreated += 1;
+        return { id: jobId };
+      }
+    },
+    stateDirectory,
+    temporaryRoot: path.join(temporary, 'temporary'),
+    outputRoot: path.join(temporary, 'output'),
+    packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY
+  });
+
+  try {
+    await assert.rejects(
+      service.start({ includeEncryptedEnvironmentFiles: true }),
+      /state file already exists.*refusing to overwrite/i
+    );
+    assert.equal(backupJobsCreated, 1);
+    assert.deepEqual(JSON.parse(await fsp.readFile(statePath, 'utf8')), existingState);
+  } finally {
+    await fsp.rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('concurrent restore package starts cannot both pass the start guard', async () => {
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), 'stocksite-restore-package-start-race-'));
+  let releaseCreateJob;
+  let createJobCalls = 0;
+  let signalCreateJobEntered;
+  const createJobEntered = new Promise((resolve) => {
+    signalCreateJobEntered = resolve;
+  });
+  const createJobGate = new Promise((resolve) => {
+    releaseCreateJob = resolve;
+  });
+  const service = createRestorePackageService({
+    backupService: {
+      async createJob() {
+        createJobCalls += 1;
+        signalCreateJobEntered();
+        await createJobGate;
+        throw new Error('Test stopped before backup creation.');
+      }
+    },
+    stateDirectory: path.join(temporary, 'state'),
+    temporaryRoot: path.join(temporary, 'temporary'),
+    outputRoot: path.join(temporary, 'output'),
+    packageSigningPrivateKey: PACKAGE_SIGNING_PRIVATE_KEY
+  });
+
+  try {
+    const firstStart = service.start({ includeEncryptedEnvironmentFiles: true });
+    const firstStartOutcome = firstStart.then(
+      () => ({ error: null }),
+      (error) => ({ error })
+    );
+    await createJobEntered;
+    await assert.rejects(
+      service.start({ includeEncryptedEnvironmentFiles: true }),
+      /A restore package is already being prepared/
+    );
+    assert.equal(createJobCalls, 1);
+    releaseCreateJob();
+    const outcome = await firstStartOutcome;
+    assert.match(outcome.error?.message || '', /Test stopped before backup creation/);
+  } finally {
+    releaseCreateJob();
+    await fsp.rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test('restore package generation refuses to create a backup when signing is not configured', async () => {
   let createCalls = 0;
   const service = createRestorePackageService({
