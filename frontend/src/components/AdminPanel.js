@@ -429,7 +429,22 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [uploadFolderPath, setUploadFolderPath] = useState("");
   const [uploadFolderPathError, setUploadFolderPathError] = useState("");
   const [uploadFolderSizeBytes, setUploadFolderSizeBytes] = useState(null);
+  const [thumbnailFolderPath, setThumbnailFolderPath] = useState("");
+  const [thumbnailFolderSizeBytes, setThumbnailFolderSizeBytes] = useState(null);
   const [driveFreeBytes, setDriveFreeBytes] = useState(null);
+  const [storageConnections, setStorageConnections] = useState({ assets: true, thumbnails: true });
+  const [storageConnectionSaving, setStorageConnectionSaving] = useState("");
+  const [assetLocationDraft, setAssetLocationDraft] = useState("");
+  const [thumbnailLocationDraft, setThumbnailLocationDraft] = useState("");
+  const [storageLocationsSaving, setStorageLocationsSaving] = useState(false);
+  const [storageLocationMessage, setStorageLocationMessage] = useState("");
+  const [storageBrowseTarget, setStorageBrowseTarget] = useState("");
+  const [storageBrowsePath, setStorageBrowsePath] = useState("");
+  const [storageBrowseParentPath, setStorageBrowseParentPath] = useState("");
+  const [storageBrowseRoots, setStorageBrowseRoots] = useState([]);
+  const [storageBrowseDirectories, setStorageBrowseDirectories] = useState([]);
+  const [storageBrowseLoading, setStorageBrowseLoading] = useState(false);
+  const [storageBrowseError, setStorageBrowseError] = useState("");
   const [databaseName, setDatabaseName] = useState("");
   const [databaseHost, setDatabaseHost] = useState("");
   const [databasePort, setDatabasePort] = useState(null);
@@ -726,12 +741,22 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       if (!active) return;
       setUploadFolderPath(String(response.data?.uploadFolderPath || ""));
       setUploadFolderSizeBytes(Number(response.data?.folderSizeBytes || 0));
+      setThumbnailFolderPath(String(response.data?.thumbnailFolderPath || ""));
+      setThumbnailFolderSizeBytes(Number(response.data?.thumbnailFolderSizeBytes || 0));
       setDriveFreeBytes(Number(response.data?.driveFreeBytes || 0));
+      if (response.data?.connections) {
+        setStorageConnections({
+          assets: response.data.connections.assets !== false,
+          thumbnails: response.data.connections.thumbnails !== false,
+        });
+      }
       setUploadFolderPathError("");
     }).catch(() => {
       if (!active) return;
       setUploadFolderPath("");
       setUploadFolderSizeBytes(null);
+      setThumbnailFolderPath("");
+      setThumbnailFolderSizeBytes(null);
       setDriveFreeBytes(null);
       setUploadFolderPathError("Unable to load the upload folder path.");
     });
@@ -740,6 +765,130 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       active = false;
     };
   }, [isControlsAssetsTab]);
+
+  const toggleStorageConnection = async (storage) => {
+    const nextValue = !storageConnections[storage];
+    setStorageConnectionSaving(storage);
+    try {
+      const response = await axios.put(
+        `${API_BASE_URL}/admin/assets/connections`,
+        { [storage]: nextValue },
+        { headers: getAuthHeaders() }
+      );
+      setStorageConnections(response.data.connections);
+      const storageLabel = storage === "assets" ? "Assets" : "Thumbnails";
+      if (nextValue) {
+        toast.success(`${storageLabel} storage connected.`);
+      } else {
+        toast.error(`${storageLabel} storage disconnected.`);
+      }
+    } catch (error) {
+      console.error("Failed to update storage connection", error);
+      toast.error(error.response?.data?.error || "Unable to update storage connection.");
+    } finally {
+      setStorageConnectionSaving("");
+    }
+  };
+
+  const openStorageFolderBrowser = async (target) => {
+    setStorageBrowseTarget(target);
+    setStorageBrowsePath("");
+    setStorageBrowseParentPath("");
+    setStorageBrowseDirectories([]);
+    setStorageBrowseRoots([]);
+    setStorageBrowseError("");
+    setStorageBrowseLoading(true);
+    try {
+      const response = await axios.get(`${API_BASE_URL}/admin/assets/folder-browser`, {
+        headers: getAuthHeaders(),
+      });
+      setStorageBrowseRoots(Array.isArray(response.data?.roots) ? response.data.roots : []);
+    } catch (error) {
+      console.error("Failed to load storage folders", error);
+      setStorageBrowseError(error.response?.data?.error || "Unable to load storage folders.");
+    } finally {
+      setStorageBrowseLoading(false);
+    }
+  };
+
+  const browseStorageDirectory = async (directoryPath) => {
+    setStorageBrowseLoading(true);
+    setStorageBrowseError("");
+    try {
+      const response = await axios.get(`${API_BASE_URL}/admin/assets/folder-browser`, {
+        params: { path: directoryPath },
+        headers: getAuthHeaders(),
+      });
+      setStorageBrowsePath(String(response.data?.path || directoryPath));
+      setStorageBrowseParentPath(String(response.data?.parentPath || ""));
+      setStorageBrowseDirectories(Array.isArray(response.data?.directories) ? response.data.directories : []);
+    } catch (error) {
+      console.error("Failed to open storage folder", error);
+      setStorageBrowseError(error.response?.data?.error || "Unable to open this folder.");
+    } finally {
+      setStorageBrowseLoading(false);
+    }
+  };
+
+  const saveStorageLocations = async () => {
+    const assetRoot = assetLocationDraft.trim();
+    const thumbnailRoot = thumbnailLocationDraft.trim();
+    if (!assetRoot || !thumbnailRoot) {
+      toast.error("Choose both the Assets and Thumbnails folders before saving.");
+      return;
+    }
+    setStorageLocationsSaving(true);
+    setStorageLocationMessage("");
+    try {
+      const response = await axios.put(
+        `${API_BASE_URL}/admin/assets/locations`,
+        { assetRoot, thumbnailRoot },
+        { headers: getAuthHeaders() }
+      );
+      setAssetLocationDraft(String(response.data.assetRoot));
+      setThumbnailLocationDraft(String(response.data.thumbnailRoot));
+      if (response.data.connections) {
+        setStorageConnections({
+          assets: response.data.connections.assets !== false,
+          thumbnails: response.data.connections.thumbnails !== false,
+        });
+      }
+      setUploadFolderPath(String(response.data.assetRoot));
+      setThumbnailFolderPath(String(response.data.thumbnailRoot));
+      setUploadFolderSizeBytes(null);
+      setThumbnailFolderSizeBytes(null);
+      setDriveFreeBytes(null);
+      setStorageLocationMessage("Storage locations updated and connected. Existing files remain in their original folders.");
+      if (response.data.backgroundQueueReady === false) {
+        toast.error("Storage locations were connected, but background thumbnail processing could not start.");
+      } else {
+        toast.success("Asset and thumbnail locations updated and connected.");
+      }
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("asset-refresh"));
+        window.dispatchEvent(new Event("asset-updated"));
+        window.dispatchEvent(new Event("home-assets-refresh"));
+      }
+      try {
+        const locationResponse = await axios.get(`${API_BASE_URL}/admin/assets/location`, {
+          headers: getAuthHeaders(),
+        });
+        setUploadFolderSizeBytes(Number(locationResponse.data?.folderSizeBytes || 0));
+        setThumbnailFolderSizeBytes(Number(locationResponse.data?.thumbnailFolderSizeBytes || 0));
+        setDriveFreeBytes(Number(locationResponse.data?.driveFreeBytes || 0));
+      } catch (refreshError) {
+        console.error("Storage locations were saved, but folder details could not be refreshed", refreshError);
+        toast.error("Locations saved, but folder size details could not be refreshed.");
+      }
+    } catch (error) {
+      console.error("Failed to update storage locations", error);
+      const message = error.response?.data?.error || "Unable to update storage locations.";
+      setStorageLocationMessage(message);
+      toast.error(message);
+    } finally {
+      setStorageLocationsSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (!isControlsDatabaseTab) return undefined;
@@ -2398,7 +2547,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       await axios.post(
         `${API_BASE_URL}/admin/card-layout-preferences`,
         { cardOrder: normalizedOrder },
-        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+        { headers: token ? { Authorization: ["Bearer", token].join(" ") } : {} }
       );
       setCardOrder(normalizedOrder);
       setIsLayoutEditMode(false);
@@ -5051,7 +5200,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   return (
     <div style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}>
-      {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && (
+      {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && !isControlsAssetsTab && (
         isUsersTab ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
             <h2 aria-label={adminPageHeading} style={{ display: "flex", alignItems: "baseline", gap: "8px", margin: 0 }}>
@@ -6203,21 +6352,201 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             </button>
           </div>
           <div className="admin-panel-controls-grid" style={{ display: "flex", flexWrap: "wrap", gap: "20px", justifyContent: "flex-start" }}>
-            <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="assets-connection-page">
-              <h3>Assets Connection</h3>
-              <div style={{ display: "grid", gap: "12px" }}>
+            <CardWrapper
+              cardOrder={cardOrder}
+              isLayoutEditMode={isLayoutEditMode}
+              isDarkMode={isDarkMode}
+              moveCard={moveCard}
+              cardId="assets-connection-page"
+              style={{ height: "auto", minHeight: "300px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #172554)" : "linear-gradient(145deg, #ffffff, #eff6ff)", border: isDarkMode ? "1px solid #334155" : "1px solid #bfdbfe", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(37, 99, 235, 0.1)" }}
+            >
+              <div style={{ display: "grid", gap: "18px" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-                  <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Connection status</span>
-                  <span style={{ padding: "4px 8px", borderRadius: "999px", background: "#dcfce7", color: "#166534", fontSize: "0.72rem", fontWeight: 800 }}>Connected</span>
+                  <div>
+                    <span style={{ display: "block", color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.72rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>Storage control</span>
+                    <h3 style={{ margin: "6px 0 0", fontSize: "1.2rem" }}>Connection status</h3>
+                  </div>
+                  <span style={{ padding: "6px 10px", borderRadius: "999px", background: storageConnections.assets && storageConnections.thumbnails ? (isDarkMode ? "#14532d" : "#dcfce7") : (isDarkMode ? "#7f1d1d" : "#fee2e2"), color: storageConnections.assets && storageConnections.thumbnails ? (isDarkMode ? "#bbf7d0" : "#166534") : (isDarkMode ? "#fecaca" : "#991b1b"), fontSize: "0.72rem", fontWeight: 800 }}>
+                    {storageConnections.assets && storageConnections.thumbnails ? "Connected" : storageConnections.assets || storageConnections.thumbnails ? "Partially connected" : "Disconnected"}
+                  </span>
                 </div>
-                <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.92rem" }}>The asset storage layer is responding and ready for uploads and previews.</p>
-                <div style={{ padding: "12px 14px", borderRadius: "8px", background: isDarkMode ? "#0f172a" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", color: isDarkMode ? "#e2e8f0" : "#0f172a", overflowWrap: "anywhere" }}>
-                  <strong style={{ display: "block", marginBottom: "6px" }}>Upload folder path</strong>
-                  {uploadFolderPathError ? <span role="alert">{uploadFolderPathError}</span> : <>{uploadFolderPath || "Loading..."}{uploadFolderPath ? <><span style={{ display: "block", marginTop: "8px" }}>Folder size: {formatFileSize(uploadFolderSizeBytes || 0)}</span><span style={{ display: "block", marginTop: "4px" }}>Drive free space: {formatFileSize(driveFreeBytes || 0)}</span></> : null}</>}
+                <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem", lineHeight: 1.55 }}>
+                  Manage whether original assets and thumbnail storage are available to the website.
+                </p>
+                <div style={{ display: "grid", gap: "10px" }}>
+                  {[
+                    { key: "assets", label: "Assets" },
+                    { key: "thumbnails", label: "Thumbnails" },
+                  ].map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      aria-pressed={storageConnections[key]}
+                      aria-label={`${storageConnections[key] ? "Disconnect" : "Connect"} ${label}`}
+                      disabled={Boolean(storageConnectionSaving)}
+                      onClick={() => toggleStorageConnection(key)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: "12px",
+                        width: "100%",
+                        padding: "12px 14px",
+                        borderRadius: "12px",
+                        border: isDarkMode ? "1px solid #334155" : "1px solid #dbeafe",
+                        background: isDarkMode ? "#0f172a" : "rgba(255,255,255,0.82)",
+                        color: isDarkMode ? "#f8fafc" : "#0f172a",
+                        fontWeight: 700,
+                        cursor: storageConnectionSaving ? "wait" : "pointer",
+                        opacity: storageConnectionSaving && storageConnectionSaving !== key ? 0.65 : 1,
+                      }}
+                    >
+                      <span style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <span aria-hidden="true" style={{ color: storageConnections[key] ? "#16a34a" : "#dc2626", fontSize: "0.8rem" }}>●</span>
+                        {label}
+                      </span>
+                      <span style={{ display: "flex", alignItems: "center", gap: "10px", color: storageConnections[key] ? (isDarkMode ? "#86efac" : "#15803d") : (isDarkMode ? "#fca5a5" : "#b91c1c"), fontSize: "0.78rem" }}>
+                        {storageConnectionSaving === key ? "Saving..." : storageConnections[key] ? "Connected" : "Disconnected"}
+                        <span aria-hidden="true" style={{ position: "relative", display: "inline-block", width: "34px", height: "20px", borderRadius: "999px", background: storageConnections[key] ? "#16a34a" : (isDarkMode ? "#64748b" : "#cbd5e1"), transition: "background 0.18s ease" }}>
+                          <span style={{ position: "absolute", top: "2px", left: storageConnections[key] ? "16px" : "2px", width: "16px", height: "16px", borderRadius: "50%", background: "#fff", boxShadow: "0 1px 3px rgba(15,23,42,0.3)", transition: "left 0.18s ease" }} />
+                        </span>
+                      </span>
+                    </button>
+                  ))}
                 </div>
               </div>
             </CardWrapper>
+            <CardWrapper
+              cardOrder={cardOrder}
+              isLayoutEditMode={isLayoutEditMode}
+              isDarkMode={isDarkMode}
+              moveCard={moveCard}
+              cardId="assets-storage-location"
+              style={{ position: "relative", height: "auto", minHeight: "300px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #102a2a)" : "linear-gradient(145deg, #ffffff, #f0fdfa)", border: isDarkMode ? "1px solid #334155" : "1px solid #ccfbf1", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(13, 148, 136, 0.09)" }}
+            >
+              <span role="img" aria-label={storageConnections.assets ? "Assets connected" : "Assets disconnected"} title={storageConnections.assets ? "Connected" : "Disconnected"} style={{ position: "absolute", top: "18px", right: "18px", color: storageConnections.assets ? "#16a34a" : "#dc2626", fontSize: "1.1rem", lineHeight: 1 }}>●</span>
+              <h3 style={{ margin: "0 28px 18px 0", fontSize: "1.2rem" }}>Assets</h3>
+              {uploadFolderPathError ? <span role="alert">{uploadFolderPathError}</span> : (
+                <div style={{ display: "grid", gap: "12px", overflowWrap: "anywhere" }}>
+                  <strong style={{ color: isDarkMode ? "#99f6e4" : "#0f766e", fontSize: "0.76rem", letterSpacing: "0.1em", textTransform: "uppercase" }}>Original asset storage</strong>
+                  <div style={{ padding: "12px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.82)", border: isDarkMode ? "1px solid #334155" : "1px solid #ccfbf1", lineHeight: 1.5 }}>
+                    {uploadFolderPath || "Loading..."}
+                  </div>
+                  {uploadFolderPath ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                      <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
+                        <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Folder size</span>
+                        <strong style={{ display: "block", marginTop: "4px" }}>{formatFileSize(uploadFolderSizeBytes || 0)}</strong>
+                      </div>
+                      <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
+                        <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Drive free</span>
+                        <strong style={{ display: "block", marginTop: "4px" }}>{formatFileSize(driveFreeBytes || 0)}</strong>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </CardWrapper>
+            <CardWrapper
+              cardOrder={cardOrder}
+              isLayoutEditMode={isLayoutEditMode}
+              isDarkMode={isDarkMode}
+              moveCard={moveCard}
+              cardId="thumbnails-storage-location"
+              style={{ position: "relative", height: "auto", minHeight: "300px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #1d1835)" : "linear-gradient(145deg, #ffffff, #f5f3ff)", border: isDarkMode ? "1px solid #334155" : "1px solid #ddd6fe", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(124, 58, 237, 0.09)" }}
+            >
+              <span role="img" aria-label={storageConnections.thumbnails ? "Thumbnails connected" : "Thumbnails disconnected"} title={storageConnections.thumbnails ? "Connected" : "Disconnected"} style={{ position: "absolute", top: "18px", right: "18px", color: storageConnections.thumbnails ? "#16a34a" : "#dc2626", fontSize: "1.1rem", lineHeight: 1 }}>●</span>
+              <h3 style={{ margin: "0 28px 18px 0", fontSize: "1.2rem" }}>Thumbnails</h3>
+              {uploadFolderPathError ? <span role="alert">{uploadFolderPathError}</span> : (
+                <div style={{ display: "grid", gap: "12px", overflowWrap: "anywhere" }}>
+                  <strong style={{ color: isDarkMode ? "#c4b5fd" : "#7c3aed", fontSize: "0.76rem", letterSpacing: "0.1em", textTransform: "uppercase" }}>Preview image storage</strong>
+                  <div style={{ padding: "12px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.82)", border: isDarkMode ? "1px solid #334155" : "1px solid #ddd6fe", lineHeight: 1.5 }}>
+                    {thumbnailFolderPath || "Loading..."}
+                  </div>
+                  {thumbnailFolderPath ? (
+                    <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
+                      <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Folder size</span>
+                      <strong style={{ display: "block", marginTop: "4px" }}>{formatFileSize(thumbnailFolderSizeBytes || 0)}</strong>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </CardWrapper>
           </div>
+          <section
+            aria-labelledby="storage-locations-title"
+            style={{
+              display: "grid",
+              gap: "18px",
+              marginTop: "22px",
+              padding: "24px",
+              borderRadius: "18px",
+              background: isDarkMode ? "linear-gradient(145deg, #111827, #1e293b)" : "linear-gradient(145deg, #ffffff, #f8fafc)",
+              border: isDarkMode ? "1px solid #334155" : "1px solid #dbe4ee",
+              boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.35)" : "0 18px 40px rgba(15, 23, 42, 0.08)",
+            }}
+          >
+            <div>
+              <span style={{ color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.72rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>Storage configuration</span>
+              <h3 id="storage-locations-title" style={{ margin: "6px 0", fontSize: "1.2rem" }}>Choose new storage locations</h3>
+              <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#64748b", fontSize: "0.9rem", lineHeight: 1.55 }}>
+                Select separate folders for original assets and thumbnails. Existing files will stay where they are; they will not be moved.
+              </p>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "14px" }}>
+              {[
+                { target: "assets", label: "Assets folder", value: assetLocationDraft },
+                { target: "thumbnails", label: "Thumbnails folder", value: thumbnailLocationDraft },
+              ].map(({ target, label, value }) => (
+                <div key={target} style={{ display: "grid", gap: "10px", padding: "14px", borderRadius: "12px", background: isDarkMode ? "rgba(15,23,42,0.72)" : "rgba(248,250,252,0.9)", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0" }}>
+                  <label htmlFor={`storage-location-${target}`} style={{ fontWeight: 700 }}>{label}</label>
+                  <textarea id={`storage-location-${target}`} rows={2} readOnly value={value} placeholder={target === "assets" ? "Browse to choose an Assets folder" : "Browse to choose a Thumbnails folder"} style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1", background: isDarkMode ? "#0f172a" : "#fff", color: "inherit", overflowWrap: "anywhere", resize: "vertical" }} />
+                  <button type="button" onClick={() => openStorageFolderBrowser(target)} style={{ justifySelf: "start", padding: "9px 14px", border: 0, borderRadius: "8px", background: target === "assets" ? "#0f766e" : "#6d28d9", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Browse {label}</button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+              <p role="status" style={{ margin: 0, color: storageLocationMessage ? (storageLocationMessage.startsWith("Storage locations updated") ? (isDarkMode ? "#86efac" : "#15803d") : "#dc2626") : (isDarkMode ? "#94a3b8" : "#64748b"), fontSize: "0.85rem" }}>{storageLocationMessage || "Locations apply immediately after saving."}</p>
+              <button type="button" onClick={saveStorageLocations} disabled={storageLocationsSaving || !assetLocationDraft || !thumbnailLocationDraft || (assetLocationDraft === uploadFolderPath && thumbnailLocationDraft === thumbnailFolderPath)} style={{ padding: "11px 20px", border: 0, borderRadius: "9px", background: "#2563eb", color: "#fff", fontWeight: 800, cursor: storageLocationsSaving ? "wait" : "pointer", opacity: storageLocationsSaving || (assetLocationDraft === uploadFolderPath && thumbnailLocationDraft === thumbnailFolderPath) ? 0.6 : 1 }}>
+                {storageLocationsSaving ? "Saving locations..." : "Save locations"}
+              </button>
+            </div>
+          </section>
+          {storageBrowseTarget && (
+            <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setStorageBrowseTarget(""); }} style={{ position: "fixed", inset: 0, zIndex: 10001, display: "grid", placeItems: "center", padding: "20px", background: "rgba(15,23,42,0.58)" }}>
+              <section role="dialog" aria-modal="true" aria-labelledby="storage-browser-title" style={{ display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)", gap: "14px", width: "min(680px, 100%)", height: "min(640px, calc(100vh - 40px))", maxHeight: "calc(100vh - 40px)", minHeight: 0, overflow: "hidden", padding: "22px", borderRadius: "16px", background: isDarkMode ? "#111827" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                  <div>
+                    <h3 id="storage-browser-title" style={{ margin: 0 }}>Browse {storageBrowseTarget === "assets" ? "Assets" : "Thumbnails"} folders</h3>
+                    <p style={{ margin: "6px 0 0", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.8rem", overflowWrap: "anywhere" }}>{storageBrowsePath || "Choose a mounted storage location"}</p>
+                  </div>
+                  <button type="button" onClick={() => setStorageBrowseTarget("")} style={{ padding: "7px 11px", border: 0, borderRadius: "7px", background: isDarkMode ? "#334155" : "#e2e8f0", color: "inherit", cursor: "pointer" }}>Close</button>
+                </div>
+                {storageBrowseError ? <p role="alert" style={{ margin: 0, color: "#dc2626" }}>{storageBrowseError}</p> : null}
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  {storageBrowsePath ? <button type="button" onClick={() => storageBrowseParentPath ? browseStorageDirectory(storageBrowseParentPath) : (setStorageBrowsePath(""), setStorageBrowseParentPath(""), setStorageBrowseDirectories([]))} disabled={storageBrowseLoading} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: isDarkMode ? "#334155" : "#e2e8f0", color: "inherit", cursor: "pointer" }}>↑ Up</button> : null}
+                  {storageBrowsePath ? <button type="button" onClick={() => { const setter = storageBrowseTarget === "assets" ? setAssetLocationDraft : setThumbnailLocationDraft; setter(storageBrowsePath); setStorageBrowseTarget(""); setStorageLocationMessage(""); }} disabled={storageBrowseLoading} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: "#2563eb", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Use this folder</button> : null}
+                </div>
+                <div style={{ minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", borderRadius: "10px" }}>
+                  {storageBrowseLoading ? <p style={{ padding: "14px", margin: 0 }}>Loading folders...</p> : storageBrowsePath ? (
+                    storageBrowseDirectories.length ? storageBrowseDirectories.map((directory) => (
+                      <button key={directory.path} type="button" onClick={() => browseStorageDirectory(directory.path)} style={{ display: "flex", width: "100%", alignItems: "flex-start", gap: "10px", padding: "12px 14px", border: 0, borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #f1f5f9", background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer" }}>
+                        <span aria-hidden="true">📁</span>
+                        <span style={{ display: "grid", gap: "4px", minWidth: 0 }}>
+                          <strong>{directory.name}</strong>
+                          <span style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.78rem", overflowWrap: "anywhere" }}>{directory.path}</span>
+                        </span>
+                      </button>
+                    )) : <p style={{ padding: "14px", margin: 0, color: isDarkMode ? "#94a3b8" : "#64748b" }}>No subfolders in this location.</p>
+                  ) : storageBrowseRoots.length ? storageBrowseRoots.map((root) => (
+                    <button key={root.path} type="button" onClick={() => browseStorageDirectory(root.path)} style={{ display: "flex", flexDirection: "column", width: "100%", gap: "4px", padding: "12px 14px", border: 0, borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #f1f5f9", background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer" }}>
+                      <strong>{root.name}</strong><span style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.78rem", overflowWrap: "anywhere" }}>{root.path}</span>
+                    </button>
+                  )) : <p style={{ padding: "14px", margin: 0 }}>No mounted storage folders are available.</p>}
+                </div>
+              </section>
+            </div>
+          )}
         </>
       ) : isControlsTab ? (
         <>

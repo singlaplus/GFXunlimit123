@@ -55,7 +55,7 @@ node image-generator-cli.js status
 |------|---------|--------------|
 | **Node.js** | JavaScript runtime | Install from nodejs.org |
 | **npm** | Package manager | Included with Node.js |
-| **PostgreSQL** | Database | Installed automatically (see below) |
+| **PostgreSQL** | Database | Configure a reachable PostgreSQL server; the backend uses its `pg` driver |
 | **Redis** | Job queue | Installed automatically (see below) |
 | **Sharp** | Image processing | Installed via `npm install` |
 
@@ -70,13 +70,14 @@ node image-generator-cli.js status
 
 ### macOS
 
-If dependencies are missing, the bootstrap script will suggest:
+If image-processing system tools are missing, the bootstrap script may install them. PostgreSQL must be configured as a reachable service; the `psql` command-line tool is optional because the backend connects using its Node.js `pg` driver.
+
+If image-processing system tools are missing, the bootstrap script may run:
 
 ```bash
 # The bootstrap will attempt to run these if needed
 brew install ghostscript
 brew install imagemagick
-brew install postgresql@15
 brew install redis
 ```
 
@@ -91,7 +92,6 @@ brew install redis
 # The bootstrap will attempt to run these if needed
 sudo apt-get install -y ghostscript
 sudo apt-get install -y imagemagick
-sudo apt-get install -y postgresql postgresql-contrib
 sudo apt-get install -y redis-server
 ```
 
@@ -101,7 +101,6 @@ sudo apt-get install -y redis-server
 # The bootstrap will attempt to run these if needed (requires admin)
 winget install --id ArtifexSoftware.GhostScript -e
 winget install --id ImageMagick.ImageMagick -e
-winget install --id PostgreSQL.PostgreSQL -e
 winget install --id tporadowski.redis -e
 ```
 
@@ -154,7 +153,7 @@ Dependency Status:
   ✓ PSD Library: installed
   ✓ Ghostscript: installed
   ✓ ImageMagick: installed
-  ✓ PostgreSQL: installed
+  ✓ PostgreSQL client: available
   ✓ Redis: installed
 
 ✓ All dependencies are installed!
@@ -299,7 +298,7 @@ npm install sharp --build-from-source
 
 ## Database Setup
 
-After the bootstrap installs PostgreSQL:
+After configuring a reachable PostgreSQL database (the `psql` CLI is needed only for these manual commands):
 
 ```bash
 # Create the database

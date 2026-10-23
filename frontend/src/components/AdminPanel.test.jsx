@@ -261,7 +261,14 @@ describe("AdminPanel collection controls", () => {
     useLocation.mockReturnValue({ search: "?tab=controls_assets" });
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/assets/location")) {
-        return Promise.resolve({ data: { uploadFolderPath: "/Users/gfxunlimit/Documents/stocksite/backend/uploads", folderSizeBytes: 783 * 1024 * 1024, driveFreeBytes: 217 * 1024 * 1024 * 1024 } });
+        return Promise.resolve({ data: {
+          uploadFolderPath: "/Users/gfxunlimit/Documents/stocksite/backend/uploads",
+          folderSizeBytes: 783 * 1024 * 1024,
+          thumbnailFolderPath: "/Volumes/GFXunlimitThumbnails",
+          thumbnailFolderSizeBytes: 2 * 1024 * 1024 * 1024,
+          driveFreeBytes: 217 * 1024 * 1024 * 1024,
+          connections: { assets: true, thumbnails: true }
+        } });
       }
       return Promise.resolve({ data: [] });
     });
@@ -269,8 +276,113 @@ describe("AdminPanel collection controls", () => {
     render(<AdminPanel />);
 
     expect(await screen.findByText("/Users/gfxunlimit/Documents/stocksite/backend/uploads")).toBeInTheDocument();
-    expect(screen.getByText("Folder size: 783.00 MB")).toBeInTheDocument();
-    expect(screen.getByText("Drive free space: 217.00 GB")).toBeInTheDocument();
+    expect(screen.getByText("783.00 MB")).toBeInTheDocument();
+    expect(screen.getByText("217.00 GB")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^assets$/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^thumbnails$/i })).toBeInTheDocument();
+    expect(screen.getByText("/Volumes/GFXunlimitThumbnails")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Browse to choose an Assets folder")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Browse to choose a Thumbnails folder")).toBeInTheDocument();
+    expect(screen.getByLabelText("Assets folder")).toHaveValue("");
+    expect(screen.getByLabelText("Thumbnails folder")).toHaveValue("");
+    expect(screen.getByText("2.00 GB")).toBeInTheDocument();
+  });
+
+  it("updates and displays asset storage connection status from the toggle", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    axios.get.mockImplementation((url) => url.includes("/admin/assets/location")
+      ? Promise.resolve({ data: { uploadFolderPath: "/assets", thumbnailFolderPath: "/thumbnails", connections: { assets: true, thumbnails: true } } })
+      : Promise.resolve({ data: [] }));
+    axios.put.mockResolvedValue({ data: { connections: { assets: false, thumbnails: true } } });
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^disconnect assets$/i }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/assets/connections"),
+        { assets: false },
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+    });
+    expect(await screen.findByRole("button", { name: /^connect assets$/i })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("img", { name: "Assets disconnected" })).toHaveStyle({ color: "#dc2626" });
+    expect(screen.getByRole("img", { name: "Thumbnails connected" })).toHaveStyle({ color: "#16a34a" });
+  });
+
+  it("browses and saves separate storage folders", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    axios.get.mockImplementation((url, config = {}) => {
+      if (url.includes("/admin/assets/folder-browser")) {
+        if (config.params?.path === "/storage") {
+          return Promise.resolve({ data: {
+            path: "/storage",
+            parentPath: null,
+            directories: [
+              { name: "assets-new", path: "/storage/assets-new" },
+              { name: "thumbnails-new", path: "/storage/thumbnails-new" },
+            ],
+          } });
+        }
+        if (config.params?.path) {
+          return Promise.resolve({ data: { path: config.params.path, parentPath: "/storage", directories: [] } });
+        }
+        return Promise.resolve({ data: { roots: [{ name: "Mounted volume", path: "/storage" }] } });
+      }
+      if (url.includes("/admin/assets/location")) {
+        return Promise.resolve({ data: {
+          uploadFolderPath: "/assets-new",
+          thumbnailFolderPath: "/thumbnails-new",
+          folderSizeBytes: 0,
+          thumbnailFolderSizeBytes: 0,
+          driveFreeBytes: 0,
+          connections: { assets: true, thumbnails: true },
+        } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { assetRoot: "/assets-new", thumbnailRoot: "/thumbnails-new" } });
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Browse Assets folder" }));
+    expect(screen.getByRole("dialog").parentElement).toHaveStyle({ zIndex: "10001" });
+    expect(screen.getByRole("dialog")).toHaveStyle({ gridTemplateRows: "auto auto minmax(0, 1fr)" });
+    expect(screen.getByRole("dialog").lastElementChild).toHaveStyle({ minHeight: "0", overflowY: "auto" });
+    fireEvent.click(await screen.findByRole("button", { name: /Mounted volume/ }));
+    await screen.findByText("/storage");
+    fireEvent.click(screen.getByRole("button", { name: "↑ Up" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Mounted volume/ }));
+    await screen.findByText("/storage");
+    fireEvent.click(await screen.findByRole("button", { name: /assets-new/ }));
+    await screen.findByText("/storage/assets-new");
+    fireEvent.click(screen.getByRole("button", { name: "↑ Up" }));
+    await screen.findByText("/storage");
+    fireEvent.click(await screen.findByRole("button", { name: /assets-new/ }));
+    await screen.findByText("/storage/assets-new");
+    fireEvent.click(screen.getByRole("button", { name: "Use this folder" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Browse Thumbnails folder" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Mounted volume/ }));
+    await screen.findByText("/storage");
+    fireEvent.click(await screen.findByRole("button", { name: /thumbnails-new/ }));
+    await screen.findByText("/storage/thumbnails-new");
+    fireEvent.click(screen.getByRole("button", { name: "Use this folder" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save locations" }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/assets/locations"),
+        { assetRoot: "/storage/assets-new", thumbnailRoot: "/storage/thumbnails-new" },
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Assets folder")).toHaveValue("/assets-new");
+      expect(screen.getByLabelText("Thumbnails folder")).toHaveValue("/thumbnails-new");
+    });
   });
 
   it("shows the actual database data path on the database controls page", async () => {

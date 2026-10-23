@@ -214,9 +214,13 @@ function createBackupRouter({ pool, verifyAdmin, projectRoot, serviceOptions = {
 
   router.get('/sources', async (req, res) => {
     try {
-      res.json({ sources: await service.getSourceMetrics() });
-    } catch (error) {
-      res.status(500).json({ error: error.message || 'Backup source measurements failed.' });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ sources: await service.getSourceMetrics({ refresh: req.query.refresh === '1' }) });
+    } catch (_error) {
+      res.status(500).json({
+        code: 'SOURCE_MEASUREMENT_FAILED',
+        error: 'Configured backup sources could not be measured. Verify source configuration and service access.'
+      });
     }
   });
 

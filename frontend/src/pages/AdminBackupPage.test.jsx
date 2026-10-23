@@ -168,7 +168,7 @@ describe("AdminBackupPage", () => {
         nextRun: null,
         lastRun: null
       } } });
-      if (method === "get" && url.endsWith("/sources")) return Promise.resolve({ data: { sources: {
+      if (method === "get" && url.includes("/sources")) return Promise.resolve({ data: { sources: {
         measuredAt: "2026-10-07T12:00:00.000Z",
         database: { available: true, name: "stocksite", version: "PostgreSQL 18.6", sourceServer: "PC2", currentBytes: 1024 },
         websiteCode: { available: true, currentBytes: 2048, encryptedEnvironmentFiles: 2, files: 10 },
@@ -224,6 +224,53 @@ describe("AdminBackupPage", () => {
     expect(screen.queryByText(/incremental/i)).not.toBeInTheDocument();
     expect(screen.getAllByText("Test Connection")).toHaveLength(2);
     expect(screen.queryByText("Start Complete Backup")).not.toBeInTheDocument();
+  });
+
+  test("measures sources on open, supports forced manual refresh, and stops polling on unmount", async () => {
+    const intervalSpy = jest.spyOn(window, "setInterval");
+    const clearIntervalSpy = jest.spyOn(window, "clearInterval");
+    const { unmount } = render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    await waitFor(() => expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+      method: "get",
+      url: "http://localhost:5000/admin/backup/sources"
+    })));
+    expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 60000);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Source Sizes" }));
+    await waitFor(() => expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+      method: "get",
+      url: "http://localhost:5000/admin/backup/sources?refresh=1"
+    })));
+    const pollingTimer = intervalSpy.mock.results.find((result) => result.type === "return")?.value;
+    unmount();
+    expect(clearIntervalSpy).toHaveBeenCalledWith(pollingTimer);
+    intervalSpy.mockRestore();
+    clearIntervalSpy.mockRestore();
+  });
+
+  test("unresolved selected sources show an explanation and prevent plan building", async () => {
+    const defaultImplementation = axios.getMockImplementation();
+    axios.mockImplementation((config) => {
+      if (config.method === "get" && config.url.includes("/sources")) {
+        return Promise.resolve({ data: { sources: {
+          database: { status: "AVAILABLE", available: true, estimatedBytes: 100, currentBytes: 100, tableCount: 2 },
+          websiteCode: { status: "NOT_CONFIGURED", available: false, error: "Configure the project source path." },
+          assets: {
+            available: true,
+            totalBytes: 50,
+            originalBytes: 25,
+            originalFiles: 1,
+            thumbnailBytes: 25,
+            thumbnailFiles: 1,
+            original: { status: "AVAILABLE", available: true },
+            thumbnails: { status: "AVAILABLE", available: true }
+          }
+        } } });
+      }
+      return defaultImplementation(config);
+    });
+    render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
+    expect(await screen.findByText(/Website code: Configure the project source path/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build Complete Backup Plan" })).toBeDisabled();
   });
 
   test("selected source size recalculates and the manual destination uses Browse", async () => {
@@ -639,6 +686,7 @@ describe("AdminBackupPage", () => {
     });
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
     const savedScheduleButton = await screen.findByRole("button", { name: "Saved Schedule" });
+    await waitFor(() => expect(savedScheduleButton).toBeEnabled());
 
     fireEvent.change(screen.getByLabelText("Frequency"), { target: { value: "weekly" } });
     fireEvent.click(savedScheduleButton);
@@ -702,7 +750,9 @@ describe("AdminBackupPage", () => {
 
   test("Saved Schedule popup excludes a disabled schedule", async () => {
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Saved Schedule" }));
+    const savedScheduleButton = await screen.findByRole("button", { name: "Saved Schedule" });
+    await waitFor(() => expect(savedScheduleButton).toBeEnabled());
+    fireEvent.click(savedScheduleButton);
 
     expect(screen.getByRole("dialog", { name: "Saved Automatic Backup Schedule" }))
       .toHaveTextContent("There are no live automatic backup schedules.");
@@ -722,8 +772,9 @@ describe("AdminBackupPage", () => {
       return defaultRequest(config);
     });
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
-    await screen.findByRole("button", { name: "Saved Schedule" });
-    fireEvent.click(screen.getByRole("button", { name: "Saved Schedule" }));
+    const savedScheduleButton = await screen.findByRole("button", { name: "Saved Schedule" });
+    await waitFor(() => expect(savedScheduleButton).toBeEnabled());
+    fireEvent.click(savedScheduleButton);
     const cards = screen.getByRole("dialog", { name: "Saved Automatic Backup Schedule" });
     fireEvent.click(within(cards).getAllByRole("button", { name: "Edit" })[1]);
 
@@ -752,8 +803,9 @@ describe("AdminBackupPage", () => {
     });
     const confirm = jest.spyOn(window, "confirm").mockReturnValue(true);
     render(<AdminBackupPage isDarkMode={false} apiBaseUrl="http://localhost:5000" getAuthToken={() => "token"} />);
-    await screen.findByRole("button", { name: "Saved Schedule" });
-    fireEvent.click(screen.getByRole("button", { name: "Saved Schedule" }));
+    const savedScheduleButton = await screen.findByRole("button", { name: "Saved Schedule" });
+    await waitFor(() => expect(savedScheduleButton).toBeEnabled());
+    fireEvent.click(savedScheduleButton);
     fireEvent.click(within(screen.getByRole("dialog")).getAllByRole("button", { name: "Delete" })[0]);
 
     await waitFor(() => expect(axios).toHaveBeenCalledWith(expect.objectContaining({

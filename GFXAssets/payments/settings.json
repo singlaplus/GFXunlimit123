@@ -1,0 +1,14 @@
+{
+  "enabledGateways": [
+    "Google Pay"
+  ],
+  "google pay": {
+    "gateway": "Google Pay",
+    "identifier": "ankitsinglaplus-1@oksbi"
+  },
+  "deletedGateways": [
+    "Development",
+    "Stripe",
+    "Cashfree"
+  ]
+}

@@ -13,6 +13,7 @@ const {
   createBackupService,
   getDefaultClientExportRoot,
   getFsCapacity,
+  getPostgresExecutableCandidates,
   getLocalDateKey,
   getNextScheduleDate,
   isEnvironmentFile,
@@ -71,7 +72,8 @@ function makeFakeDatabase(dataDirectory) {
             database_name: 'stocksite',
             server_version: 'PostgreSQL 18.6 (test)',
             data_directory: dataDirectory,
-            size_bytes: '1024'
+            size_bytes: '1024',
+            table_count: '23'
           }]
         };
       }
@@ -119,7 +121,7 @@ function makeService({
     spawnSync: spawnSync || (() => ({ status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' })),
     spawn,
     spawnRestore,
-    pgRestoreListTimeoutMs
+    pgRestoreListTimeoutMs,
   });
 }
 
@@ -224,6 +226,115 @@ test('PostgreSQL 18 backups require pg_dump 18 or newer', async () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(destination, { recursive: true, force: true });
     fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('PostgreSQL executable discovery prioritizes configured paths and includes platform defaults', () => {
+  const macCandidates = getPostgresExecutableCandidates('pg_dump', {
+    platform: 'darwin',
+    serverVersion: 'PostgreSQL 18.6',
+    environment: {
+      PG_DUMP_PATH: '/custom/postgres/bin/pg_dump',
+      PG_BIN_DIR: '/configured/postgres/bin'
+    }
+  });
+  assert.equal(macCandidates[0], '/custom/postgres/bin/pg_dump');
+  assert.equal(macCandidates[1], '/configured/postgres/bin/pg_dump');
+  assert.equal(macCandidates[2], 'pg_dump');
+  assert.ok(macCandidates.includes('/opt/homebrew/opt/postgresql@18/bin/pg_dump'));
+  assert.ok(macCandidates.includes('/usr/local/opt/postgresql@18/bin/pg_dump'));
+
+  const windowsCandidates = getPostgresExecutableCandidates('pg_restore', {
+    platform: 'win32',
+    serverVersion: 'PostgreSQL 18.6',
+    environment: { ProgramFiles: 'C:\\Apps' },
+    pairedExecutable: 'D:\\PostgreSQL\\bin\\pg_restore.exe'
+  });
+  assert.equal(windowsCandidates[0], 'D:\\PostgreSQL\\bin\\pg_restore.exe');
+  assert.ok(windowsCandidates.includes('C:\\Apps\\PostgreSQL\\18\\bin\\pg_restore.exe'));
+  assert.ok(windowsCandidates.includes('pg_restore.exe'));
+
+  const linuxCandidates = getPostgresExecutableCandidates('pg_dump', {
+    platform: 'linux',
+    serverVersion: 'PostgreSQL 18.6',
+    environment: {}
+  });
+  assert.ok(linuxCandidates.includes('/usr/lib/postgresql/18/bin/pg_dump'));
+  assert.ok(linuxCandidates.includes('/usr/pgsql-18/bin/pg_dump'));
+});
+
+test('backup planning selects and validates PostgreSQL tools from Homebrew without PATH', async () => {
+  const projectRoot = makeProjectRoot();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-homebrew-pg-'));
+  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-homebrew-state-'));
+  const calls = [];
+  const service = createBackupService({
+    projectRoot,
+    stateDirectory,
+    platform: 'darwin',
+    database: makeFakeDatabase(path.join(projectRoot, 'postgres-data')),
+    environment: {
+      DB_HOST: '127.0.0.1',
+      DB_NAME: 'stocksite',
+      PG_BIN_DIR: '/opt/homebrew/opt/postgresql@18/bin',
+      BACKUP_ENCRYPTION_KEY: '11'.repeat(32)
+    },
+    spawnSync(executable, args) {
+      calls.push([executable, args]);
+      if (executable === '/opt/homebrew/opt/postgresql@18/bin/pg_dump') {
+        return { status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' };
+      }
+      if (executable === '/opt/homebrew/opt/postgresql@18/bin/pg_restore') {
+        return { status: 0, stdout: 'pg_restore (PostgreSQL) 18.6\n' };
+      }
+      return { status: null, error: Object.assign(new Error('not found'), { code: 'ENOENT' }) };
+    }
+  });
+  try {
+    const plan = await service.buildPlan({ categories: ['database'], destinations: [destination] });
+    assert.equal(plan.database.pgDump.available, true);
+    assert.equal(plan.database.pgRestore.available, true);
+    assert.ok(calls.some(([executable]) => executable === '/opt/homebrew/opt/postgresql@18/bin/pg_dump'));
+    assert.ok(calls.some(([executable]) => executable === '/opt/homebrew/opt/postgresql@18/bin/pg_restore'));
+    assert.ok(calls.every(([, args]) => args[0] === '--version'));
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('missing or unexecutable PostgreSQL tools fail planning without exposing subprocess output', async () => {
+  for (const spawnSync of [
+    () => ({ status: null, error: Object.assign(new Error('not found'), { code: 'ENOENT' }) }),
+    () => { throw new Error('subprocess failure containing a fake secret token'); }
+  ]) {
+    const projectRoot = makeProjectRoot();
+    const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-missing-pg-'));
+    const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-missing-pg-state-'));
+    const service = createBackupService({
+      projectRoot,
+      stateDirectory,
+      platform: 'darwin',
+      database: makeFakeDatabase(path.join(projectRoot, 'postgres-data')),
+      environment: {
+        DB_HOST: '127.0.0.1',
+        DB_NAME: 'stocksite',
+        PG_BIN_DIR: '/configured/missing/postgres/bin'
+      },
+      spawnSync
+    });
+    try {
+      const plan = await service.buildPlan({ categories: ['database'], destinations: [destination] });
+      assert.equal(plan.database.pgDump.available, false);
+      assert.match(plan.database.pgDump.error, /pg_dump (?:could not be checked|was not found)/);
+      assert.equal(plan.database.pgDump.error.includes('fake secret token'), false);
+      assert.equal(plan.ready, false);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(destination, { recursive: true, force: true });
+      fs.rmSync(stateDirectory, { recursive: true, force: true });
+    }
   }
 });
 
@@ -499,8 +610,14 @@ test('source metrics measure database metadata, Website Code including .env, and
   });
   try {
     const sources = await service.getSourceMetrics();
+    assert.equal(sources.sourceEnvironment, 'SERVER');
     assert.equal(sources.database.currentBytes, 1024);
+    assert.equal(sources.database.estimatedBytes, 1024);
+    assert.equal(sources.database.tableCount, 23);
+    assert.equal(sources.database.status, 'AVAILABLE');
     assert.equal(sources.websiteCode.available, true, sources.websiteCode.error);
+    assert.equal(sources.websiteCode.files > 0, true);
+    assert.equal(sources.websiteCode.status, 'AVAILABLE');
     const codePlan = await service.buildPlan({ categories: ['websiteCode'], destinations: [destination] });
     assert.equal(sources.websiteCode.currentBytes, codePlan.categories.websiteCode.estimatedBytes);
     assert.equal(sources.websiteCode.encryptedEnvironmentFiles, 3);
@@ -508,7 +625,12 @@ test('source metrics measure database metadata, Website Code including .env, and
     assert.equal(sources.assets.originalBytes, Buffer.byteLength('asset-size'));
     assert.equal(sources.assets.thumbnailBytes, Buffer.byteLength('thumb'));
     assert.equal(sources.assets.totalBytes, Buffer.byteLength('asset-size') + Buffer.byteLength('thumb'));
+    assert.equal(sources.assets.originalFiles, 1);
+    assert.equal(sources.assets.thumbnailFiles, 1);
+    assert.equal(sources.assets.status, 'AVAILABLE');
     assert.equal(sources.assets.originalRoot, originalRoot);
+    assert.equal(sources.estimatedPackageBytes, sources.database.estimatedBytes + sources.websiteCode.estimatedBytes + sources.assets.totalBytes);
+    assert.equal(sources.lastSuccessfulMeasurementAt, sources.measuredAt);
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(sourceRoot, { recursive: true, force: true });
@@ -722,6 +844,61 @@ test('Assets + Thumbnails plan measures production roots and keeps user and date
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(sourceRoot, { recursive: true, force: true });
+  }
+});
+
+test('backup planning reads persisted storage roots from the live environment after service creation', async () => {
+  const projectRoot = makeProjectRoot();
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-backup-dynamic-roots-'));
+  const oldOriginalRoot = path.join(fixtureRoot, 'old-originals');
+  const oldThumbnailRoot = path.join(fixtureRoot, 'old-thumbnails');
+  const newOriginalRoot = path.join(fixtureRoot, 'new-originals');
+  const newThumbnailRoot = path.join(fixtureRoot, 'new-thumbnails');
+  const destination = path.join(fixtureRoot, 'destination');
+  const dataDirectory = path.join(projectRoot, 'postgres-data');
+  fs.mkdirSync(path.join(oldOriginalRoot, 'old-user'), { recursive: true });
+  fs.mkdirSync(oldThumbnailRoot, { recursive: true });
+  fs.mkdirSync(path.join(newOriginalRoot, 'new-user'), { recursive: true });
+  fs.mkdirSync(newThumbnailRoot, { recursive: true });
+  fs.mkdirSync(destination);
+  fs.writeFileSync(path.join(oldOriginalRoot, 'old-user', 'old.jpg'), 'old-original');
+  fs.writeFileSync(path.join(oldThumbnailRoot, 'old.webp'), 'old-thumbnail');
+  fs.writeFileSync(path.join(newOriginalRoot, 'new-user', 'new.jpg'), 'new-original');
+  fs.writeFileSync(path.join(newThumbnailRoot, 'new.webp'), 'new-thumbnail');
+
+  const environment = {
+    DB_HOST: 'test-postgres',
+    DB_NAME: 'stocksite',
+    BACKUP_ENCRYPTION_KEY: '11'.repeat(32),
+    ASSETS_ROOT: oldOriginalRoot,
+    THUMBNAIL_STORAGE_PATH: oldThumbnailRoot,
+  };
+  const service = createBackupService({
+    projectRoot,
+    stateDirectory: path.join(fixtureRoot, 'state'),
+    clientExportRoot: path.join(fixtureRoot, 'client-export'),
+    database: makeFakeDatabase(dataDirectory),
+    environment,
+    spawnSync: () => ({ status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' }),
+    spawnRestore: successfulRestoreSpawner,
+  });
+
+  try {
+    environment.ASSETS_ROOT = newOriginalRoot;
+    environment.THUMBNAIL_STORAGE_PATH = newThumbnailRoot;
+    const plan = await service.buildPlan({
+      categories: ['assetsAndThumbnails'],
+      destinations: [destination],
+    });
+
+    assert.equal(plan.ready, true);
+    assert.equal(plan.sourceRoots.originalAssets, newOriginalRoot);
+    assert.equal(plan.sourceRoots.thumbnails, newThumbnailRoot);
+    assert.equal(plan.categories.originalAssets.estimatedBytes, Buffer.byteLength('new-original'));
+    assert.equal(plan.categories.thumbnails.estimatedBytes, Buffer.byteLength('new-thumbnail'));
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });
 
@@ -1194,7 +1371,7 @@ test('database planning fails closed when a compatible pg_restore is unavailable
     projectRoot,
     stateDirectory,
     environment: { PG_DUMP_PATH: '/opt/postgresql/bin/pg_dump' },
-    spawnSync: (executable) => executable.endsWith('/pg_restore')
+    spawnSync: (executable) => executable.includes('pg_restore')
       ? { status: null, error: Object.assign(new Error('not found'), { code: 'ENOENT' }) }
       : { status: 0, stdout: 'pg_dump (PostgreSQL) 18.6\n' }
   });

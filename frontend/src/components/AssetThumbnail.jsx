@@ -9,11 +9,10 @@ const BROWSER_IMAGE_EXTENSIONS = new Set([".gif", ".jpeg", ".jpg", ".png", ".web
 const getOriginalImageUrl = (image) => {
   const filename = String(image.filename || "").replace(/\\/g, "/").replace(/^\/+/, "");
   const extension = filename.slice(filename.lastIndexOf(".")).toLowerCase();
-  if (!filename || !BROWSER_IMAGE_EXTENSIONS.has(extension)) return "";
+  if (!image.id || !filename || !BROWSER_IMAGE_EXTENSIONS.has(extension)) return "";
 
-  const encodedPath = filename.split("/").map(encodeURIComponent).join("/");
   const apiBaseUrl = API_BASE_URL;
-  return `${apiBaseUrl.replace(/\/+$/, "")}/api/files/${encodedPath}`;
+  return `${apiBaseUrl.replace(/\/+$/, "")}/api/images/${encodeURIComponent(String(image.id))}?original=true`;
 };
 
 function AssetThumbnail({ image, darkMode = false, style = {} }) {

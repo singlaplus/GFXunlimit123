@@ -42,6 +42,58 @@ function statusColor(status) {
   return "#64748b";
 }
 
+function isSourceAvailable(source) {
+  return source?.status ? source.status === "AVAILABLE" : source?.available === true;
+}
+
+function sourceIssue(source, label) {
+  if (isSourceAvailable(source)) return null;
+  if (!source) return `${label}: measurement has not completed.`;
+  const status = source.status || (source.available ? "AVAILABLE" : "UNAVAILABLE");
+  const reason = source.error || (
+    status === "NOT_CONFIGURED"
+      ? "not configured"
+      : status === "MEASUREMENT_FAILED"
+        ? "measurement failed"
+        : "unavailable"
+  );
+  return `${label}: ${reason}`;
+}
+
+function getUnresolvedSourceReasons(sources, categories) {
+  if (!sources) return ["Source measurements are still loading or have failed."];
+  const reasons = [];
+  if (categories.includes("database")) {
+    const reason = sourceIssue(sources.database, "Database");
+    if (reason) reasons.push(reason);
+  }
+  if (categories.includes("websiteCode")) {
+    const reason = sourceIssue(sources.websiteCode, "Website code");
+    if (reason) reasons.push(reason);
+  }
+  if (categories.includes("assetsAndThumbnails")) {
+    const originals = sources.assets?.original || {
+      status: sources.assets?.available ? "AVAILABLE" : undefined,
+      available: sources.assets?.available,
+      error: sources.assets?.error
+    };
+    const thumbnails = sources.assets?.thumbnails || {
+      status: sources.assets?.available ? "AVAILABLE" : undefined,
+      available: sources.assets?.available,
+      error: sources.assets?.error
+    };
+    const originalIssue = sourceIssue(originals, "Original assets");
+    const thumbnailIssue = sourceIssue(thumbnails, "Thumbnails");
+    if (originalIssue) reasons.push(originalIssue);
+    if (thumbnailIssue) reasons.push(thumbnailIssue);
+    if (!originalIssue && !thumbnailIssue) {
+      const aggregateIssue = sourceIssue(sources.assets, "Assets + thumbnails");
+      if (aggregateIssue) reasons.push(aggregateIssue);
+    }
+  }
+  return reasons;
+}
+
 export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, restoreMode = false }) {
   const [categories, setCategories] = useState(BACKUP_CATEGORIES.map(({ key }) => key));
   const [testedManualDestination, setTestedManualDestination] = useState(null);
@@ -52,6 +104,8 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
   const [pageError, setPageError] = useState("");
   const [sources, setSources] = useState(null);
   const [sourceError, setSourceError] = useState("");
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [serverStatusLoading, setServerStatusLoading] = useState(true);
   const [manualDestinationType, setManualDestinationType] = useState("mac-local");
   const [manualLocalFolder, setManualLocalFolder] = useState(null);
   const [manualServerPath, setManualServerPath] = useState("");
@@ -63,6 +117,8 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
   const localExportProgressRef = useRef(null);
   const lastLocalProgressRenderRef = useRef(0);
   const localProgressRenderTimerRef = useRef(null);
+  const sourceRefreshInFlightRef = useRef(null);
+  const sourceMeasurementActiveRef = useRef(false);
   const [manualLocalJobTarget, setManualLocalJobTarget] = useState(null);
   const [localExportAttemptedJobId, setLocalExportAttemptedJobId] = useState(null);
   const [automaticDestination, setAutomaticDestination] = useState("");
@@ -117,17 +173,29 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
     setHistory(Array.isArray(response.data?.jobs) ? response.data.jobs : []);
   }, [request]);
 
-  const refreshSources = useCallback(async () => {
-    setSourceError("");
-    try {
-      const response = await request("get", "/sources");
-      setSources(response.data?.sources || null);
-      return response.data?.sources || null;
-    } catch (error) {
-      const message = error.response?.data?.error || "Could not measure current backup source sizes.";
-      setSourceError(message);
-      throw error;
-    }
+  const refreshSources = useCallback(async ({ force = false } = {}) => {
+    if (sourceRefreshInFlightRef.current) return sourceRefreshInFlightRef.current;
+    const refreshPromise = (async () => {
+      if (sourceMeasurementActiveRef.current) setSourcesLoading(true);
+      setSourceError("");
+      try {
+        const response = await request("get", `/sources${force ? "?refresh=1" : ""}`);
+        const measuredSources = response.data?.sources || null;
+        if (sourceMeasurementActiveRef.current) {
+          setSources(measuredSources);
+        }
+        return measuredSources;
+      } catch (error) {
+        const message = error.response?.data?.error || "Could not measure current backup source sizes.";
+        if (sourceMeasurementActiveRef.current) setSourceError(message);
+        throw error;
+      } finally {
+        sourceRefreshInFlightRef.current = null;
+        if (sourceMeasurementActiveRef.current) setSourcesLoading(false);
+      }
+    })();
+    sourceRefreshInFlightRef.current = refreshPromise;
+    return refreshPromise;
   }, [request]);
 
   const refreshSchedule = useCallback(async () => {
@@ -159,12 +227,12 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
   useEffect(() => {
     if (restoreMode) return undefined;
     let active = true;
+    setServerStatusLoading(true);
     Promise.all([
       request("get", "/jobs/active"),
       request("get", "/history"),
-      request("get", "/automatic"),
-      request("get", "/sources")
-    ]).then(([activeResponse, historyResponse, scheduleResponse, sourceResponse]) => {
+      request("get", "/automatic")
+    ]).then(([activeResponse, historyResponse, scheduleResponse]) => {
       if (!active) return;
       const activeJob = activeResponse.data?.job || null;
       setJob(activeJob);
@@ -181,7 +249,6 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
           setAutomaticDestination(selected.destination || "");
         }
       }
-      setSources(sourceResponse.data?.sources || null);
       if (activeJob?.status === "RUNNING") {
         request("get", `/jobs/${encodeURIComponent(activeJob.id)}`)
           .then((response) => { if (active) setJob(response.data?.job || activeJob); })
@@ -191,9 +258,23 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
       }
     }).catch((error) => {
       if (active) setPageError(error.response?.data?.error || "Could not load backup status and history.");
+    }).finally(() => {
+      if (active) setServerStatusLoading(false);
     });
     return () => { active = false; };
   }, [request, restoreMode]);
+
+  useEffect(() => {
+    if (restoreMode) return undefined;
+    sourceMeasurementActiveRef.current = true;
+    const measure = () => refreshSources().catch(() => {});
+    measure();
+    const timer = window.setInterval(measure, 60000);
+    return () => {
+      sourceMeasurementActiveRef.current = false;
+      window.clearInterval(timer);
+    };
+  }, [refreshSources, restoreMode]);
 
   useEffect(() => {
     if (!job?.id || job.status !== "RUNNING") return undefined;
@@ -299,8 +380,13 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
     setPageError("");
     setPlan(null);
     try {
-      const freshSources = await refreshSources();
+      const freshSources = await refreshSources({ force: true });
       if (!freshSources) throw new Error("Current backup source sizes could not be refreshed.");
+      const unresolvedSources = getUnresolvedSourceReasons(freshSources, categories);
+      if (unresolvedSources.length) {
+        setPageError(`Backup plan unavailable. Resolve these sources first: ${unresolvedSources.join(" ")}`);
+        return;
+      }
       const response = await request("post", "/plan", {
         categories,
         ...(manualDestinationType === "mac-local"
@@ -329,8 +415,14 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
     setBusy(true);
     setPageError("");
     try {
-      const freshSources = await refreshSources();
+      const freshSources = await refreshSources({ force: true });
       if (!freshSources) throw new Error("Current backup source sizes could not be refreshed.");
+      const unresolvedSources = getUnresolvedSourceReasons(freshSources, categories);
+      if (unresolvedSources.length) {
+        setPlan(null);
+        setPageError(`Backup cannot start. Resolve these sources first: ${unresolvedSources.join(" ")}`);
+        return;
+      }
       const refreshedPlanResponse = await request("post", "/plan", {
         categories,
         ...(manualDestinationType === "mac-local"
@@ -923,11 +1015,13 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
 
   const sourceSize = (key) => {
     if (!sources) return null;
-    if (key === "database") return sources.database?.available ? sources.database.currentBytes : null;
-    if (key === "websiteCode") return sources.websiteCode?.available ? sources.websiteCode.currentBytes : null;
-    if (key === "assetsAndThumbnails") return sources.assets?.available ? sources.assets.totalBytes : null;
+    if (key === "database") return isSourceAvailable(sources.database) ? sources.database.estimatedBytes ?? sources.database.currentBytes : null;
+    if (key === "websiteCode") return isSourceAvailable(sources.websiteCode) ? sources.websiteCode.estimatedBytes ?? sources.websiteCode.currentBytes : null;
+    if (key === "assetsAndThumbnails") return isSourceAvailable(sources.assets) ? sources.assets.totalBytes : null;
     return null;
   };
+  const unresolvedSourceReasons = getUnresolvedSourceReasons(sources, categories);
+  const sourcesReady = sources !== null && unresolvedSourceReasons.length === 0;
   const selectedSourceValues = categories.map(sourceSize);
   const selectedSourceBytes = selectedSourceValues.some((size) => size == null)
     ? null
@@ -1022,7 +1116,13 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
       <section className="gfx-backup-section gfx-backup-sources" style={sectionStyle}>
         <div className="gfx-backup-section-heading">
           <div><span className="gfx-backup-kicker">01 / CONFIGURE</span><h3>Select backup type</h3><p>Choose the data you want to protect in this complete backup.</p></div>
-          <span className="gfx-backup-measurement">{sources?.measuredAt ? `Measured ${formatScheduleDate(sources.measuredAt)}` : "Live source measurements"}</span>
+          <span className="gfx-backup-measurement" role="status">
+            {sourcesLoading
+              ? "Measuring configured sources…"
+              : sources?.measuredAt
+                ? `SERVER sources · measured ${formatScheduleDate(sources.measuredAt)}`
+                : "Live source measurements"}
+          </span>
         </div>
         <div className="gfx-backup-category-grid" aria-label="Backup categories">
         {BACKUP_CATEGORIES.map((category) => {
@@ -1054,7 +1154,13 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
               </span>
               <span style={{ color: palette.muted, fontSize: 13, lineHeight: 1.45 }}>{category.description}</span>
               {category.key !== "assetsAndThumbnails" && (
-                <span className="gfx-backup-category-size"><small>Current source size</small><strong>{size == null ? "Unavailable" : formatBytes(size)}</strong></span>
+                <span className="gfx-backup-category-size">
+                  <small>{category.key === "database" ? "Estimated database size (not compressed dump size)" : "Estimated source package size"}</small>
+                  <strong>{size == null ? sourcesLoading ? "Measuring…" : "Unavailable" : formatBytes(size)}</strong>
+                  <small>{category.key === "websiteCode"
+                    ? `${sources?.websiteCode?.files ?? "—"} eligible files · ${sources?.websiteCode?.status || (sources?.websiteCode?.available ? "AVAILABLE" : "UNAVAILABLE")}`
+                    : `${sources?.database?.tableCount ?? "—"} tables · ${sources?.database?.status || (sources?.database?.available ? "AVAILABLE" : "UNAVAILABLE")}`}</small>
+                </span>
               )}
               {category.key === "database" && sources?.database && (
                 <span style={{ fontSize: 12, color: palette.muted }}>
@@ -1070,9 +1176,19 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
               )}
               {category.key === "assetsAndThumbnails" && (
                 <span style={{ display: "grid", gap: 5, fontSize: 12, color: palette.muted }}>
-                  <span className="gfx-backup-asset-size"><span>Original assets</span><strong style={{ color: palette.text }}>{sources?.assets?.originalBytes == null ? "Unavailable" : formatBytes(sources.assets.originalBytes)}</strong><small>{sources?.assets?.originalRoot || "Not configured on PC2"}</small></span>
-                  <span className="gfx-backup-asset-size"><span>Centralized thumbnails</span><strong style={{ color: palette.text }}>{sources?.assets?.thumbnailBytes == null ? "Unavailable" : formatBytes(sources.assets.thumbnailBytes)}</strong><small>{sources?.assets?.thumbnailRoot || "Not configured on PC2"}</small></span>
-                  <span className="gfx-backup-category-size"><small>Total assets + thumbnails</small><strong>{size == null ? "Unavailable" : formatBytes(size)}</strong></span>
+                  <span className="gfx-backup-asset-size">
+                    <span>Original assets</span>
+                    <strong style={{ color: palette.text }}>{sources?.assets?.originalBytes == null ? sourcesLoading ? "Measuring…" : "Unavailable" : formatBytes(sources.assets.originalBytes)}</strong>
+                    <small>{sources?.assets?.originalFiles == null ? "— files" : `${sources.assets.originalFiles} files`} · {sources?.assets?.original?.status || (sources?.assets?.available ? "AVAILABLE" : "UNAVAILABLE")} · {sources?.assets?.originalRoot || "Not configured"}</small>
+                    {sources?.assets?.original?.error && <small role="alert">{sources.assets.original.error}</small>}
+                  </span>
+                  <span className="gfx-backup-asset-size">
+                    <span>Centralized thumbnails</span>
+                    <strong style={{ color: palette.text }}>{sources?.assets?.thumbnailBytes == null ? sourcesLoading ? "Measuring…" : "Unavailable" : formatBytes(sources.assets.thumbnailBytes)}</strong>
+                    <small>{sources?.assets?.thumbnailFiles == null ? "— files" : `${sources.assets.thumbnailFiles} files`} · {sources?.assets?.thumbnails?.status || (sources?.assets?.available ? "AVAILABLE" : "UNAVAILABLE")} · {sources?.assets?.thumbnailRoot || "Not configured"}</small>
+                    {sources?.assets?.thumbnails?.error && <small role="alert">{sources.assets.thumbnails.error}</small>}
+                  </span>
+                  <span className="gfx-backup-category-size"><small>Total assets + thumbnails</small><strong>{size == null ? sourcesLoading ? "Measuring…" : "Unavailable" : formatBytes(size)}</strong></span>
                   {sources?.assets?.error && <span role="alert" style={{ color: "#b91c1c" }}>{sources.assets.error}</span>}
                 </span>
               )}
@@ -1082,10 +1198,20 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
         </div>
         <div className="gfx-backup-selected-total">
           <strong>Selected Backup Size: {selectedSourceBytes == null ? "Unavailable" : formatBytes(selectedSourceBytes)}</strong>
-          <button type="button" onClick={() => refreshSources().catch(() => {})} disabled={busy || activeJob} style={buttonStyle()}>Refresh Source Sizes</button>
+          <button type="button" onClick={() => refreshSources({ force: true }).catch(() => {})} disabled={sourcesLoading || busy || activeJob} style={buttonStyle()}>Refresh Source Sizes</button>
         </div>
         {sourceError && <div role="alert" style={{ color: "#b91c1c" }}>{sourceError}</div>}
-        {sources?.measuredAt && <span style={{ color: palette.muted, fontSize: 12 }}>Measured {formatScheduleDate(sources.measuredAt)}</span>}
+        {unresolvedSourceReasons.length > 0 && (
+          <div role="status" style={{ color: "#b91c1c", fontSize: 13 }}>
+            Selected backup sources are not ready: {unresolvedSourceReasons.join(" ")}
+          </div>
+        )}
+        {sources?.lastSuccessfulMeasurementAt && (
+          <span style={{ color: palette.muted, fontSize: 12 }}>Last complete successful measurement: {formatScheduleDate(sources.lastSuccessfulMeasurementAt)}</span>
+        )}
+        {sources?.estimatedPackageBytes != null && (
+          <span style={{ color: palette.muted, fontSize: 12 }}>Estimated total package size: {formatBytes(sources.estimatedPackageBytes)} (source-size estimate, not compressed dump size)</span>
+        )}
       </section>
 
       <section className="gfx-backup-section gfx-backup-manual" style={sectionStyle}>
@@ -1227,7 +1353,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
           </div>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 9 }}>
-          <button type="button" onClick={buildPlan} disabled={!destinationMatchesTest || busy || activeJob || categories.length === 0} style={buttonStyle()}>
+          <button type="button" onClick={buildPlan} disabled={!destinationMatchesTest || !sourcesReady || busy || activeJob || categories.length === 0} style={buttonStyle()}>
             Build Complete Backup Plan
           </button>
         </div>
@@ -1721,6 +1847,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
             aria-expanded={showSavedSchedule}
             aria-haspopup="dialog"
             onClick={() => setShowSavedSchedule((visible) => !visible)}
+            disabled={serverStatusLoading}
             style={buttonStyle()}
           >
             Saved Schedule

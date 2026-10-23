@@ -13,7 +13,7 @@ const EpsProcessor = require('../thumbnail-engine/eps-processor');
 const ghostscriptAvailable = spawnSync('gs', ['--version'], { stdio: 'ignore' }).status === 0;
 
 test('reports Ghostscript timeout termination and renders the intermediate at the diagnostic DPI', async (t) => {
-  t.mock.method(pool, 'query', async () => ({ rows: [{ executable_path: 'gswin64c.exe' }] }));
+  t.mock.method(pool, 'query', async () => ({ rows: [{ executable_path: process.execPath }] }));
   let invocation;
   const spawnProcess = (command, args, options) => {
     invocation = { command, args, options };
@@ -29,7 +29,7 @@ test('reports Ghostscript timeout termination and renders the intermediate at th
     processor.extractPreview('C:\\assets\\complex artwork.eps'),
     /Ghostscript failed with code null \(terminated by SIGTERM\)/
   );
-  assert.equal(invocation.command, 'gswin64c.exe');
+  assert.equal(invocation.command, process.execPath);
   assert.ok(invocation.args.includes('-r72'));
   assert.equal(invocation.options.timeout, 60000);
 });

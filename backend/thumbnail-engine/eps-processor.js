@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const pool = require('../db');
+const { resolveGhostscriptExecutable } = require('./ghostscript-path');
 
 class EpsProcessor extends BaseProcessor {
   constructor(options = {}) {
@@ -94,7 +95,9 @@ class EpsProcessor extends BaseProcessor {
           console.warn(`[EpsProcessor] Processor config unavailable, using Ghostscript from PATH: ${err.message}`);
         }
 
-        const gsPath = gsConfig?.rows[0]?.executable_path || 'gs';
+        const gsPath = resolveGhostscriptExecutable({
+          configuredPath: gsConfig?.rows[0]?.executable_path,
+        });
 
         // Create temporary output file for PNG
         const tempDir = path.join(__dirname, '..', 'tmp', 'eps-processing');

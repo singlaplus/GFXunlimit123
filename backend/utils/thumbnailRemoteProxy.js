@@ -2,11 +2,15 @@ const axios = require('axios');
 const { pipeline } = require('node:stream/promises');
 const { parseThumbnailAssetId } = require('./assetThumbnails');
 const { getAssetServerOrigin } = require('../config');
+const { getConfiguredStorageRoots } = require('../services/assetStorageConnections');
 
 const THUMBNAIL_PROXY_TIMEOUT_MS = 10000;
 
-function shouldProxyRemoteThumbnail(platform = process.platform) {
-  return platform === 'darwin';
+function shouldProxyRemoteThumbnail(platform = process.platform, thumbnailStoragePath) {
+  const configuredPath = thumbnailStoragePath === undefined
+    ? getConfiguredStorageRoots().thumbnailStoragePath
+    : thumbnailStoragePath;
+  return platform === 'darwin' && !String(configuredPath || '').trim();
 }
 
 function buildRemoteThumbnailUrl(baseUrl, assetId) {

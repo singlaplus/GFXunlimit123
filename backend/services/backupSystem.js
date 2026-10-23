@@ -19,6 +19,9 @@ const AUTOMATIC_RETENTION_LIMIT = 30;
 const PG_TOOL_VERSION_TIMEOUT_MS = 10000;
 const PG_RESTORE_LIST_TIMEOUT_MS = 60000;
 const CLIENT_EXPORT_RETENTION_MS = 24 * 60 * 60 * 1000;
+const SOURCE_METRICS_CACHE_MS = 30000;
+const SOURCE_SCAN_MAX_ENTRIES = 250000;
+const SOURCE_SCAN_MAX_DURATION_MS = 30000;
 const WINDOWS_RESTORE_TEMP_ROOT = 'D:\\GFXTemp';
 const SCHEDULE_TIMEZONE = 'Asia/Kolkata';
 const SCHEDULE_FREQUENCIES = new Set(['daily', 'weekly', 'monthly']);
@@ -410,6 +413,64 @@ function formatError(error) {
   return error && typeof error.message === 'string' ? error.message : String(error);
 }
 
+function getPostgresExecutableCandidates(tool, {
+  environment = process.env,
+  platform = process.platform,
+  serverVersion = '',
+  pairedExecutable = null
+} = {}) {
+  if (!['pg_dump', 'pg_restore'].includes(tool)) {
+    throw new Error('Unsupported PostgreSQL executable.');
+  }
+  const windows = platform === 'win32';
+  const pathApi = windows ? path.win32 : path;
+  const executableName = windows ? `${tool}.exe` : tool;
+  const configuredPath = String(environment[tool === 'pg_dump' ? 'PG_DUMP_PATH' : 'PG_RESTORE_PATH'] || '').trim();
+  const configuredDirectory = String(environment.PG_BIN_DIR || environment.POSTGRES_BIN_DIR || '').trim();
+  const majorVersion = String(serverVersion).match(/PostgreSQL\s+(\d+)/i)?.[1] || '';
+  const candidates = [];
+  const add = (candidate) => {
+    const trimmed = String(candidate || '').trim();
+    if (!trimmed) return;
+    const normalized = windows ? trimmed.toLowerCase() : trimmed;
+    if (!candidates.some((entry) => (windows ? entry.toLowerCase() : entry) === normalized)) {
+      candidates.push(trimmed);
+    }
+  };
+
+  add(configuredPath);
+  if (configuredDirectory) add(pathApi.join(configuredDirectory, executableName));
+  if (tool === 'pg_restore' && pairedExecutable) add(pairedExecutable);
+  add(executableName);
+
+  if (windows) {
+    const programFiles = [
+      environment.ProgramFiles || 'C:\\Program Files',
+      environment['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+    ];
+    if (majorVersion) {
+      for (const directory of programFiles) {
+        add(pathApi.join(directory, 'PostgreSQL', majorVersion, 'bin', executableName));
+      }
+    }
+  } else if (platform === 'darwin') {
+    if (majorVersion) {
+      add(`/opt/homebrew/opt/postgresql@${majorVersion}/bin/${tool}`);
+      add(`/usr/local/opt/postgresql@${majorVersion}/bin/${tool}`);
+    }
+    add('/opt/homebrew/opt/postgresql/bin/' + tool);
+    add('/usr/local/opt/postgresql/bin/' + tool);
+  } else if (platform === 'linux') {
+    if (majorVersion) {
+      add(`/usr/lib/postgresql/${majorVersion}/bin/${tool}`);
+      add(`/usr/pgsql-${majorVersion}/bin/${tool}`);
+    }
+    add(`/usr/local/pgsql/bin/${tool}`);
+  }
+
+  return candidates;
+}
+
 function getDefaultClientExportRoot(platform = process.platform) {
   return platform === 'win32'
     ? WINDOWS_RESTORE_TEMP_ROOT
@@ -424,7 +485,9 @@ function createBackupService(options = {}) {
   const clientExportRoot = path.resolve(options.clientExportRoot || getDefaultClientExportRoot(options.platform || process.platform));
   const database = options.database;
   const environment = options.environment || process.env;
-  const storageRoots = getAssetStorageRoots(environment);
+  const getStorageRoots = typeof options.getStorageRoots === 'function'
+    ? options.getStorageRoots
+    : () => getAssetStorageRoots(environment);
   const spawnProcess = options.spawn || spawn;
   const spawnRestore = options.spawnRestore || spawnProcess;
   const pgRestoreListTimeoutMs = options.pgRestoreListTimeoutMs || PG_RESTORE_LIST_TIMEOUT_MS;
@@ -432,6 +495,9 @@ function createBackupService(options = {}) {
   const jobs = new Map();
   let activeJobId = null;
   let historyCache = null;
+  let sourceMetricsCache = null;
+  let sourceMetricsPromise = null;
+  let lastSuccessfulMeasurementAt = null;
 
   const historyFile = path.join(stateDirectory, 'history.json');
   const activeLockFile = path.join(stateDirectory, 'active-job.json');
@@ -439,6 +505,7 @@ function createBackupService(options = {}) {
   let automaticScheduleCache = null;
   let scheduleTickRunning = false;
   let automaticLaunchRunning = false;
+
   const scheduleTimer = setInterval(() => {
     tickAutomaticSchedule().catch((error) => {
       console.error('Automatic backup scheduler failed:', formatError(error));
@@ -830,118 +897,173 @@ function createBackupService(options = {}) {
       SELECT current_database() AS database_name,
              version() AS server_version,
              current_setting('data_directory', true) AS data_directory,
-             pg_database_size(current_database())::text AS size_bytes
+             pg_database_size(current_database())::text AS size_bytes,
+             (
+               SELECT count(*)::text
+               FROM information_schema.tables
+               WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                 AND table_type = 'BASE TABLE'
+             ) AS table_count
     `);
     const row = result.rows?.[0];
     if (!row?.database_name || !row?.server_version) {
       throw new Error('PostgreSQL did not return database and server version metadata.');
     }
+    const sizeBytes = Number(row.size_bytes);
+    if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
+      throw new Error('PostgreSQL did not return a safely measurable database size.');
+    }
     return {
       name: String(row.database_name),
       version: String(row.server_version),
       dataDirectory: String(row.data_directory || environment.POSTGRES_DATA_DIRECTORY || ''),
-      sizeBytes: Number(row.size_bytes || 0),
+      sizeBytes,
+      tableCount: row.table_count == null ? null : Number(row.table_count),
       sourceServer: sourceHost
     };
   }
 
   function detectPgDump(serverVersion) {
-    const executable = environment.PG_DUMP_PATH || 'pg_dump';
-    let result;
-    try {
-      result = (options.spawnSync || require('node:child_process').spawnSync)(executable, ['--version'], {
-        encoding: 'utf8',
-        windowsHide: true,
-        timeout: PG_TOOL_VERSION_TIMEOUT_MS,
-        maxBuffer: 1024 * 1024
-      });
-    } catch (error) {
-      return { executable, available: false, version: null, error: `pg_dump could not be checked: ${formatError(error)}` };
+    let lastFailure = null;
+    let compatibilityFailure = null;
+    const spawnSync = options.spawnSync || require('node:child_process').spawnSync;
+    for (const executable of getPostgresExecutableCandidates('pg_dump', {
+      environment,
+      platform: options.platform || process.platform,
+      serverVersion
+    })) {
+      let result;
+      try {
+        result = spawnSync(executable, ['--version'], {
+          encoding: 'utf8',
+          windowsHide: true,
+          timeout: PG_TOOL_VERSION_TIMEOUT_MS,
+          maxBuffer: 1024 * 1024
+        });
+      } catch (_error) {
+        lastFailure = {
+          executable,
+          available: false,
+          version: null,
+          error: 'pg_dump could not be checked; configure a working PostgreSQL client installation.'
+        };
+        continue;
+      }
+      if (result.error || result.status !== 0 || result.signal) {
+        lastFailure = {
+          executable,
+          available: false,
+          version: null,
+          error: result.error?.code === 'ETIMEDOUT'
+            ? 'pg_dump version check timed out; configure a working PostgreSQL client installation.'
+            : 'pg_dump was not found or could not be executed.'
+        };
+        continue;
+      }
+      const versionText = String(result.stdout || result.stderr || '').trim();
+      const clientMatch = versionText.match(/(?:PostgreSQL\s+)?(\d+)(?:\.\d+)?/i);
+      const serverMatch = String(serverVersion).match(/PostgreSQL\s+(\d+)(?:\.\d+)?/i);
+      if (!clientMatch || !serverMatch) {
+        compatibilityFailure ||= { executable, available: false, version: versionText, error: 'Could not verify pg_dump compatibility with the PostgreSQL server.' };
+        continue;
+      }
+      const clientMajor = Number(clientMatch[1]);
+      const serverMajor = Number(serverMatch[1]);
+      if (clientMajor < serverMajor) {
+        compatibilityFailure ||= {
+          executable,
+          available: false,
+          version: versionText,
+          error: `pg_dump ${clientMajor} cannot back up PostgreSQL ${serverMajor}; install pg_dump ${serverMajor} or newer.`
+        };
+        continue;
+      }
+      return { executable, available: true, version: versionText, error: null };
     }
-    if (result.error || result.status !== 0 || result.signal) {
-      return {
-        executable,
-        available: false,
-        version: null,
-        error: result.error?.code === 'ETIMEDOUT'
-          ? 'pg_dump version check timed out; configure a working PostgreSQL client installation.'
-          : 'pg_dump was not found or could not be executed.'
-      };
-    }
-    const versionText = String(result.stdout || result.stderr || '').trim();
-    const clientMatch = versionText.match(/(?:PostgreSQL\s+)?(\d+)(?:\.\d+)?/i);
-    const serverMatch = String(serverVersion).match(/PostgreSQL\s+(\d+)(?:\.\d+)?/i);
-    if (!clientMatch || !serverMatch) {
-      return { executable, available: false, version: versionText, error: 'Could not verify pg_dump compatibility with the PostgreSQL server.' };
-    }
-    const clientMajor = Number(clientMatch[1]);
-    const serverMajor = Number(serverMatch[1]);
-    if (clientMajor < serverMajor) {
-      return {
-        executable,
-        available: false,
-        version: versionText,
-        error: `pg_dump ${clientMajor} cannot back up PostgreSQL ${serverMajor}; install pg_dump ${serverMajor} or newer.`
-      };
-    }
-    return { executable, available: true, version: versionText, error: null };
+    return compatibilityFailure || lastFailure || {
+      executable: 'pg_dump',
+      available: false,
+      version: null,
+      error: 'pg_dump was not found or could not be executed.'
+    };
   }
 
   function detectPgRestore(serverVersion, pgDump) {
-    const dumpApi = pathApiFor(pgDump.executable);
-    const dumpExtension = dumpApi.extname(pgDump.executable).toLowerCase();
-    const pairedRestore = dumpApi.join(
-      dumpApi.dirname(pgDump.executable),
-      `pg_restore${dumpExtension === '.exe' ? '.exe' : ''}`
-    );
-    const executable = environment.PG_RESTORE_PATH || (
-      environment.PG_DUMP_PATH ? pairedRestore : 'pg_restore'
-    );
-    let result;
-    try {
-      result = (options.spawnSync || require('node:child_process').spawnSync)(executable, ['--version'], {
-        encoding: 'utf8',
-        windowsHide: true,
-        timeout: PG_TOOL_VERSION_TIMEOUT_MS,
-        maxBuffer: 1024 * 1024
-      });
-    } catch (error) {
-      return { executable, available: false, version: null, error: `pg_restore could not be checked: ${formatError(error)}` };
+    const dumpApi = pathApiFor(pgDump?.executable || environment.PG_DUMP_PATH || '');
+    const dumpExtension = dumpApi.extname(pgDump?.executable || '').toLowerCase();
+    const pairedRestore = pgDump?.executable
+      ? dumpApi.join(dumpApi.dirname(pgDump.executable), `pg_restore${dumpExtension === '.exe' ? '.exe' : ''}`)
+      : null;
+    let lastFailure = null;
+    let compatibilityFailure = null;
+    const spawnSync = options.spawnSync || require('node:child_process').spawnSync;
+    for (const executable of getPostgresExecutableCandidates('pg_restore', {
+      environment,
+      platform: options.platform || process.platform,
+      serverVersion,
+      pairedExecutable: pairedRestore
+    })) {
+      let result;
+      try {
+        result = spawnSync(executable, ['--version'], {
+          encoding: 'utf8',
+          windowsHide: true,
+          timeout: PG_TOOL_VERSION_TIMEOUT_MS,
+          maxBuffer: 1024 * 1024
+        });
+      } catch (_error) {
+        lastFailure = {
+          executable,
+          available: false,
+          version: null,
+          error: 'pg_restore could not be checked; configure a working PostgreSQL client installation.'
+        };
+        continue;
+      }
+      if (result.error || result.status !== 0 || result.signal) {
+        lastFailure = {
+          executable,
+          available: false,
+          version: null,
+          error: result.error?.code === 'ETIMEDOUT'
+            ? 'pg_restore version check timed out; configure a working PostgreSQL client installation.'
+            : 'pg_restore was not found or could not be executed; configure PG_RESTORE_PATH or install a compatible PostgreSQL client.'
+        };
+        continue;
+      }
+      const versionText = String(result.stdout || result.stderr || '').trim();
+      const clientMatch = versionText.match(/(?:PostgreSQL\s+)?(\d+)(?:\.\d+)?/i);
+      const serverMatch = String(serverVersion).match(/PostgreSQL\s+(\d+)(?:\.\d+)?/i);
+      const dumpVersionMatch = String(pgDump.version || '').match(/(?:PostgreSQL\s+)?(\d+)(?:\.\d+)?/i);
+      if (!clientMatch || !serverMatch || !dumpVersionMatch) {
+        compatibilityFailure ||= { executable, available: false, version: versionText, error: 'Could not verify pg_restore compatibility with the PostgreSQL server.' };
+        continue;
+      }
+      const clientMajor = Number(clientMatch[1]);
+      const serverMajor = Number(serverMatch[1]);
+      const dumpMajor = Number(dumpVersionMatch[1]);
+      const requiredMajor = Math.max(serverMajor, dumpMajor);
+      if (clientMajor < requiredMajor) {
+        compatibilityFailure ||= {
+          executable,
+          available: false,
+          version: versionText,
+          error: `pg_restore ${clientMajor} cannot validate PostgreSQL ${serverMajor} backups created by pg_dump ${dumpMajor}; install pg_restore ${requiredMajor} or newer.`
+        };
+        continue;
+      }
+      return { executable, available: true, version: versionText, error: null };
     }
-    if (result.error || result.status !== 0 || result.signal) {
-      const timedOut = result.error?.code === 'ETIMEDOUT';
-      return {
-        executable,
-        available: false,
-        version: null,
-        error: timedOut
-          ? 'pg_restore version check timed out; configure a working PostgreSQL client installation.'
-          : 'pg_restore was not found or could not be executed; configure PG_RESTORE_PATH or install a compatible PostgreSQL client.'
-      };
-    }
-    const versionText = String(result.stdout || result.stderr || '').trim();
-    const clientMatch = versionText.match(/(?:PostgreSQL\s+)?(\d+)(?:\.\d+)?/i);
-    const serverMatch = String(serverVersion).match(/PostgreSQL\s+(\d+)(?:\.\d+)?/i);
-    const dumpVersionMatch = String(pgDump.version || '').match(/(?:PostgreSQL\s+)?(\d+)(?:\.\d+)?/i);
-    if (!clientMatch || !serverMatch || !dumpVersionMatch) {
-      return { executable, available: false, version: versionText, error: 'Could not verify pg_restore compatibility with the PostgreSQL server.' };
-    }
-    const clientMajor = Number(clientMatch[1]);
-    const serverMajor = Number(serverMatch[1]);
-    const dumpMajor = Number(dumpVersionMatch[1]);
-    const requiredMajor = Math.max(serverMajor, dumpMajor);
-    if (clientMajor < requiredMajor) {
-      return {
-        executable,
-        available: false,
-        version: versionText,
-        error: `pg_restore ${clientMajor} cannot validate PostgreSQL ${serverMajor} backups created by pg_dump ${dumpMajor}; install pg_restore ${requiredMajor} or newer.`
-      };
-    }
-    return { executable, available: true, version: versionText, error: null };
+    return compatibilityFailure || lastFailure || {
+      executable: 'pg_restore',
+      available: false,
+      version: null,
+      error: 'pg_restore was not found or could not be executed; configure PG_RESTORE_PATH or install a compatible PostgreSQL client.'
+    };
   }
 
   async function getProtectedPaths(databaseInfo, includeClientExportRoot = true) {
+    const storageRoots = getStorageRoots();
     return [
       projectRoot,
       storageRoots.assetsRoot,
@@ -988,6 +1110,26 @@ function createBackupService(options = {}) {
     return key;
   }
 
+  function recordScanEntry(optionsForTree) {
+    const budget = optionsForTree.scanBudget;
+    if (!budget) return;
+    budget.entries += 1;
+    if (budget.entries > SOURCE_SCAN_MAX_ENTRIES) {
+      const error = new Error('Source measurement exceeded its safe file-count limit.');
+      error.code = 'SOURCE_SCAN_LIMIT';
+      throw error;
+    }
+    if (Date.now() - budget.startedAt > SOURCE_SCAN_MAX_DURATION_MS) {
+      const error = new Error('Source measurement exceeded its safe time limit.');
+      error.code = 'SOURCE_SCAN_TIMEOUT';
+      throw error;
+    }
+  }
+
+  function createScanBudget() {
+    return { entries: 0, startedAt: Date.now() };
+  }
+
   async function collectTree(root, prefix, optionsForTree = {}) {
     const result = [];
     const pending = [{ absolutePath: root, relativePath: prefix }];
@@ -996,6 +1138,7 @@ function createBackupService(options = {}) {
       const entries = await fsp.readdir(current.absolutePath, { withFileTypes: true });
       entries.sort((left, right) => left.name.localeCompare(right.name));
       for (const entry of entries) {
+        recordScanEntry(optionsForTree);
         const absolutePath = path.join(current.absolutePath, entry.name);
         const relativePath = path.posix.join(current.relativePath, entry.name);
         if (optionsForTree.code && EXCLUDED_CODE_NAMES.has(entry.name.toLowerCase())) {
@@ -1032,7 +1175,7 @@ function createBackupService(options = {}) {
     return result;
   }
 
-  async function collectWebsiteFiles(exclusions = []) {
+  async function collectWebsiteFiles(exclusions = [], scanOptions = {}) {
     const files = [];
     const rootEntries = await fsp.readdir(projectRoot);
     const rootEnvironmentFiles = rootEntries.filter((name) => isEnvironmentFile(name));
@@ -1124,7 +1267,7 @@ function createBackupService(options = {}) {
           if (!subStat.isDirectory() || subStat.isSymbolicLink()) {
             throw new Error(`Required Website Code source is missing: frontend/${subdirectory}`);
           }
-          files.push(...await collectTree(subdirectoryPath, `${name}/${subdirectory}`, { code: true, exclusions }));
+          files.push(...await collectTree(subdirectoryPath, `${name}/${subdirectory}`, { code: true, exclusions, ...scanOptions }));
         }
         for (const hiddenDirectory of frontendEntries.filter((entry) =>
           entry.startsWith('.') && !EXCLUDED_CODE_NAMES.has(entry.toLowerCase())
@@ -1132,7 +1275,7 @@ function createBackupService(options = {}) {
           const hiddenPath = path.join(absolutePath, hiddenDirectory);
           const hiddenStat = await fsp.lstat(hiddenPath);
           if (hiddenStat.isDirectory() && !hiddenStat.isSymbolicLink()) {
-            files.push(...await collectTree(hiddenPath, `${name}/${hiddenDirectory}`, { code: true, exclusions }));
+            files.push(...await collectTree(hiddenPath, `${name}/${hiddenDirectory}`, { code: true, exclusions, ...scanOptions }));
           }
         }
         const scannedFrontendEntries = new Set([
@@ -1193,84 +1336,212 @@ function createBackupService(options = {}) {
     ]));
   }
 
-  async function getSourceMetrics() {
-    const [databaseResult, websiteResult, assetsResult] = await Promise.allSettled([
-      getOptionalDatabaseInfo(false),
-      collectWebsiteFiles(),
-      (async () => {
-        const originalRoot = storageRoots.assetsRoot || '';
-        const thumbnailRoot = storageRoots.thumbnailStoragePath || '';
-        if (!originalRoot) throw new Error('ASSETS_ROOT must point to the production original asset root; backend/uploads is not used.');
-        if (!thumbnailRoot) throw new Error('THUMBNAIL_STORAGE_PATH must point to the centralized production thumbnail root.');
-        if (!pathApiFor(originalRoot).isAbsolute(originalRoot) || !pathApiFor(thumbnailRoot).isAbsolute(thumbnailRoot)) {
-          throw new Error('Production asset and thumbnail roots must be absolute server paths.');
-        }
-        if (pathsOverlap(originalRoot, thumbnailRoot)) {
-          throw new Error('Original asset and thumbnail roots must be separate, non-overlapping directories.');
-        }
-        const [originalGroups, thumbnailGroups] = await Promise.all([
-          collectGroupedFiles(originalRoot, { excludeStaging: true }),
-          collectGroupedFiles(thumbnailRoot, { thumbnails: true })
-        ]);
+  function safeSourceFailure(error) {
+    if (error?.code === 'SOURCE_SCAN_LIMIT') {
+      return { status: 'MEASUREMENT_FAILED', code: 'SCAN_LIMIT_EXCEEDED', error: 'The configured source contains too many entries for a safe measurement. Reduce the source scope and retry.' };
+    }
+    if (error?.code === 'SOURCE_SCAN_TIMEOUT') {
+      return { status: 'MEASUREMENT_FAILED', code: 'SCAN_TIMEOUT', error: 'Source measurement exceeded its safe time limit. Retry when the server is less busy or reduce the source scope.' };
+    }
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+      return { status: 'UNAVAILABLE', code: 'SOURCE_PATH_UNAVAILABLE', error: 'The configured source path does not exist or is not a directory. Verify the configured path.' };
+    }
+    if (error?.code === 'EACCES' || error?.code === 'EPERM') {
+      return { status: 'UNAVAILABLE', code: 'SOURCE_ACCESS_DENIED', error: 'The backup service cannot read the configured source. Check directory permissions.' };
+    }
+    if (error?.code === 'SOURCE_SYMLINK' || /symbolic link/i.test(error?.message || '')) {
+      return { status: 'MEASUREMENT_FAILED', code: 'UNSAFE_SYMLINK', error: 'The source contains a symbolic link, which is excluded to prevent traversal outside the configured root.' };
+    }
+    if (/allowlist requires|Required Website Code source is missing|requires at least one \.env file/i.test(error?.message || '')) {
+      return { status: 'UNAVAILABLE', code: 'WEBSITE_SOURCE_INCOMPLETE', error: 'The allowlisted website source is incomplete. Verify required project files and encrypted environment-file availability.' };
+    }
+    return { status: 'MEASUREMENT_FAILED', code: 'SOURCE_MEASUREMENT_FAILED', error: 'The configured source could not be measured. Verify its configuration and read access, then retry.' };
+  }
+
+  async function measureFilesystemRoot(root, { code = false, excludeStaging = false } = {}) {
+    if (!root) {
+      return {
+        status: 'NOT_CONFIGURED',
+        code: 'SOURCE_NOT_CONFIGURED',
+        error: 'Configure this source path in the backend environment before measuring it.',
+        root: null,
+        files: null,
+        bytes: null
+      };
+    }
+    if (!pathApiFor(root).isAbsolute(root)) {
+      return {
+        status: 'MEASUREMENT_FAILED',
+        code: 'INVALID_SOURCE_PATH',
+        error: 'The configured source path must be absolute.',
+        root,
+        files: null,
+        bytes: null
+      };
+    }
+    try {
+      const rootStat = await fsp.lstat(root);
+      if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+        const error = new Error('Configured source root must be a regular directory.');
+        error.code = 'SOURCE_SYMLINK';
+        throw error;
+      }
+      const scanBudget = createScanBudget();
+      const exclusions = [];
+      const entries = code
+        ? (await collectWebsiteFiles(exclusions, { scanBudget })).files
+        : await collectTree(root, '', { scanBudget, excludeStaging });
+      const bytes = entries.reduce((sum, file) => sum + file.sizeBytes, 0);
+      if (!Number.isSafeInteger(bytes)) {
         return {
-          originalBytes: originalGroups.reduce((sum, group) => sum + group.sizeBytes, 0),
-          thumbnailBytes: thumbnailGroups.reduce((sum, group) => sum + group.sizeBytes, 0),
-          originalFiles: originalGroups.reduce((sum, group) => sum + group.files.length, 0),
-          thumbnailFiles: thumbnailGroups.reduce((sum, group) => sum + group.files.length, 0),
-          originalRoot,
-          thumbnailRoot
+          status: 'MEASUREMENT_FAILED',
+          code: 'SIZE_OVERFLOW',
+          error: 'The configured source is too large to represent safely.',
+          root,
+          files: null,
+          bytes: null
         };
-      })()
+      }
+      return {
+        status: 'AVAILABLE',
+        code: 'SOURCE_MEASURED',
+        error: null,
+        root,
+        files: entries.length,
+        bytes,
+        encryptedEnvironmentFiles: code ? entries.filter((file) => file.encrypted).length : undefined,
+        excludedFiles: code ? exclusions : undefined
+      };
+    } catch (error) {
+      return { ...safeSourceFailure(error), root, files: null, bytes: null };
+    }
+  }
+
+  async function measureSourceMetrics() {
+    const storageRoots = getStorageRoots();
+    const originalRoot = storageRoots.assetsRoot || '';
+    const thumbnailRoot = storageRoots.thumbnailStoragePath || '';
+    const overlappingAssetRoots = originalRoot && thumbnailRoot && pathsOverlap(originalRoot, thumbnailRoot);
+    const [databaseResult, websiteResult, originalResult, thumbnailResult] = await Promise.all([
+      getOptionalDatabaseInfo(false).then((value) => ({ value }), (error) => ({ error })),
+      measureFilesystemRoot(projectRoot, { code: true }),
+      overlappingAssetRoots
+        ? Promise.resolve({ status: 'MEASUREMENT_FAILED', code: 'OVERLAPPING_SOURCE_PATHS', error: 'Original and thumbnail roots must be separate, non-overlapping directories.', root: originalRoot, files: null, bytes: null })
+        : measureFilesystemRoot(originalRoot, { excludeStaging: true }),
+      overlappingAssetRoots
+        ? Promise.resolve({ status: 'MEASUREMENT_FAILED', code: 'OVERLAPPING_SOURCE_PATHS', error: 'Original and thumbnail roots must be separate, non-overlapping directories.', root: thumbnailRoot, files: null, bytes: null })
+        : measureFilesystemRoot(thumbnailRoot)
     ]);
 
     let databaseMetrics;
-    if (databaseResult.status === 'fulfilled') {
+    if (databaseResult.value?.available) {
       const databaseInfo = databaseResult.value;
-      const pgDump = databaseInfo.available ? detectPgDump(databaseInfo.version) : null;
+      const pgDump = detectPgDump(databaseInfo.version);
       databaseMetrics = {
-        available: databaseInfo.available,
+        status: 'AVAILABLE',
+        code: 'DATABASE_CONNECTED',
+        available: true,
         name: databaseInfo.name,
         version: databaseInfo.version,
+        tableCount: Number.isSafeInteger(databaseInfo.tableCount) ? databaseInfo.tableCount : null,
         sourceServer: databaseInfo.sourceServer,
-        currentBytes: databaseInfo.available ? databaseInfo.sizeBytes : null,
-        pgDump: pgDump ? { available: pgDump.available, version: pgDump.version, error: pgDump.error } : null,
-        error: databaseInfo.error
+        estimatedBytes: databaseInfo.sizeBytes,
+        currentBytes: databaseInfo.sizeBytes,
+        pgDump: { available: pgDump.available, version: pgDump.version, error: pgDump.error },
+        error: null
       };
     } else {
-      databaseMetrics = { available: false, name: null, version: null, sourceServer: null, currentBytes: null, error: formatError(databaseResult.reason) };
+      const message = databaseResult.value?.error || databaseResult.error;
+      const notConfigured = /must be explicitly configured/i.test(message || '');
+      const notConnected = /connection is unavailable|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|connection terminated|could not connect/i.test(message || '');
+      const failure = notConfigured
+        ? { status: 'NOT_CONFIGURED', code: 'DATABASE_NOT_CONFIGURED', error: 'DB_HOST (or PGHOST) and DB_NAME (or PGDATABASE) must be explicitly configured for source measurement.' }
+        : notConnected
+          ? { status: 'UNAVAILABLE', code: 'DATABASE_UNAVAILABLE', error: 'The configured PostgreSQL connection is unavailable. Verify that the local database is running and the configured host/database are correct.' }
+          : { status: 'MEASUREMENT_FAILED', code: 'DATABASE_CONNECTION_FAILED', error: 'The configured PostgreSQL connection could not be measured. Verify database availability and backend connection settings.' };
+      databaseMetrics = {
+        ...failure,
+        available: false,
+        name: String(environment.DB_NAME || environment.PGDATABASE || '') || null,
+        version: null,
+        tableCount: null,
+        sourceServer: String(environment.DB_HOST || environment.PGHOST || '').trim() || null,
+        estimatedBytes: null,
+        currentBytes: null,
+        pgDump: null
+      };
     }
 
-    const websiteMetrics = websiteResult.status === 'fulfilled'
-      ? {
-          available: true,
-          currentBytes: websiteResult.value.files.reduce((sum, file) => sum + file.sizeBytes, 0),
-          files: websiteResult.value.files.length,
-          encryptedEnvironmentFiles: websiteResult.value.files.filter((file) => file.encrypted).length,
-          excludedFiles: websiteResult.value.exclusions,
-          error: null
-        }
-      : { available: false, currentBytes: null, files: 0, encryptedEnvironmentFiles: 0, error: formatError(websiteResult.reason) };
-
-    const assetsMetrics = assetsResult.status === 'fulfilled'
-      ? { available: true, ...assetsResult.value, totalBytes: assetsResult.value.originalBytes + assetsResult.value.thumbnailBytes, error: null }
-      : {
-          available: false,
-          originalBytes: null,
-          thumbnailBytes: null,
-          originalFiles: 0,
-          thumbnailFiles: 0,
-          originalRoot: storageRoots.assetsRoot,
-          thumbnailRoot: storageRoots.thumbnailStoragePath,
-          totalBytes: null,
-          error: formatError(assetsResult.reason)
-        };
-
+    const websiteMetrics = {
+      ...websiteResult,
+      available: websiteResult.status === 'AVAILABLE',
+      sourceRoot: projectRoot,
+      currentBytes: websiteResult.bytes,
+      estimatedBytes: websiteResult.bytes,
+      files: websiteResult.files,
+      encryptedEnvironmentFiles: websiteResult.encryptedEnvironmentFiles ?? null,
+      excludedFiles: websiteResult.excludedFiles
+    };
+    const originalMetrics = { ...originalResult, available: originalResult.status === 'AVAILABLE' };
+    const thumbnailMetrics = { ...thumbnailResult, available: thumbnailResult.status === 'AVAILABLE' };
+    const assetsAvailable = originalMetrics.available && thumbnailMetrics.available;
+    const assetsSizeOverflow = assetsAvailable && !Number.isSafeInteger(originalMetrics.bytes + thumbnailMetrics.bytes);
+    const assetsStatus = assetsSizeOverflow ? 'MEASUREMENT_FAILED' : assetsAvailable ? 'AVAILABLE' : 'UNAVAILABLE';
+    const assetsFailed = [originalMetrics, thumbnailMetrics].some((source) => source.status === 'MEASUREMENT_FAILED');
+    const assetsMetrics = {
+      status: assetsStatus,
+      code: assetsSizeOverflow ? 'SIZE_OVERFLOW' : assetsAvailable ? 'ASSET_SOURCES_MEASURED' : assetsFailed ? 'ASSET_SOURCE_MEASUREMENT_FAILED' : 'ASSET_SOURCES_INCOMPLETE',
+      available: assetsAvailable && !assetsSizeOverflow,
+      original: originalMetrics,
+      thumbnails: thumbnailMetrics,
+      originalRoot: originalMetrics.root,
+      originalBytes: originalMetrics.bytes,
+      originalFiles: originalMetrics.files,
+      thumbnailRoot: thumbnailMetrics.root,
+      thumbnailBytes: thumbnailMetrics.bytes,
+      thumbnailFiles: thumbnailMetrics.files,
+      totalBytes: assetsAvailable && !assetsSizeOverflow
+        ? originalMetrics.bytes + thumbnailMetrics.bytes
+        : null,
+      totalFiles: assetsAvailable ? originalMetrics.files + thumbnailMetrics.files : null,
+      error: assetsSizeOverflow
+        ? 'The total asset size is too large to represent safely.'
+        : assetsAvailable
+          ? null
+          : [originalMetrics, thumbnailMetrics].filter((source) => !source.available).map((source) => source.error).join(' ')
+    };
+    const allAvailable = databaseMetrics.available && websiteMetrics.available && assetsMetrics.available;
+    const measuredAt = clock().toISOString();
+    if (allAvailable) lastSuccessfulMeasurementAt = measuredAt;
     return {
-      measuredAt: clock().toISOString(),
+      sourceEnvironment: 'SERVER',
+      measuredAt,
+      lastSuccessfulMeasurementAt,
       database: databaseMetrics,
       websiteCode: websiteMetrics,
-      assets: assetsMetrics
+      assets: assetsMetrics,
+      estimatedPackageBytes: allAvailable &&
+        Number.isSafeInteger(databaseMetrics.estimatedBytes + websiteMetrics.estimatedBytes + assetsMetrics.totalBytes)
+        ? databaseMetrics.estimatedBytes + websiteMetrics.estimatedBytes + assetsMetrics.totalBytes
+        : null
     };
+  }
+
+  async function getSourceMetrics({ refresh = false } = {}) {
+    const now = Date.now();
+    if (!refresh && sourceMetricsCache && now - sourceMetricsCache.cachedAt < SOURCE_METRICS_CACHE_MS) {
+      return sourceMetricsCache.metrics;
+    }
+    if (sourceMetricsPromise) return sourceMetricsPromise;
+    sourceMetricsPromise = measureSourceMetrics()
+      .then((metrics) => {
+        sourceMetricsCache = { metrics, cachedAt: Date.now() };
+        return metrics;
+      })
+      .finally(() => {
+        sourceMetricsPromise = null;
+      });
+    return sourceMetricsPromise;
   }
 
   async function browseDestination(directoryPath = '') {
@@ -1814,7 +2085,7 @@ function createBackupService(options = {}) {
     await fsp.rm(candidate, { recursive: true, force: false });
   }
 
-  async function buildPlan({
+  async function buildPlanUnlocked({
     categories,
     destinations,
     capacityReclaimBytes = [],
@@ -1824,6 +2095,7 @@ function createBackupService(options = {}) {
     if (!Array.isArray(destinations) || destinations.length === 0 || destinations.length > MAX_DESTINATIONS) {
       throw new Error(`Add between 1 and ${MAX_DESTINATIONS} tested backup destinations.`);
     }
+
     const normalizedDestinations = destinations.map((destination) => {
       if (typeof destination !== 'string' || !destination.trim()) throw new Error('Every backup destination needs a path.');
       return destination.trim();
@@ -1875,6 +2147,7 @@ function createBackupService(options = {}) {
       originalAssets: { estimatedBytes: 0, plannedBytes: 0, files: 0, users: [] },
       thumbnails: { estimatedBytes: 0, plannedBytes: 0, files: 0 }
     };
+    const storageRoots = getStorageRoots();
     const sourceRoots = {
       websiteCode: projectRoot,
       databaseData: databaseInfo.dataDirectory || null,
@@ -1932,8 +2205,10 @@ function createBackupService(options = {}) {
     }
 
     if (selectedTypes.includes('assetsAndThumbnails')) {
-      const originalRoot = storageRoots.assetsRoot || '';
-      const thumbnailRoot = storageRoots.thumbnailStoragePath || '';
+      const { assetsRoot: configuredOriginalRoot, thumbnailStoragePath: configuredThumbnailRoot } =
+        getStorageRoots();
+      const originalRoot = configuredOriginalRoot || '';
+      const thumbnailRoot = configuredThumbnailRoot || '';
       if (!originalRoot) issues.push('ASSETS_ROOT must point to the production original asset root; local backend/uploads fallback is not used.');
       else if (!pathApiFor(originalRoot).isAbsolute(originalRoot)) issues.push('ASSETS_ROOT must be an absolute production storage path.');
       if (!thumbnailRoot) issues.push('THUMBNAIL_STORAGE_PATH must point to the centralized production thumbnail root.');
@@ -2105,6 +2380,10 @@ function createBackupService(options = {}) {
       results.push({ ...drive, driveNumber: index + 1, status: 'READY' });
     }
     return results;
+  }
+
+  async function buildPlan(options) {
+    return buildPlanUnlocked(options);
   }
 
   async function createJob({
@@ -3047,13 +3326,28 @@ function createBackupService(options = {}) {
             job.progress.currentPath = group.outputRelativePath;
             job.progress.currentFileBytes = 0;
             job.progress.currentFileSize = group.requiredBytes;
-            await runPgDump(job, group, drive, drive.setDirectory, checksumStreams[drive.driveNumber], speedState);
+            await runPgDump(
+              job,
+              group,
+              drive,
+              drive.setDirectory,
+              checksumStreams[drive.driveNumber],
+              speedState
+            );
           } else {
             for (const file of group.files) {
               job.progress.currentPath = file.outputRelativePath;
               job.progress.currentFileBytes = 0;
               job.progress.currentFileSize = file.sizeBytes + (file.encrypted ? ENV_OVERHEAD_BYTES : 0);
-              await copyFileVerified(job, group, file, drive, drive.setDirectory, checksumStreams[drive.driveNumber], speedState);
+              await copyFileVerified(
+                job,
+                group,
+                file,
+                drive,
+                drive.setDirectory,
+                checksumStreams[drive.driveNumber],
+                speedState
+              );
             }
           }
         }
@@ -3259,6 +3553,7 @@ module.exports = {
   createBackupService,
   getDefaultClientExportRoot,
   getFsCapacity,
+  getPostgresExecutableCandidates,
   getLocalDateKey,
   getNextScheduleDate,
   isEnvironmentFile,

@@ -76,7 +76,7 @@ test('single-image endpoint serves approved assets publicly without internal fie
   const publicImage = {
     id: 196,
     title: 'ankit 1',
-    filename: 'asset.jpg',
+    filename: 'contributor/2026/10/Approved/asset.jpg',
     category: 'Images',
     keywords: 'asset',
     created_at: '2026-10-03T00:00:00.000Z',
@@ -116,7 +116,8 @@ test('single-image endpoint serves approved assets publicly without internal fie
   const body = JSON.parse(response.body);
   assert.equal(body.id, 196);
   assert.equal(body.title, 'ankit 1');
-  assert.equal(body.thumbnail_url, publicImage.thumbnail_url);
+  assert.equal(body.filename, 'asset.jpg');
+  assert.equal(body.thumbnail_url, '/api/assets/196/thumbnail');
   assert.equal(body.thumbnail_status, publicImage.thumbnail_status);
   for (const field of [
     'uploaded_by',
@@ -127,6 +128,9 @@ test('single-image endpoint serves approved assets publicly without internal fie
     'processing_completed_at',
     'processing_error',
     'thumbnail_error',
+    'thumbnail_path',
+    'upload_file_device',
+    'upload_file_inode',
   ]) {
     assert.equal(Object.hasOwn(body, field), false, `${field} must not be returned publicly`);
   }
@@ -134,6 +138,58 @@ test('single-image endpoint serves approved assets publicly without internal fie
   for (const field of Object.keys(publicImage)) {
     assert.match(queryText, new RegExp(`\\b${field}\\b`, 'i'));
   }
+});
+
+test('public image listing hides storage paths while preserving asset fields', async (t) => {
+  const originalQuery = pool.query;
+  pool.query = async (sql, values) => {
+    if (/SELECT images\.\*, users\.username/i.test(sql)) {
+      return {
+        rows: [{
+          id: 42,
+          title: 'Sample',
+          filename: 'contributor/2026/10/Approved/sample.jpg',
+          original_filename: '/private/storage/sample-original.jpg',
+          thumbnail_url: '/api/thumbnail?file=contributor%2Fthumbnails%2Fsample.webp',
+          thumbnail_path: 'contributor/thumbnails/sample.webp',
+          upload_file_device: 'private-device',
+          upload_file_inode: 'private-inode',
+          upload_thumbnail_location_id: 'private-location',
+          views: 12,
+        }],
+      };
+    }
+    if (/COUNT\(\*\)::int AS total_images/i.test(sql)) {
+      return { rows: [{ total_images: 1, total_likes: 0, total_downloads: 0, total_views: 12 }] };
+    }
+    return originalQuery(sql, values);
+  };
+
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(async () => {
+    pool.query = originalQuery;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  const response = await request(server.address().port, '/images?page=1&limit=1');
+  assert.equal(response.status, 200);
+  const body = JSON.parse(response.body);
+  assert.equal(body.images[0].filename, 'sample.jpg');
+  assert.equal(body.images[0].original_filename, 'sample-original.jpg');
+  assert.equal(body.images[0].thumbnail_url, '/api/assets/42/thumbnail');
+  assert.equal(body.images[0].views, 12);
+  for (const field of [
+    'thumbnail_path',
+    'upload_file_device',
+    'upload_file_inode',
+    'upload_thumbnail_location_id',
+  ]) {
+    assert.equal(Object.hasOwn(body.images[0], field), false, `${field} must not be returned publicly`);
+  }
+  assert.doesNotMatch(response.body, /private\/storage|contributor\/2026|thumbnail%2Fsample/);
 });
 
 test('catalog preview rejects a 3x2 image instead of returning a successful placeholder-sized preview', async (t) => {

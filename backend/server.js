@@ -20,7 +20,8 @@ const { createMessagingRouter, createAssetNotifications, createCouponNotificatio
 const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { registerOrderRoutes } = require("./orders");
 const { summarizeContributorDownloadWindowCounts, summarizeContributorUploadWindowCounts } = require("./dashboardStats");
-const { createAssetServingHandler, encodeAssetPath, resolveAssetFile } = require("./utils/assetServing");
+const { createAssetServingHandler, encodeAssetPath, resolveAssetFile, sendAssetFile } = require("./utils/assetServing");
+const { sanitizePublicAsset, sanitizePublicAssets } = require("./utils/publicAssetSerializer");
 const { applyWatermarkToBuffer, generateWatermarkSvg } = require("./utils/watermarkEngine");
 const { getAssetSourceDimensions } = require("./utils/assetDimensions");
 const thumbnailQueue = require("./thumbnail-queue-worker");
@@ -41,6 +42,9 @@ const {
   publishStagedUpload,
 } = require("./services/assetUploadLifecycle");
 const { checkAssetLifecycleSchema } = require("./services/assetLifecycleSchema");
+const assetStorageConnections = require("./services/assetStorageConnections");
+const { updateStorageRootsInEnv } = require("./services/assetStorageEnvironment");
+const { getDisconnectedStorageForRequest } = assetStorageConnections;
 const {
   createFinalUploadFilename,
   getAssetUploadTimeZone,
@@ -62,9 +66,13 @@ const { createBackupRouter } = require("./routes/backup-routes");
 const { createAdminVerifier } = require("./middleware/createAdminVerifier");
 const {
   getAssetServerHttpOrigin,
-  getAssetStorageRoots,
   getCorsAllowedOrigins,
 } = require("./config");
+const {
+  browseStorageDirectory,
+  getAllowedStorageRoots,
+  validateStorageRootPair,
+} = require("./services/storageLocationBrowser");
 const processorFactory = require("./thumbnail-engine/processor-factory");
 const {
   proxyRemoteThumbnail,
@@ -294,9 +302,31 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 app.use("/admin/backup", createBackupRouter({
   pool,
   verifyAdmin,
-  projectRoot: path.resolve(__dirname, "..")
+  projectRoot: path.resolve(__dirname, ".."),
+  serviceOptions: {
+    getStorageRoots: () => assetStorageConnections.getConfiguredStorageRoots(),
+  },
 }));
 app.use(cookieParser());
+app.use((req, res, next) => {
+  let connections;
+  try {
+    connections = assetStorageConnections.get();
+  } catch (error) {
+    console.error("Failed to read asset storage connection settings", error);
+    return res.status(500).json({ error: "Unable to read asset storage connection settings" });
+  }
+
+  const disconnectedStorage = getDisconnectedStorageForRequest(req.method, req.path, connections);
+  if (disconnectedStorage === "thumbnails") {
+      return res.status(503).json({ error: "THUMBNAIL_STORAGE_DISCONNECTED" });
+  }
+  if (disconnectedStorage === "assets") {
+      return res.status(503).json({ error: "ASSET_STORAGE_DISCONNECTED" });
+  }
+
+  return next();
+});
 
 if (process.env.NODE_ENV === "production") {
   app.get(["/profile", "/dashboard", "/favorites"], (req, res, next) => {
@@ -328,6 +358,10 @@ const IMAGE_CONTENT_TYPES = {
   ".webp": "image/webp",
   ".gif": "image/gif",
   ".svg": "image/svg+xml",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".heif": "image/heif",
+  ".heic": "image/heic",
 };
 
 const UNSUPPORTED_PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -414,6 +448,7 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  let localAssetRoot = null;
   try {
     const processImage = Boolean(options.processImage && req.method === "GET");
     if (processImage) {
@@ -423,26 +458,40 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
       }
       if (unsupportedUntil) unsupportedPreviewSources.delete(upstreamPath);
     }
-    const assetServerOrigin = getAssetServerHttpOrigin();
-
-    const queryIndex = req.originalUrl.indexOf("?");
-    const query = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : "";
-    const response = await axios.request({
-      method: req.method.toLowerCase(),
-      url: `${assetServerOrigin}${upstreamPath}${query}`,
-      responseType: processImage ? "arraybuffer" : "stream",
-      decompress: false,
-      headers: {
-        authorization: Object.prototype.hasOwnProperty.call(options, "authorization")
-          ? options.authorization
-          : req.headers.authorization,
-        accept: req.headers.accept,
-        range: req.headers.range,
-      },
-      timeout: 30000,
-      maxRedirects: 0,
-      validateStatus: () => true,
-    });
+    let response;
+    if (options.localAssetPath && (localAssetRoot = getLocalAssetRoot())) {
+      const localFilePath = await resolveAssetFile(localAssetRoot, options.localAssetPath);
+      if (!processImage) {
+        return sendAssetFile(req, res, localAssetRoot, options.localAssetPath);
+      }
+      response = {
+        status: 200,
+        headers: {
+          "content-type": IMAGE_CONTENT_TYPES[path.extname(localFilePath).toLowerCase()] || "image/octet-stream",
+        },
+        data: await fs.promises.readFile(localFilePath),
+      };
+    } else {
+      const assetServerOrigin = getAssetServerHttpOrigin();
+      const queryIndex = req.originalUrl.indexOf("?");
+      const query = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : "";
+      response = await axios.request({
+        method: req.method.toLowerCase(),
+        url: `${assetServerOrigin}${upstreamPath}${query}`,
+        responseType: processImage ? "arraybuffer" : "stream",
+        decompress: false,
+        headers: {
+          authorization: Object.prototype.hasOwnProperty.call(options, "authorization")
+            ? options.authorization
+            : req.headers.authorization,
+          accept: req.headers.accept,
+          range: req.headers.range,
+        },
+        timeout: 30000,
+        maxRedirects: 0,
+        validateStatus: () => true,
+      });
+    }
 
     res.status(response.status);
     const cacheControlOverride = Boolean(
@@ -557,20 +606,26 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
     });
     return response.data.pipe(res);
   } catch (error) {
+    if (localAssetRoot && error.code === "INVALID_ASSET_PATH") {
+      return res.status(400).json({ error: "Invalid asset path" });
+    }
+    if (localAssetRoot && ["ENOENT", "ENOTDIR"].includes(error.code)) {
+      return res.status(404).json({ error: "Asset not found" });
+    }
     console.error("SERVER asset proxy failed", error.message);
     return res.status(502).json({ error: "SERVER asset server unavailable" });
   }
 };
 
 const getLocalAssetRoot = () => {
-  const { assetsRoot: configuredRoot } = getAssetStorageRoots();
+  const { assetsRoot: configuredRoot } = assetStorageConnections.getConfiguredStorageRoots();
   const allowLocalTestStorage =
     process.env.NODE_ENV === "test" &&
     process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE === "true";
-  if (process.platform === "darwin" && !allowLocalTestStorage) {
+  if (process.platform === "darwin" && !configuredRoot && !allowLocalTestStorage) {
     return null;
   }
-  if (process.env.NODE_ENV === "production" || configuredRoot) {
+  if (process.env.NODE_ENV === "production" || configuredRoot || allowLocalTestStorage) {
     return assetThumbnails.getOriginalAssetStorageRoot();
   }
   return null;
@@ -980,6 +1035,7 @@ app.get("/api/images/:imageId", async (req, res) => {
 
     if (
       !req.headers.range &&
+      req.query.original !== "true" &&
       image.generated_thumbnail_status === "READY" &&
       image.format === "webp"
     ) {
@@ -1001,6 +1057,7 @@ app.get("/api/images/:imageId", async (req, res) => {
       res,
       `/api/files/${encodeAssetPath(assetPath)}`,
       {
+        localAssetPath: assetPath,
         processImage: canOptimizeImage,
         watermark: req.query.watermark === "true",
         scaleFactor: proportionalDetailPreview ? 0.2 : undefined,
@@ -1192,8 +1249,9 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
             res,
             `/api/files/${encodeAssetPath(sourcePath)}`,
             {
-              processImage: true,
-              watermark: req.query.watermark === "true",
+            localAssetPath: sourcePath,
+            processImage: true,
+            watermark: req.query.watermark === "true",
               scaleFactor: 0.2,
               outputFormat: req.query.watermark === "true" ? "jpeg" : "webp",
               strictImageProcessing: true,
@@ -2565,32 +2623,116 @@ app.delete("/admin/branding/hero-banner", verifyAdmin, async (req, res) => {
 
 app.get("/admin/assets/location", verifyAdmin, async (req, res) => {
   try {
+    const connections = assetStorageConnections.get();
     const uploadFolderPath = assetThumbnails.getOriginalAssetStorageRoot();
-    let folderSizeBytes = 0;
-    const pendingDirectories = [uploadFolderPath];
-    while (pendingDirectories.length > 0) {
-      const currentDirectory = pendingDirectories.pop();
-      for (const entry of fs.readdirSync(currentDirectory, { withFileTypes: true })) {
-        const entryPath = path.join(currentDirectory, entry.name);
-        if (entry.isDirectory()) {
-          pendingDirectories.push(entryPath);
-        } else if (entry.isFile()) {
-          folderSizeBytes += fs.statSync(entryPath).size;
+    const thumbnailFolderPath = assetThumbnails.getThumbnailStorageRoot();
+    const getFolderSizeBytes = (directoryPath) => {
+      let folderSizeBytes = 0;
+      if (fs.existsSync(directoryPath)) {
+        const pendingDirectories = [directoryPath];
+        while (pendingDirectories.length > 0) {
+          const currentDirectory = pendingDirectories.pop();
+          for (const entry of fs.readdirSync(currentDirectory, { withFileTypes: true })) {
+            const entryPath = path.join(currentDirectory, entry.name);
+            if (entry.isDirectory()) {
+              pendingDirectories.push(entryPath);
+            } else if (entry.isFile()) {
+              folderSizeBytes += fs.statSync(entryPath).size;
+            }
+          }
         }
       }
-    }
+      return folderSizeBytes;
+    };
+    const folderSizeBytes = getFolderSizeBytes(uploadFolderPath);
+    const thumbnailFolderSizeBytes = getFolderSizeBytes(thumbnailFolderPath);
     const driveStats = fs.statfsSync(uploadFolderPath);
     const blockSize = Number(driveStats.bsize || 0);
     const driveFreeBytes = blockSize * Number(driveStats.bavail || 0);
     res.json({
-      uploadFolderPath: "Original asset storage",
+      uploadFolderPath,
       exists: fs.existsSync(uploadFolderPath),
       folderSizeBytes,
-      driveFreeBytes
+      thumbnailFolderPath,
+      thumbnailFolderSizeBytes,
+      thumbnailFolderExists: fs.existsSync(thumbnailFolderPath),
+      driveFreeBytes,
+      connections
     });
   } catch (error) {
     console.error("Failed to resolve upload folder path", error);
     res.status(500).json({ error: "Unable to resolve upload folder path" });
+  }
+});
+
+app.put("/admin/assets/connections", verifyAdmin, async (req, res) => {
+  const changes = {};
+  if (typeof req.body?.assets === "boolean") changes.assets = req.body.assets;
+  if (typeof req.body?.thumbnails === "boolean") changes.thumbnails = req.body.thumbnails;
+  if (!Object.keys(changes).length) {
+    return res.status(400).json({ error: "Provide an assets or thumbnails boolean connection setting." });
+  }
+
+  try {
+    return res.json({ connections: assetStorageConnections.update(changes) });
+  } catch (error) {
+    console.error("Failed to update asset storage connections", error);
+    return res.status(500).json({ error: "Unable to update asset storage connections" });
+  }
+});
+
+app.get("/admin/assets/folder-browser", verifyAdmin, (req, res) => {
+  try {
+    const configuredRoots = assetStorageConnections.getConfiguredStorageRoots();
+    const roots = getAllowedStorageRoots({
+      currentRoots: [
+        configuredRoots.assetsRoot || assetThumbnails.getOriginalAssetStorageRoot(),
+        configuredRoots.thumbnailStoragePath,
+      ],
+    });
+    if (typeof req.query.path !== "string" || !req.query.path) {
+      return res.json({
+        roots: roots.map((rootPath) => ({
+          path: rootPath,
+          name: process.platform === "darwin" && rootPath === path.parse(rootPath).root
+            ? "Macintosh HD (System Drive)"
+            : path.basename(rootPath) || rootPath,
+        })),
+      });
+    }
+    return res.json(browseStorageDirectory(req.query.path, roots));
+  } catch (error) {
+    console.error("Failed to browse storage folders", error);
+    return res.status(error.code ? 500 : 400).json({ error: error.message || "Unable to browse storage folders" });
+  }
+});
+
+app.put("/admin/assets/locations", verifyAdmin, async (req, res) => {
+  try {
+    const configuredRoots = assetStorageConnections.getConfiguredStorageRoots();
+    const roots = getAllowedStorageRoots({
+      currentRoots: [
+        configuredRoots.assetsRoot || assetThumbnails.getOriginalAssetStorageRoot(),
+        configuredRoots.thumbnailStoragePath,
+      ],
+    });
+    const locations = validateStorageRootPair(req.body?.assetRoot, req.body?.thumbnailRoot, roots);
+    updateStorageRootsInEnv(locations.assetRoot, locations.thumbnailRoot);
+    const settings = assetStorageConnections.update({
+      ...locations,
+      assets: true,
+      thumbnails: true,
+    });
+    const backgroundQueueReady = thumbnailQueue.isRunning || await thumbnailQueue.initialize();
+    return res.json({
+      assetRoot: assetThumbnails.getOriginalAssetStorageRoot(),
+      thumbnailRoot: assetThumbnails.getThumbnailStorageRoot(),
+      connections: settings,
+      backgroundQueueReady,
+    });
+  } catch (error) {
+    console.error("Failed to update asset storage locations", error);
+    return res.status(error.code ? 500 : 400).json({ error: error.message || "Unable to update asset storage locations" });
   }
 });
 
@@ -7079,7 +7221,7 @@ app.post(
       return userId;
     },
     getAuthorization: assetThumbnails.getRemoteAssetAuthorization,
-    shouldProxy: () => shouldProxyRemoteAssetUpload(),
+    shouldProxy: () => shouldProxyRemoteAssetUpload() && !assetStorageConnections.get().assetRoot,
   })
 );
 
@@ -8172,7 +8314,7 @@ app.get("/images", async (req, res) => {
     ]);
 
     res.json({
-      images: imagesResult.rows,
+      images: sanitizePublicAssets(imagesResult.rows),
       totalImages: Number(statsResult.rows[0]?.total_images || 0),
       totalLikes: Number(statsResult.rows[0]?.total_likes || 0),
       totalDownloads: Number(statsResult.rows[0]?.total_downloads || 0),
@@ -8213,7 +8355,7 @@ app.get("/images/trending", async (req, res) => {
       [limit]
     );
 
-    res.json(result.rows);
+    res.json(sanitizePublicAssets(result.rows));
   } catch (err) {
     console.error(err);
     res.status(500).send("Failed to fetch trending images");
@@ -8314,7 +8456,7 @@ app.get("/images/related/:id", async (req, res) => {
       [id, collection, category, keywords]
     );
 
-    return res.json(related.rows);
+    return res.json(sanitizePublicAssets(related.rows));
   } catch (err) {
     console.error("Related images error", err);
     return res.status(500).json({ error: "Failed to fetch related images" });
@@ -8380,10 +8522,10 @@ app.get(
           return res.status(404).json("Image not found");
         }
 
-        return res.json(authenticatedImage.rows[0]);
+        return res.json(sanitizePublicAsset(authenticatedImage.rows[0]));
       }
 
-      const publicImage = { ...image.rows[0] };
+      const publicImage = sanitizePublicAsset(image.rows[0]);
       delete publicImage.uploaded_by;
       res.json(publicImage);
 
@@ -8907,7 +9049,16 @@ app.get(
 
       // Send file
       res.sendFile(filePath, async (downloadError) => {
-        if (!downloadError) {
+        try {
+          if (downloadError) {
+            if (res.headersSent) {
+              if (!res.destroyed) res.destroy(downloadError);
+            } else {
+              res.status(downloadError.statusCode || 500).send("Download error");
+            }
+            return;
+          }
+
           if (!isContributor && !isAdmin) {
             await pool.query(
               `INSERT INTO downloads (user_id, image_id, downloaded_at) VALUES ($1, $2, NOW())`,
@@ -8925,6 +9076,8 @@ app.get(
             ownerId: image.uploaded_by,
             actorId: userId
           });
+        } catch (callbackError) {
+          console.error("Asset download completion failed", callbackError);
         }
       });
 
@@ -10366,7 +10519,16 @@ app.post('/checkout/retry-with-credits', authenticateToken, async (req, res) => 
         ].join('_') + fileExtension;
         console.debug('Serving customer download', { token, image_id: dl.image_id, user_id: dl.user_id, filename: dl.filename, suggestedName });
         res.download(filePath, suggestedName, async (downloadError) => {
-          if (!downloadError) {
+          try {
+            if (downloadError) {
+              console.error('Customer download stream failed', downloadError);
+              if (!res.headersSent) {
+                res.status(500).json({ error: 'Failed to process download' });
+              } else if (!res.writableEnded && !res.destroyed) {
+                res.destroy(downloadError);
+              }
+              return;
+            }
             await pool.query(
               `INSERT INTO downloads (user_id, image_id, downloaded_at, order_id) VALUES ($1, $2, NOW(), $3) ON CONFLICT DO NOTHING`,
               [dl.user_id, dl.image_id, dl.order_id]
@@ -10382,11 +10544,20 @@ app.post('/checkout/retry-with-credits', authenticateToken, async (req, res) => 
               ownerId: dl.uploaded_by,
               actorId: dl.user_id
             });
+          } catch (callbackError) {
+            console.error('Customer download completion failed', callbackError);
+            if (!res.headersSent) {
+              res.status(500).json({ error: 'Failed to process download' });
+            } else if (!res.writableEnded && !res.destroyed) {
+              res.destroy(callbackError);
+            }
           }
         });
       } catch (err) {
         console.error('Download error', err);
-        res.status(500).json({ error: 'Failed to process download' });
+        if (!res.headersSent) {
+          res.status(err.statusCode || 500).json({ error: 'Failed to process download' });
+        }
       }
     });
 
@@ -10416,7 +10587,7 @@ app.get("/public-contributors/:username", async (req, res) => {
       [contributor.id]
     );
 
-    res.json({ contributor, assets: assetsResult.rows });
+    res.json({ contributor, assets: sanitizePublicAssets(assetsResult.rows) });
   } catch (error) {
     console.error("Public contributor profile error", error);
     res.status(500).json({ error: "Unable to load contributor profile" });
@@ -13931,6 +14102,7 @@ async function initializeThumbnailSystem() {
       }
       const uploadStagingCleanup = await cleanupAbandonedUploadStaging({
         assetRoot: assetThumbnails.getOriginalAssetStorageRoot(),
+        configuredAssetRoot: assetStorageConnections.getConfiguredStorageRoots().assetsRoot,
       });
       if (uploadStagingCleanup.removed > 0) {
         console.log(`Removed ${uploadStagingCleanup.removed} abandoned upload staging directory(s).`);

@@ -9,7 +9,8 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const sharp = require('sharp');
 const pool = require('../db');
-const { getAssetServerOrigin, getAssetStorageRoots } = require('../config');
+const { getAssetServerOrigin } = require('../config');
+const assetStorageConnections = require('../services/assetStorageConnections');
 const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
 const { getAssetSourceDimensions } = require('./assetDimensions');
@@ -120,7 +121,7 @@ function canonicalizePossiblyMissingPath(targetPath) {
 }
 
 function getThumbnailStorageRoot() {
-  const { thumbnailStoragePath: configuredRoot } = getAssetStorageRoots();
+  const { thumbnailStoragePath: configuredRoot } = assetStorageConnections.getConfiguredStorageRoots();
   if (process.platform === 'darwin' && !configuredRoot) {
     throw new Error('THUMBNAIL_STORAGE_PATH must be configured on macOS; local thumbnail storage is not an implicit fallback');
   }
@@ -440,7 +441,7 @@ async function getRemoteAssetSourceInfo(filename, assetOwnerId) {
 }
 
 function getConfiguredAssetRoot() {
-  const { assetsRoot: configured } = getAssetStorageRoots();
+  const { assetsRoot: configured } = assetStorageConnections.getConfiguredStorageRoots();
   if (configured) return path.resolve(configured);
   if (process.platform === 'win32' && process.env.NODE_ENV === 'production') {
     throw new Error('ASSETS_ROOT must be configured in Windows production');
@@ -456,7 +457,7 @@ function getLifecycleRecoveryStorageRoots({ platform = process.platform } = {}) 
   const {
     assetsRoot: originalRootConfigured,
     thumbnailStoragePath: thumbnailRootConfigured,
-  } = getAssetStorageRoots();
+  } = assetStorageConnections.getConfiguredStorageRoots();
 
   return {
     assetRoot: platform === 'darwin' && !originalRootConfigured
@@ -857,6 +858,16 @@ async function recordThumbnailQueueFailure(assetId, error) {
 }
 
 async function generateAssetThumbnailUnlocked(assetId, options = {}) {
+  if (!assetStorageConnections.isAssetsConnected()) {
+    const error = new Error('Original asset storage is disconnected');
+    error.code = 'ASSET_STORAGE_DISCONNECTED';
+    throw error;
+  }
+  if (!assetStorageConnections.isThumbnailsConnected()) {
+    const error = new Error('Thumbnail storage is disconnected');
+    error.code = 'THUMBNAIL_STORAGE_DISCONNECTED';
+    throw error;
+  }
   const id = Number(assetId);
   const assetResult = await pool.query(
     "SELECT id, title, filename, original_filename, uploaded_by, to_char(created_at, 'YYYY-MM-DD') AS created_date FROM images WHERE id = $1",

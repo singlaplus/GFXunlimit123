@@ -44,8 +44,12 @@ function makeProxyApp(httpClient, authorization = null) {
   return app;
 }
 
-test('Mac uses remote thumbnail proxy while Windows continues using local serving', () => {
-  assert.equal(shouldProxyRemoteThumbnail('darwin'), true);
+test('Mac proxies thumbnails only when no local thumbnail root is configured', () => {
+  assert.equal(shouldProxyRemoteThumbnail('darwin', ''), true);
+  assert.equal(
+    shouldProxyRemoteThumbnail('darwin', ' /Users/gfxunlimit/Documents/stocksite/GFXunlimitThumbnails '),
+    false
+  );
   assert.equal(shouldProxyRemoteThumbnail('win32'), false);
   assert.equal(shouldProxyRemoteThumbnail('linux'), false);
 });

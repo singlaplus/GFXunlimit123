@@ -38,3 +38,4 @@ backups/
 Database/
 GFX-Aanav/database/
 GFX-Aanav/backups/
+backend/settings/asset-storage-connections.json

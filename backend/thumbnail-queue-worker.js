@@ -12,11 +12,11 @@ const pool = require('./db');
 const processorFactory = require('./thumbnail-engine/processor-factory');
 const assetThumbnails = require('./utils/assetThumbnails');
 const { createAssetNotifications } = require('./messaging');
-const { getAssetStorageRoots } = require('./config');
+const assetStorageConnections = require('./services/assetStorageConnections');
 
 function shouldInitializeThumbnailWorker({
   platform = process.platform,
-  thumbnailStoragePath = getAssetStorageRoots().thumbnailStoragePath,
+  thumbnailStoragePath = assetStorageConnections.getConfiguredStorageRoots().thumbnailStoragePath,
   nodeEnv = process.env.NODE_ENV,
   allowLocalTestStorage = process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE === 'true',
 } = {}) {
