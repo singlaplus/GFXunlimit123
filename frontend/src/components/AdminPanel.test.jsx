@@ -73,6 +73,96 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByText(/manage categories/i)).toBeInTheDocument();
   });
 
+  it("renders the Links and sitemap card with matching buttons", async () => {
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: "Links and sitemap" })).toBeInTheDocument();
+    const linksCard = screen.getByRole("heading", { name: "Links and sitemap" }).closest(".admin-panel-card");
+    expect(within(linksCard).getByRole("button", { name: "Links" })).toBeInTheDocument();
+    expect(within(linksCard).getByRole("button", { name: "Sitemap" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["links", "Links"],
+    ["sitemap", "Sitemap"],
+  ])("renders the dedicated %s page", async (tab, heading) => {
+    useLocation.mockReturnValue({ search: `?tab=${tab}` });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: heading, level: 2 })).toBeInTheDocument();
+    const backButton = screen.getByRole("button", { name: "Back to Controls" });
+    expect(screen.getByRole("heading", { name: heading, level: 2 }).parentElement).toContainElement(backButton);
+    expect(backButton.parentElement).toHaveStyle({ display: "flex", justifyContent: "space-between" });
+    expect(screen.queryByText(/total assets:/i)).not.toBeInTheDocument();
+    if (tab === "sitemap") {
+      const pageHeading = screen.getByRole("heading", { name: heading, level: 2 });
+      const page = screen.getByRole("region", { name: "Sitemap page" });
+      const cards = page.querySelectorAll(".admin-panel-card");
+      expect(cards).toHaveLength(3);
+      expect(page).toHaveStyle({ display: "flex", flexWrap: "wrap", gap: "20px" });
+      cards.forEach((card) => {
+        expect(card.style.flexBasis).toBe("calc(33.333% - 14px)");
+      });
+    }
+  });
+
+  it("loads and saves the sitemap file path", async () => {
+    const sitemapFilePath = "/srv/www/public";
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/sitemap-settings")) {
+        return Promise.resolve({ data: { path: `${sitemapFilePath}/sitemap.xml` } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { path: sitemapFilePath } });
+    useLocation.mockReturnValue({ search: "?tab=sitemap" });
+
+    render(<AdminPanel />);
+
+    const pathInput = await screen.findByRole("textbox", { name: "Sitemap storage directory" });
+    expect(pathInput).toHaveValue(sitemapFilePath);
+    fireEvent.click(screen.getByRole("button", { name: "Save Sitemap Path" }));
+
+    await waitFor(() => expect(axios.put).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/sitemap-settings"),
+      { path: sitemapFilePath },
+      expect.objectContaining({ headers: expect.any(Object) })
+    ));
+    expect(await screen.findByRole("status")).toHaveTextContent("Sitemap path saved.");
+  });
+
+  it("browses server folders and selects the directory path only", async () => {
+    axios.get.mockImplementation((url, config) => {
+      if (url.includes("/admin/sitemap-settings")) {
+        return Promise.resolve({ data: { path: "" } });
+      }
+      if (url.includes("/admin/assets/folder-browser")) {
+        if (config?.params?.path === "/srv/www") {
+          return Promise.resolve({
+            data: {
+              path: "/srv/www",
+              parentPath: "/srv",
+              directories: [{ name: "public", path: "/srv/www/public" }],
+            },
+          });
+        }
+        return Promise.resolve({ data: { roots: [{ name: "Web Root", path: "/srv/www" }] } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    useLocation.mockReturnValue({ search: "?tab=sitemap" });
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Browse" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Web Root/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /public/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use this folder" }));
+
+    expect(screen.getByRole("textbox", { name: "Sitemap storage directory" })).toHaveValue("/srv/www/public");
+  });
+
   it("shows the SERVER error when deleting a pending asset fails", async () => {
     useLocation.mockReturnValue({ search: "?status=pending" });
     axios.get.mockImplementation((url) => {

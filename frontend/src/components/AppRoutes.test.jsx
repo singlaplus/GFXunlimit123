@@ -19,9 +19,26 @@ jest.mock("../pages/AdminAnalyticsPage", () => () => <div>Admin Analytics</div>)
 jest.mock("../pages/AdminOrdersPage", () => () => <div>Admin Orders</div>);
 jest.mock("../pages/ExplorePage", () => () => <div>Explore Page</div>);
 jest.mock("../pages/OrderHistoryPage", () => () => <div>Order History</div>);
+jest.mock("./CompanyPage", () => ({ slug }) => (
+  <main><a href="http://localhost:3000/privacy">Privacy Policy</a><a href="http://localhost:3000/terms">Terms</a>{slug}</main>
+));
 jest.mock("axios");
 
 describe("AppRoutes", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/analytics";
+    mockLocation.search = "";
+    mockLocation.state = null;
+    axios.get.mockResolvedValue({
+      data: {
+        available: true,
+        path: mockLocation.pathname,
+        disabledLinks: [],
+      },
+    });
+  });
+
   it("renders admin analytics for admin users regardless of role casing", () => {
     render(<AppRoutes userRole="Admin" activePage="analytics" />);
     expect(screen.getByText("Admin Analytics")).toBeInTheDocument();
@@ -371,7 +388,11 @@ describe("AppRoutes", () => {
   it("shows published blogs on the public blog page newest first", async () => {
     mockLocation.pathname = "/blog";
     mockLocation.search = "";
-    axios.get.mockResolvedValueOnce({ data: { posts: [{ id: 1, title: "Latest post", excerpt: "Latest summary", publishAt: "2026-09-19T12:00:00.000Z" }] } });
+    axios.get.mockImplementation((url) => Promise.resolve({
+      data: url.includes("/pages/availability")
+        ? { available: true, path: "/blog", disabledLinks: [] }
+        : { posts: [{ id: 1, title: "Latest post", excerpt: "Latest summary", publishAt: "2026-09-19T12:00:00.000Z" }] },
+    }));
 
     render(<AppRoutes userRole="customer" activePage="home" />);
 
@@ -383,7 +404,11 @@ describe("AppRoutes", () => {
   it("renders the public blog detail page from a category and title URL", async () => {
     mockLocation.pathname = "/blog/tips-tricks/demo-published-blog-01_7";
     mockLocation.search = "";
-    axios.get.mockResolvedValueOnce({ data: { post: { id: 7, title: "Demo Published Blog 01", category: "Tips & Tricks", excerpt: "A demo blog post", content: "Blog content", author: "ankit", publishAt: "2026-09-19T12:00:00.000Z" } } });
+    axios.get.mockImplementation((url) => Promise.resolve({
+      data: url.includes("/pages/availability")
+        ? { available: true, path: mockLocation.pathname, disabledLinks: [] }
+        : { post: { id: 7, title: "Demo Published Blog 01", category: "Tips & Tricks", excerpt: "A demo blog post", content: "Blog content", author: "ankit", publishAt: "2026-09-19T12:00:00.000Z" } },
+    }));
 
     render(<AppRoutes userRole="customer" activePage="home" />);
 
@@ -401,7 +426,11 @@ describe("AppRoutes", () => {
       excerpt: `Summary ${index + 1}`,
       publishAt: "2026-09-19T12:00:00.000Z",
     }));
-    axios.get.mockResolvedValueOnce({ data: { posts } });
+    axios.get.mockImplementation((url) => Promise.resolve({
+      data: url.includes("/pages/availability")
+        ? { available: true, path: "/blog", disabledLinks: [] }
+        : { posts },
+    }));
 
     render(<AppRoutes userRole="customer" activePage="home" />);
 
@@ -472,8 +501,9 @@ describe("AppRoutes", () => {
     document.title = "GFXunlimit";
   });
 
-  it("renders the page for the current pathname even when the cached active page is stale", () => {
+  it("renders the page for the current pathname even when the cached active page is stale", async () => {
     mockLocation.pathname = "/explore";
+    axios.get.mockResolvedValue({ data: { available: true, path: "/explore", disabledLinks: [] } });
     render(
       <AppRoutes
         userRole="customer"
@@ -512,18 +542,20 @@ describe("AppRoutes", () => {
         }}
       />
     );
-    expect(screen.getByText("Explore Page")).toBeInTheDocument();
+    expect(await screen.findByText("Explore Page")).toBeInTheDocument();
   });
 
-  it("renders order history for customer orders route", () => {
+  it("renders order history for customer orders route", async () => {
     mockLocation.pathname = "/orders";
+    axios.get.mockResolvedValue({ data: { available: true, path: "/orders", disabledLinks: [] } });
     render(<AppRoutes userRole="customer" activePage="home" homeSectionProps={{ homePageProps: {}, galleryProps: {}, containerProps: { loading: false, filteredImages: [], currentPage: 1, totalPages: 1, totalImages: 0, setCurrentPage: jest.fn(), selectedImage: null, setSelectedImage: jest.fn(), darkMode: false, relatedImages: [], fetchSingleImage: jest.fn(), goToPreviousImage: jest.fn(), goToNextImage: jest.fn(), likeImage: jest.fn(), addFavorite: jest.fn(), downloadImage: jest.fn(), shareImage: jest.fn() }, popupProps: { selectedContributor: null, setSelectedContributor: jest.fn(), contributorImages: [], contributorLikes: [], contributorViews: [], contributorDownloads: [], contributorBestImage: null } }} />);
-    expect(screen.getByText("Order History")).toBeInTheDocument();
+    expect(await screen.findByText("Order History")).toBeInTheDocument();
   });
 
-  it("renders the tax form review screen for the review tab", () => {
+  it("renders the tax form review screen for the review tab", async () => {
     mockLocation.pathname = "/dashboard";
     mockLocation.search = "?tab=filltaxform_review";
+    axios.get.mockResolvedValue({ data: { available: true, path: "/dashboard", disabledLinks: [] } });
     mockLocation.state = {
       formType: "W-8BEN",
       formData: { name: "Amit Patel", citizenship: "India", treatyCountry: "India" },
@@ -531,16 +563,24 @@ describe("AppRoutes", () => {
 
     render(<AppRoutes userRole="contributor" activePage="tax" />);
 
-    expect(screen.getByText("Review tax form")).toBeInTheDocument();
+    expect(await screen.findByText("Review tax form")).toBeInTheDocument();
     expect(screen.getByText("Amit Patel")).toBeInTheDocument();
   });
 
   it("submits the reviewed tax form before returning to Tax Center", async () => {
+    mockLocation.pathname = "/dashboard";
+    mockLocation.search = "?tab=filltaxform_review";
+    mockLocation.state = {
+      formType: "W-8BEN",
+      formData: { name: "Amit Patel", citizenship: "India", treatyCountry: "India" },
+    };
     axios.post.mockResolvedValue({ data: { submitted: true } });
+    axios.get.mockResolvedValue({ data: { available: true, path: "/dashboard", disabledLinks: [] } });
     mockNavigate.mockClear();
 
     render(<AppRoutes userRole="contributor" activePage="tax" />);
 
+    await screen.findByRole("button", { name: /^submit$/i });
     fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
 
     await waitFor(() => {
@@ -551,5 +591,46 @@ describe("AppRoutes", () => {
       );
       expect(mockNavigate).toHaveBeenCalledWith("/dashboard?tab=taxcenter");
     });
+  });
+
+  it("blocks visitors from a page disabled by an administrator", async () => {
+    mockLocation.pathname = "/pricing";
+    mockLocation.search = "";
+    axios.get.mockResolvedValue({ data: { available: false, path: "/pricing", disabledLinks: [] } });
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("heading", { name: "This page is temporarily unavailable" })).toBeInTheDocument();
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining("/pages/availability"),
+      { params: { path: "/pricing" } }
+    );
+    mockLocation.search = "";
+  });
+
+  it("disables only the selected link on its source page", async () => {
+    mockLocation.pathname = "/pricing";
+    mockLocation.search = "";
+    axios.get.mockResolvedValue({
+      data: {
+        available: true,
+        path: "/pricing",
+        disabledLinks: [{ href: "http://localhost:3000/privacy", linkText: "Privacy Policy" }],
+      },
+    });
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    const privacyLink = await screen.findByRole("link", { name: "Privacy Policy" });
+    const termsLink = screen.getByRole("link", { name: "Terms" });
+    expect(privacyLink).toHaveAttribute("aria-disabled", "true");
+    expect(termsLink).not.toHaveAttribute("aria-disabled");
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
+    privacyLink.dispatchEvent(clickEvent);
+    expect(clickEvent.defaultPrevented).toBe(true);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining("/pages/availability"),
+      { params: { path: "/pricing" } }
+    );
   });
 });

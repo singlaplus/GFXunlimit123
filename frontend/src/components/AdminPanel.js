@@ -22,6 +22,8 @@ import TaxMailTemplates from "./TaxMailTemplates";
 import { limitWords, formatKeywords } from "../utils/uploadInputLimits";
 import { getAssetPreviewUrl, getAssetThumbnailUrl } from "../utils/assetPreview";
 import AssetThumbnail from "./AssetThumbnail";
+import SitemapGenerationPanel from "./SitemapGenerationPanel";
+import LinksScanPanel from "./LinksScanPanel";
 
 const CATEGORY_STORAGE_KEY = "asset-categories";
 const COLLECTION_STORAGE_KEY = "asset-collections";
@@ -488,6 +490,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [databaseBackupFolderSizeBytes, setDatabaseBackupFolderSizeBytes] = useState(null);
   const [databaseBackupFolderFreeBytes, setDatabaseBackupFolderFreeBytes] = useState(null);
   const [databaseDataDirectoryError, setDatabaseDataDirectoryError] = useState("");
+  const [sitemapFilePath, setSitemapFilePath] = useState("");
+  const [sitemapSettingsLoading, setSitemapSettingsLoading] = useState(false);
+  const [sitemapSettingsSaving, setSitemapSettingsSaving] = useState(false);
+  const [sitemapSettingsMessage, setSitemapSettingsMessage] = useState("");
+  const [sitemapSettingsError, setSitemapSettingsError] = useState("");
 
   useEffect(() => {
     if (!isAddStorageMenuOpen) return undefined;
@@ -759,7 +766,38 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const isControlsTaxFormsTab = tabParam === "controls_taxforms";
   const isControlsDatabaseTab = tabParam === "controls_database";
   const isControlsAssetsTab = tabParam === "controls_assets";
+  const isLinksTab = tabParam === "links";
+  const isSitemapTab = tabParam === "sitemap";
   const isCustomerDetailsTab = tabParam === "customerdetails";
+  const normalizeSitemapDirectoryPath = (value) => {
+    const sitemapPath = String(value || "").trim().replace(/[\\/]+$/, "");
+    return sitemapPath.replace(/([\\/])sitemap\.xml$/i, "") || (sitemapPath ? "/" : "");
+  };
+
+  useEffect(() => {
+    if (!isSitemapTab) return undefined;
+
+    let active = true;
+    setSitemapSettingsLoading(true);
+    setSitemapSettingsMessage("");
+    setSitemapSettingsError("");
+    axios.get(`${API_BASE_URL}/admin/sitemap-settings`, { headers: buildAuthHeaders() })
+      .then((response) => {
+        if (active) setSitemapFilePath(normalizeSitemapDirectoryPath(response.data?.path));
+      })
+      .catch((error) => {
+        if (!active) return;
+        console.error("Failed to load sitemap path", error);
+        setSitemapSettingsError(error.response?.data?.error || "Unable to load the sitemap path.");
+      })
+      .finally(() => {
+        if (active) setSitemapSettingsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isSitemapTab]);
 
   useEffect(() => {
     setSelectedLiveAssetIds(new Set());
@@ -1104,10 +1142,16 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   };
 
   const selectStorageBrowserFolder = () => {
-    const setter = storageBrowseTarget === "assets" ? setAssetLocationDraft : setThumbnailLocationDraft;
-    setter(storageBrowsePath);
+    if (storageBrowseTarget === "sitemap") {
+      setSitemapFilePath(storageBrowsePath);
+      setSitemapSettingsMessage("");
+      setSitemapSettingsError("");
+    } else {
+      const setter = storageBrowseTarget === "assets" ? setAssetLocationDraft : setThumbnailLocationDraft;
+      setter(storageBrowsePath);
+      setStorageLocationMessage("");
+    }
     setStorageBrowseTarget("");
-    setStorageLocationMessage("");
   };
 
   const openStorageFolderBrowser = async (target) => {
@@ -1303,8 +1347,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   }, [isControlsDatabaseTab, currentAuthToken, authStateVersion]);
 
   const isPromotionsTab = tabParam === "promotions";
-  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab && !isControlsDatabaseTab && !isControlsAssetsTab;
-  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "controls_database" ? "Database Connection" : tabParam === "controls_assets" ? "Assets Connection" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : statusFilter === "reviewed" ? "Reviewed Panel" : statusFilter === "pending" ? "Pending Panel" : statusFilter === "approved" ? "Approved Panel" : statusFilter === "rejected" ? "Rejected Panel" : "All Assets";
+  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab && !isControlsDatabaseTab && !isControlsAssetsTab && !isLinksTab && !isSitemapTab;
+  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "controls_database" ? "Database Connection" : tabParam === "controls_assets" ? "Assets Connection" : tabParam === "links" ? "Links" : tabParam === "sitemap" ? "Sitemap" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : statusFilter === "reviewed" ? "Reviewed Panel" : statusFilter === "pending" ? "Pending Panel" : statusFilter === "approved" ? "Approved Panel" : statusFilter === "rejected" ? "Rejected Panel" : "All Assets";
 
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
@@ -1619,7 +1663,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     "credits",
     "credit-price-control",
     "contributor-details",
-    "customer-details"
+    "customer-details",
+    "links-and-sitemap"
   ];
 
   const normalizeCardOrder = (order) => {
@@ -2915,6 +2960,26 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       toast.error("Failed to save layout");
     } finally {
       setLayoutSaving(false);
+    }
+  };
+
+  const saveSitemapFilePath = async () => {
+    setSitemapSettingsSaving(true);
+    setSitemapSettingsMessage("");
+    setSitemapSettingsError("");
+    try {
+      const response = await axios.put(
+        `${API_BASE_URL}/admin/sitemap-settings`,
+        { path: sitemapFilePath },
+        { headers: buildAuthHeaders() }
+      );
+      setSitemapFilePath(String(response.data?.path || ""));
+      setSitemapSettingsMessage("Sitemap path saved.");
+    } catch (error) {
+      console.error("Failed to save sitemap path", error);
+      setSitemapSettingsError(error.response?.data?.error || "Unable to save the sitemap path.");
+    } finally {
+      setSitemapSettingsSaving(false);
     }
   };
 
@@ -5638,6 +5703,17 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               {bulkSelectionCount}
             </div>
           </div>
+        ) : isLinksTab || isSitemapTab ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
+            <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
+            <button
+              type="button"
+              onClick={() => { window.location.href = `${adminBasePath}?tab=controls`; }}
+              style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer" }}
+            >
+              Back to Controls
+            </button>
+          </div>
         ) : (
           <h2>{adminPageHeading}</h2>
         )
@@ -5739,6 +5815,94 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         </div>
       ) : isDailyReportSettingsRouteOpen ? (
         renderDailyReportSettingsContent()
+      ) : isLinksTab || isSitemapTab ? (
+        <section
+          aria-label={`${adminPageHeading} page`}
+          style={{
+            display: isSitemapTab || isLinksTab ? "flex" : "grid",
+            flexWrap: isSitemapTab || isLinksTab ? "wrap" : undefined,
+            gap: isSitemapTab || isLinksTab ? "20px" : "16px",
+            justifyContent: isSitemapTab || isLinksTab ? "flex-start" : undefined,
+          }}
+        >
+          {isSitemapTab && (
+            <div className="admin-panel-card" style={{ flexBasis: "calc(33.333% - 14px)", background: isDarkMode ? "#111827" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a" }}>
+              <h3 style={{ marginTop: 0 }}>Sitemap</h3>
+              <label style={{ display: "grid", gap: "8px", marginBottom: "16px" }}>
+                <span>Sitemap storage directory</span>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <input
+                    type="text"
+                    aria-label="Sitemap storage directory"
+                    placeholder="/absolute/path/to/sitemap-folder"
+                    value={sitemapFilePath}
+                    onChange={(event) => setSitemapFilePath(event.target.value)}
+                    disabled={sitemapSettingsLoading || sitemapSettingsSaving}
+                    style={{ flex: 1, minWidth: 0, boxSizing: "border-box", padding: "10px 12px", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1", background: isDarkMode ? "#0f172a" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a" }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => openStorageFolderBrowser("sitemap")}
+                    disabled={sitemapSettingsLoading || sitemapSettingsSaving}
+                    style={{ padding: "10px 14px", border: 0, borderRadius: "8px", background: "#0f766e", color: "#fff", fontWeight: 700, cursor: sitemapSettingsLoading || sitemapSettingsSaving ? "not-allowed" : "pointer" }}
+                  >
+                    Browse
+                  </button>
+                </div>
+              </label>
+              <p style={{ margin: "-8px 0 16px", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.9rem" }}>
+                Leave this empty to use the backend&apos;s default sitemap directory.
+              </p>
+              <button
+                type="button"
+                onClick={saveSitemapFilePath}
+                disabled={sitemapSettingsLoading || sitemapSettingsSaving}
+                style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: sitemapSettingsSaving || sitemapSettingsLoading ? "not-allowed" : "pointer" }}
+              >
+                {sitemapSettingsLoading ? "Loading..." : sitemapSettingsSaving ? "Saving..." : "Save Sitemap Path"}
+              </button>
+              {sitemapSettingsMessage && <p role="status" style={{ color: "#16a34a" }}>{sitemapSettingsMessage}</p>}
+              {sitemapSettingsError && <p role="alert" style={{ color: "#dc2626" }}>{sitemapSettingsError}</p>}
+            </div>
+          )}
+          {isSitemapTab && <SitemapGenerationPanel isDarkMode={isDarkMode} />}
+          {isLinksTab && <LinksScanPanel isDarkMode={isDarkMode} />}
+          {isSitemapTab && storageBrowseTarget === "sitemap" && (
+            <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setStorageBrowseTarget(""); }} style={{ position: "fixed", inset: 0, zIndex: 10001, display: "grid", placeItems: "center", padding: "20px", background: "rgba(15,23,42,0.58)" }}>
+              <section role="dialog" aria-modal="true" aria-labelledby="sitemap-browser-title" style={{ display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)", gap: "14px", width: "min(680px, 100%)", height: "min(640px, calc(100vh - 40px))", maxHeight: "calc(100vh - 40px)", minHeight: 0, overflow: "hidden", padding: "22px", borderRadius: "16px", background: isDarkMode ? "#111827" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                  <div>
+                    <h3 id="sitemap-browser-title" style={{ margin: 0 }}>Browse Sitemap folders</h3>
+                    <p style={{ margin: "6px 0 0", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.8rem", overflowWrap: "anywhere" }}>{storageBrowsePath || "Choose a mounted storage location"}</p>
+                  </div>
+                  <button type="button" onClick={() => setStorageBrowseTarget("")} style={{ padding: "7px 11px", border: 0, borderRadius: "7px", background: isDarkMode ? "#334155" : "#e2e8f0", color: "inherit", cursor: "pointer" }}>Close</button>
+                </div>
+                {storageBrowseError ? <p role="alert" style={{ margin: 0, color: "#dc2626" }}>{storageBrowseError}</p> : null}
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  {storageBrowsePath ? <button type="button" onClick={() => storageBrowseParentPath ? browseStorageDirectory(storageBrowseParentPath) : (setStorageBrowsePath(""), setStorageBrowseParentPath(""), setStorageBrowseDirectories([]))} disabled={storageBrowseLoading} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: isDarkMode ? "#334155" : "#e2e8f0", color: "inherit", cursor: "pointer" }}>↑ Up</button> : null}
+                  {storageBrowsePath ? <button type="button" onClick={selectStorageBrowserFolder} disabled={storageBrowseLoading || sitemapSettingsSaving} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: "#2563eb", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Use this folder</button> : null}
+                </div>
+                <div style={{ minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", borderRadius: "10px" }}>
+                  {storageBrowseLoading ? <p style={{ padding: "14px", margin: 0 }}>Loading folders...</p> : storageBrowsePath ? (
+                    storageBrowseDirectories.length ? storageBrowseDirectories.map((directory) => (
+                      <button key={directory.path} type="button" onClick={() => browseStorageDirectory(directory.path)} style={{ display: "flex", width: "100%", alignItems: "flex-start", gap: "10px", padding: "12px 14px", border: 0, borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #f1f5f9", background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer" }}>
+                        <span aria-hidden="true">📁</span>
+                        <span style={{ display: "grid", gap: "4px", minWidth: 0 }}>
+                          <strong>{directory.name}</strong>
+                          <span style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.78rem", overflowWrap: "anywhere" }}>{directory.path}</span>
+                        </span>
+                      </button>
+                    )) : <p style={{ padding: "14px", margin: 0, color: isDarkMode ? "#94a3b8" : "#64748b" }}>No subfolders in this location.</p>
+                  ) : storageBrowseRoots.length ? storageBrowseRoots.map((root) => (
+                    <button key={root.path} type="button" onClick={() => browseStorageDirectory(root.path)} style={{ display: "flex", flexDirection: "column", width: "100%", gap: "4px", padding: "12px 14px", border: 0, borderBottom: isDarkMode ? "1px solid #1f2937" : "1px solid #f1f5f9", background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer" }}>
+                      <strong>{root.name}</strong><span style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.78rem", overflowWrap: "anywhere" }}>{root.path}</span>
+                    </button>
+                  )) : <p style={{ padding: "14px", margin: 0 }}>No mounted storage folders are available.</p>}
+                </div>
+              </section>
+            </div>
+          )}
+        </section>
       ) : isBackupTab || isRestoreTab ? (
         <AdminBackupPage
           isDarkMode={isDarkMode}
@@ -7055,7 +7219,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               <section role="dialog" aria-modal="true" aria-labelledby="storage-browser-title" style={{ display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)", gap: "14px", width: "min(680px, 100%)", height: "min(640px, calc(100vh - 40px))", maxHeight: "calc(100vh - 40px)", minHeight: 0, overflow: "hidden", padding: "22px", borderRadius: "16px", background: isDarkMode ? "#111827" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                   <div>
-                    <h3 id="storage-browser-title" style={{ margin: 0 }}>Browse {storageBrowseTarget.includes("assets") ? "Assets" : "Thumbnails"} folders</h3>
+                    <h3 id="storage-browser-title" style={{ margin: 0 }}>Browse {storageBrowseTarget.includes("assets") ? "Assets" : storageBrowseTarget === "sitemap" ? "Sitemap" : "Thumbnails"} folders</h3>
                     <p style={{ margin: "6px 0 0", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.8rem", overflowWrap: "anywhere" }}>{storageBrowsePath || "Choose a mounted storage location"}</p>
                   </div>
                   <button type="button" onClick={() => setStorageBrowseTarget("")} style={{ padding: "7px 11px", border: 0, borderRadius: "7px", background: isDarkMode ? "#334155" : "#e2e8f0", color: "inherit", cursor: "pointer" }}>Close</button>
@@ -7063,7 +7227,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 {storageBrowseError ? <p role="alert" style={{ margin: 0, color: "#dc2626" }}>{storageBrowseError}</p> : null}
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   {storageBrowsePath ? <button type="button" onClick={() => storageBrowseParentPath ? browseStorageDirectory(storageBrowseParentPath) : (setStorageBrowsePath(""), setStorageBrowseParentPath(""), setStorageBrowseDirectories([]))} disabled={storageBrowseLoading} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: isDarkMode ? "#334155" : "#e2e8f0", color: "inherit", cursor: "pointer" }}>↑ Up</button> : null}
-                  {storageBrowsePath ? <button type="button" onClick={selectStorageBrowserFolder} disabled={storageBrowseLoading || storageLocationsSaving} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: "#2563eb", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Use this folder</button> : null}
+                  {storageBrowsePath ? <button type="button" onClick={selectStorageBrowserFolder} disabled={storageBrowseLoading || (storageBrowseTarget === "sitemap" ? sitemapSettingsSaving : storageLocationsSaving)} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: "#2563eb", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Use this folder</button> : null}
                 </div>
                 <div style={{ minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", borderRadius: "10px" }}>
                   {storageBrowseLoading ? <p style={{ padding: "14px", margin: 0 }}>Loading folders...</p> : storageBrowsePath ? (
@@ -7132,6 +7296,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             <h3>Customer Details</h3>
             <p style={{ color: isDarkMode ? "#cbd5e1" : "#555", margin: "8px 0 16px" }}>Review and manage customer accounts.</p>
             <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=customerdetails`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%" }}>Customer Details</button>
+          </CardWrapper>
+
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="links-and-sitemap">
+            <h3>Links and sitemap</h3>
+            <div style={{ display: "grid", gap: "10px", marginTop: "8px" }}>
+              <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=links`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%" }}>Links</button>
+              <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=sitemap`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%" }}>Sitemap</button>
+            </div>
           </CardWrapper>
 
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="database-connection">

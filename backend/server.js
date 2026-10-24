@@ -44,6 +44,12 @@ const { checkAssetLifecycleSchema } = require("./services/assetLifecycleSchema")
 const assetStorageConnections = require("./services/assetStorageConnections");
 const assetStorageCardConnections = require("./services/assetStorageCardConnections");
 const assetStorageCardCounts = require("./services/assetStorageCardCounts");
+const sitemapSettings = require("./services/sitemapSettings");
+const { createSitemapGenerator } = require("./services/sitemapGenerator");
+const { createSitemapScheduleSettings, createSitemapScheduler } = require("./services/sitemapSchedule");
+const { createSitemapRouter } = require("./routes/sitemap-routes");
+const { createLinksScanner } = require("./services/linksScanner");
+const { createLinksScanRouter } = require("./routes/links-scan-routes");
 const { updateStorageRootInEnv, updateStorageRootsInEnv } = require("./services/assetStorageEnvironment");
 const { getDisconnectedStorageForRequest } = assetStorageConnections;
 const {
@@ -150,6 +156,22 @@ const verifyAdmin = createAdminVerifier({
   pool,
   jwtSecret: JWT_SECRET,
   verifyToken: verifyJwtToken,
+});
+const allowedCorsOrigins = getCorsAllowedOrigins();
+const sitemapGenerator = createSitemapGenerator({
+  pool,
+  settings: sitemapSettings,
+  siteUrl: () => process.env.SITE_URL,
+});
+const sitemapScheduler = createSitemapScheduler({
+  settings: createSitemapScheduleSettings(),
+  generator: sitemapGenerator,
+});
+sitemapScheduler.start();
+const linksScanner = createLinksScanner({
+  pool,
+  allowedOrigins: allowedCorsOrigins,
+  chromePath: process.env.LINK_SCAN_CHROME_PATH,
 });
 
 /* ---------------- FILE UPLOAD CONFIG ---------------- */
@@ -283,7 +305,6 @@ const handleBrandingUpload = (req, res, next) => {
 };
 /* ---------------- MIDDLEWARE ---------------- */
 
-const allowedCorsOrigins = getCorsAllowedOrigins();
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -3196,6 +3217,39 @@ app.post("/admin/otp-settings", verifyAdmin, async (req, res) => {
     res.status(500).json({ error: err.message || "Failed to save OTP settings" });
   }
 });
+
+app.get("/admin/sitemap-settings", verifyAdmin, (req, res) => {
+  try {
+    return res.json(sitemapSettings.get());
+  } catch (error) {
+    console.error("Failed to load sitemap settings", error);
+    return res.status(500).json({ error: "Failed to load sitemap settings." });
+  }
+});
+
+app.put("/admin/sitemap-settings", verifyAdmin, (req, res) => {
+  try {
+    return res.json(sitemapSettings.set(req.body?.path));
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error("Failed to save sitemap settings", error);
+    return res.status(500).json({ error: "Failed to save sitemap settings." });
+  }
+});
+
+app.use(createSitemapRouter({
+  generator: sitemapGenerator,
+  schedule: sitemapScheduler,
+  verifyAdmin,
+}));
+app.use(createLinksScanRouter({
+  scanner: linksScanner,
+  verifyAdmin,
+  allowedOrigins: allowedCorsOrigins,
+  pool,
+}));
 
 // Card layout preferences - per admin user
 app.get("/admin/card-layout-preferences", verifyAdmin, async (req, res) => {
@@ -14369,6 +14423,21 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(contributorCommissionMigration);
+      const adminLinkScansMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "031_admin_link_scans.sql"),
+        "utf8"
+      );
+      await pool.query(adminLinkScansMigration);
+      const disabledAppPagesMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "032_disabled_app_pages.sql"),
+        "utf8"
+      );
+      await pool.query(disabledAppPagesMigration);
+      const disabledAppLinkRowsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "033_disabled_app_link_rows.sql"),
+        "utf8"
+      );
+      await pool.query(disabledAppLinkRowsMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);
@@ -14496,6 +14565,7 @@ const shutdownHandlers = [];
 process.on("SIGINT", async () => {
   console.log("\n\nShutting down gracefully...");
   try {
+    await linksScanner.close();
     await thumbnailQueue.shutdown();
   } catch (err) {
     console.error("Error during queue shutdown:", err);
@@ -14506,6 +14576,7 @@ process.on("SIGINT", async () => {
 process.on("SIGTERM", async () => {
   console.log("\n\nShutting down gracefully...");
   try {
+    await linksScanner.close();
     await thumbnailQueue.shutdown();
   } catch (err) {
     console.error("Error during queue shutdown:", err);

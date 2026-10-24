@@ -128,6 +128,10 @@ The backend reads its service and storage settings from the existing environment
 
 Production frontend builds require `REACT_APP_API_BASE_URL`. Local development and tests retain the `http://localhost:5000` fallback, while the production build exits with an error if the API URL is absent or invalid.
 
+Sitemap generation requires `SITE_URL` to be set to the trusted production HTTPS origin (for example, `https://www.your-production-domain.com`, with no path or query). Generation is rejected when this value is missing or points to a local, staging, or development host. An optional sitemap storage directory can be configured in the authenticated admin Sitemap page; when it is empty, files are stored under `backend/generated/sitemaps`. Each generation is archived under `YYYY/MM/DD`, and the latest successful sitemap is served at `/sitemap.xml`.
+
+The authenticated admin Links scanner uses Playwright to render the configured app routes. The backend needs a compatible Chrome/Chromium binary: it uses a system Chrome when available or Playwright's managed Chromium. For deployments without system Chrome, install the browser from the backend directory with `npx playwright install chromium`; set `LINK_SCAN_CHROME_PATH` if the executable is in a custom location. The frontend origin must also be included in the backend's trusted CORS origins. Scan results are stored by signed-in admin user in PostgreSQL, and the admin can export all results matching the current filters as a CSV file.
+
 ## Startup Process
 
 When you run `npm start`:

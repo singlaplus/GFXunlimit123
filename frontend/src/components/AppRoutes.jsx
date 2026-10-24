@@ -1396,10 +1396,136 @@ export default function AppRoutes(props) {
   const loc = useLocation();
   const navigate = useNavigate();
   const pathname = (loc && loc.pathname) || (typeof window !== 'undefined' ? window.location.pathname : '/');
-  const search = (loc && loc.search) || (typeof window !== 'undefined' ? window.location.search : '');
+  const search = (loc && loc.search) ?? (typeof window !== 'undefined' ? window.location.search : '');
+  const normalizedUserRole = (props.userRole || "").toString();
+  const isAdmin = isAdminRole(normalizedUserRole);
+  const [pageAvailability, setPageAvailability] = useState(null);
   const [blogSection, setBlogSection] = useState(() => new URLSearchParams(search).get("section") || "");
   const [blogDraftId, setBlogDraftId] = useState(() => new URLSearchParams(search).get("draft") || "");
   const [selectedBlogDraft, setSelectedBlogDraft] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    setPageAvailability(null);
+    axios.get(`${API_BASE_URL}/pages/availability`, { params: { path: `${pathname}${search}` } })
+      .then(({ data }) => {
+        if (typeof data?.available !== "boolean") {
+          throw new Error("Page availability response was invalid.");
+        }
+        if (!Array.isArray(data.disabledLinks)) {
+          throw new Error("Disabled link response was invalid.");
+        }
+        if (active) {
+          setPageAvailability({
+            pathname,
+            available: isAdmin || data.available,
+            sourcePath: data.path,
+            disabledLinks: data.disabledLinks,
+          });
+        }
+      })
+      .catch((error) => {
+        console.error("Unable to verify app page availability", error);
+        if (active) setPageAvailability({
+          pathname,
+          error: "Unable to verify this page's availability. Please try again.",
+        });
+      });
+
+    return () => { active = false; };
+  }, [isAdmin, pathname, search]);
+
+  useEffect(() => {
+    if (pageAvailability?.pathname !== pathname || !pageAvailability.sourcePath) return undefined;
+
+    const disabledLinkKeys = new Set(pageAvailability.disabledLinks.map((link) => (
+      JSON.stringify([pageAvailability.sourcePath, link.href, link.linkText])
+    )));
+    const originalAttributes = new Map();
+    const getAnchorText = (anchor) => String(
+      anchor.innerText || anchor.textContent || anchor.getAttribute("aria-label") || anchor.title || ""
+    ).trim().replace(/\s+/g, " ") || "Unlabeled link";
+    const updateDisabledLinkMarkers = () => {
+      document.querySelectorAll("a[href]").forEach((anchor) => {
+        let href;
+        try {
+          href = new URL(anchor.href, window.location.origin).href;
+        } catch {
+          return;
+        }
+        const isDisabled = disabledLinkKeys.has(JSON.stringify([
+          pageAvailability.sourcePath,
+          href,
+          getAnchorText(anchor),
+        ]));
+        if (isDisabled && !originalAttributes.has(anchor)) {
+          originalAttributes.set(anchor, {
+            ariaDisabled: anchor.getAttribute("aria-disabled"),
+            title: anchor.getAttribute("title"),
+            pointerEvents: anchor.style.pointerEvents,
+            opacity: anchor.style.opacity,
+            textDecoration: anchor.style.textDecoration,
+          });
+        }
+        if (isDisabled) {
+          anchor.dataset.appLinkDisabled = "true";
+          anchor.setAttribute("aria-disabled", "true");
+          anchor.setAttribute("title", "This link has been disabled.");
+          anchor.style.pointerEvents = "none";
+          anchor.style.opacity = "0.55";
+          anchor.style.textDecoration = "line-through";
+        }
+      });
+    };
+    const preventDisabledLinkNavigation = (event) => {
+      if (!event.target.closest?.('a[data-app-link-disabled="true"]')) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const preventDisabledLinkKeyboardNavigation = (event) => {
+      if (event.key === "Enter") preventDisabledLinkNavigation(event);
+    };
+    updateDisabledLinkMarkers();
+    const observer = new MutationObserver(updateDisabledLinkMarkers);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["href"] });
+    document.addEventListener("click", preventDisabledLinkNavigation, true);
+    document.addEventListener("keydown", preventDisabledLinkKeyboardNavigation, true);
+
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("click", preventDisabledLinkNavigation, true);
+      document.removeEventListener("keydown", preventDisabledLinkKeyboardNavigation, true);
+      document.querySelectorAll('a[data-app-link-disabled="true"]').forEach((anchor) => {
+        const original = originalAttributes.get(anchor);
+        delete anchor.dataset.appLinkDisabled;
+        if (!original) return;
+        if (original.ariaDisabled === null) anchor.removeAttribute("aria-disabled");
+        else anchor.setAttribute("aria-disabled", original.ariaDisabled);
+        if (original.title === null) anchor.removeAttribute("title");
+        else anchor.setAttribute("title", original.title);
+        anchor.style.pointerEvents = original.pointerEvents;
+        anchor.style.opacity = original.opacity;
+        anchor.style.textDecoration = original.textDecoration;
+      });
+    };
+  }, [pageAvailability, pathname]);
+
+  if (!isAdmin && pageAvailability?.pathname !== pathname) {
+    return <main aria-live="polite" style={{ minHeight: "60vh", display: "grid", placeItems: "center", color: "#64748b" }}>Checking page availability...</main>;
+  }
+
+  if (!isAdmin && pageAvailability?.error) {
+    return <main role="alert" style={{ minHeight: "60vh", padding: "64px 24px", textAlign: "center", color: "#991b1b" }}>{pageAvailability.error}</main>;
+  }
+
+  if (!isAdmin && pageAvailability?.available === false) {
+    return (
+      <main role="status" style={{ minHeight: "60vh", display: "grid", placeContent: "center", padding: "40px 24px", textAlign: "center", color: "#334155" }}>
+        <h1 style={{ margin: "0 0 10px", fontSize: "clamp(1.7rem, 4vw, 2.4rem)" }}>This page is temporarily unavailable</h1>
+        <p style={{ margin: 0, color: "#64748b" }}>Please check back later.</p>
+      </main>
+    );
+  }
 
   const dashboardTab = new URLSearchParams(search).get("tab");
   if (pathname === "/dashboard" && dashboardTab === "filltaxform1") {
@@ -1426,7 +1552,6 @@ export default function AppRoutes(props) {
     return <Navigate to={`${adminBasePath}?tab=controls`} replace />;
   }
 
-  const normalizedUserRole = (props.userRole || "").toString();
   const resolvedActivePage = resolveActivePage(pathname) || "home";
 
   if (isContributorRole(normalizedUserRole) && (explorePaths.has(pathname) || isExplorePath)) {
