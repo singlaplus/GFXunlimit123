@@ -48,6 +48,8 @@ describe("AdminPanel collection controls", () => {
 
   beforeEach(() => {
     window.history.pushState({}, "", "/");
+    localStorage.removeItem("admin-assets-connection-card-count");
+    localStorage.removeItem("admin-thumbnails-connection-card-count");
     useLocation.mockReturnValue({ search: "?tab=controls" });
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/categories")) {
@@ -69,6 +71,72 @@ describe("AdminPanel collection controls", () => {
     expect(screen.queryByText(/^approve$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^reject$/i)).not.toBeInTheDocument();
     expect(screen.getByText(/manage categories/i)).toBeInTheDocument();
+  });
+
+  it("shows the SERVER error when deleting a pending asset fails", async () => {
+    useLocation.mockReturnValue({ search: "?status=pending" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({ data: [{ id: 262, title: "demonew", status: "pending", filename: "demonew.jpg" }] });
+      }
+      if (url.includes("/images?limit=1000&page=1")) {
+        return Promise.resolve({ data: { images: [] } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.delete.mockRejectedValue({
+      response: { status: 503, data: { error: "SERVER asset lifecycle service is unavailable." } },
+    });
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    const toastErrorSpy = jest.spyOn(toast, "error").mockImplementation(() => {});
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Active" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Select Status" }), {
+      target: { value: "delete" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(axios.delete).toHaveBeenCalledWith(
+      expect.stringContaining("/images/262"),
+      expect.objectContaining({ headers: expect.any(Object) })
+    ));
+    await waitFor(() => expect(toastErrorSpy).toHaveBeenCalledWith("SERVER asset lifecycle service is unavailable."));
+
+    confirmSpy.mockRestore();
+    toastErrorSpy.mockRestore();
+  });
+
+  it("shows the SERVER error when approving a pending asset fails", async () => {
+    useLocation.mockReturnValue({ search: "?status=pending" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({ data: [{ id: 262, title: "demonew", status: "pending", filename: "demonew.jpg" }] });
+      }
+      if (url.includes("/images?limit=1000&page=1")) {
+        return Promise.resolve({ data: { images: [] } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockRejectedValue({
+      response: { status: 401, data: { error: "The SERVER rejected this backend token." } },
+    });
+    const toastErrorSpy = jest.spyOn(toast, "error").mockImplementation(() => {});
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Active" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(axios.put).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/approve/262"),
+      {},
+      expect.objectContaining({ headers: expect.any(Object) })
+    ));
+    await waitFor(() => expect(toastErrorSpy).toHaveBeenCalledWith("The SERVER rejected this backend token."));
+
+    toastErrorSpy.mockRestore();
   });
 
   it("uses dark-friendly styling in the controls tab when dark mode is active", async () => {
@@ -259,6 +327,7 @@ describe("AdminPanel collection controls", () => {
 
   it("shows the actual upload folder path on the assets controls page", async () => {
     useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    const serverCardCounts = { assets: 1, thumbnails: 1 };
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/assets/location")) {
         return Promise.resolve({ data: {
@@ -272,20 +341,210 @@ describe("AdminPanel collection controls", () => {
       }
       return Promise.resolve({ data: [] });
     });
+    axios.put.mockImplementation((_url, payload) => {
+      if (payload?.type && Number.isInteger(payload.count)) {
+        serverCardCounts[payload.type] = payload.count;
+      }
+      return Promise.resolve({ data: { cardCounts: { ...serverCardCounts } } });
+    });
 
-    render(<AdminPanel />);
+    const { unmount } = render(<AdminPanel />);
 
     expect(await screen.findByText("/Users/gfxunlimit/Documents/stocksite/backend/uploads")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to Controls" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add" })).toBeInTheDocument();
+    expect(screen.queryByRole("menu", { name: "Add storage location" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByRole("menu", { name: "Add storage location" })).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu", { name: "Add storage location" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Assets (1/99)" }));
+    expect(await screen.findByRole("heading", { name: "Assets (2)" })).toBeInTheDocument();
+    const additionalAssetsCard = screen.getByRole("heading", { name: "Assets (2)" }).closest(".admin-panel-card");
+    expect(within(additionalAssetsCard).getByText("Original asset storage")).toBeInTheDocument();
+    expect(within(additionalAssetsCard).getByText("Folder size")).toBeInTheDocument();
+    expect(within(additionalAssetsCard).getByText("Drive free")).toBeInTheDocument();
+    expect(within(additionalAssetsCard).getByLabelText("Assets 2 folder path")).toBeEmptyDOMElement();
+    expect(within(additionalAssetsCard).getByLabelText("Assets 2 folder size")).toBeEmptyDOMElement();
+    expect(within(additionalAssetsCard).queryByRole("button", { name: "Choose folder" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByRole("menuitem", { name: "Assets (2/99)" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Thumbnails (1/9)" }));
+    expect(await screen.findByRole("heading", { name: "Thumbnails (2)" })).toBeInTheDocument();
+    const additionalThumbnailsCard = screen.getByRole("heading", { name: "Thumbnails (2)" }).closest(".admin-panel-card");
+    const firstAssetCard = screen.getByRole("heading", { name: /^assets \(1\)$/i }).closest(".admin-panel-card");
+    const firstThumbnailCard = screen.getByRole("heading", { name: /^thumbnails \(1\)$/i }).closest(".admin-panel-card");
+    const storageGrid = firstAssetCard.closest(".storage-connections-grid");
+    expect(storageGrid).toHaveStyle({ display: "grid", gridAutoRows: "350px" });
+    expect([firstAssetCard, firstThumbnailCard, additionalAssetsCard, additionalThumbnailsCard].map((card) => card.style.width)).toEqual(["100%", "100%", "100%", "100%"]);
+    expect([firstAssetCard, firstThumbnailCard, additionalAssetsCard, additionalThumbnailsCard].map((card) => card.style.height)).toEqual(["350px", "350px", "350px", "350px"]);
+    expect(firstAssetCard.compareDocumentPosition(firstThumbnailCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(firstThumbnailCard.compareDocumentPosition(additionalAssetsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(additionalAssetsCard.compareDocumentPosition(additionalThumbnailsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(Number(additionalAssetsCard.style.order)).toBeGreaterThan(Number(firstThumbnailCard.style.order));
+    expect(Number(additionalThumbnailsCard.style.order)).toBeGreaterThan(Number(additionalAssetsCard.style.order));
+    expect(within(additionalThumbnailsCard).getByText("Preview image storage")).toBeInTheDocument();
+    expect(within(additionalThumbnailsCard).getByText("Folder size")).toBeInTheDocument();
+    expect(within(additionalThumbnailsCard).getByLabelText("Thumbnails 2 folder path")).toBeEmptyDOMElement();
+    expect(within(additionalThumbnailsCard).getByLabelText("Thumbnails 2 folder size")).toBeEmptyDOMElement();
+    expect(within(additionalThumbnailsCard).queryByRole("button", { name: "Choose folder" })).not.toBeInTheDocument();
     expect(screen.getByText("783.00 MB")).toBeInTheDocument();
     expect(screen.getByText("217.00 GB")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /^assets$/i })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /^thumbnails$/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^assets \(1\)$/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^thumbnails \(1\)$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Default Assets (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Default Thumbnails (1)" })).toBeInTheDocument();
     expect(screen.getByText("/Volumes/GFXunlimitThumbnails")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Browse to choose an Assets folder")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Browse to choose a Thumbnails folder")).toBeInTheDocument();
     expect(screen.getByLabelText("Assets folder")).toHaveValue("");
     expect(screen.getByLabelText("Thumbnails folder")).toHaveValue("");
     expect(screen.getByText("2.00 GB")).toBeInTheDocument();
+
+    unmount();
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: "Assets (2)" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Thumbnails (2)" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByRole("menuitem", { name: "Assets (2/99)" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Thumbnails (2/9)" })).toBeInTheDocument();
+  });
+
+  it("uses server storage-card counts instead of each browser's local count", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    localStorage.setItem("admin-assets-connection-card-count", "2");
+    localStorage.setItem("admin-thumbnails-connection-card-count", "1");
+    axios.get.mockImplementation((url) => url.includes("/admin/assets/location")
+      ? Promise.resolve({ data: {
+        connections: { assets: true, thumbnails: true },
+        cardCounts: { assets: 4, thumbnails: 3 },
+        assetLocations: [{ id: "assets-one", label: "Asset 1", path: "/assets-one" }],
+        thumbnailLocations: [{ id: "thumbnails-one", label: "Thumbnail 1", path: "/thumbnails-one" }],
+      } })
+      : Promise.resolve({ data: [] }));
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: "Assets (4)" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Thumbnails (3)" })).toBeInTheDocument();
+    expect(localStorage.getItem("admin-assets-connection-card-count")).toBe("4");
+    expect(localStorage.getItem("admin-thumbnails-connection-card-count")).toBe("3");
+  });
+
+  it("loads detailed folder sizes for every configured storage card", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    const assetLocations = [
+      { id: "assets-one", label: "Asset 1", path: "/assets-one" },
+      { id: "assets-two", label: "Asset 2", path: "/assets-two" },
+    ];
+    const thumbnailLocations = [
+      { id: "thumbnails-one", label: "Thumbnail 1", path: "/thumbnails-one" },
+      { id: "thumbnails-two", label: "Thumbnail 2", path: "/thumbnails-two" },
+    ];
+    axios.get.mockImplementation((url) => url.includes("/admin/assets/location")
+      ? Promise.resolve({ data: {
+        uploadFolderPath: "/assets-one",
+        thumbnailFolderPath: "/thumbnails-one",
+        folderSizeBytes: 10 * 1024 * 1024,
+        thumbnailFolderSizeBytes: 5 * 1024 * 1024,
+        assetLocations: assetLocations.map((location, index) => ({
+          ...location,
+          folderSizeBytes: (index + 1) * 10 * 1024 * 1024,
+          driveFreeBytes: index === 0 ? 221_967_572_992 : 100 * 1024 * 1024,
+        })),
+        thumbnailLocations: thumbnailLocations.map((location, index) => ({
+          ...location,
+          folderSizeBytes: (index + 1) * 5 * 1024 * 1024,
+          driveFreeBytes: 100 * 1024 * 1024,
+        })),
+        connections: {
+          assets: true,
+          thumbnails: true,
+          assetLocations,
+          thumbnailLocations,
+          defaultAssetLocationId: "assets-one",
+          defaultThumbnailLocationId: "thumbnails-one",
+        },
+      } })
+      : Promise.resolve({ data: [] }));
+
+    render(<AdminPanel />);
+
+    const secondAssetsHeading = await screen.findByRole("heading", { name: "Assets (2)" });
+    const firstAssetsHeading = screen.getByRole("heading", { name: "Assets (1)" });
+    const secondThumbnailsHeading = await screen.findByRole("heading", { name: "Thumbnails (2)" });
+    const firstThumbnailsHeading = screen.getByRole("heading", { name: "Thumbnails (1)" });
+    const secondAssetsCard = secondAssetsHeading.closest(".admin-panel-card");
+    const firstAssetsCard = firstAssetsHeading.closest(".admin-panel-card");
+    const secondThumbnailsCard = secondThumbnailsHeading.closest(".admin-panel-card");
+    const firstThumbnailsCard = firstThumbnailsHeading.closest(".admin-panel-card");
+    expect(within(secondAssetsCard).getByLabelText("Assets 2 folder size")).toHaveTextContent("20.00 MB");
+    expect(within(firstAssetsCard).getByText("Drive free").parentElement).toHaveTextContent("221.97 GB");
+    expect(within(secondAssetsCard).getByLabelText("Assets 2 drive free")).toHaveTextContent("104.86 MB");
+    expect(within(secondThumbnailsCard).getByLabelText("Thumbnails 2 folder size")).toHaveTextContent("10.00 MB");
+    expect(within(secondThumbnailsCard).getByLabelText("Thumbnails 2 drive free")).toHaveTextContent("104.86 MB");
+    expect(within(firstThumbnailsCard).getByLabelText("Thumbnails 1 drive free")).toHaveTextContent("104.86 MB");
+  });
+
+  it("deletes an additional storage card and its registered path", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    const assetLocations = [
+      { id: "assets-one", label: "Asset 1", path: "/assets-one", folderSizeBytes: 10, driveFreeBytes: 100 },
+      { id: "assets-two", label: "Asset 2", path: "/assets-two", folderSizeBytes: 20, driveFreeBytes: 100 },
+    ];
+    const thumbnailLocations = [
+      { id: "thumbnails-one", label: "Thumbnail 1", path: "/thumbnails-one", folderSizeBytes: 5, driveFreeBytes: 100 },
+    ];
+    const locationResponse = {
+      uploadFolderPath: "/assets-one",
+      thumbnailFolderPath: "/thumbnails-one",
+      assetLocations,
+      thumbnailLocations,
+      connections: {
+        assetLocations,
+        thumbnailLocations,
+        defaultAssetLocationId: "assets-one",
+        defaultThumbnailLocationId: "thumbnails-one",
+      },
+    };
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/assets/location")
+        ? Promise.resolve({ data: locationResponse })
+        : Promise.resolve({ data: [] })
+    ));
+    axios.delete.mockResolvedValue({
+      data: {
+        connections: {
+          ...locationResponse.connections,
+          assetLocations: [assetLocations[0]],
+        },
+        cardConnections: { assets: {}, thumbnails: {} },
+      },
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("heading", { name: "Assets (2)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete Assets (2)" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete Assets (1)" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Assets (2)" }));
+
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/assets/locations"),
+        {
+          data: { type: "assets", locationId: "assets-two", locationNumber: 2 },
+          headers: expect.any(Object),
+        }
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: "Assets (2)" })).not.toBeInTheDocument();
+      expect(localStorage.getItem("admin-assets-connection-card-count")).toBe("1");
+    });
+    expect(screen.getByText("/assets-one")).toBeInTheDocument();
   });
 
   it("updates and displays asset storage connection status from the toggle", async () => {
@@ -309,6 +568,107 @@ describe("AdminPanel collection controls", () => {
     expect(await screen.findByRole("button", { name: /^connect assets$/i })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("img", { name: "Assets disconnected" })).toHaveStyle({ color: "#dc2626" });
     expect(screen.getByRole("img", { name: "Thumbnails connected" })).toHaveStyle({ color: "#16a34a" });
+  });
+
+  it("saves card-specific connection toggles and shows success toasts", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    axios.get.mockImplementation((url) => url.includes("/admin/assets/location")
+      ? Promise.resolve({ data: {
+        uploadFolderPath: "/assets",
+        thumbnailFolderPath: "/thumbnails",
+        connections: { assets: true, thumbnails: true },
+        cardConnections: { assets: {}, thumbnails: {} },
+      } })
+      : Promise.resolve({ data: [] }));
+    axios.put.mockResolvedValue({
+      data: { cardConnections: { assets: { "1": false }, thumbnails: {} } },
+    });
+    const toastSuccessSpy = jest.spyOn(toast, "success").mockImplementation(() => {});
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect Assets (1)" }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/assets/card-connections"),
+        { storage: "assets", locationNumber: 1, connected: false },
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+    });
+    expect(await screen.findByRole("button", { name: "Connect Assets (1)" })).toHaveAttribute("aria-pressed", "false");
+    expect(toastSuccessSpy).toHaveBeenCalledWith("Assets (1) marked disconnected.");
+    toastSuccessSpy.mockRestore();
+  });
+
+  it("shows a hover-only Default button and routes new uploads to the selected asset location", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    const locationData = {
+      uploadFolderPath: "/assets-one",
+      thumbnailFolderPath: "/thumbnails-one",
+      connections: {
+        assets: true,
+        thumbnails: true,
+        assetLocations: [
+          { id: "assets-one", label: "Asset 1", path: "/assets-one", folderSizeBytes: 10, driveFreeBytes: 100 },
+          { id: "assets-two", label: "Asset 2", path: "/assets-two", folderSizeBytes: 20, driveFreeBytes: 200 },
+        ],
+        thumbnailLocations: [
+          { id: "thumbnails-one", label: "Thumbnail 1", path: "/thumbnails-one", folderSizeBytes: 5, driveFreeBytes: 100 },
+          { id: "thumbnails-two", label: "Thumbnail 2", path: "/thumbnails-two", folderSizeBytes: 6, driveFreeBytes: 200 },
+        ],
+        defaultAssetLocationId: "assets-one",
+        defaultThumbnailLocationId: "thumbnails-one",
+      },
+    };
+    axios.get.mockImplementation((url) => url.includes("/admin/assets/location")
+      ? Promise.resolve({ data: locationData })
+      : Promise.resolve({ data: [] }));
+    axios.put.mockImplementation((_url, payload) => {
+      if (payload.type === "assets") {
+        locationData.connections.assetRoot = "/assets-two";
+        locationData.connections.defaultAssetLocationId = "assets-two";
+      } else {
+        locationData.connections.thumbnailRoot = "/thumbnails-two";
+        locationData.connections.defaultThumbnailLocationId = "thumbnails-two";
+      }
+      return Promise.resolve({
+        data: { connections: locationData.connections, backgroundQueueReady: true },
+      });
+    });
+    const toastSuccessSpy = jest.spyOn(toast, "success").mockImplementation(() => {});
+
+    render(<AdminPanel />);
+
+    const defaultButton = await screen.findByRole("button", { name: "Default Assets (2)" });
+    expect(defaultButton).toHaveClass("storage-location-default-button");
+    expect(screen.getByLabelText("Assets 2 folder path")).toHaveTextContent("/assets-two");
+    fireEvent.click(defaultButton);
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/assets/locations/default"),
+        { type: "assets", locationId: "assets-two" },
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+    });
+    expect(await screen.findByRole("status", { name: "Assets (2) active default" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Default Assets (2)" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Default Assets (1)" })).toBeInTheDocument();
+    expect(toastSuccessSpy).toHaveBeenCalledWith("Assets default location selected for new uploads.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Default Thumbnails (2)" }));
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/assets/locations/default"),
+        { type: "thumbnails", locationId: "thumbnails-two" },
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+    });
+    expect(await screen.findByRole("status", { name: "Thumbnails (2) active default" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Default Thumbnails (2)" })).not.toBeInTheDocument();
+    expect(toastSuccessSpy).toHaveBeenCalledWith("Thumbnails default location selected for new uploads.");
+    toastSuccessSpy.mockRestore();
   });
 
   it("browses and saves separate storage folders", async () => {
@@ -383,6 +743,73 @@ describe("AdminPanel collection controls", () => {
       expect(screen.getByLabelText("Assets folder")).toHaveValue("/assets-new");
       expect(screen.getByLabelText("Thumbnails folder")).toHaveValue("/thumbnails-new");
     });
+  });
+
+  it("assigns a browsed folder to the independently selected storage card", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls_assets" });
+    const locationData = {
+      uploadFolderPath: "/assets-one",
+      thumbnailFolderPath: "/thumbnails-one",
+      assetLocations: [{ id: "assets-one", label: "Asset 1", path: "/assets-one" }],
+      thumbnailLocations: [{ id: "thumbnails-one", label: "Thumbnail 1", path: "/thumbnails-one" }],
+      connections: {
+        assetLocations: [{ id: "assets-one", label: "Asset 1", path: "/assets-one" }],
+        thumbnailLocations: [{ id: "thumbnails-one", label: "Thumbnail 1", path: "/thumbnails-one" }],
+        defaultAssetLocationId: "assets-one",
+        defaultThumbnailLocationId: "thumbnails-one",
+      },
+    };
+    const cardCounts = { assets: 1, thumbnails: 1 };
+    axios.get.mockImplementation((url, config = {}) => {
+      if (url.includes("/admin/assets/location")) return Promise.resolve({ data: locationData });
+      if (url.includes("/admin/assets/folder-browser")) {
+        if (!config.params?.path) return Promise.resolve({ data: { roots: [{ name: "Mounted volume", path: "/storage" }] } });
+        return Promise.resolve({
+          data: {
+            path: config.params.path,
+            parentPath: config.params.path === "/storage" ? null : "/storage",
+            directories: config.params.path === "/storage" ? [{ name: "assets-new", path: "/storage/assets-new" }] : [],
+          },
+        });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockImplementation((_url, payload) => {
+      if (_url.includes("/admin/assets/card-counts")) {
+        cardCounts[payload.type] = payload.count;
+        return Promise.resolve({ data: { cardCounts: { ...cardCounts } } });
+      }
+      locationData.assetLocations.push({ id: "assets-two", label: "Asset 2", path: payload.path });
+      locationData.connections.assetLocations = locationData.assetLocations;
+      return Promise.resolve({ data: { connections: locationData.connections, backgroundQueueReady: true } });
+    });
+
+    render(<AdminPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Assets (1/99)" }));
+    expect(await screen.findByRole("heading", { name: "Assets (2)" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Assets storage card"), { target: { value: "2" } });
+    expect(screen.getByLabelText("Thumbnails storage card")).toHaveValue("1");
+    fireEvent.click(screen.getByRole("button", { name: "Browse Assets folder" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Mounted volume/ }));
+    await screen.findByText("/storage");
+    fireEvent.click(await screen.findByRole("button", { name: /assets-new/ }));
+    await screen.findByText("/storage/assets-new");
+    fireEvent.click(screen.getByRole("button", { name: "Use this folder" }));
+    expect(screen.getByLabelText("Assets storage card")).toHaveValue("2");
+    expect(screen.getByLabelText("Assets folder")).toHaveValue("/storage/assets-new");
+    expect(screen.getByRole("button", { name: "Save locations" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save locations" }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/assets/location-card"),
+        { type: "assets", locationNumber: 2, path: "/storage/assets-new" },
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+    });
+    expect(await screen.findByLabelText("Assets 2 folder path")).toHaveTextContent("/storage/assets-new");
   });
 
   it("shows the actual database data path on the database controls page", async () => {
@@ -2089,6 +2516,12 @@ describe("AdminPanel collection controls", () => {
           headers: { "content-type": "image/webp" }
         });
       }
+      if (url.includes("/images/1/download-thumbnail")) {
+        return Promise.resolve({
+          data: new Blob(["thumbnail"], { type: "image/webp" }),
+          headers: { "content-type": "image/webp" }
+        });
+      }
       if (url.includes("/admin/images")) {
         return Promise.resolve({
           data: [
@@ -2126,13 +2559,13 @@ describe("AdminPanel collection controls", () => {
       );
       fireEvent.click(await screen.findByTitle("Download Thumbnail"));
 
-      await waitFor(() => {
-        expect(axios.get).toHaveBeenCalledWith(
-          expect.stringContaining("/api/assets/1/thumbnail"),
-          expect.objectContaining({ responseType: "blob" })
-        );
-        expect(clickSpy).toHaveBeenCalled();
-      });
+      await waitFor(() => expect(clickSpy).toHaveBeenCalled());
+      const downloadRequest = axios.get.mock.calls.find(([url]) => (
+        String(url).includes("/images/1/download-thumbnail")
+      ));
+      expect(downloadRequest).toBeDefined();
+      expect(downloadRequest[1].responseType).toBe("blob");
+      expect(downloadRequest[1].headers.Authorization).toMatch(/^Bearer \S+$/);
       expect(clickSpy.mock.instances[0]).toHaveAttribute("download", "pending.webp");
     } finally {
       unmount?.();

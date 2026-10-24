@@ -2,6 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 require('./helpers/blockPostgres');
 const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const cron = require('node-cron');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
@@ -32,6 +35,9 @@ Pool.prototype.connect = async () => ({
 const pool = require('../db');
 const originalPoolQuery = pool.query;
 const { app } = require('../server');
+const assetStorageConnections = require('../services/assetStorageConnections');
+const assetStorageCardConnections = require('../services/assetStorageCardConnections');
+const assetThumbnails = require('../utils/assetThumbnails');
 
 cron.schedule = originalCronSchedule;
 pool.query = originalPoolQuery;
@@ -335,6 +341,78 @@ test('private pre-submission assets are available only to their owner through im
     { Authorization: 'Bearer ' + otherContributorToken }
   );
   assert.equal(otherOriginalFile.status, 404);
+});
+
+test('thumbnail download does not fall back to a legacy file when its generated thumbnail is unavailable', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'thumbnail-download-disconnected-'));
+  const assetsRoot = path.join(directory, 'assets');
+  const connectedThumbnailRoot = path.join(directory, 'thumbnails-connected');
+  const disconnectedThumbnailRoot = path.join(directory, 'thumbnails-disconnected');
+  const legacyThumbnailPath = path.join(assetsRoot, 'legacy-thumbnail.jpg');
+  fs.mkdirSync(assetsRoot, { recursive: true });
+  fs.mkdirSync(connectedThumbnailRoot, { recursive: true });
+  fs.mkdirSync(disconnectedThumbnailRoot, { recursive: true });
+  fs.writeFileSync(legacyThumbnailPath, Buffer.from('legacy thumbnail'));
+
+  const originalQuery = pool.query;
+  const originalConnectionsGet = assetStorageConnections.get;
+  const originalCardConnectionsGet = assetStorageCardConnections.get;
+  const originalThumbnailRoot = assetThumbnails.getThumbnailStorageRoot;
+  const originalAssetRoot = assetThumbnails.getOriginalAssetStorageRoot;
+  const image = {
+    id: 901,
+    filename: 'contributor/source.psd',
+    thumbnail_url: '/api/thumbnail?file=legacy-thumbnail.jpg',
+    uploaded_by: 7,
+    status: 'approved',
+    thumbnail_path: '2026/10/24/original_title_901.webp',
+    generated_thumbnail_status: 'READY',
+    format: 'webp',
+  };
+
+  pool.query = async (sql) => {
+    if (/SELECT i\.id, i\.filename, i\.thumbnail_url, i\.uploaded_by, i\.status/i.test(sql)) {
+      return { rows: [image] };
+    }
+    if (/SELECT role FROM users WHERE id = \$1/i.test(sql)) {
+      return { rows: [{ role: 'admin' }] };
+    }
+    throw new Error(`Unexpected query in thumbnail-download test: ${sql}`);
+  };
+  assetStorageConnections.get = () => ({
+    assets: true,
+    thumbnails: true,
+    assetLocations: [{ id: 'assets-1', path: assetsRoot }],
+    thumbnailLocations: [
+      { id: 'thumbnails-1', path: connectedThumbnailRoot },
+      { id: 'thumbnails-2', path: disconnectedThumbnailRoot },
+    ],
+  });
+  assetStorageCardConnections.get = () => ({ assets: {}, thumbnails: { '2': false } });
+  assetThumbnails.getThumbnailStorageRoot = () => connectedThumbnailRoot;
+  assetThumbnails.getOriginalAssetStorageRoot = () => assetsRoot;
+
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(async () => {
+    pool.query = originalQuery;
+    assetStorageConnections.get = originalConnectionsGet;
+    assetStorageCardConnections.get = originalCardConnectionsGet;
+    assetThumbnails.getThumbnailStorageRoot = originalThumbnailRoot;
+    assetThumbnails.getOriginalAssetStorageRoot = originalAssetRoot;
+    fs.rmSync(directory, { recursive: true, force: true });
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  const token = jwt.sign({ user: 7 }, process.env.JWT_SECRET || 'secretkey', { expiresIn: '1h' });
+  const response = await request(server.address().port, '/images/901/download-thumbnail', {
+    Authorization: `Bearer ${token}`,
+  });
+
+  assert.equal(response.status, 404);
+  assert.equal(response.body, '"Thumbnail not available"');
 });
 
 test('private original proxy authenticates cookie and bearer requests and preserves SERVER rejection', async (t) => {

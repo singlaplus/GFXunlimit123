@@ -11,6 +11,7 @@ const {
   encodeAssetPath,
   getProductionAssetRoot,
 } = require('../utils/assetServing');
+const { getConnectedStorageLocations } = require('../services/assetStorageCardConnections');
 const { getThumbnailStorageDirectory } = require('../utils/assetThumbnail');
 
 async function listen(app, t) {
@@ -134,6 +135,62 @@ test('local asset handler securely serves central files and existing thumbnails'
   } catch (error) {
     if (!['EPERM', 'EACCES', 'ENOSYS'].includes(error.code)) throw error;
   }
+});
+
+test('local asset handler reads existing files from any configured storage location', async (t) => {
+  const currentRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-assets-current-'));
+  const previousRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-assets-previous-'));
+  t.after(() => Promise.all([
+    fs.rm(currentRoot, { recursive: true, force: true }),
+    fs.rm(previousRoot, { recursive: true, force: true }),
+  ]));
+  const relativePath = 'contributor/2026/10/Approved/existing.jpg';
+  const contents = Buffer.from('existing asset from previous location');
+  const previousFile = path.join(previousRoot, ...relativePath.split('/'));
+  await fs.mkdir(path.dirname(previousFile), { recursive: true });
+  await fs.writeFile(previousFile, contents);
+
+  const app = express();
+  app.use('/api/files', createAssetServingHandler({
+    getAssetRoot: () => [currentRoot, previousRoot],
+    getAssetPath: (req) => decodeURIComponent(String(req.path || '').replace(/^\/+/, '')),
+    getRemotePath: (assetPath) => `/api/files/${encodeAssetPath(assetPath)}`,
+    proxyHandler: (_req, res) => res.status(502).json({ error: 'Unexpected remote proxy' }),
+  }));
+  const port = await listen(app, t);
+  const response = await request(port, `/api/files/${relativePath}`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, contents);
+});
+
+test('asset serving does not read files from a disconnected storage card', async (t) => {
+  const connectedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-assets-connected-'));
+  const disconnectedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-assets-disconnected-'));
+  t.after(() => Promise.all([
+    fs.rm(connectedRoot, { recursive: true, force: true }),
+    fs.rm(disconnectedRoot, { recursive: true, force: true }),
+  ]));
+  const relativePath = 'contributor/2026/10/Approved/disconnected.jpg';
+  await fs.mkdir(path.dirname(path.join(disconnectedRoot, relativePath)), { recursive: true });
+  await fs.writeFile(path.join(disconnectedRoot, relativePath), Buffer.from('must not be served'));
+  const activeLocations = getConnectedStorageLocations('assets', [
+    { path: connectedRoot },
+    { path: disconnectedRoot },
+  ], { assets: { '2': false } });
+
+  const app = express();
+  app.use('/api/files', createAssetServingHandler({
+    getAssetRoot: () => activeLocations.map(({ path: rootPath }) => rootPath),
+    getAssetPath: (req) => decodeURIComponent(String(req.path || '').replace(/^\/+/, '')),
+    getRemotePath: (assetPath) => `/api/files/${encodeAssetPath(assetPath)}`,
+    proxyHandler: (_req, res) => res.status(502).json({ error: 'Unexpected remote proxy' }),
+  }));
+  const port = await listen(app, t);
+  const response = await request(port, `/api/files/${relativePath}`);
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(JSON.parse(response.body.toString()), { error: 'Asset not found' });
 });
 
 test('local asset root is selected only in production when configured', () => {

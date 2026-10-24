@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const dotenv = require('dotenv');
-const { updateStorageRootsInEnv } = require('../services/assetStorageEnvironment');
+const { updateStorageRootInEnv, updateStorageRootsInEnv } = require('../services/assetStorageEnvironment');
 
 test('updates storage roots in .env while preserving unrelated settings', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asset-storage-env-'));
@@ -58,4 +58,29 @@ test('quotes storage paths safely and rejects invalid paths without writing', (t
   assert.equal(parsed.ASSETS_ROOT, assetRoot);
   assert.equal(parsed.THUMBNAIL_STORAGE_PATH, thumbnailRoot);
   assert.throws(() => updateStorageRootsInEnv('relative/assets', thumbnailRoot, envPath), /absolute path/i);
+});
+
+test('updates one default storage root without requiring or changing the other root', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asset-storage-env-one-root-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const envPath = path.join(directory, '.env');
+  fs.writeFileSync(envPath, 'ASSETS_ROOT=/assets\nPORT=5000\n');
+  const previousAssetsRoot = process.env.ASSETS_ROOT;
+  const previousThumbnailRoot = process.env.THUMBNAIL_STORAGE_PATH;
+  t.after(() => {
+    if (previousAssetsRoot === undefined) delete process.env.ASSETS_ROOT;
+    else process.env.ASSETS_ROOT = previousAssetsRoot;
+    if (previousThumbnailRoot === undefined) delete process.env.THUMBNAIL_STORAGE_PATH;
+    else process.env.THUMBNAIL_STORAGE_PATH = previousThumbnailRoot;
+  });
+
+  const assetRoot = path.join(directory, 'new assets');
+  updateStorageRootInEnv('assets', assetRoot, envPath);
+
+  const parsed = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
+  assert.equal(parsed.ASSETS_ROOT, assetRoot);
+  assert.equal(parsed.THUMBNAIL_STORAGE_PATH, undefined);
+  assert.equal(parsed.PORT, '5000');
+  assert.equal(process.env.ASSETS_ROOT, assetRoot);
+  assert.throws(() => updateStorageRootInEnv('thumbnails', 'relative/path', envPath), /absolute path/i);
 });

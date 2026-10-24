@@ -25,7 +25,18 @@ import AssetThumbnail from "./AssetThumbnail";
 
 const CATEGORY_STORAGE_KEY = "asset-categories";
 const COLLECTION_STORAGE_KEY = "asset-collections";
+const ASSET_STORAGE_CARD_COUNT_KEY = "admin-assets-connection-card-count";
+const THUMBNAIL_STORAGE_CARD_COUNT_KEY = "admin-thumbnails-connection-card-count";
 const USER_DELETE_COOLING_PERIOD_MINUTES = 60;
+
+const readStorageCardCount = (key, maximum) => {
+  if (typeof window === "undefined") return 1;
+
+  const storedCount = Number(window.localStorage.getItem(key));
+  return Number.isInteger(storedCount) && storedCount >= 1 && storedCount <= maximum
+    ? storedCount
+    : 1;
+};
 
 export const getAnimatedCountIncrement = (target, stepIndex) => {
   const magnitude = target > 1000000 ? 100000
@@ -130,6 +141,12 @@ const formatFileSize = (bytes) => {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+};
+const formatDriveFreeSize = (bytes) => {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return "0 KB";
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(2)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1_000))} KB`;
 };
 const formatTaxFormSubmittedAt = (submittedAt) => {
   if (!submittedAt) return "—";
@@ -434,10 +451,26 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [driveFreeBytes, setDriveFreeBytes] = useState(null);
   const [storageConnections, setStorageConnections] = useState({ assets: true, thumbnails: true });
   const [storageConnectionSaving, setStorageConnectionSaving] = useState("");
+  const [storageCardConnections, setStorageCardConnections] = useState({ assets: {}, thumbnails: {} });
+  const [storageCardConnectionSaving, setStorageCardConnectionSaving] = useState("");
+  const [assetStorageLocations, setAssetStorageLocations] = useState([]);
+  const [thumbnailStorageLocations, setThumbnailStorageLocations] = useState([]);
+  const [defaultAssetLocationId, setDefaultAssetLocationId] = useState("");
+  const [defaultThumbnailLocationId, setDefaultThumbnailLocationId] = useState("");
   const [assetLocationDraft, setAssetLocationDraft] = useState("");
   const [thumbnailLocationDraft, setThumbnailLocationDraft] = useState("");
+  const [assetLocationTarget, setAssetLocationTarget] = useState(1);
+  const [thumbnailLocationTarget, setThumbnailLocationTarget] = useState(1);
   const [storageLocationsSaving, setStorageLocationsSaving] = useState(false);
   const [storageLocationMessage, setStorageLocationMessage] = useState("");
+  const [isAddStorageMenuOpen, setIsAddStorageMenuOpen] = useState(false);
+  const [assetLocationCardCount, setAssetLocationCardCount] = useState(
+    () => readStorageCardCount(ASSET_STORAGE_CARD_COUNT_KEY, 99)
+  );
+  const [thumbnailLocationCardCount, setThumbnailLocationCardCount] = useState(
+    () => readStorageCardCount(THUMBNAIL_STORAGE_CARD_COUNT_KEY, 9)
+  );
+  const addStorageMenuRef = useRef(null);
   const [storageBrowseTarget, setStorageBrowseTarget] = useState("");
   const [storageBrowsePath, setStorageBrowsePath] = useState("");
   const [storageBrowseParentPath, setStorageBrowseParentPath] = useState("");
@@ -455,6 +488,17 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [databaseBackupFolderSizeBytes, setDatabaseBackupFolderSizeBytes] = useState(null);
   const [databaseBackupFolderFreeBytes, setDatabaseBackupFolderFreeBytes] = useState(null);
   const [databaseDataDirectoryError, setDatabaseDataDirectoryError] = useState("");
+
+  useEffect(() => {
+    if (!isAddStorageMenuOpen) return undefined;
+    const closeMenuOnOutsideClick = (event) => {
+      if (!addStorageMenuRef.current?.contains(event.target)) {
+        setIsAddStorageMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", closeMenuOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeMenuOnOutsideClick);
+  }, [isAddStorageMenuOpen]);
   const [databaseConnectionStatus, setDatabaseConnectionStatus] = useState("Connected");
   const [authStateVersion, setAuthStateVersion] = useState(0);
   const currentAuthToken = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
@@ -735,7 +779,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
     let active = true;
     const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-    axios.get(`${API_BASE_URL}/admin/assets/location`, {
+    axios.get(`${API_BASE_URL}/admin/assets/location?assetCardCount=${assetLocationCardCount}&thumbnailCardCount=${thumbnailLocationCardCount}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     }).then((response) => {
       if (!active) return;
@@ -749,6 +793,36 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           assets: response.data.connections.assets !== false,
           thumbnails: response.data.connections.thumbnails !== false,
         });
+      }
+      if (response.data?.cardConnections) {
+        setStorageCardConnections(response.data.cardConnections);
+      }
+      const connections = response.data?.connections;
+      if (connections) {
+        const assetLocations = Array.isArray(response.data?.assetLocations)
+          ? response.data.assetLocations
+          : Array.isArray(connections.assetLocations) ? connections.assetLocations : [];
+        const thumbnailLocations = Array.isArray(response.data?.thumbnailLocations)
+          ? response.data.thumbnailLocations
+          : Array.isArray(connections.thumbnailLocations) ? connections.thumbnailLocations : [];
+        setAssetStorageLocations(assetLocations);
+        setThumbnailStorageLocations(thumbnailLocations);
+        setDefaultAssetLocationId(connections.defaultAssetLocationId || assetLocations[0]?.id || "");
+        setDefaultThumbnailLocationId(connections.defaultThumbnailLocationId || thumbnailLocations[0]?.id || "");
+        setAssetLocationCardCount((count) => Math.max(
+          Number.isInteger(response.data?.cardCounts?.assets) ? response.data.cardCounts.assets : count,
+          assetLocations.length
+        ));
+        setThumbnailLocationCardCount((count) => Math.max(
+          Number.isInteger(response.data?.cardCounts?.thumbnails) ? response.data.cardCounts.thumbnails : count,
+          thumbnailLocations.length
+        ));
+        if (Number.isInteger(response.data?.cardCounts?.assets)) {
+          window.localStorage.setItem(ASSET_STORAGE_CARD_COUNT_KEY, String(Math.max(response.data.cardCounts.assets, assetLocations.length)));
+        }
+        if (Number.isInteger(response.data?.cardCounts?.thumbnails)) {
+          window.localStorage.setItem(THUMBNAIL_STORAGE_CARD_COUNT_KEY, String(Math.max(response.data.cardCounts.thumbnails, thumbnailLocations.length)));
+        }
       }
       setUploadFolderPathError("");
     }).catch(() => {
@@ -788,6 +862,252 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     } finally {
       setStorageConnectionSaving("");
     }
+  };
+
+  const isStorageCardConnected = (storage, locationNumber) => {
+    const cardStatus = storageCardConnections[storage]?.[String(locationNumber)];
+    if (typeof cardStatus === "boolean") return cardStatus;
+    if (locationNumber === 1) return storageConnections[storage];
+    const locations = storage === "assets" ? assetStorageLocations : thumbnailStorageLocations;
+    return locations[locationNumber - 1] ? storageConnections[storage] : false;
+  };
+
+  const toggleStorageCardConnection = async (storage, locationNumber) => {
+    const nextValue = !isStorageCardConnected(storage, locationNumber);
+    const connectionKey = `${storage}-${locationNumber}`;
+    setStorageCardConnectionSaving(connectionKey);
+    try {
+      const response = await axios.put(
+        `${API_BASE_URL}/admin/assets/card-connections`,
+        { storage, locationNumber, connected: nextValue },
+        { headers: getAuthHeaders() }
+      );
+      setStorageCardConnections(response.data.cardConnections);
+      const storageLabel = storage === "assets" ? "Assets" : "Thumbnails";
+      const cardLabel = `${storageLabel} (${locationNumber})`;
+      if (nextValue) {
+        toast.success(`${cardLabel} marked connected.`);
+      } else {
+        toast.success(`${cardLabel} marked disconnected.`);
+      }
+    } catch (error) {
+      console.error("Failed to update storage-card connection", error);
+      toast.error(error.response?.data?.error || "Unable to update storage-card connection.");
+    } finally {
+      setStorageCardConnectionSaving("");
+    }
+  };
+
+  const renderStorageCardConnectionToggle = (storage, locationNumber) => {
+    const connected = isStorageCardConnected(storage, locationNumber);
+    const connectionKey = `${storage}-${locationNumber}`;
+    const saving = storageCardConnectionSaving === connectionKey;
+    const label = storage === "assets" ? "Assets" : "Thumbnails";
+    return (
+      <button
+        type="button"
+        aria-pressed={connected}
+        aria-label={`${connected ? "Disconnect" : "Connect"} ${label} (${locationNumber})`}
+        disabled={Boolean(storageCardConnectionSaving)}
+        onClick={() => toggleStorageCardConnection(storage, locationNumber)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "12px",
+          width: "100%",
+          padding: "10px 12px",
+          borderRadius: "10px",
+          border: isDarkMode ? "1px solid #334155" : "1px solid #cbd5e1",
+          background: isDarkMode ? "#0f172a" : "rgba(255,255,255,0.82)",
+          color: isDarkMode ? "#f8fafc" : "#0f172a",
+          fontWeight: 700,
+          cursor: storageCardConnectionSaving ? "wait" : "pointer",
+        }}
+      >
+        <span>{saving ? "Saving..." : connected ? "Connected" : "Disconnected"}</span>
+        <span
+          aria-hidden="true"
+          style={{
+            position: "relative",
+            display: "inline-block",
+            width: "34px",
+            height: "20px",
+            borderRadius: "999px",
+            background: connected ? "#16a34a" : (isDarkMode ? "#64748b" : "#cbd5e1"),
+            transition: "background 0.18s ease",
+          }}
+        >
+          <span style={{
+            position: "absolute",
+            top: "2px",
+            left: connected ? "16px" : "2px",
+            width: "16px",
+            height: "16px",
+            borderRadius: "50%",
+            background: "#fff",
+            boxShadow: "0 1px 3px rgba(15,23,42,0.3)",
+            transition: "left 0.18s ease",
+          }} />
+        </span>
+      </button>
+    );
+  };
+
+  const refreshStorageLocationDetails = async () => {
+    const response = await axios.get(`${API_BASE_URL}/admin/assets/location`, {
+      headers: getAuthHeaders(),
+    });
+    const connections = response.data?.connections || {};
+    const assetLocations = response.data?.assetLocations || connections.assetLocations || [];
+    const thumbnailLocations = response.data?.thumbnailLocations || connections.thumbnailLocations || [];
+    setAssetStorageLocations(assetLocations);
+    setThumbnailStorageLocations(thumbnailLocations);
+    if (Number.isInteger(response.data?.cardCounts?.assets)) {
+      setAssetLocationCardCount(Math.max(response.data.cardCounts.assets, assetLocations.length));
+      window.localStorage.setItem(ASSET_STORAGE_CARD_COUNT_KEY, String(Math.max(response.data.cardCounts.assets, assetLocations.length)));
+    }
+    if (Number.isInteger(response.data?.cardCounts?.thumbnails)) {
+      setThumbnailLocationCardCount(Math.max(response.data.cardCounts.thumbnails, thumbnailLocations.length));
+      window.localStorage.setItem(THUMBNAIL_STORAGE_CARD_COUNT_KEY, String(Math.max(response.data.cardCounts.thumbnails, thumbnailLocations.length)));
+    }
+    setDefaultAssetLocationId(connections.defaultAssetLocationId || assetLocations[0]?.id || "");
+    setDefaultThumbnailLocationId(connections.defaultThumbnailLocationId || thumbnailLocations[0]?.id || "");
+    setUploadFolderPath(String(response.data?.uploadFolderPath || ""));
+    setThumbnailFolderPath(String(response.data?.thumbnailFolderPath || ""));
+    setUploadFolderSizeBytes(Number(response.data?.folderSizeBytes || 0));
+    setThumbnailFolderSizeBytes(Number(response.data?.thumbnailFolderSizeBytes || 0));
+    setDriveFreeBytes(Number(response.data?.driveFreeBytes || 0));
+    if (response.data?.cardConnections) setStorageCardConnections(response.data.cardConnections);
+  };
+
+  const setDefaultStorageLocation = async (type, locationId) => {
+    setStorageLocationsSaving(true);
+    try {
+      const response = await axios.put(
+        `${API_BASE_URL}/admin/assets/locations/default`,
+        { type, locationId },
+        { headers: getAuthHeaders() }
+      );
+      const connections = response.data?.connections || {};
+      setAssetStorageLocations(connections.assetLocations || []);
+      setThumbnailStorageLocations(connections.thumbnailLocations || []);
+      setDefaultAssetLocationId(connections.defaultAssetLocationId || "");
+      setDefaultThumbnailLocationId(connections.defaultThumbnailLocationId || "");
+      await refreshStorageLocationDetails();
+      toast.success(`${type === "assets" ? "Assets" : "Thumbnails"} default location selected for new uploads.`);
+      if (response.data?.backgroundQueueReady === false) {
+        toast.error("Default was selected, but background thumbnail processing could not start.");
+      }
+    } catch (error) {
+      console.error("Failed to set default storage location", error);
+      toast.error(error.response?.data?.error || "Unable to set the default storage location.");
+    } finally {
+      setStorageLocationsSaving(false);
+    }
+  };
+
+  const deleteStorageLocationCard = async (type, locationNumber) => {
+    const locations = type === "assets" ? assetStorageLocations : thumbnailStorageLocations;
+    const location = locations[locationNumber - 1];
+    const count = type === "assets" ? assetLocationCardCount : thumbnailLocationCardCount;
+    const countKey = type === "assets" ? ASSET_STORAGE_CARD_COUNT_KEY : THUMBNAIL_STORAGE_CARD_COUNT_KEY;
+    const setCount = type === "assets" ? setAssetLocationCardCount : setThumbnailLocationCardCount;
+    const label = type === "assets" ? "Assets" : "Thumbnails";
+    setStorageLocationsSaving(true);
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/admin/assets/locations`, {
+        data: { type, locationId: location?.id || null, locationNumber },
+        headers: getAuthHeaders(),
+      });
+      if (response.data?.cardConnections) setStorageCardConnections(response.data.cardConnections);
+      await refreshStorageLocationDetails();
+      const remainingLocationCount = (type === "assets"
+        ? response.data?.connections?.assetLocations
+        : response.data?.connections?.thumbnailLocations)?.length || 1;
+      const countValue = type === "assets" ? response.data?.cardCounts?.assets : response.data?.cardCounts?.thumbnails;
+      const nextCount = Number.isInteger(countValue)
+        ? Math.max(countValue, remainingLocationCount)
+        : Math.max(1, Math.max(count - 1, remainingLocationCount));
+      setCount(nextCount);
+      window.localStorage.setItem(countKey, String(nextCount));
+      toast.success(`${label} (${locationNumber}) card deleted.`);
+    } catch (error) {
+      console.error(`Failed to delete ${label.toLowerCase()} storage card`, error);
+      toast.error(error.response?.data?.error || `Unable to delete ${label.toLowerCase()} storage card.`);
+    } finally {
+      setStorageLocationsSaving(false);
+    }
+  };
+
+  const addStorageLocationCard = async (type) => {
+    const isAssets = type === "assets";
+    const currentCount = isAssets ? assetLocationCardCount : thumbnailLocationCardCount;
+    const maximum = isAssets ? 99 : 9;
+    const countKey = isAssets ? ASSET_STORAGE_CARD_COUNT_KEY : THUMBNAIL_STORAGE_CARD_COUNT_KEY;
+    const setCount = isAssets ? setAssetLocationCardCount : setThumbnailLocationCardCount;
+    if (currentCount >= maximum) return;
+
+    setStorageLocationsSaving(true);
+    try {
+      const response = await axios.put(
+        `${API_BASE_URL}/admin/assets/card-counts`,
+        { type, count: currentCount + 1 },
+        { headers: getAuthHeaders() }
+      );
+      const savedCount = isAssets ? response.data?.cardCounts?.assets : response.data?.cardCounts?.thumbnails;
+      if (!Number.isInteger(savedCount) || savedCount !== currentCount + 1) {
+        throw new Error("The server did not confirm the new storage-card count.");
+      }
+      setCount(savedCount);
+      window.localStorage.setItem(countKey, String(savedCount));
+    } catch (error) {
+      console.error(`Failed to add ${type} storage card`, error);
+      toast.error(error.response?.data?.error || `Unable to add ${type} storage card.`);
+    } finally {
+      setStorageLocationsSaving(false);
+    }
+  };
+
+  const renderStorageLocationDefaultButton = (type, locationNumber) => {
+    const locations = type === "assets" ? assetStorageLocations : thumbnailStorageLocations;
+    const location = locations[locationNumber - 1];
+    const isDefault = location && location.id === (
+      type === "assets" ? defaultAssetLocationId : defaultThumbnailLocationId
+    );
+    if (isDefault) {
+      return (
+        <span
+          className="storage-location-active-indicator"
+          role="status"
+          aria-label={`${type === "assets" ? "Assets" : "Thumbnails"} (${locationNumber}) active default`}
+        >
+          <span aria-hidden="true" className="storage-location-active-dot" />
+          Active
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        className="storage-location-default-button storage-location-action-button"
+        aria-label={`Default ${type === "assets" ? "Assets" : "Thumbnails"} (${locationNumber})`}
+        aria-pressed={Boolean(isDefault)}
+        disabled={!location || storageLocationsSaving}
+        title={!location ? "Choose a folder before making this the default." : "Use this location for new uploads"}
+        onClick={() => location && setDefaultStorageLocation(type, location.id)}
+        style={{ background: type === "assets" ? (isDarkMode ? "#134e4a" : "#ccfbf1") : (isDarkMode ? "#3b246b" : "#ede9fe"), borderColor: type === "assets" ? (isDarkMode ? "#115e59" : "#99f6e4") : (isDarkMode ? "#5b21b6" : "#ddd6fe"), color: type === "assets" ? (isDarkMode ? "#99f6e4" : "#0f766e") : (isDarkMode ? "#ddd6fe" : "#6d28d9"), cursor: !location || storageLocationsSaving ? "default" : "pointer" }}
+      >
+        Default
+      </button>
+    );
+  };
+
+  const selectStorageBrowserFolder = () => {
+    const setter = storageBrowseTarget === "assets" ? setAssetLocationDraft : setThumbnailLocationDraft;
+    setter(storageBrowsePath);
+    setStorageBrowseTarget("");
+    setStorageLocationMessage("");
   };
 
   const openStorageFolderBrowser = async (target) => {
@@ -833,52 +1153,90 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const saveStorageLocations = async () => {
     const assetRoot = assetLocationDraft.trim();
     const thumbnailRoot = thumbnailLocationDraft.trim();
-    if (!assetRoot || !thumbnailRoot) {
-      toast.error("Choose both the Assets and Thumbnails folders before saving.");
+    const assetTargetPath = assetStorageLocations[assetLocationTarget - 1]?.path || "";
+    const thumbnailTargetPath = thumbnailStorageLocations[thumbnailLocationTarget - 1]?.path || "";
+    const shouldSaveAssets = Boolean(assetRoot && assetRoot !== assetTargetPath);
+    const shouldSaveThumbnails = Boolean(thumbnailRoot && thumbnailRoot !== thumbnailTargetPath);
+    if (!shouldSaveAssets && !shouldSaveThumbnails) {
+      toast.error("Choose a new folder for an Assets or Thumbnails card before saving.");
       return;
     }
     setStorageLocationsSaving(true);
     setStorageLocationMessage("");
     try {
-      const response = await axios.put(
-        `${API_BASE_URL}/admin/assets/locations`,
-        { assetRoot, thumbnailRoot },
-        { headers: getAuthHeaders() }
-      );
-      setAssetLocationDraft(String(response.data.assetRoot));
-      setThumbnailLocationDraft(String(response.data.thumbnailRoot));
-      if (response.data.connections) {
-        setStorageConnections({
-          assets: response.data.connections.assets !== false,
-          thumbnails: response.data.connections.thumbnails !== false,
-        });
-      }
-      setUploadFolderPath(String(response.data.assetRoot));
-      setThumbnailFolderPath(String(response.data.thumbnailRoot));
-      setUploadFolderSizeBytes(null);
-      setThumbnailFolderSizeBytes(null);
-      setDriveFreeBytes(null);
-      setStorageLocationMessage("Storage locations updated and connected. Existing files remain in their original folders.");
-      if (response.data.backgroundQueueReady === false) {
-        toast.error("Storage locations were connected, but background thumbnail processing could not start.");
+      if (shouldSaveAssets && shouldSaveThumbnails && assetLocationTarget === 1 && thumbnailLocationTarget === 1) {
+        const response = await axios.put(
+          `${API_BASE_URL}/admin/assets/locations`,
+          { assetRoot, thumbnailRoot },
+          { headers: getAuthHeaders() }
+        );
+        setAssetLocationDraft(String(response.data.assetRoot));
+        setThumbnailLocationDraft(String(response.data.thumbnailRoot));
+        if (response.data.connections) {
+          setStorageConnections({
+            assets: response.data.connections.assets !== false,
+            thumbnails: response.data.connections.thumbnails !== false,
+          });
+          setAssetStorageLocations(response.data.connections.assetLocations || []);
+          setThumbnailStorageLocations(response.data.connections.thumbnailLocations || []);
+          setDefaultAssetLocationId(response.data.connections.defaultAssetLocationId || "");
+          setDefaultThumbnailLocationId(response.data.connections.defaultThumbnailLocationId || "");
+        }
+        setUploadFolderPath(String(response.data.assetRoot));
+        setThumbnailFolderPath(String(response.data.thumbnailRoot));
+        setStorageLocationMessage("Storage locations updated and connected. Existing files remain in their original folders.");
+        if (response.data.backgroundQueueReady === false) {
+          toast.error("Storage locations were connected, but background thumbnail processing could not start.");
+        } else {
+          toast.success("Asset and thumbnail locations updated and connected.");
+        }
       } else {
-        toast.success("Asset and thumbnail locations updated and connected.");
+        const responses = [];
+        if (shouldSaveAssets) {
+          responses.push(await axios.put(
+            `${API_BASE_URL}/admin/assets/location-card`,
+            { type: "assets", locationNumber: assetLocationTarget, path: assetRoot },
+            { headers: getAuthHeaders() }
+          ));
+        }
+        if (shouldSaveThumbnails) {
+          responses.push(await axios.put(
+            `${API_BASE_URL}/admin/assets/location-card`,
+            { type: "thumbnails", locationNumber: thumbnailLocationTarget, path: thumbnailRoot },
+            { headers: getAuthHeaders() }
+          ));
+        }
+        const connections = responses[responses.length - 1]?.data?.connections;
+        if (connections) {
+          setStorageConnections({
+            assets: connections.assets !== false,
+            thumbnails: connections.thumbnails !== false,
+          });
+        }
+        await refreshStorageLocationDetails();
+        setStorageLocationMessage("Storage locations updated for the selected cards.");
+        toast.success("Storage locations saved to the selected cards.");
+        if (responses.some(({ data }) => data?.backgroundQueueReady === false)) {
+          toast.error("Storage locations were saved, but background thumbnail processing could not start.");
+        }
       }
       if (typeof window !== "undefined") {
         window.dispatchEvent(new Event("asset-refresh"));
         window.dispatchEvent(new Event("asset-updated"));
         window.dispatchEvent(new Event("home-assets-refresh"));
       }
-      try {
-        const locationResponse = await axios.get(`${API_BASE_URL}/admin/assets/location`, {
-          headers: getAuthHeaders(),
-        });
-        setUploadFolderSizeBytes(Number(locationResponse.data?.folderSizeBytes || 0));
-        setThumbnailFolderSizeBytes(Number(locationResponse.data?.thumbnailFolderSizeBytes || 0));
-        setDriveFreeBytes(Number(locationResponse.data?.driveFreeBytes || 0));
-      } catch (refreshError) {
-        console.error("Storage locations were saved, but folder details could not be refreshed", refreshError);
-        toast.error("Locations saved, but folder size details could not be refreshed.");
+      if (shouldSaveAssets && shouldSaveThumbnails && assetLocationTarget === 1 && thumbnailLocationTarget === 1) {
+        try {
+          const locationResponse = await axios.get(`${API_BASE_URL}/admin/assets/location`, {
+            headers: getAuthHeaders(),
+          });
+          setUploadFolderSizeBytes(Number(locationResponse.data?.folderSizeBytes || 0));
+          setThumbnailFolderSizeBytes(Number(locationResponse.data?.thumbnailFolderSizeBytes || 0));
+          setDriveFreeBytes(Number(locationResponse.data?.driveFreeBytes || 0));
+        } catch (refreshError) {
+          console.error("Storage locations were saved, but folder details could not be refreshed", refreshError);
+          toast.error("Locations saved, but folder size details could not be refreshed.");
+        }
       }
     } catch (error) {
       console.error("Failed to update storage locations", error);
@@ -4959,6 +5317,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       fetchImages();
     } catch (err) {
       console.error(err);
+      const errorData = err?.response?.data;
+      const errorMessage = errorData?.error || (typeof errorData === "string" ? errorData : null);
+      toast.error(errorMessage || err?.message || "Failed to approve asset.");
     }
   };
 
@@ -4978,6 +5339,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       }
     } catch (err) {
       console.error(err);
+      const errorData = err?.response?.data;
+      const errorMessage = errorData?.error || (typeof errorData === "string" ? errorData : null);
+      toast.error(errorMessage || err?.message || "Failed to delete asset.");
     }
   };
 
@@ -5004,6 +5368,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       }
     } catch (err) {
       console.error(err);
+      const errorData = err?.response?.data;
+      const errorMessage = errorData?.error || (typeof errorData === "string" ? errorData : null);
+      toast.error(errorMessage || err?.message || "Failed to reject asset.");
     }
   };
 
@@ -5155,7 +5522,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const downloadThumbnail = async (image) => {
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      const thumbnailUrl = getAssetThumbnailUrl(image);
+      const thumbnailUrl = `${API_BASE_URL}/images/${encodeURIComponent(String(image.id))}/download-thumbnail`;
       const response = await axios.get(
         thumbnailUrl,
         {
@@ -6332,33 +6699,74 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         </>
       ) : isControlsAssetsTab ? (
         <>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px" }}>
-            <div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
               <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
+              <div ref={addStorageMenuRef} style={{ position: "relative" }}>
+                <button
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={isAddStorageMenuOpen}
+                  onClick={() => setIsAddStorageMenuOpen((open) => !open)}
+                  style={{ background: "#0f766e", color: "white", border: "none", padding: "10px 20px", borderRadius: "8px", cursor: "pointer", fontWeight: 600 }}
+                >
+                  Add
+                </button>
+                {isAddStorageMenuOpen && (
+                  <div role="menu" aria-label="Add storage location" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 20, display: "grid", minWidth: "190px", padding: "6px", borderRadius: "8px", background: isDarkMode ? "#1e293b" : "#fff", border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1", boxShadow: "0 8px 24px rgba(15,23,42,0.18)" }}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setIsAddStorageMenuOpen(false);
+                        addStorageLocationCard("assets");
+                      }}
+                      disabled={assetLocationCardCount >= 99 || storageLocationsSaving}
+                      style={{ padding: "9px 10px", border: 0, borderRadius: "5px", background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer" }}
+                    >
+                      Assets ({assetLocationCardCount}/99)
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setIsAddStorageMenuOpen(false);
+                        addStorageLocationCard("thumbnails");
+                      }}
+                      disabled={thumbnailLocationCardCount >= 9 || storageLocationsSaving}
+                      style={{ padding: "9px 10px", border: 0, borderRadius: "5px", background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer" }}
+                    >
+                      Thumbnails ({thumbnailLocationCardCount}/9)
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                const nextUrl = `${adminBasePath}?tab=controls`;
-                if (typeof window !== "undefined") {
-                  window.history.pushState({}, "", nextUrl);
-                  setCurrentWindowPath(adminBasePath);
-                  window.dispatchEvent(new PopStateEvent("popstate"));
-                }
-              }}
-              style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 20px", borderRadius: "8px", cursor: "pointer", fontWeight: 600 }}
-            >
-              Back to Controls
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextUrl = `${adminBasePath}?tab=controls`;
+                  if (typeof window !== "undefined") {
+                    window.history.pushState({}, "", nextUrl);
+                    setCurrentWindowPath(adminBasePath);
+                    window.dispatchEvent(new PopStateEvent("popstate"));
+                  }
+                }}
+                style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 20px", borderRadius: "8px", cursor: "pointer", fontWeight: 600 }}
+              >
+                Back to Controls
+              </button>
+            </div>
           </div>
-          <div className="admin-panel-controls-grid" style={{ display: "flex", flexWrap: "wrap", gap: "20px", justifyContent: "flex-start" }}>
+          <div className="admin-panel-controls-grid storage-connections-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 360px))", gridAutoRows: "350px", gap: "20px", justifyContent: "flex-start", alignItems: "stretch" }}>
             <CardWrapper
               cardOrder={cardOrder}
               isLayoutEditMode={isLayoutEditMode}
               isDarkMode={isDarkMode}
               moveCard={moveCard}
               cardId="assets-connection-page"
-              style={{ height: "auto", minHeight: "300px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #172554)" : "linear-gradient(145deg, #ffffff, #eff6ff)", border: isDarkMode ? "1px solid #334155" : "1px solid #bfdbfe", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(37, 99, 235, 0.1)" }}
+              style={{ width: "100%", height: "350px", minHeight: "350px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #172554)" : "linear-gradient(145deg, #ffffff, #eff6ff)", border: isDarkMode ? "1px solid #334155" : "1px solid #bfdbfe", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(37, 99, 235, 0.1)" }}
             >
               <div style={{ display: "grid", gap: "18px" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
@@ -6422,30 +6830,35 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               isDarkMode={isDarkMode}
               moveCard={moveCard}
               cardId="assets-storage-location"
-              style={{ position: "relative", height: "auto", minHeight: "300px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #102a2a)" : "linear-gradient(145deg, #ffffff, #f0fdfa)", border: isDarkMode ? "1px solid #334155" : "1px solid #ccfbf1", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(13, 148, 136, 0.09)" }}
+              className="storage-location-card"
+              style={{ position: "relative", width: "100%", height: "350px", minHeight: "350px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #102a2a)" : "linear-gradient(145deg, #ffffff, #f0fdfa)", border: isDarkMode ? "1px solid #334155" : "1px solid #ccfbf1", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(13, 148, 136, 0.09)" }}
             >
-              <span role="img" aria-label={storageConnections.assets ? "Assets connected" : "Assets disconnected"} title={storageConnections.assets ? "Connected" : "Disconnected"} style={{ position: "absolute", top: "18px", right: "18px", color: storageConnections.assets ? "#16a34a" : "#dc2626", fontSize: "1.1rem", lineHeight: 1 }}>●</span>
-              <h3 style={{ margin: "0 28px 18px 0", fontSize: "1.2rem" }}>Assets</h3>
+              <span role="img" aria-label={isStorageCardConnected("assets", 1) ? "Assets connected" : "Assets disconnected"} title={isStorageCardConnected("assets", 1) ? "Connected" : "Disconnected"} style={{ position: "absolute", top: "18px", right: "18px", color: isStorageCardConnected("assets", 1) ? "#16a34a" : "#dc2626", fontSize: "1.1rem", lineHeight: 1 }}>●</span>
+              <h3 style={{ margin: "0 28px 18px 0", fontSize: "1.2rem" }}>Assets (1)</h3>
               {uploadFolderPathError ? <span role="alert">{uploadFolderPathError}</span> : (
                 <div style={{ display: "grid", gap: "12px", overflowWrap: "anywhere" }}>
                   <strong style={{ color: isDarkMode ? "#99f6e4" : "#0f766e", fontSize: "0.76rem", letterSpacing: "0.1em", textTransform: "uppercase" }}>Original asset storage</strong>
                   <div style={{ padding: "12px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.82)", border: isDarkMode ? "1px solid #334155" : "1px solid #ccfbf1", lineHeight: 1.5 }}>
-                    {uploadFolderPath || "Loading..."}
+                    {assetStorageLocations[0]?.path || uploadFolderPath || "Loading..."}
                   </div>
                   {uploadFolderPath ? (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                       <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
                         <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Folder size</span>
-                        <strong style={{ display: "block", marginTop: "4px" }}>{formatFileSize(uploadFolderSizeBytes || 0)}</strong>
+                        <strong style={{ display: "block", marginTop: "4px" }}>{formatFileSize(assetStorageLocations[0]?.folderSizeBytes ?? uploadFolderSizeBytes ?? 0)}</strong>
                       </div>
                       <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
                         <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Drive free</span>
-                        <strong style={{ display: "block", marginTop: "4px" }}>{formatFileSize(driveFreeBytes || 0)}</strong>
+                        <strong style={{ display: "block", marginTop: "4px" }}>{formatDriveFreeSize(assetStorageLocations[0]?.driveFreeBytes ?? driveFreeBytes ?? 0)}</strong>
                       </div>
                     </div>
                   ) : null}
                 </div>
               )}
+              {renderStorageCardConnectionToggle("assets", 1)}
+              <div className={`storage-location-actions${assetStorageLocations[0]?.id === defaultAssetLocationId ? " storage-location-actions--active" : ""}`}>
+                {renderStorageLocationDefaultButton("assets", 1)}
+              </div>
             </CardWrapper>
             <CardWrapper
               cardOrder={cardOrder}
@@ -6453,25 +6866,114 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               isDarkMode={isDarkMode}
               moveCard={moveCard}
               cardId="thumbnails-storage-location"
-              style={{ position: "relative", height: "auto", minHeight: "300px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #1d1835)" : "linear-gradient(145deg, #ffffff, #f5f3ff)", border: isDarkMode ? "1px solid #334155" : "1px solid #ddd6fe", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(124, 58, 237, 0.09)" }}
+              className="storage-location-card"
+              style={{ position: "relative", width: "100%", height: "350px", minHeight: "350px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #1d1835)" : "linear-gradient(145deg, #ffffff, #f5f3ff)", border: isDarkMode ? "1px solid #334155" : "1px solid #ddd6fe", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(124, 58, 237, 0.09)" }}
             >
-              <span role="img" aria-label={storageConnections.thumbnails ? "Thumbnails connected" : "Thumbnails disconnected"} title={storageConnections.thumbnails ? "Connected" : "Disconnected"} style={{ position: "absolute", top: "18px", right: "18px", color: storageConnections.thumbnails ? "#16a34a" : "#dc2626", fontSize: "1.1rem", lineHeight: 1 }}>●</span>
-              <h3 style={{ margin: "0 28px 18px 0", fontSize: "1.2rem" }}>Thumbnails</h3>
+              <span role="img" aria-label={isStorageCardConnected("thumbnails", 1) ? "Thumbnails connected" : "Thumbnails disconnected"} title={isStorageCardConnected("thumbnails", 1) ? "Connected" : "Disconnected"} style={{ position: "absolute", top: "18px", right: "18px", color: isStorageCardConnected("thumbnails", 1) ? "#16a34a" : "#dc2626", fontSize: "1.1rem", lineHeight: 1 }}>●</span>
+              <h3 style={{ margin: "0 28px 18px 0", fontSize: "1.2rem" }}>Thumbnails (1)</h3>
               {uploadFolderPathError ? <span role="alert">{uploadFolderPathError}</span> : (
                 <div style={{ display: "grid", gap: "12px", overflowWrap: "anywhere" }}>
                   <strong style={{ color: isDarkMode ? "#c4b5fd" : "#7c3aed", fontSize: "0.76rem", letterSpacing: "0.1em", textTransform: "uppercase" }}>Preview image storage</strong>
                   <div style={{ padding: "12px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.82)", border: isDarkMode ? "1px solid #334155" : "1px solid #ddd6fe", lineHeight: 1.5 }}>
-                    {thumbnailFolderPath || "Loading..."}
+                    {thumbnailStorageLocations[0]?.path || thumbnailFolderPath || "Loading..."}
                   </div>
                   {thumbnailFolderPath ? (
-                    <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
-                      <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Folder size</span>
-                      <strong style={{ display: "block", marginTop: "4px" }}>{formatFileSize(thumbnailFolderSizeBytes || 0)}</strong>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                      <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
+                        <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Folder size</span>
+                        <strong aria-label="Thumbnails 1 folder size" style={{ display: "block", marginTop: "4px" }}>{formatFileSize(thumbnailStorageLocations[0]?.folderSizeBytes ?? thumbnailFolderSizeBytes ?? 0)}</strong>
+                      </div>
+                      <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
+                        <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Drive free</span>
+                        <strong aria-label="Thumbnails 1 drive free" style={{ display: "block", marginTop: "4px" }}>{thumbnailStorageLocations[0]?.driveFreeBytes == null ? "" : formatDriveFreeSize(thumbnailStorageLocations[0].driveFreeBytes)}</strong>
+                      </div>
                     </div>
                   ) : null}
                 </div>
               )}
+              {renderStorageCardConnectionToggle("thumbnails", 1)}
+              <div className={`storage-location-actions${thumbnailStorageLocations[0]?.id === defaultThumbnailLocationId ? " storage-location-actions--active" : ""}`}>
+                {renderStorageLocationDefaultButton("thumbnails", 1)}
+              </div>
             </CardWrapper>
+            {Array.from({ length: assetLocationCardCount - 1 }, (_, index) => {
+              const locationNumber = index + 2;
+              return (
+                <CardWrapper
+                  key={`assets-storage-location-${locationNumber}`}
+                  cardOrder={cardOrder}
+                  isLayoutEditMode={isLayoutEditMode}
+                  isDarkMode={isDarkMode}
+                  moveCard={moveCard}
+                  cardId={`assets-storage-location-${locationNumber}`}
+                  className="storage-location-card"
+                  style={{ position: "relative", order: cardOrder.length + locationNumber, width: "100%", height: "350px", minHeight: "350px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #102a2a)" : "linear-gradient(145deg, #ffffff, #f0fdfa)", border: isDarkMode ? "1px solid #334155" : "1px solid #ccfbf1", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(13, 148, 136, 0.09)" }}
+                >
+                  <span role="img" aria-label={isStorageCardConnected("assets", locationNumber) ? `Assets ${locationNumber} connected` : `Assets ${locationNumber} disconnected`} title={isStorageCardConnected("assets", locationNumber) ? "Connected" : "Disconnected"} style={{ position: "absolute", top: "18px", right: "18px", color: isStorageCardConnected("assets", locationNumber) ? "#16a34a" : "#dc2626", fontSize: "1.1rem", lineHeight: 1 }}>●</span>
+                  <h3 style={{ margin: "0 28px 18px 0", fontSize: "1.2rem" }}>Assets ({locationNumber})</h3>
+                  <div style={{ display: "grid", gap: "12px", overflowWrap: "anywhere" }}>
+                    <strong style={{ color: isDarkMode ? "#99f6e4" : "#0f766e", fontSize: "0.76rem", letterSpacing: "0.1em", textTransform: "uppercase" }}>Original asset storage</strong>
+                    <div aria-label={`Assets ${locationNumber} folder path`} style={{ minHeight: "24px", padding: "12px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.82)", border: isDarkMode ? "1px solid #334155" : "1px solid #ccfbf1", lineHeight: 1.5 }}>{assetStorageLocations[locationNumber - 1]?.path || ""}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                      <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
+                        <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Folder size</span>
+                        <strong aria-label={`Assets ${locationNumber} folder size`} style={{ display: "block", minHeight: "1em", marginTop: "4px" }}>{assetStorageLocations[locationNumber - 1]?.folderSizeBytes == null ? "" : formatFileSize(assetStorageLocations[locationNumber - 1].folderSizeBytes)}</strong>
+                      </div>
+                      <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
+                        <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Drive free</span>
+                        <strong aria-label={`Assets ${locationNumber} drive free`} style={{ display: "block", minHeight: "1em", marginTop: "4px" }}>{assetStorageLocations[locationNumber - 1]?.driveFreeBytes == null ? "" : formatDriveFreeSize(assetStorageLocations[locationNumber - 1].driveFreeBytes)}</strong>
+                      </div>
+                    </div>
+                  </div>
+                  {renderStorageCardConnectionToggle("assets", locationNumber)}
+                  <div className={`storage-location-actions${assetStorageLocations[locationNumber - 1]?.id === defaultAssetLocationId ? " storage-location-actions--active" : ""}`}>
+                    {renderStorageLocationDefaultButton("assets", locationNumber)}
+                    <button type="button" className="storage-location-action-button storage-location-delete-button" aria-label={`Delete Assets (${locationNumber})`} onClick={() => deleteStorageLocationCard("assets", locationNumber)} disabled={storageLocationsSaving} style={{ background: isDarkMode ? "rgba(127, 29, 29, 0.24)" : "#fff1f2", borderColor: isDarkMode ? "#7f1d1d" : "#fecdd3", color: isDarkMode ? "#fda4af" : "#be123c" }}>
+                      Delete
+                    </button>
+                  </div>
+                </CardWrapper>
+              );
+            })}
+            {Array.from({ length: thumbnailLocationCardCount - 1 }, (_, index) => {
+              const locationNumber = index + 2;
+              return (
+                <CardWrapper
+                  key={`thumbnails-storage-location-${locationNumber}`}
+                  cardOrder={cardOrder}
+                  isLayoutEditMode={isLayoutEditMode}
+                  isDarkMode={isDarkMode}
+                  moveCard={moveCard}
+                  cardId={`thumbnails-storage-location-${locationNumber}`}
+                  className="storage-location-card"
+                  style={{ position: "relative", order: cardOrder.length + 99 + locationNumber, width: "100%", height: "350px", minHeight: "350px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #1d1835)" : "linear-gradient(145deg, #ffffff, #f5f3ff)", border: isDarkMode ? "1px solid #334155" : "1px solid #ddd6fe", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(124, 58, 237, 0.09)" }}
+                >
+                  <span role="img" aria-label={isStorageCardConnected("thumbnails", locationNumber) ? `Thumbnails ${locationNumber} connected` : `Thumbnails ${locationNumber} disconnected`} title={isStorageCardConnected("thumbnails", locationNumber) ? "Connected" : "Disconnected"} style={{ position: "absolute", top: "18px", right: "18px", color: isStorageCardConnected("thumbnails", locationNumber) ? "#16a34a" : "#dc2626", fontSize: "1.1rem", lineHeight: 1 }}>●</span>
+                  <h3 style={{ margin: "0 28px 18px 0", fontSize: "1.2rem" }}>Thumbnails ({locationNumber})</h3>
+                  <div style={{ display: "grid", gap: "12px", overflowWrap: "anywhere" }}>
+                    <strong style={{ color: isDarkMode ? "#c4b5fd" : "#7c3aed", fontSize: "0.76rem", letterSpacing: "0.1em", textTransform: "uppercase" }}>Preview image storage</strong>
+                    <div aria-label={`Thumbnails ${locationNumber} folder path`} style={{ minHeight: "24px", padding: "12px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.82)", border: isDarkMode ? "1px solid #334155" : "1px solid #ddd6fe", lineHeight: 1.5 }}>{thumbnailStorageLocations[locationNumber - 1]?.path || ""}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                      <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
+                        <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Folder size</span>
+                        <strong aria-label={`Thumbnails ${locationNumber} folder size`} style={{ display: "block", minHeight: "1em", marginTop: "4px" }}>{thumbnailStorageLocations[locationNumber - 1]?.folderSizeBytes == null ? "" : formatFileSize(thumbnailStorageLocations[locationNumber - 1].folderSizeBytes)}</strong>
+                      </div>
+                      <div style={{ padding: "10px", borderRadius: "10px", background: isDarkMode ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.7)" }}>
+                        <span style={{ display: "block", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.72rem" }}>Drive free</span>
+                        <strong aria-label={`Thumbnails ${locationNumber} drive free`} style={{ display: "block", minHeight: "1em", marginTop: "4px" }}>{thumbnailStorageLocations[locationNumber - 1]?.driveFreeBytes == null ? "" : formatDriveFreeSize(thumbnailStorageLocations[locationNumber - 1].driveFreeBytes)}</strong>
+                      </div>
+                    </div>
+                  </div>
+                  {renderStorageCardConnectionToggle("thumbnails", locationNumber)}
+                  <div className={`storage-location-actions${thumbnailStorageLocations[locationNumber - 1]?.id === defaultThumbnailLocationId ? " storage-location-actions--active" : ""}`}>
+                    {renderStorageLocationDefaultButton("thumbnails", locationNumber)}
+                    <button type="button" className="storage-location-action-button storage-location-delete-button" aria-label={`Delete Thumbnails (${locationNumber})`} onClick={() => deleteStorageLocationCard("thumbnails", locationNumber)} disabled={storageLocationsSaving} style={{ background: isDarkMode ? "rgba(127, 29, 29, 0.24)" : "#fff1f2", borderColor: isDarkMode ? "#7f1d1d" : "#fecdd3", color: isDarkMode ? "#fda4af" : "#be123c" }}>
+                      Delete
+                    </button>
+                  </div>
+                </CardWrapper>
+              );
+            })}
           </div>
           <section
             aria-labelledby="storage-locations-title"
@@ -6488,7 +6990,43 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           >
             <div>
               <span style={{ color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.72rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>Storage configuration</span>
-              <h3 id="storage-locations-title" style={{ margin: "6px 0", fontSize: "1.2rem" }}>Choose new storage locations</h3>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", flexWrap: "wrap" }}>
+                <h3 id="storage-locations-title" style={{ margin: "6px 0", fontSize: "1.2rem" }}>Choose new storage locations</h3>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.82rem", fontWeight: 700 }}>
+                    Assets card
+                    <select
+                      aria-label="Assets storage card"
+                      value={assetLocationTarget}
+                      onChange={(event) => {
+                        const target = Number(event.target.value);
+                        setAssetLocationTarget(target);
+                        setAssetLocationDraft(assetStorageLocations[target - 1]?.path || "");
+                        setStorageLocationMessage("");
+                      }}
+                      style={{ padding: "7px 9px", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1", background: isDarkMode ? "#0f172a" : "#fff", color: "inherit" }}
+                    >
+                      {Array.from({ length: assetLocationCardCount }, (_, index) => <option key={index + 1} value={index + 1}>Assets ({index + 1})</option>)}
+                    </select>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.82rem", fontWeight: 700 }}>
+                    Thumbnails card
+                    <select
+                      aria-label="Thumbnails storage card"
+                      value={thumbnailLocationTarget}
+                      onChange={(event) => {
+                        const target = Number(event.target.value);
+                        setThumbnailLocationTarget(target);
+                        setThumbnailLocationDraft(thumbnailStorageLocations[target - 1]?.path || "");
+                        setStorageLocationMessage("");
+                      }}
+                      style={{ padding: "7px 9px", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1", background: isDarkMode ? "#0f172a" : "#fff", color: "inherit" }}
+                    >
+                      {Array.from({ length: thumbnailLocationCardCount }, (_, index) => <option key={index + 1} value={index + 1}>Thumbnails ({index + 1})</option>)}
+                    </select>
+                  </label>
+                </div>
+              </div>
               <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#64748b", fontSize: "0.9rem", lineHeight: 1.55 }}>
                 Select separate folders for original assets and thumbnails. Existing files will stay where they are; they will not be moved.
               </p>
@@ -6507,7 +7045,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
               <p role="status" style={{ margin: 0, color: storageLocationMessage ? (storageLocationMessage.startsWith("Storage locations updated") ? (isDarkMode ? "#86efac" : "#15803d") : "#dc2626") : (isDarkMode ? "#94a3b8" : "#64748b"), fontSize: "0.85rem" }}>{storageLocationMessage || "Locations apply immediately after saving."}</p>
-              <button type="button" onClick={saveStorageLocations} disabled={storageLocationsSaving || !assetLocationDraft || !thumbnailLocationDraft || (assetLocationDraft === uploadFolderPath && thumbnailLocationDraft === thumbnailFolderPath)} style={{ padding: "11px 20px", border: 0, borderRadius: "9px", background: "#2563eb", color: "#fff", fontWeight: 800, cursor: storageLocationsSaving ? "wait" : "pointer", opacity: storageLocationsSaving || (assetLocationDraft === uploadFolderPath && thumbnailLocationDraft === thumbnailFolderPath) ? 0.6 : 1 }}>
+              <button type="button" onClick={saveStorageLocations} disabled={storageLocationsSaving || (!assetLocationDraft.trim() || assetLocationDraft.trim() === (assetStorageLocations[assetLocationTarget - 1]?.path || "")) && (!thumbnailLocationDraft.trim() || thumbnailLocationDraft.trim() === (thumbnailStorageLocations[thumbnailLocationTarget - 1]?.path || ""))} style={{ padding: "11px 20px", border: 0, borderRadius: "9px", background: "#2563eb", color: "#fff", fontWeight: 800, cursor: storageLocationsSaving ? "wait" : "pointer", opacity: storageLocationsSaving || ((!assetLocationDraft.trim() || assetLocationDraft.trim() === (assetStorageLocations[assetLocationTarget - 1]?.path || "")) && (!thumbnailLocationDraft.trim() || thumbnailLocationDraft.trim() === (thumbnailStorageLocations[thumbnailLocationTarget - 1]?.path || ""))) ? 0.6 : 1 }}>
                 {storageLocationsSaving ? "Saving locations..." : "Save locations"}
               </button>
             </div>
@@ -6517,7 +7055,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               <section role="dialog" aria-modal="true" aria-labelledby="storage-browser-title" style={{ display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)", gap: "14px", width: "min(680px, 100%)", height: "min(640px, calc(100vh - 40px))", maxHeight: "calc(100vh - 40px)", minHeight: 0, overflow: "hidden", padding: "22px", borderRadius: "16px", background: isDarkMode ? "#111827" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                   <div>
-                    <h3 id="storage-browser-title" style={{ margin: 0 }}>Browse {storageBrowseTarget === "assets" ? "Assets" : "Thumbnails"} folders</h3>
+                    <h3 id="storage-browser-title" style={{ margin: 0 }}>Browse {storageBrowseTarget.includes("assets") ? "Assets" : "Thumbnails"} folders</h3>
                     <p style={{ margin: "6px 0 0", color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.8rem", overflowWrap: "anywhere" }}>{storageBrowsePath || "Choose a mounted storage location"}</p>
                   </div>
                   <button type="button" onClick={() => setStorageBrowseTarget("")} style={{ padding: "7px 11px", border: 0, borderRadius: "7px", background: isDarkMode ? "#334155" : "#e2e8f0", color: "inherit", cursor: "pointer" }}>Close</button>
@@ -6525,7 +7063,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 {storageBrowseError ? <p role="alert" style={{ margin: 0, color: "#dc2626" }}>{storageBrowseError}</p> : null}
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   {storageBrowsePath ? <button type="button" onClick={() => storageBrowseParentPath ? browseStorageDirectory(storageBrowseParentPath) : (setStorageBrowsePath(""), setStorageBrowseParentPath(""), setStorageBrowseDirectories([]))} disabled={storageBrowseLoading} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: isDarkMode ? "#334155" : "#e2e8f0", color: "inherit", cursor: "pointer" }}>↑ Up</button> : null}
-                  {storageBrowsePath ? <button type="button" onClick={() => { const setter = storageBrowseTarget === "assets" ? setAssetLocationDraft : setThumbnailLocationDraft; setter(storageBrowsePath); setStorageBrowseTarget(""); setStorageLocationMessage(""); }} disabled={storageBrowseLoading} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: "#2563eb", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Use this folder</button> : null}
+                  {storageBrowsePath ? <button type="button" onClick={selectStorageBrowserFolder} disabled={storageBrowseLoading || storageLocationsSaving} style={{ padding: "8px 11px", border: 0, borderRadius: "7px", background: "#2563eb", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Use this folder</button> : null}
                 </div>
                 <div style={{ minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", borderRadius: "10px" }}>
                   {storageBrowseLoading ? <p style={{ padding: "14px", margin: 0 }}>Loading folders...</p> : storageBrowsePath ? (

@@ -40,14 +40,26 @@ async function deleteAssetCompletely(assetId, requesterId, dependencies, options
   let transactionStarted = false;
   let advisoryLocked = false;
   let operationId = null;
+  let assetRoot;
+  let thumbnailRoot;
 
   try {
     client = await pool.connect();
     await client.query('SELECT pg_advisory_lock($1)', [id]);
     advisoryLocked = true;
+    const existingAssetResult = await client.query(
+      'SELECT filename FROM images WHERE id = $1',
+      [id]
+    );
+    assetRoot = assetThumbnails.getOriginalAssetStorageRoot(existingAssetResult.rows[0]?.filename);
+    const existingThumbnailResult = await client.query(
+      'SELECT thumbnail_path FROM asset_thumbnail_metadata WHERE asset_id = $1',
+      [id]
+    );
+    thumbnailRoot = assetThumbnails.getThumbnailStorageRoot(existingThumbnailResult.rows[0]?.thumbnail_path);
     await recoverPendingAssetLifecycleOperations(pool, id, {
-      assetRoot: assetThumbnails.getOriginalAssetStorageRoot(),
-      thumbnailRoot: assetThumbnails.getThumbnailStorageRoot(),
+      assetRoot,
+      thumbnailRoot,
     });
     await client.query('BEGIN');
     transactionStarted = true;
@@ -141,8 +153,8 @@ async function deleteAssetCompletely(assetId, requesterId, dependencies, options
         [operationId]
       )).rows[0];
       await recoverLifecycleOperation(pool, operation, {
-        assetRoot: assetThumbnails.getOriginalAssetStorageRoot(),
-        thumbnailRoot: assetThumbnails.getThumbnailStorageRoot(),
+        assetRoot,
+        thumbnailRoot,
       });
       return { deleted: true, asset, cleanupPending: false };
     } catch (cleanupError) {
@@ -170,8 +182,8 @@ async function deleteAssetCompletely(assetId, requesterId, dependencies, options
       if (operation.rows[0]) {
         try {
           await recoverLifecycleOperation(pool, operation.rows[0], {
-            assetRoot: assetThumbnails.getOriginalAssetStorageRoot(),
-            thumbnailRoot: assetThumbnails.getThumbnailStorageRoot(),
+            assetRoot,
+            thumbnailRoot,
           });
         } catch (recoveryError) {
           await setOperationState(pool, operationId, 'recovery_required', recoveryError.message).catch((stateError) => {

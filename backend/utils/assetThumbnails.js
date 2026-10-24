@@ -11,6 +11,7 @@ const sharp = require('sharp');
 const pool = require('../db');
 const { getAssetServerOrigin } = require('../config');
 const assetStorageConnections = require('../services/assetStorageConnections');
+const assetStorageCardConnections = require('../services/assetStorageCardConnections');
 const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
 const { getAssetSourceDimensions } = require('./assetDimensions');
@@ -120,26 +121,62 @@ function canonicalizePossiblyMissingPath(targetPath) {
   }
 }
 
-function getThumbnailStorageRoot() {
-  const { thumbnailStoragePath: configuredRoot } = assetStorageConnections.getConfiguredStorageRoots();
+function getThumbnailStorageRoots() {
+  const configured = assetStorageConnections.getConfiguredStorageRoots();
+  const configuredLocations = configured.thumbnailLocations || [];
+  const orderedLocations = assetStorageCardConnections.getConnectedLocations('thumbnails', configuredLocations);
+  const defaultLocationIndex = orderedLocations.findIndex(({ id }) => id === configured.defaultThumbnailLocationId);
+  const prioritizedLocations = defaultLocationIndex > 0
+    ? [orderedLocations[defaultLocationIndex], ...orderedLocations.filter((_, index) => index !== defaultLocationIndex)]
+    : orderedLocations;
+  const roots = prioritizedLocations.map(({ path: locationPath }) => path.resolve(locationPath));
+  if (!roots.length && !configuredLocations.some(Boolean) && configured.thumbnailStoragePath) {
+    roots.push(path.resolve(configured.thumbnailStoragePath));
+  }
+  if (!roots.length && !configuredLocations.some(Boolean) && process.platform !== 'darwin' && process.env.NODE_ENV !== 'production') {
+    roots.push(path.resolve(__dirname, '..', '..', 'tmp', 'asset-thumbnails'));
+  }
+  return [...new Set(roots)];
+}
+
+function getThumbnailStorageRoot(relativePath) {
+  const configured = assetStorageConnections.getConfiguredStorageRoots();
+  const configuredRoot = configured.thumbnailStoragePath;
   if (process.platform === 'darwin' && !configuredRoot) {
     throw new Error('THUMBNAIL_STORAGE_PATH must be configured on macOS; local thumbnail storage is not an implicit fallback');
   }
-  let root;
-  if (configuredRoot) root = path.resolve(configuredRoot);
+  const thumbnailRoots = getThumbnailStorageRoots();
+  let root = configuredRoot && thumbnailRoots.includes(path.resolve(configuredRoot))
+    ? path.resolve(configuredRoot)
+    : thumbnailRoots[0];
   if (process.platform === 'win32' && process.env.NODE_ENV === 'production') {
     if (!root) throw new Error('THUMBNAIL_STORAGE_PATH must be configured in Windows production');
   }
-  root = root || path.resolve(__dirname, '..', '..', 'tmp', 'asset-thumbnails');
+  if (!root) {
+    const error = new Error('THUMBNAIL_STORAGE_DISCONNECTED');
+    error.code = 'THUMBNAIL_STORAGE_DISCONNECTED';
+    throw error;
+  }
 
-  const canonicalRoot = canonicalizePossiblyMissingPath(root);
-  const canonicalOriginalRoot = canonicalizePossiblyMissingPath(getOriginalAssetStorageRoot());
-  const rootToOriginal = path.relative(canonicalOriginalRoot, canonicalRoot);
-  const originalToRoot = path.relative(canonicalRoot, canonicalOriginalRoot);
   const isSameOrNested = (relativePath) =>
     relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
-  if (isSameOrNested(rootToOriginal) || isSameOrNested(originalToRoot)) {
-    throw new Error('Thumbnail storage must be separate from the original asset storage root');
+  const availableThumbnailRoots = [...new Set(thumbnailRoots)];
+  let selectedRoot = root;
+  if (relativePath) {
+    const normalizedPath = String(relativePath).replace(/\\/g, '/').replace(/^\/+/, '');
+    const matches = availableThumbnailRoots.filter((candidate) =>
+      fs.existsSync(path.resolve(candidate, ...normalizedPath.split('/')))
+    );
+    if (matches.length) selectedRoot = matches[0];
+  }
+  const canonicalRoot = canonicalizePossiblyMissingPath(selectedRoot);
+  for (const assetRoot of getOriginalAssetStorageRoots()) {
+    const canonicalOriginalRoot = canonicalizePossiblyMissingPath(assetRoot);
+    const rootToOriginal = path.relative(canonicalOriginalRoot, canonicalRoot);
+    const originalToRoot = path.relative(canonicalRoot, canonicalOriginalRoot);
+    if (isSameOrNested(rootToOriginal) || isSameOrNested(originalToRoot)) {
+      throw new Error('Thumbnail storage must be separate from the original asset storage root');
+    }
   }
   if (
     process.platform === 'darwin' &&
@@ -449,8 +486,47 @@ function getConfiguredAssetRoot() {
   return '';
 }
 
-function getOriginalAssetStorageRoot() {
-  return getConfiguredAssetRoot() || path.resolve(__dirname, '..', 'uploads');
+function getOriginalAssetStorageRoots() {
+  const configured = assetStorageConnections.getConfiguredStorageRoots();
+  const configuredLocations = configured.assetLocations || [];
+  const orderedLocations = assetStorageCardConnections.getConnectedLocations('assets', configuredLocations);
+  const defaultLocationIndex = orderedLocations.findIndex(({ id }) => id === configured.defaultAssetLocationId);
+  const prioritizedLocations = defaultLocationIndex > 0
+    ? [orderedLocations[defaultLocationIndex], ...orderedLocations.filter((_, index) => index !== defaultLocationIndex)]
+    : orderedLocations;
+  const roots = prioritizedLocations.map(({ path: locationPath }) => path.resolve(locationPath));
+  if (!roots.length && !configuredLocations.some(Boolean) && configured.assetsRoot) {
+    roots.push(path.resolve(configured.assetsRoot));
+  }
+  if (
+    !roots.length &&
+    !configuredLocations.some(Boolean) &&
+    process.platform !== 'darwin' &&
+    !(process.platform === 'win32' && process.env.NODE_ENV === 'production')
+  ) {
+    roots.push(path.resolve(__dirname, '..', 'uploads'));
+  }
+  return [...new Set(roots)];
+}
+
+function getOriginalAssetStorageRoot(relativePath) {
+  const configured = assetStorageConnections.getConfiguredStorageRoots();
+  const configuredLocations = configured.assetLocations || [];
+  const roots = getOriginalAssetStorageRoots();
+  if (!roots.length && configuredLocations.some(Boolean)) {
+    const error = new Error('Original asset storage is disconnected');
+    error.code = 'ASSET_STORAGE_DISCONNECTED';
+    throw error;
+  }
+  if (!relativePath) return roots[0] || getConfiguredAssetRoot() || path.resolve(__dirname, '..', 'uploads');
+  const normalizedPath = String(relativePath).replace(/\\/g, '/').replace(/^\/+/, '');
+  const matches = roots.filter((root) => {
+    const candidate = path.resolve(root, ...normalizedPath.split('/'));
+    const relative = path.relative(path.resolve(root), candidate);
+    return relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative) && fs.existsSync(candidate);
+  });
+  return matches[0] || roots[0] || path.resolve(__dirname, '..', 'uploads');
 }
 
 function getLifecycleRecoveryStorageRoots({ platform = process.platform } = {}) {
@@ -458,15 +534,16 @@ function getLifecycleRecoveryStorageRoots({ platform = process.platform } = {}) 
     assetsRoot: originalRootConfigured,
     thumbnailStoragePath: thumbnailRootConfigured,
   } = assetStorageConnections.getConfiguredStorageRoots();
+  const originalRoots = getOriginalAssetStorageRoots();
+  const thumbnailRoots = getThumbnailStorageRoots();
+  const assetRoot = originalRoots.length
+    ? getOriginalAssetStorageRoot()
+    : (platform === 'darwin' || originalRootConfigured ? null : getOriginalAssetStorageRoot());
+  const thumbnailRoot = thumbnailRoots.length
+    ? getThumbnailStorageRoot()
+    : (platform === 'darwin' || thumbnailRootConfigured ? null : getThumbnailStorageRoot());
 
-  return {
-    assetRoot: platform === 'darwin' && !originalRootConfigured
-      ? null
-      : getOriginalAssetStorageRoot(),
-    thumbnailRoot: platform === 'darwin' && !thumbnailRootConfigured
-      ? null
-      : getThumbnailStorageRoot(),
-  };
+  return { assetRoot, thumbnailRoot };
 }
 
 async function stageLocalAsset(sourcePath, extension) {
@@ -479,8 +556,7 @@ async function stageLocalAsset(sourcePath, extension) {
 }
 
 async function getAssetSourceInfo(filename, assetOwnerId) {
-  const assetRoot = getConfiguredAssetRoot();
-  if (assetRoot) {
+  for (const assetRoot of getOriginalAssetStorageRoots()) {
     try {
       const sourcePath = await resolveAssetFile(assetRoot, filename);
       const stats = await fsp.stat(sourcePath);
@@ -492,32 +568,12 @@ async function getAssetSourceInfo(filename, assetOwnerId) {
         modifiedAt: stats.mtime,
       };
     } catch (error) {
-      if (
-        process.platform !== 'darwin' ||
-        !['ENOENT', 'ENOTDIR', 'ASSET_ROOT_UNAVAILABLE'].includes(error.code)
-      ) {
-        throw error;
-      }
+      if (!['ENOENT', 'ENOTDIR', 'ASSET_ROOT_UNAVAILABLE'].includes(error.code)) throw error;
     }
   }
 
   if (process.platform === 'darwin') {
     return getRemoteAssetSourceInfo(filename, assetOwnerId);
-  }
-
-  const localUploadsRoot = path.resolve(__dirname, '..', 'uploads');
-  try {
-    const sourcePath = await resolveAssetFile(localUploadsRoot, filename);
-    const stats = await fsp.stat(sourcePath);
-    if (stats.size > MAX_SOURCE_BYTES) throw new Error(`Source exceeds the ${MAX_SOURCE_BYTES} byte processing limit`);
-    return {
-      kind: 'local',
-      sourcePath,
-      size: stats.size,
-      modifiedAt: stats.mtime,
-    };
-  } catch (error) {
-    if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
   }
 
   return getRemoteAssetSourceInfo(filename, assetOwnerId);
@@ -1121,7 +1177,7 @@ async function deleteAssetThumbnail(assetId, thumbnailPathOverride) {
   let safePath = String(thumbnailPath);
   try {
     safePath = normalizeThumbnailRelativePath(thumbnailPath, id);
-    const root = getThumbnailStorageRoot();
+    const root = getThumbnailStorageRoot(safePath);
     const filePath = getThumbnailFilePath(id, root, safePath);
     const realRoot = await fsp.realpath(root);
     let fileStats;
@@ -1316,7 +1372,9 @@ module.exports = {
   getThumbnailFilePath,
   getThumbnailFilename,
   getThumbnailStorageRoot,
+  getThumbnailStorageRoots,
   getOriginalAssetStorageRoot,
+  getOriginalAssetStorageRoots,
   getLifecycleRecoveryStorageRoots,
   getThumbnailCacheControl,
   finalizeThumbnailFile,

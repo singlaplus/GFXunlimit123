@@ -1,7 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createReadStream } = require('node:fs');
+const { constants, createReadStream } = require('node:fs');
 const { pipeline } = require('node:stream/promises');
 const { getAssetStorageRoots } = require('../config');
 const {
@@ -110,6 +110,9 @@ function fileWitness(stats) {
 }
 
 function witnessMatches(stats, witness) {
+  if (witness?.device === null && witness?.inode === null) return true;
+  if (witness?.device === undefined || witness?.inode === undefined ||
+      witness?.device === null || witness?.inode === null) return false;
   return String(stats.dev) === String(witness.device) &&
     String(stats.ino) === String(witness.inode);
 }
@@ -152,39 +155,100 @@ async function verifyPublishedUpload(assetRoot, relativePath, expected) {
   return { stats, sha256 };
 }
 
-async function publishStagedUpload(assetRoot, stagedPath, relativePath, expected) {
+async function removeCreatedCopyIfUnchanged(destinationPath, createdStats) {
+  const currentStats = await fs.lstat(destinationPath).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (
+    currentStats &&
+    currentStats.isFile() &&
+    !currentStats.isSymbolicLink() &&
+    witnessMatches(currentStats, { device: createdStats.dev, inode: createdStats.ino })
+  ) {
+    await fs.unlink(destinationPath);
+  }
+}
+
+function isHardLinkUnsupported(error) {
+  return ['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EXDEV'].includes(error.code);
+}
+
+async function publishStagedUpload(assetRoot, stagedPath, relativePath, expected, onUnstableFileIdentity, linkFile = fs.link) {
   const staged = await hashStagedUpload(assetRoot, stagedPath);
-  if (!witnessMatches({ dev: staged.witness.device, ino: staged.witness.inode }, expected) ||
-      staged.witness.size !== Number(expected.size) ||
-      staged.sha256 !== expected.sha256) {
-    const error = new Error('Staged upload does not match its persisted operation witness.');
+  if (staged.witness.size !== Number(expected.size) || staged.sha256 !== expected.sha256) {
+    const error = new Error('Staged upload does not match its persisted content witness.');
     error.code = 'UPLOAD_STAGING_MISMATCH';
     error.statusCode = 409;
     throw error;
+  }
+  let publicationWitness = expected;
+  if (!witnessMatches({ dev: staged.witness.device, ino: staged.witness.inode }, expected)) {
+    if (typeof onUnstableFileIdentity !== 'function') {
+      const error = new Error('Staged upload does not match its persisted operation witness.');
+      error.code = 'UPLOAD_STAGING_MISMATCH';
+      error.statusCode = 409;
+      throw error;
+    }
+    await onUnstableFileIdentity();
+    publicationWitness = { ...expected, device: null, inode: null };
   }
 
   const destination = await ensureSafeParent(assetRoot, relativePath, true);
   if (!destination) throw new Error('Could not safely prepare the saved upload directory.');
   try {
-    await fs.link(stagedPath, destination.resolvedPath);
+    await linkFile(stagedPath, destination.resolvedPath);
   } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    let published;
-    try {
-      published = await verifyPublishedUpload(assetRoot, relativePath, expected);
-    } catch (identityError) {
-      identityError.code = 'UPLOAD_DESTINATION_COLLISION';
-      identityError.statusCode = 409;
-      throw identityError;
+    if (error.code === 'EEXIST') {
+      if (publicationWitness.device === null && publicationWitness.inode === null) {
+        const collision = new Error('The upload destination already exists.');
+        collision.code = 'UPLOAD_DESTINATION_COLLISION';
+        collision.statusCode = 409;
+        throw collision;
+      }
+      let published;
+      try {
+        published = await verifyPublishedUpload(assetRoot, relativePath, publicationWitness);
+      } catch (identityError) {
+        identityError.code = 'UPLOAD_DESTINATION_COLLISION';
+        identityError.statusCode = 409;
+        throw identityError;
+      }
+      await fs.unlink(stagedPath);
+      return { ...published, alreadyPublished: true };
     }
-    await fs.unlink(stagedPath);
-    return { ...published, alreadyPublished: true };
+    if (!isHardLinkUnsupported(error)) throw error;
+    if (publicationWitness.device !== null || publicationWitness.inode !== null) {
+      if (typeof onUnstableFileIdentity !== 'function') throw error;
+      await onUnstableFileIdentity();
+      publicationWitness = { ...expected, device: null, inode: null };
+    }
+
+    let createdStats;
+    try {
+      await fs.copyFile(stagedPath, destination.resolvedPath, constants.COPYFILE_EXCL);
+      createdStats = await fs.lstat(destination.resolvedPath);
+      const published = await verifyPublishedUpload(assetRoot, relativePath, publicationWitness);
+      await fs.unlink(stagedPath);
+      return { ...published, alreadyPublished: false };
+    } catch (copyError) {
+      if (createdStats) {
+        await removeCreatedCopyIfUnchanged(destination.resolvedPath, createdStats);
+      }
+      if (copyError.code === 'EEXIST') {
+        const collision = new Error('The upload destination already exists.');
+        collision.code = 'UPLOAD_DESTINATION_COLLISION';
+        collision.statusCode = 409;
+        throw collision;
+      }
+      throw copyError;
+    }
   }
 
   try {
-    const published = await verifyPublishedUpload(assetRoot, relativePath, expected);
+    const published = await verifyPublishedUpload(assetRoot, relativePath, publicationWitness);
     const stagedStats = await fs.lstat(stagedPath);
-    if (!witnessMatches(stagedStats, expected) || stagedStats.isSymbolicLink() || !stagedStats.isFile()) {
+    if (!witnessMatches(stagedStats, publicationWitness) || stagedStats.isSymbolicLink() || !stagedStats.isFile()) {
       throw new Error('Upload staging file identity changed before cleanup.');
     }
     await fs.unlink(stagedPath);

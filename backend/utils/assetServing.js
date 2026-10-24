@@ -66,8 +66,23 @@ async function resolveAssetFile(assetRoot, requestedPath) {
 }
 
 async function sendAssetFile(req, res, assetRoot, requestedPath, sendFileOptions = {}) {
+  const roots = Array.isArray(assetRoot) ? assetRoot : [assetRoot];
+  let filePath;
+  for (const root of roots) {
+    try {
+      filePath = await resolveAssetFile(root, requestedPath);
+      break;
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR' || error.code === 'ASSET_ROOT_UNAVAILABLE') continue;
+      if (error.code === 'INVALID_ASSET_PATH') {
+        return res.status(400).json({ error: 'Invalid asset path' });
+      }
+      return res.status(500).json({ error: 'Asset storage unavailable' });
+    }
+  }
+  if (!filePath) return res.status(404).json({ error: 'Asset not found' });
+
   try {
-    const filePath = await resolveAssetFile(assetRoot, requestedPath);
     return res.sendFile(filePath, sendFileOptions, (error) => {
       if (!error) return;
       if (res.headersSent) {
@@ -81,12 +96,6 @@ async function sendAssetFile(req, res, assetRoot, requestedPath, sendFileOptions
       res.status(500).json({ error: 'Unable to serve asset' });
     });
   } catch (error) {
-    if (error.code === 'INVALID_ASSET_PATH') {
-      return res.status(400).json({ error: 'Invalid asset path' });
-    }
-    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') {
-      return res.status(404).json({ error: 'Asset not found' });
-    }
     return res.status(500).json({ error: 'Asset storage unavailable' });
   }
 }
@@ -117,7 +126,7 @@ function createAssetServingHandler({ getAssetRoot, getAssetPath, getRemotePath, 
       res.locals.immutableThumbnail = true;
     }
     const assetRoot = getAssetRoot();
-    if (assetRoot) {
+    if (Array.isArray(assetRoot) ? assetRoot.length > 0 : assetRoot) {
       return sendAssetFile(req, res, assetRoot, assetPath, sendFileOptions);
     }
 

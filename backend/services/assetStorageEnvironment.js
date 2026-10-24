@@ -11,12 +11,9 @@ function quoteEnvironmentValue(value) {
   return `'${value}'`;
 }
 
-function updateStorageRootsInEnv(assetRoot, thumbnailRoot, envPath = path.join(__dirname, '..', '.env')) {
-  const values = {
-    ASSETS_ROOT: assetRoot,
-    THUMBNAIL_STORAGE_PATH: thumbnailRoot,
-  };
+function updateStorageEnvironment(values, envPath) {
   for (const [key, value] of Object.entries(values)) {
+    if (!STORAGE_ROOT_KEYS.includes(key)) throw new TypeError('Storage environment key is invalid.');
     if (typeof value !== 'string' || !path.isAbsolute(value)) {
       throw new TypeError(`${key} must be an absolute path.`);
     }
@@ -43,12 +40,16 @@ function updateStorageRootsInEnv(assetRoot, thumbnailRoot, envPath = path.join(_
       continue;
     }
     const key = match[1];
+    if (!Object.hasOwn(values, key)) {
+      updatedLines.push(line);
+      continue;
+    }
     if (foundKeys.has(key)) continue;
     foundKeys.add(key);
     updatedLines.push(`${key}=${quoteEnvironmentValue(values[key])}`);
   }
 
-  for (const key of STORAGE_ROOT_KEYS) {
+  for (const key of Object.keys(values)) {
     if (!foundKeys.has(key)) updatedLines.push(`${key}=${quoteEnvironmentValue(values[key])}`);
   }
 
@@ -69,8 +70,24 @@ function updateStorageRootsInEnv(assetRoot, thumbnailRoot, envPath = path.join(_
     throw error;
   }
 
-  process.env.ASSETS_ROOT = assetRoot;
-  process.env.THUMBNAIL_STORAGE_PATH = thumbnailRoot;
+  for (const [key, value] of Object.entries(values)) process.env[key] = value;
 }
 
-module.exports = { updateStorageRootsInEnv };
+function updateStorageRootsInEnv(assetRoot, thumbnailRoot, envPath = path.join(__dirname, '..', '.env')) {
+  updateStorageEnvironment({
+    ASSETS_ROOT: assetRoot,
+    THUMBNAIL_STORAGE_PATH: thumbnailRoot,
+  }, envPath);
+}
+
+function updateStorageRootInEnv(type, root, envPath = path.join(__dirname, '..', '.env')) {
+  const key = type === 'assets'
+    ? 'ASSETS_ROOT'
+    : type === 'thumbnails'
+      ? 'THUMBNAIL_STORAGE_PATH'
+      : null;
+  if (!key) throw new TypeError('Storage type must be assets or thumbnails.');
+  updateStorageEnvironment({ [key]: root }, envPath);
+}
+
+module.exports = { updateStorageRootInEnv, updateStorageRootsInEnv };

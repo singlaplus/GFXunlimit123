@@ -47,6 +47,49 @@ function hasJournaledTemporaryIdentity(operation, stats) {
     String(stats.ino) === String(operation.temporary_inode);
 }
 
+function isHardLinkUnsupported(error) {
+  return ['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EPERM'].includes(error?.code);
+}
+
+async function publishTemporaryFile(temporaryPath, destinationPath, expectedSha256, onCopiedDestination) {
+  try {
+    await fs.link(temporaryPath, destinationPath);
+    return;
+  } catch (error) {
+    if (!isHardLinkUnsupported(error)) throw error;
+  }
+
+  if (typeof onCopiedDestination !== 'function') {
+    const error = new Error('Asset storage does not support hard links and cannot journal a copied destination.');
+    error.code = 'ASSET_HARD_LINK_UNSUPPORTED';
+    throw error;
+  }
+
+  await fs.copyFile(temporaryPath, destinationPath, require('node:fs').constants.COPYFILE_EXCL);
+  const [temporaryStats, destinationStats] = await Promise.all([
+    fs.lstat(temporaryPath),
+    fs.lstat(destinationPath),
+  ]);
+  if (
+    temporaryStats.isSymbolicLink() ||
+    !temporaryStats.isFile() ||
+    destinationStats.isSymbolicLink() ||
+    !destinationStats.isFile() ||
+    temporaryStats.size !== destinationStats.size ||
+    !(await filesHaveSameContent(temporaryPath, destinationPath)) ||
+    (expectedSha256 && await hashFile(destinationPath) !== expectedSha256)
+  ) {
+    throw new Error('Copied asset failed destination verification.');
+  }
+
+  const currentTemporaryStats = await fs.lstat(temporaryPath);
+  if (!hasSameFileIdentity(temporaryStats, currentTemporaryStats)) {
+    throw new Error('Asset temporary file changed before copy publication.');
+  }
+  await fs.unlink(temporaryPath);
+  await onCopiedDestination(destinationStats);
+}
+
 function resolveRelativePath(root, relativePath) {
   if (typeof relativePath !== 'string' || !relativePath.trim()) {
     throw new Error('Asset lifecycle path is invalid.');
@@ -127,7 +170,12 @@ async function copyContainedFile(root, sourceRelativePath, destinationRelativePa
       throw new Error('Copied asset does not match its journaled content hash.');
     }
     if (onTemporaryCreated) await onTemporaryCreated(copiedStats);
-    await fs.link(temporary.resolvedPath, destination.resolvedPath);
+    await publishTemporaryFile(
+      temporary.resolvedPath,
+      destination.resolvedPath,
+      expectedSha256,
+      onTemporaryCreated
+    );
   } catch (error) {
     if (copiedStats) {
       const currentStats = await fs.lstat(temporary.resolvedPath).catch((cleanupError) => {
@@ -350,9 +398,13 @@ async function recoverLifecycleOperation(pool, operation, options) {
               !(await filesHaveSameContent(oldPath.resolvedPath, newPath.resolvedPath))) {
             throw new Error(`Uncommitted destination for asset ${operation.asset_id} is not a verified duplicate.`);
           }
-          if (!temporaryStats?.isFile() || temporaryStats.isSymbolicLink() ||
-              !hasJournaledTemporaryIdentity(operation, temporaryStats) ||
-              !hasSameFileIdentity(temporaryStats, newStats)) {
+          if (!hasJournaledTemporaryIdentity(operation, newStats) ||
+              (temporaryStats && (
+                !temporaryStats.isFile() ||
+                temporaryStats.isSymbolicLink() ||
+                !hasJournaledTemporaryIdentity(operation, temporaryStats) ||
+                !hasSameFileIdentity(temporaryStats, newStats)
+              ))) {
             throw new Error(`Uncommitted destination for asset ${operation.asset_id} cannot be attributed to its operation.`);
           }
           await removeContainedFile(recoveryAssetRoot, operation.new_filename);
@@ -400,7 +452,12 @@ async function recoverLifecycleOperation(pool, operation, options) {
                 (operation.content_sha256 && await hashFile(temporaryPath.resolvedPath) !== operation.content_sha256)) {
               throw new Error('Committed asset temporary file cannot be verified against its source.');
             }
-            await fs.link(temporaryPath.resolvedPath, target.resolvedPath);
+            await publishTemporaryFile(
+              temporaryPath.resolvedPath,
+              target.resolvedPath,
+              operation.content_sha256,
+              (stats) => recordTemporaryIdentity(pool, operation, stats)
+            );
           } else {
             await copyContainedFile(
               recoveryAssetRoot,
@@ -415,9 +472,13 @@ async function recoverLifecycleOperation(pool, operation, options) {
           if (stats.isSymbolicLink() || !stats.isFile()) {
             throw new Error('Committed asset destination is not a regular file.');
           }
-          if (!temporaryStats?.isFile() || temporaryStats.isSymbolicLink() ||
-              !hasJournaledTemporaryIdentity(operation, temporaryStats) ||
-              !hasSameFileIdentity(temporaryStats, stats)) {
+          if (!hasJournaledTemporaryIdentity(operation, stats) ||
+              (temporaryStats && (
+                !temporaryStats.isFile() ||
+                temporaryStats.isSymbolicLink() ||
+                !hasJournaledTemporaryIdentity(operation, temporaryStats) ||
+                !hasSameFileIdentity(temporaryStats, stats)
+              ))) {
             throw new Error('Committed asset destination cannot be attributed to its operation.');
           }
           const destinationHash = await hashContainedFile(recoveryAssetRoot, operation.new_filename);
@@ -442,12 +503,19 @@ async function recoverLifecycleOperation(pool, operation, options) {
       const temporaryPath = await ensureSafeParent(recoveryAssetRoot, temporary, false);
       const [destinationStats, temporaryStats] = await Promise.all([
         fs.lstat(destinationPath.resolvedPath),
-        fs.lstat(temporaryPath.resolvedPath),
+        fs.lstat(temporaryPath.resolvedPath).catch((error) => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        }),
       ]);
       if (destinationStats.isSymbolicLink() || !destinationStats.isFile() ||
-          temporaryStats.isSymbolicLink() || !temporaryStats.isFile() ||
-          !hasJournaledTemporaryIdentity(operation, temporaryStats) ||
-          !hasSameFileIdentity(destinationStats, temporaryStats)) {
+          !hasJournaledTemporaryIdentity(operation, destinationStats) ||
+          (temporaryStats && (
+            temporaryStats.isSymbolicLink() ||
+            !temporaryStats.isFile() ||
+            !hasJournaledTemporaryIdentity(operation, temporaryStats) ||
+            !hasSameFileIdentity(destinationStats, temporaryStats)
+          ))) {
         throw new Error('Committed asset destination is not linked to its operation-owned temporary file.');
       }
       const sourcePath = await ensureSafeParent(recoveryAssetRoot, operation.old_filename, false);

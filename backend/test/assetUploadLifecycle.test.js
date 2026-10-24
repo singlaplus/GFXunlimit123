@@ -80,6 +80,114 @@ test('publishes the same staged inode without overwriting and verifies its conte
   assert.equal(verified.sha256, witness.sha256);
 });
 
+test('publishes matching staged content when the filesystem identity is not stable', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-asset-upload-unstable-identity-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const content = Buffer.from('verified content on a filesystem with unstable file identities');
+  const { stagedPath, witness } = await createStagedUpload(root, 'original.jpg', content);
+  const relativePath = 'owner/2026/10/Pending/original.jpg';
+  const persistedWitness = { ...witness, device: 'stale-device', inode: 'stale-inode' };
+  let identityMarkedUnavailable = false;
+
+  const published = await publishStagedUpload(
+    root,
+    stagedPath,
+    relativePath,
+    persistedWitness,
+    async () => {
+      identityMarkedUnavailable = true;
+      persistedWitness.device = null;
+      persistedWitness.inode = null;
+    }
+  );
+
+  assert.equal(identityMarkedUnavailable, true);
+  assert.equal(published.stats.size, content.length);
+  assert.equal(persistedWitness.device, null);
+  assert.equal(persistedWitness.inode, null);
+  assert.equal((await verifyPublishedUpload(root, relativePath, persistedWitness)).sha256, witness.sha256);
+});
+
+test('does not publish different content when filesystem identity is unstable', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-asset-upload-unstable-content-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const { stagedPath, witness } = await createStagedUpload(root, 'original.jpg', Buffer.from('uploaded content'));
+  let identityMarkedUnavailable = false;
+
+  await assert.rejects(
+    publishStagedUpload(
+      root,
+      stagedPath,
+      'owner/2026/10/Pending/original.jpg',
+      { ...witness, device: 'stale-device', inode: 'stale-inode', sha256: '0'.repeat(64) },
+      async () => { identityMarkedUnavailable = true; }
+    ),
+    { code: 'UPLOAD_STAGING_MISMATCH', message: 'Staged upload does not match its persisted content witness.' }
+  );
+  assert.equal(identityMarkedUnavailable, false);
+});
+
+test('copies and verifies uploads when the storage filesystem does not support hard links', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-asset-upload-no-hard-links-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const content = Buffer.from('copy fallback keeps the uploaded bytes verified');
+  const { stagedPath, witness } = await createStagedUpload(root, 'original.jpg', content);
+  const relativePath = 'owner/2026/10/Pending/original.jpg';
+  const persistedWitness = { ...witness };
+  let identityMarkedUnavailable = false;
+
+  const published = await publishStagedUpload(
+    root,
+    stagedPath,
+    relativePath,
+    witness,
+    async () => {
+      identityMarkedUnavailable = true;
+      persistedWitness.device = null;
+      persistedWitness.inode = null;
+    },
+    async () => {
+      const error = new Error('Hard links are unsupported.');
+      error.code = 'ENOTSUP';
+      throw error;
+    }
+  );
+
+  assert.equal(identityMarkedUnavailable, true);
+  assert.equal(published.stats.size, content.length);
+  assert.deepEqual(await fs.readFile(path.join(root, relativePath)), content);
+  assert.equal(await fs.stat(stagedPath).then(() => true, (error) => error.code !== 'ENOENT'), false);
+  assert.equal((await verifyPublishedUpload(root, relativePath, persistedWitness)).sha256, witness.sha256);
+});
+
+test('does not treat an existing destination as the same upload when identity is unavailable', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-asset-upload-identity-collision-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const content = Buffer.from('same bytes do not prove this is the same upload operation');
+  const { stagedPath, witness } = await createStagedUpload(root, 'original.jpg', content);
+  const relativePath = 'owner/2026/10/Pending/original.jpg';
+  const destination = path.join(root, relativePath);
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  await fs.writeFile(destination, content);
+
+  await assert.rejects(
+    publishStagedUpload(
+      root,
+      stagedPath,
+      relativePath,
+      { ...witness, device: 'stale-device', inode: 'stale-inode' },
+      async () => {},
+      async () => {
+        const error = new Error('Hard links are unsupported.');
+        error.code = 'ENOTSUP';
+        throw error;
+      }
+    ),
+    { code: 'UPLOAD_DESTINATION_COLLISION' }
+  );
+  assert.equal(await fs.readFile(stagedPath, 'utf8'), content.toString());
+});
+
 test('a pre-existing destination collision is preserved with the staging file', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-asset-upload-collision-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

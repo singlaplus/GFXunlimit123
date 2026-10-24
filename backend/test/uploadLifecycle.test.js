@@ -9,6 +9,7 @@ const jwt = require('jsonwebtoken');
 const cron = require('node-cron');
 const pool = require('../db');
 const thumbnailQueue = require('../thumbnail-queue-worker');
+const assetThumbnails = require('../utils/assetThumbnails');
 
 process.env.DISABLE_EMAIL_SCHEDULER = 'true';
 process.env.DISABLE_CURRENCY_SCHEDULER = 'true';
@@ -21,6 +22,17 @@ process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE = 'true';
 process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION = 'true';
 process.env.DISABLE_USER_DELETION_SCHEDULER = 'true';
 const originalCronSchedule = cron.schedule;
+const originalGetOriginalAssetStorageRoot = assetThumbnails.getOriginalAssetStorageRoot;
+assetThumbnails.getOriginalAssetStorageRoot = (relativePath) => {
+  if (
+    process.env.NODE_ENV === 'test' &&
+    process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE === 'true' &&
+    process.env.ASSETS_ROOT
+  ) {
+    return process.env.ASSETS_ROOT;
+  }
+  return originalGetOriginalAssetStorageRoot(relativePath);
+};
 cron.schedule = () => ({ stop() {} });
 const { app } = require('../server');
 cron.schedule = originalCronSchedule;
@@ -39,6 +51,7 @@ test.after(async () => {
   pool.query = originalPoolQuery;
   pool.connect = originalPoolConnect;
   thumbnailQueue.queueAssetThumbnailJob = originalQueueUpload;
+  assetThumbnails.getOriginalAssetStorageRoot = originalGetOriginalAssetStorageRoot;
   if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = previousNodeEnv;
   if (previousLocalUploadTestStorage === undefined) delete process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE;

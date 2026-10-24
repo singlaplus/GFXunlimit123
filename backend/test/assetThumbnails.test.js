@@ -19,7 +19,9 @@ const {
   getThumbnailCacheControl,
   getProcessorVersion,
   getThumbnailStorageRoot,
+  getOriginalAssetStorageRoot,
   getLifecycleRecoveryStorageRoots,
+  isThumbnailPathInsideRoot,
   getAssetSourceInfo,
   stageRemoteAsset,
   isValidThumbnailFile,
@@ -39,6 +41,8 @@ const { planOrphanThumbnailFiles } = require('../scripts/thumbnail-cli-utils');
 const pool = require('../db');
 const ProcessorDetector = require('../thumbnail-engine/processor-detector');
 const { getAssetSourceDimensions } = require('../utils/assetDimensions');
+const assetStorageConnections = require('../services/assetStorageConnections');
+const assetStorageCardConnections = require('../services/assetStorageCardConnections');
 
 function setPlatform(platform) {
   const originalDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
@@ -68,6 +72,28 @@ test('macOS lifecycle recovery does not require local asset or thumbnail roots',
     );
   } finally {
     restoreEnvironment();
+  }
+});
+
+test('original asset root selection excludes disconnected cards, including the default card', () => {
+  const originalGetConfiguredStorageRoots = assetStorageConnections.getConfiguredStorageRoots;
+  const originalGetConnectedLocations = assetStorageCardConnections.getConnectedLocations;
+  const connectedLocation = { id: 'assets-1', path: '/connected-assets' };
+  const disconnectedDefault = { id: 'assets-2', path: '/disconnected-assets' };
+  assetStorageConnections.getConfiguredStorageRoots = () => ({
+    assetsRoot: disconnectedDefault.path,
+    assetLocations: [connectedLocation, disconnectedDefault],
+    defaultAssetLocationId: disconnectedDefault.id,
+  });
+  assetStorageCardConnections.getConnectedLocations = (_storage, locations) => locations.slice(0, 1);
+
+  try {
+    assert.equal(getOriginalAssetStorageRoot(), connectedLocation.path);
+    assetStorageCardConnections.getConnectedLocations = () => [];
+    assert.throws(getOriginalAssetStorageRoot, { code: 'ASSET_STORAGE_DISCONNECTED' });
+  } finally {
+    assetStorageConnections.getConfiguredStorageRoots = originalGetConfiguredStorageRoots;
+    assetStorageCardConnections.getConnectedLocations = originalGetConnectedLocations;
   }
 });
 
@@ -432,6 +458,22 @@ test('rejects thumbnail roots that resolve through symlinks into original storag
     else process.env.ASSETS_ROOT = oldAssetRoot;
     if (oldThumbnailRoot === undefined) delete process.env.THUMBNAIL_STORAGE_PATH;
     else process.env.THUMBNAIL_STORAGE_PATH = oldThumbnailRoot;
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('validates a thumbnail against the root that contains it', async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gfx-thumbnail-root-validation-'));
+  const configuredRoot = path.join(temporaryDirectory, 'configured');
+  const activeRoot = path.join(temporaryDirectory, 'active');
+  const thumbnailPath = path.join(activeRoot, '2026', '10', '24', 'thumbnail.webp');
+  fs.mkdirSync(path.dirname(thumbnailPath), { recursive: true });
+  fs.writeFileSync(thumbnailPath, 'thumbnail');
+
+  try {
+    assert.equal(await isThumbnailPathInsideRoot(thumbnailPath, activeRoot), true);
+    assert.equal(await isThumbnailPathInsideRoot(thumbnailPath, configuredRoot), false);
+  } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });

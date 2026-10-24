@@ -28,7 +28,6 @@ const thumbnailQueue = require("./thumbnail-queue-worker");
 const assetThumbnails = require("./utils/assetThumbnails");
 const { deleteAssetCompletely } = require("./services/assetDeletion");
 const { moveAssetFileAndUpdate } = require("./services/assetFileMove");
-const { assertLocalAssetLifecycleSupported } = require("./services/assetLifecycleRouting");
 const { resolveUploadLimitBytes } = require("./uploadLimits");
 const {
   ensureSafeParent,
@@ -43,7 +42,9 @@ const {
 } = require("./services/assetUploadLifecycle");
 const { checkAssetLifecycleSchema } = require("./services/assetLifecycleSchema");
 const assetStorageConnections = require("./services/assetStorageConnections");
-const { updateStorageRootsInEnv } = require("./services/assetStorageEnvironment");
+const assetStorageCardConnections = require("./services/assetStorageCardConnections");
+const assetStorageCardCounts = require("./services/assetStorageCardCounts");
+const { updateStorageRootInEnv, updateStorageRootsInEnv } = require("./services/assetStorageEnvironment");
 const { getDisconnectedStorageForRequest } = assetStorageConnections;
 const {
   createFinalUploadFilename,
@@ -71,6 +72,7 @@ const {
 const {
   browseStorageDirectory,
   getAllowedStorageRoots,
+  resolveAllowedDirectory,
   validateStorageRootPair,
 } = require("./services/storageLocationBrowser");
 const processorFactory = require("./thumbnail-engine/processor-factory");
@@ -317,7 +319,12 @@ app.use((req, res, next) => {
     return res.status(500).json({ error: "Unable to read asset storage connection settings" });
   }
 
-  const disconnectedStorage = getDisconnectedStorageForRequest(req.method, req.path, connections);
+  const disconnectedStorage = getDisconnectedStorageForRequest(
+    req.method,
+    req.path,
+    connections,
+    assetStorageCardConnections.get()
+  );
   if (disconnectedStorage === "thumbnails") {
       return res.status(503).json({ error: "THUMBNAIL_STORAGE_DISCONNECTED" });
   }
@@ -432,7 +439,7 @@ const resolveUploadFilePath = (value) => {
     throw new Error("Invalid file path");
   }
 
-  const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot();
+  const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot(image.filename);
   const absolutePath = path.resolve(uploadsRoot, normalizedPath);
   const relativeToUploads = path.relative(uploadsRoot, absolutePath);
 
@@ -459,7 +466,7 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
       if (unsupportedUntil) unsupportedPreviewSources.delete(upstreamPath);
     }
     let response;
-    if (options.localAssetPath && (localAssetRoot = getLocalAssetRoot())) {
+    if (options.localAssetPath && (localAssetRoot = getLocalAssetRoot(options.localAssetPath))) {
       const localFilePath = await resolveAssetFile(localAssetRoot, options.localAssetPath);
       if (!processImage) {
         return sendAssetFile(req, res, localAssetRoot, options.localAssetPath);
@@ -617,22 +624,31 @@ const proxyPc2AssetRequest = async (req, res, upstreamPath, options = {}) => {
   }
 };
 
-const getLocalAssetRoot = () => {
-  const { assetsRoot: configuredRoot } = assetStorageConnections.getConfiguredStorageRoots();
+const getLocalAssetRoots = () => {
+  const configuredRoots = assetStorageConnections.getConfiguredStorageRoots();
   const allowLocalTestStorage =
     process.env.NODE_ENV === "test" &&
     process.env.ASSET_UPLOAD_ALLOW_LOCAL_TEST_STORAGE === "true";
-  if (process.platform === "darwin" && !configuredRoot && !allowLocalTestStorage) {
-    return null;
-  }
-  if (process.env.NODE_ENV === "production" || configuredRoot || allowLocalTestStorage) {
-    return assetThumbnails.getOriginalAssetStorageRoot();
-  }
-  return null;
+  if (process.platform === "darwin" && !configuredRoots.assetsRoot && !allowLocalTestStorage) return [];
+  if (process.env.NODE_ENV !== "production" && !configuredRoots.assetsRoot && !allowLocalTestStorage) return [];
+  return assetThumbnails.getOriginalAssetStorageRoots();
+};
+
+const getLocalAssetRoot = (relativePath) => {
+  const roots = getLocalAssetRoots();
+  if (!relativePath) return roots[0] || null;
+  const normalizedPath = String(relativePath).replace(/\\/g, "/").replace(/^\/+/, "");
+  const matchingRoots = roots.filter((root) => {
+    const candidate = path.resolve(root, ...normalizedPath.split("/"));
+    const relative = path.relative(path.resolve(root), candidate);
+    return relative && relative !== ".." && !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative) && fs.existsSync(candidate);
+  });
+  return matchingRoots[0] || null;
 };
 
 const filesAssetHandler = createAssetServingHandler({
-  getAssetRoot: getLocalAssetRoot,
+  getAssetRoot: getLocalAssetRoots,
   getAssetPath: (req) => decodeURIComponent(String(req.path || "").replace(/^\/+/, "")),
   getRemotePath: (assetPath) => `/api/files/${encodeAssetPath(assetPath)}`,
   proxyHandler: (req, res, upstreamPath, options) => proxyPc2AssetRequest(
@@ -644,7 +660,7 @@ const filesAssetHandler = createAssetServingHandler({
 });
 
 const thumbnailAssetHandler = createAssetServingHandler({
-  getAssetRoot: getLocalAssetRoot,
+  getAssetRoot: getLocalAssetRoots,
   getAssetPath: (req) => req.query.file,
   getRemotePath: () => "/api/thumbnail",
   proxyHandler: proxyPc2AssetRequest,
@@ -663,13 +679,14 @@ const persistEpsThumbnailIfMissing = async (imageRow) => {
     return false;
   }
 
-  const originalFilePath = path.resolve(assetThumbnails.getOriginalAssetStorageRoot(), String(imageRow.filename).replace(/^\/+/, ""));
+  const originalRoot = assetThumbnails.getOriginalAssetStorageRoot(imageRow.filename);
+  const originalFilePath = path.resolve(originalRoot, String(imageRow.filename).replace(/^\/+/, ""));
   if (!fs.existsSync(originalFilePath) || path.extname(originalFilePath).toLowerCase() !== ".eps") {
     return false;
   }
 
   const expectedThumbnailPath = buildGeneratedThumbnailPath(originalFilePath, ".jpg");
-  const relativeFromUploads = path.relative(assetThumbnails.getOriginalAssetStorageRoot(), expectedThumbnailPath).replace(/\\/g, "/");
+  const relativeFromUploads = path.relative(originalRoot, expectedThumbnailPath).replace(/\\/g, "/");
   const thumbnailUrl = `/api/thumbnail?file=${encodeURIComponent(relativeFromUploads)}`;
 
   if (fs.existsSync(expectedThumbnailPath)) {
@@ -713,7 +730,7 @@ const resolveOriginalEpsFromThumbnailPath = (thumbnailPath) => {
       return null;
     }
 
-    const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot();
+    const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot(thumbnailPath);
     const absoluteThumbPath = path.resolve(uploadsRoot, String(thumbnailPath).replace(/^\/+/, ""));
     if (!fs.existsSync(absoluteThumbPath)) {
       return null;
@@ -1082,7 +1099,7 @@ const renderCleanCatalogPreview = async ({ imageId, filename, extension, process
 
       try {
         const sourcePath = filename.replace(/^\/+/, "").replace(/^uploads[\\/]+/i, "");
-        const assetRoot = getLocalAssetRoot();
+        const assetRoot = getLocalAssetRoot(sourcePath);
         let previewSourcePath;
 
         if (assetRoot) {
@@ -1328,12 +1345,12 @@ app.get("/uploads/processed", async (req, res) => {
     ? Math.min(100, Math.max(10, parsedQuality))
     : 50;
 
-  const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot();
   const rawFile = String(file || "").trim();
   const strippedFile = rawFile
     .replace(/^\/+/, "")
     .replace(/^uploads[\\/]+/, "");
   const normalizedPath = path.normalize(strippedFile);
+  const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot(normalizedPath);
   const imagePath = path.resolve(uploadsRoot, normalizedPath);
   const uploadsRootResolved = path.resolve(uploadsRoot);
   const relativeToUploads = path.relative(uploadsRootResolved, imagePath);
@@ -2624,11 +2641,22 @@ app.delete("/admin/branding/hero-banner", verifyAdmin, async (req, res) => {
 app.get("/admin/assets/location", verifyAdmin, async (req, res) => {
   try {
     const connections = assetStorageConnections.get();
-    const uploadFolderPath = assetThumbnails.getOriginalAssetStorageRoot();
-    const thumbnailFolderPath = assetThumbnails.getThumbnailStorageRoot();
+    const assetCardCountHint = Number(req.query.assetCardCount);
+    const thumbnailCardCountHint = Number(req.query.thumbnailCardCount);
+    const minimumAssetCardCount = Math.max(1, connections.assetLocations.length);
+    const minimumThumbnailCardCount = Math.max(1, connections.thumbnailLocations.length);
+    const cardCounts = assetStorageCardCounts.get(req.user.id, {
+      assets: minimumAssetCardCount,
+      thumbnails: minimumThumbnailCardCount,
+    }, {
+      assets: Math.max(minimumAssetCardCount, Number.isInteger(assetCardCountHint) && assetCardCountHint <= 99 ? assetCardCountHint : 1),
+      thumbnails: Math.max(minimumThumbnailCardCount, Number.isInteger(thumbnailCardCountHint) && thumbnailCardCountHint <= 9 ? thumbnailCardCountHint : 1),
+    });
+    const uploadFolderPath = connections.assetRoot || connections.assetLocations.find(Boolean)?.path || "";
+    const thumbnailFolderPath = connections.thumbnailRoot || connections.thumbnailLocations.find(Boolean)?.path || "";
     const getFolderSizeBytes = (directoryPath) => {
       let folderSizeBytes = 0;
-      if (fs.existsSync(directoryPath)) {
+      if (directoryPath && fs.existsSync(directoryPath)) {
         const pendingDirectories = [directoryPath];
         while (pendingDirectories.length > 0) {
           const currentDirectory = pendingDirectories.pop();
@@ -2644,24 +2672,60 @@ app.get("/admin/assets/location", verifyAdmin, async (req, res) => {
       }
       return folderSizeBytes;
     };
+    const getDriveFreeBytes = (directoryPath) => {
+      if (!directoryPath || !fs.existsSync(directoryPath)) return 0;
+      const driveStats = fs.statfsSync(directoryPath);
+      return Number(driveStats.bsize || 0) * Number(driveStats.bavail || 0);
+    };
     const folderSizeBytes = getFolderSizeBytes(uploadFolderPath);
     const thumbnailFolderSizeBytes = getFolderSizeBytes(thumbnailFolderPath);
-    const driveStats = fs.statfsSync(uploadFolderPath);
-    const blockSize = Number(driveStats.bsize || 0);
-    const driveFreeBytes = blockSize * Number(driveStats.bavail || 0);
+    const getLocationDetails = (locations) => locations.map((location) => {
+      if (!location) return null;
+      return {
+        ...location,
+        exists: fs.existsSync(location.path),
+        folderSizeBytes: getFolderSizeBytes(location.path),
+        driveFreeBytes: getDriveFreeBytes(location.path),
+      };
+    });
     res.json({
       uploadFolderPath,
-      exists: fs.existsSync(uploadFolderPath),
+      exists: Boolean(uploadFolderPath && fs.existsSync(uploadFolderPath)),
       folderSizeBytes,
       thumbnailFolderPath,
       thumbnailFolderSizeBytes,
-      thumbnailFolderExists: fs.existsSync(thumbnailFolderPath),
-      driveFreeBytes,
-      connections
+      thumbnailFolderExists: Boolean(thumbnailFolderPath && fs.existsSync(thumbnailFolderPath)),
+      driveFreeBytes: getDriveFreeBytes(uploadFolderPath),
+      connections,
+      cardConnections: assetStorageCardConnections.get(),
+      cardCounts,
+      assetLocations: getLocationDetails(connections.assetLocations),
+      thumbnailLocations: getLocationDetails(connections.thumbnailLocations),
     });
   } catch (error) {
     console.error("Failed to resolve upload folder path", error);
     res.status(500).json({ error: "Unable to resolve upload folder path" });
+  }
+});
+
+app.put("/admin/assets/card-counts", verifyAdmin, (req, res) => {
+  try {
+    const { type, count } = req.body || {};
+    if (!["assets", "thumbnails"].includes(type)) {
+      return res.status(400).json({ error: "Choose either assets or thumbnails." });
+    }
+    const connections = assetStorageConnections.get();
+    const locations = type === "assets" ? connections.assetLocations : connections.thumbnailLocations;
+    const cardCounts = assetStorageCardCounts.set(
+      req.user.id,
+      type,
+      count,
+      Math.max(1, locations.length)
+    );
+    return res.json({ cardCounts });
+  } catch (error) {
+    console.error("Failed to update storage-card counts", error);
+    return res.status(400).json({ error: error.message || "Unable to update storage-card counts" });
   }
 });
 
@@ -2681,11 +2745,28 @@ app.put("/admin/assets/connections", verifyAdmin, async (req, res) => {
   }
 });
 
+app.put("/admin/assets/card-connections", verifyAdmin, (req, res) => {
+  const { storage, locationNumber, connected } = req.body || {};
+  try {
+    return res.json({
+      cardConnections: assetStorageCardConnections.update(storage, locationNumber, connected),
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error("Failed to update storage-card connection", error);
+    return res.status(500).json({ error: "Unable to update storage-card connection" });
+  }
+});
+
 app.get("/admin/assets/folder-browser", verifyAdmin, (req, res) => {
   try {
     const configuredRoots = assetStorageConnections.getConfiguredStorageRoots();
     const roots = getAllowedStorageRoots({
       currentRoots: [
+        ...configuredRoots.assetLocations.filter(Boolean).map(({ path: locationPath }) => locationPath),
+        ...configuredRoots.thumbnailLocations.filter(Boolean).map(({ path: locationPath }) => locationPath),
         configuredRoots.assetsRoot || assetThumbnails.getOriginalAssetStorageRoot(),
         configuredRoots.thumbnailStoragePath,
       ],
@@ -2704,6 +2785,172 @@ app.get("/admin/assets/folder-browser", verifyAdmin, (req, res) => {
   } catch (error) {
     console.error("Failed to browse storage folders", error);
     return res.status(error.code ? 500 : 400).json({ error: error.message || "Unable to browse storage folders" });
+  }
+});
+
+app.post("/admin/assets/locations", verifyAdmin, (req, res) => {
+  try {
+    const { type, path: selectedPath } = req.body || {};
+    if (!["assets", "thumbnails"].includes(type)) {
+      return res.status(400).json({ error: "Choose either an assets or thumbnails location." });
+    }
+    const configuredRoots = assetStorageConnections.getConfiguredStorageRoots();
+    const roots = getAllowedStorageRoots({
+      currentRoots: [
+        ...configuredRoots.assetLocations.filter(Boolean).map(({ path: locationPath }) => locationPath),
+        ...configuredRoots.thumbnailLocations.filter(Boolean).map(({ path: locationPath }) => locationPath),
+      ],
+    });
+    const canonicalPath = resolveAllowedDirectory(selectedPath, roots);
+    const allLocations = [
+      ...configuredRoots.assetLocations.filter(Boolean).map((location) => ({ ...location, type: "assets" })),
+      ...configuredRoots.thumbnailLocations.filter(Boolean).map((location) => ({ ...location, type: "thumbnails" })),
+    ];
+    const overlaps = allLocations.some(({ path: otherPath, type: otherType }) => {
+      if (otherType === type && path.resolve(otherPath) === canonicalPath) return false;
+      const relative = path.relative(otherPath, canonicalPath);
+      const reverse = path.relative(canonicalPath, otherPath);
+      return relative === "" || reverse === "" ||
+        (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) ||
+        (!reverse.startsWith(`..${path.sep}`) && reverse !== ".." && !path.isAbsolute(reverse));
+    });
+    if (overlaps) {
+      return res.status(400).json({ error: "Assets and thumbnails must use separate, non-overlapping folders." });
+    }
+    const connections = assetStorageConnections.addLocation(type, canonicalPath);
+    return res.status(201).json({
+      locations: type === "assets" ? connections.assetLocations : connections.thumbnailLocations,
+      connections,
+    });
+  } catch (error) {
+    const status = error.code === "STORAGE_LOCATION_LIMIT" ? 409 : error instanceof TypeError ? 400 : 400;
+    console.error("Failed to add asset storage location", error);
+    return res.status(status).json({ error: error.message || "Unable to add storage location" });
+  }
+});
+
+app.put("/admin/assets/location-card", verifyAdmin, async (req, res) => {
+  try {
+    const { type, locationNumber, path: selectedPath } = req.body || {};
+    if (!["assets", "thumbnails"].includes(type) || !Number.isInteger(locationNumber)) {
+      return res.status(400).json({ error: "Choose a valid storage card and folder." });
+    }
+    const configuredRoots = assetStorageConnections.getConfiguredStorageRoots();
+    const roots = getAllowedStorageRoots({
+      currentRoots: [
+        ...configuredRoots.assetLocations.filter(Boolean).map(({ path: locationPath }) => locationPath),
+        ...configuredRoots.thumbnailLocations.filter(Boolean).map(({ path: locationPath }) => locationPath),
+      ],
+    });
+    const canonicalPath = resolveAllowedDirectory(selectedPath, roots);
+    const current = assetStorageConnections.get();
+    const otherLocations = [
+      ...current.assetLocations.filter(Boolean).map((location, index) => ({ ...location, type: "assets", index })),
+      ...current.thumbnailLocations.filter(Boolean).map((location, index) => ({ ...location, type: "thumbnails", index })),
+    ];
+    const overlaps = otherLocations.some(({ path: otherPath, type: otherType, index }) => {
+      if (otherType === type && index === locationNumber - 1) return false;
+      const relative = path.relative(otherPath, canonicalPath);
+      const reverse = path.relative(canonicalPath, otherPath);
+      return relative === "" || reverse === "" ||
+        (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) ||
+        (!reverse.startsWith(`..${path.sep}`) && reverse !== ".." && !path.isAbsolute(reverse));
+    });
+    if (overlaps) {
+      return res.status(400).json({ error: "Assets and thumbnails must use separate, non-overlapping folders." });
+    }
+    const currentLocations = type === "assets" ? current.assetLocations : current.thumbnailLocations;
+    const targetLocationBeforeSave = currentLocations[locationNumber - 1];
+    const currentDefaultId = type === "assets" ? current.defaultAssetLocationId : current.defaultThumbnailLocationId;
+    const connections = assetStorageConnections.setLocation(type, locationNumber, canonicalPath);
+    const defaultLocationId = type === "assets"
+      ? connections.defaultAssetLocationId
+      : connections.defaultThumbnailLocationId;
+    const savedLocation = (type === "assets" ? connections.assetLocations : connections.thumbnailLocations)[locationNumber - 1];
+    const targetWasOrBecameDefault = savedLocation?.id === defaultLocationId &&
+      (targetLocationBeforeSave?.id === currentDefaultId || !currentDefaultId);
+    if (targetWasOrBecameDefault) updateStorageRootInEnv(type, canonicalPath);
+    const backgroundQueueReady = type === "thumbnails"
+      ? thumbnailQueue.isRunning || await thumbnailQueue.initialize()
+      : true;
+    return res.json({ connections, backgroundQueueReady });
+  } catch (error) {
+    console.error("Failed to save storage-card folder", error);
+    const status = error.code === "STORAGE_LOCATION_DUPLICATE" ? 409 : error instanceof TypeError ? 400 : 400;
+    return res.status(status).json({ error: error.message || "Unable to save storage-card folder" });
+  }
+});
+
+app.delete("/admin/assets/locations", verifyAdmin, (req, res) => {
+  const { type, locationId, locationNumber } = req.body || {};
+  if (
+    !["assets", "thumbnails"].includes(type) ||
+    locationId !== null && typeof locationId !== "string" ||
+    !Number.isInteger(locationNumber) ||
+    locationNumber < 2
+  ) {
+    return res.status(400).json({ error: "Choose a valid additional storage location to delete." });
+  }
+
+  try {
+    const current = assetStorageConnections.get();
+    const locations = type === "assets" ? current.assetLocations : current.thumbnailLocations;
+    const selectedLocation = locations[locationNumber - 1];
+    if (locationId && selectedLocation?.id !== locationId) {
+      return res.status(404).json({ error: "The selected storage location was not found." });
+    }
+    if (!locationId && selectedLocation) {
+      return res.status(409).json({ error: "This storage card has a registered folder and cannot be deleted as an empty card." });
+    }
+    const connections = assetStorageConnections.removeLocationAt(type, locationNumber);
+    if (locationId) updateStorageRootsInEnv(connections.assetsRoot, connections.thumbnailStoragePath);
+    const cardConnections = assetStorageCardConnections.remove(type, locationNumber);
+    const remainingLocations = type === "assets" ? connections.assetLocations : connections.thumbnailLocations;
+    const minimumCount = Math.max(1, remainingLocations.length);
+    const currentCounts = assetStorageCardCounts.get(req.user.id, {
+      assets: Math.max(1, current.assetLocations.length),
+      thumbnails: Math.max(1, current.thumbnailLocations.length),
+    });
+    const cardCounts = assetStorageCardCounts.set(
+      req.user.id,
+      type,
+      Math.max(minimumCount, currentCounts[type] - 1),
+      minimumCount
+    );
+    return res.json({ connections, cardConnections, cardCounts });
+  } catch (error) {
+    console.error("Failed to delete asset storage location", error);
+    const status = error.code === "STORAGE_LOCATION_NOT_FOUND" ? 404 : error instanceof TypeError ? 400 : 500;
+    return res.status(status).json({ error: error.message || "Unable to delete storage location" });
+  }
+});
+
+app.put("/admin/assets/locations/default", verifyAdmin, async (req, res) => {
+  try {
+    const { type, locationId } = req.body || {};
+    if (!["assets", "thumbnails"].includes(type) || typeof locationId !== "string") {
+      return res.status(400).json({ error: "Choose a valid storage location to make the default." });
+    }
+    const current = assetStorageConnections.get();
+    const isAssets = type === "assets";
+    const selected = (isAssets ? current.assetLocations : current.thumbnailLocations)
+      .find(({ id }) => id === locationId);
+    if (!selected) return res.status(404).json({ error: "The selected storage location was not found." });
+    const assetRoot = isAssets ? selected.path : current.assetRoot;
+    const thumbnailRoot = isAssets ? current.thumbnailRoot : selected.path;
+    if (!assetRoot || !thumbnailRoot) {
+      return res.status(400).json({ error: "Add both an Assets location and a Thumbnails location first." });
+    }
+    updateStorageRootsInEnv(assetRoot, thumbnailRoot);
+    const connections = assetStorageConnections.setDefault(type, locationId);
+    const backgroundQueueReady = type === "thumbnails"
+      ? thumbnailQueue.isRunning || await thumbnailQueue.initialize()
+      : true;
+    return res.json({ connections, backgroundQueueReady });
+  } catch (error) {
+    console.error("Failed to set default asset storage location", error);
+    return res.status(error.code === "STORAGE_LOCATION_LIMIT" ? 409 : 400)
+      .json({ error: error.message || "Unable to set the default storage location" });
   }
 });
 
@@ -6939,7 +7186,7 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
     }
 
     if (asset.thumbnail_status === "READY" && asset.thumbnail_path) {
-      const thumbnailRoot = assetThumbnails.getThumbnailStorageRoot();
+      const thumbnailRoot = assetThumbnails.getThumbnailStorageRoot(asset.thumbnail_path);
       let thumbnailPath;
       try {
         thumbnailPath = assetThumbnails.getThumbnailFilePath(
@@ -6958,7 +7205,7 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
       const validThumbnail = async (filePath, fileStats) => fileStats?.isFile() &&
         !fileStats.isSymbolicLink() &&
         asset.format === "webp" &&
-        await assetThumbnails.isThumbnailPathInsideRoot(filePath) &&
+        await assetThumbnails.isThumbnailPathInsideRoot(filePath, thumbnailRoot) &&
         await assetThumbnails.isValidThumbnailFile(filePath);
       const sendThumbnail = async (filePath, fileStats) => {
         const version = String(req.query.v || "");
@@ -7003,11 +7250,12 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
       try {
         const result = await regeneration;
         const regeneratedPath = result.thumbnailPath;
+        const regeneratedRoot = assetThumbnails.getThumbnailStorageRoot();
         const regeneratedStats = await fs.promises.lstat(regeneratedPath);
         if (
           !regeneratedStats.isFile() ||
           regeneratedStats.isSymbolicLink() ||
-          !(await assetThumbnails.isThumbnailPathInsideRoot(regeneratedPath)) ||
+          !(await assetThumbnails.isThumbnailPathInsideRoot(regeneratedPath, regeneratedRoot)) ||
           !(await assetThumbnails.isValidThumbnailFile(regeneratedPath))
         ) {
           throw new Error("Regenerated thumbnail is missing or invalid");
@@ -7378,6 +7626,29 @@ app.post(
       let finalFilePath;
       let verifiedFile;
       let isReplay = false;
+      const persistUnstableUploadIdentity = async () => {
+        const result = await pool.query(
+          `UPDATE images
+           SET upload_file_device = NULL, upload_file_inode = NULL
+           WHERE id = $1 AND uploaded_by = $2 AND upload_request_id = $3
+             AND upload_content_sha256 = $4 AND upload_request_hash = $5`,
+          [finalizedAssetId, uploaded_by, uploadRequestId, stagedUpload.sha256, requestHash]
+        );
+        if (result.rowCount !== 1) {
+          const error = new Error("Could not update the upload's filesystem identity.");
+          error.code = "UPLOAD_IDENTITY_UPDATE_FAILED";
+          error.statusCode = 409;
+          throw error;
+        }
+        if (newImage) {
+          newImage.upload_file_device = null;
+          newImage.upload_file_inode = null;
+        }
+        if (existingImage) {
+          existingImage.upload_file_device = null;
+          existingImage.upload_file_inode = null;
+        }
+      };
       const existingResult = await pool.query(
         `SELECT * FROM images WHERE uploaded_by = $1 AND upload_request_id = $2`,
         [uploaded_by, uploadRequestId]
@@ -7435,7 +7706,13 @@ app.post(
               requestHash,
             ]
           );
-          savedUpload = await publishStagedUpload(assetRoot, originalFile.path, storedFilename, updatedWitness);
+          savedUpload = await publishStagedUpload(
+            assetRoot,
+            originalFile.path,
+            storedFilename,
+            updatedWitness,
+            persistUnstableUploadIdentity
+          );
           verifiedFile = savedUpload;
           existingImage.upload_file_device = updatedWitness.device;
           existingImage.upload_file_inode = updatedWitness.inode;
@@ -7496,10 +7773,13 @@ app.post(
         finalizedAssetId = newImage.id;
         createdNewUploadRecord = true;
         assertUploadConnected();
-        verifiedFile = await publishStagedUpload(assetRoot, originalFile.path, storedFilename, {
-          ...stagedUpload.witness,
-          sha256: stagedUpload.sha256,
-        });
+        verifiedFile = await publishStagedUpload(
+          assetRoot,
+          originalFile.path,
+          storedFilename,
+          { ...stagedUpload.witness, sha256: stagedUpload.sha256 },
+          persistUnstableUploadIdentity
+        );
         isReplay = false;
       }
       finalizedFilePath = finalFilePath;
@@ -9030,7 +9310,7 @@ app.get(
 
       // Resolve file path safely
       const filename = image.filename;
-      const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot();
+      const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot(filename);
       const filePath = path.resolve(uploadsRoot, filename);
       const uploadsRootResolved = path.resolve(uploadsRoot);
       const relativeToUploads = path.relative(uploadsRootResolved, filePath);
@@ -9138,7 +9418,7 @@ app.get(
       }
 
       if (image.generated_thumbnail_status === "READY" && image.thumbnail_path) {
-        const thumbnailRoot = assetThumbnails.getThumbnailStorageRoot();
+        const thumbnailRoot = assetThumbnails.getThumbnailStorageRoot(image.thumbnail_path);
         let thumbnailFilePath;
         try {
           thumbnailFilePath = assetThumbnails.getThumbnailFilePath(
@@ -9166,6 +9446,8 @@ app.get(
           res.setHeader("Content-Disposition", `attachment; filename="${path.basename(thumbnailFilePath)}"`);
           return streamImageFile(req, res, thumbnailFilePath, { bypassProcessing: true });
         }
+
+        return res.status(404).json("Thumbnail not available");
       }
 
       if (!image.thumbnail_url) {
@@ -9210,8 +9492,9 @@ app.get(
         return res.status(404).json("Thumbnail file reference missing");
       }
 
-      const thumbnailFilePath = path.resolve(assetThumbnails.getOriginalAssetStorageRoot(), sourcePath);
-      const uploadsRootResolved = assetThumbnails.getOriginalAssetStorageRoot();
+      const uploadsRoot = assetThumbnails.getOriginalAssetStorageRoot(sourcePath);
+      const thumbnailFilePath = path.resolve(uploadsRoot, sourcePath);
+      const uploadsRootResolved = uploadsRoot;
       const relativeToUploads = path.relative(uploadsRootResolved, thumbnailFilePath);
 
       if (!relativeToUploads || relativeToUploads.startsWith("..") || path.isAbsolute(sourcePath)) {
@@ -9233,48 +9516,50 @@ app.get(
 
 /* ---------------- DELETE IMAGE ---------------- */
 
+async function handleLocalAssetDeletion(req, res) {
+  try {
+    const result = await deleteAssetCompletely(
+      req.params.id,
+      req.user.id,
+      { pool, assetThumbnails, thumbnailQueue }
+    );
+    if (result.notFound) return res.status(404).json({ error: "Image not found." });
+    try {
+      await assetThumbnails.deleteContributorUploadFolderIfUnused(result.asset.uploaded_by);
+    } catch (cleanupError) {
+      console.error(
+        `Failed to remove empty upload folder for contributor ${result.asset.uploaded_by}:`,
+        cleanupError
+      );
+    }
+    await createAssetNotifications(pool, {
+      userIds: [result.asset.uploaded_by],
+      eventType: 'ASSET_DELETED',
+      assetTitle: result.asset.title,
+      ownerId: result.asset.uploaded_by
+    });
+    if (result.cleanupPending) {
+      return res.status(202).json({
+        error: "Asset deletion completed; file cleanup remains queued for recovery.",
+        deleted: true,
+        cleanup_pending: true,
+      });
+    }
+    return res.json("Image deleted successfully");
+  } catch (err) {
+    console.error(err);
+    return res.status(err.statusCode || 500).json({
+      error: err.statusCode ? err.message : "Delete failed because asset cleanup could not be completed."
+    });
+  }
+}
+
 app.delete(
   "/images/:id",
   (req, res, next) => authenticateToken(req, res, next),
-  async (req, res) => {
-    try {
-      assertLocalAssetLifecycleSupported();
-      const result = await deleteAssetCompletely(
-        req.params.id,
-        req.user.id,
-        { pool, assetThumbnails, thumbnailQueue }
-      );
-      if (result.notFound) return res.status(404).json({ error: "Image not found." });
-      try {
-        await assetThumbnails.deleteContributorUploadFolderIfUnused(result.asset.uploaded_by);
-      } catch (cleanupError) {
-        console.error(
-          `Failed to remove empty upload folder for contributor ${result.asset.uploaded_by}:`,
-          cleanupError
-        );
-      }
-      await createAssetNotifications(pool, {
-        userIds: [result.asset.uploaded_by],
-        eventType: 'ASSET_DELETED',
-        assetTitle: result.asset.title,
-        ownerId: result.asset.uploaded_by
-      });
-      if (result.cleanupPending) {
-        return res.status(202).json({
-          error: "Asset deletion completed; file cleanup remains queued for recovery.",
-          deleted: true,
-          cleanup_pending: true,
-        });
-      }
-      res.json("Image deleted successfully");
-    } catch (err) {
-      console.error(err);
-      res.status(err.statusCode || 500).json({
-        error: err.statusCode ? err.message : "Delete failed because asset cleanup could not be completed."
-      });
-    }
-  }
+  handleLocalAssetDeletion
 );
+
 /* ---------------- UPDATE IMAGE ---------------- */
 
 app.put(
@@ -10499,7 +10784,7 @@ app.post('/checkout/retry-with-credits', authenticateToken, async (req, res) => 
           return res.status(404).json({ error: 'File not available' });
         }
 
-        const filePath = path.join(assetThumbnails.getOriginalAssetStorageRoot(), dl.filename);
+        const filePath = path.join(assetThumbnails.getOriginalAssetStorageRoot(dl.filename), dl.filename);
         if (!fs.existsSync(filePath)) {
           return res.status(404).json({ error: 'File missing on server' });
         }
@@ -11324,7 +11609,8 @@ const moveGeneratedThumbnailFile = (currentFilename) => {
   }
 
   const normalized = currentFilename.replace(/\\/g, "/");
-  const assetPath = path.join(assetThumbnails.getOriginalAssetStorageRoot(), ...normalized.split("/"));
+  const assetRoot = assetThumbnails.getOriginalAssetStorageRoot(normalized);
+  const assetPath = path.join(assetRoot, ...normalized.split("/"));
   const thumbnailDir = getThumbnailStorageDirectory(assetPath);
   const assetDir = path.dirname(assetPath);
   const assetExt = path.extname(assetPath);
@@ -11345,7 +11631,7 @@ const moveGeneratedThumbnailFile = (currentFilename) => {
   fs.renameSync(oldThumbPath, newThumbPath);
 
   const relativeThumbPath = path.relative(
-    assetThumbnails.getOriginalAssetStorageRoot(),
+    assetRoot,
     newThumbPath
   ).replace(/\\/g, "/");
 
@@ -11357,13 +11643,15 @@ app.put(
   verifyAdmin,
   async (req, res) => {
     try {
-      assertLocalAssetLifecycleSupported();
       const { id } = req.params;
+      const assetResult = await pool.query(`SELECT filename FROM images WHERE id = $1`, [id]);
+      if (!assetResult.rows[0]?.filename) return res.status(404).json("Image not found");
+      const assetRoot = assetThumbnails.getOriginalAssetStorageRoot(assetResult.rows[0].filename);
       const moveResult = await moveAssetFileAndUpdate(
         pool,
         id,
         "Approved",
-        assetThumbnails.getOriginalAssetStorageRoot()
+        assetRoot
       );
       if (moveResult.notFound) return res.status(404).json("Image not found");
       const movedThumbnailUrl = moveGeneratedThumbnailFile(moveResult.previousFilename);
@@ -11393,13 +11681,15 @@ app.put(
   verifyAdmin,
   async (req, res) => {
     try {
-      assertLocalAssetLifecycleSupported();
       const { id } = req.params;
+      const assetResult = await pool.query(`SELECT filename FROM images WHERE id = $1`, [id]);
+      if (!assetResult.rows[0]?.filename) return res.status(404).json("Image not found");
+      const assetRoot = assetThumbnails.getOriginalAssetStorageRoot(assetResult.rows[0].filename);
       const moveResult = await moveAssetFileAndUpdate(
         pool,
         id,
         "Rejected",
-        assetThumbnails.getOriginalAssetStorageRoot()
+        assetRoot
       );
       if (moveResult.notFound) return res.status(404).json("Image not found");
       const movedThumbnailUrl = moveGeneratedThumbnailFile(moveResult.previousFilename);

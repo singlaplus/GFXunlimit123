@@ -147,6 +147,30 @@ for (const status of ['Approved', 'Rejected']) {
   });
 }
 
+test('publishes a verified independent copy when storage does not support hard links', async (t) => {
+  const fixture = await createFixture(t);
+  const originalLink = fs.link;
+  fs.link = async () => {
+    const error = new Error('operation not supported');
+    error.code = 'ENOTSUP';
+    throw error;
+  };
+
+  try {
+    const result = await moveAssetFileAndUpdate(fixture.pool, 251, 'Approved', fixture.root);
+    assert.equal(result.asset.filename, fixture.newFilename);
+    assert.equal(fixture.state.operations[0].state, 'completed');
+    assert.equal(await fs.readFile(fixture.newPath, 'utf8'), 'original');
+    await assert.rejects(fs.access(fixture.oldPath), { code: 'ENOENT' });
+    await assert.rejects(
+      fs.access(`${fixture.newPath}.asset-lifecycle-${fixture.state.operations[0].id}.tmp`),
+      { code: 'ENOENT' }
+    );
+  } finally {
+    fs.link = originalLink;
+  }
+});
+
 test('restores the old database-valid file after a database update failure', async (t) => {
   const fixture = await createFixture(t);
   fixture.failures.update = new Error('database update failed');
