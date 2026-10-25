@@ -4130,9 +4130,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   };
 
   useEffect(() => {
+    if (!isUsersTab) return undefined;
     const timer = setInterval(() => setCurrentTime(Date.now()), 60000);
     return () => clearInterval(timer);
-  }, []);
+  }, [isUsersTab]);
 
   // Ensure we refresh users when the users tab or the active user filter changes
   useEffect(() => {

@@ -20,13 +20,28 @@ function finishTrackingRequest() {
   dispatchRequestCount(BACKEND_REQUEST_FINISHED);
 }
 
+function isBackgroundRead(config) {
+  if (config.skipGlobalLoading) return true;
+
+  const method = String(config.method || "get").toLowerCase();
+  if (method !== "get") return false;
+
+  const url = String(config.url || "").split("?")[0].replace(/\/+$/, "");
+  return (
+    url.includes("/notifications/") ||
+    url.endsWith("/api/messages/summary") ||
+    url.endsWith("/trending-keywords") ||
+    url.endsWith("/admin/payment-settings")
+  );
+}
+
 export function trackBackendRequests(client) {
   if (!client?.interceptors?.request?.use || !client?.interceptors?.response?.use) {
     return client;
   }
 
   client.interceptors.request.use((config) => {
-    if (config.skipGlobalLoading) return config;
+    if (isBackgroundRead(config)) return config;
 
     if (!config[TRACKED_REQUEST]) {
       config[TRACKED_REQUEST] = true;

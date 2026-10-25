@@ -2146,6 +2146,22 @@ describe("AdminPanel collection controls", () => {
     });
   });
 
+  it("only starts the cooling-period clock on the Users tab", () => {
+    const setIntervalSpy = jest.spyOn(window, "setInterval");
+
+    const { unmount } = render(<AdminPanel />);
+
+    expect(setIntervalSpy).not.toHaveBeenCalledWith(expect.any(Function), 60000);
+    unmount();
+
+    setIntervalSpy.mockClear();
+    useLocation.mockReturnValue({ search: "?tab=users" });
+    render(<AdminPanel />);
+
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 60000);
+    setIntervalSpy.mockRestore();
+  });
+
   it("saves a Google Pay ID from the popup", async () => {
     render(<AdminPanel />);
 

@@ -68,6 +68,42 @@ describe("backend request loading tracker", () => {
     window.removeEventListener(BACKEND_REQUEST_FINISHED, onFinished);
   });
 
+  it.each([
+    ["/notifications/ankit"],
+    ["/notifications/count/ankit"],
+    ["/api/messages/summary"],
+    ["/trending-keywords"],
+    ["/admin/payment-settings"],
+  ])("does not include routine background read %s in the global loader", (url) => {
+    const client = createAxiosClient();
+    const events = [];
+    const onStarted = (event) => events.push(["started", event.detail.pendingRequests]);
+    const onFinished = (event) => events.push(["finished", event.detail.pendingRequests]);
+    window.addEventListener(BACKEND_REQUEST_STARTED, onStarted);
+    window.addEventListener(BACKEND_REQUEST_FINISHED, onFinished);
+    trackBackendRequests(client);
+
+    const request = client.requestHandlers[0]({ method: "get", url });
+    expect(getPendingBackendRequestCount()).toBe(0);
+    client.responseHandlers[0].onSuccess({ config: request });
+
+    expect(getPendingBackendRequestCount()).toBe(0);
+    expect(events).toEqual([]);
+    window.removeEventListener(BACKEND_REQUEST_STARTED, onStarted);
+    window.removeEventListener(BACKEND_REQUEST_FINISHED, onFinished);
+  });
+
+  it("continues to show the global loader for user-initiated notification changes", () => {
+    const client = createAxiosClient();
+    trackBackendRequests(client);
+
+    const request = client.requestHandlers[0]({ method: "delete", url: "/notifications/ankit" });
+
+    expect(getPendingBackendRequestCount()).toBe(1);
+    client.responseHandlers[0].onSuccess({ config: request });
+    expect(getPendingBackendRequestCount()).toBe(0);
+  });
+
   it("tracks fetch requests to the configured backend origin only", async () => {
     const events = [];
     const onStarted = (event) => events.push(["started", event.detail.pendingRequests]);

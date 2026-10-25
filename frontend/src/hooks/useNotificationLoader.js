@@ -14,13 +14,15 @@ export default function useNotificationLoader({
         if (!username) return;
 
         const res = await axios.get(
-          `${API_BASE_URL}/notifications/${username}`
+          `${API_BASE_URL}/notifications/${username}`,
+          { skipGlobalLoading: true }
         );
 
         setNotifications(res.data);
 
         const countRes = await axios.get(
-          `${API_BASE_URL}/notifications/count/${username}`
+          `${API_BASE_URL}/notifications/count/${username}`,
+          { skipGlobalLoading: true }
         );
 
         setNotificationCount(Number(countRes.data.count));
