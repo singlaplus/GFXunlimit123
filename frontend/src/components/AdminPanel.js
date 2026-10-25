@@ -1,5 +1,6 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -1501,6 +1502,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   };
   const [socialLinks, setSocialLinks] = useState(getStoredSocialLinks);
   const [socialLinksMessage, setSocialLinksMessage] = useState("");
+  const [socialLinkModal, setSocialLinkModal] = useState(null);
 
   const [accountForm, setAccountForm] = useState({
     full_name: localStorage.getItem("fullName") || "",
@@ -1582,6 +1584,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [adminModal, setAdminModal] = useState(null);
   const [pricingSettings, setPricingSettings] = useState(null);
   const [pricingLoading, setPricingLoading] = useState(false);
+  const [pricingOpening, setPricingOpening] = useState(false);
   const [pricingMessage, setPricingMessage] = useState("");
   const [creditPrices, setCreditPrices] = useState({ 100: "100", 200: "200", 500: "500", 1000: "1000" });
   const [creditPriceMessage, setCreditPriceMessage] = useState("");
@@ -3174,12 +3177,30 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       sessionStorage.setItem('pricingSettingsSet', JSON.stringify(normalized));
       const parsed = Array.isArray(normalized.tax_settings) ? normalized.tax_settings : [];
       setTaxSettings(parsed.length > 0 ? parsed : [{ enabled: true, rate: 18, label: 'GST', id: 1 }]);
+      return true;
     } catch (err) {
       sessionStorage.setItem('fetchPricingError', err.message);
       console.error(err);
       setPricingMessage("Unable to load pricing settings.");
+      return false;
     } finally {
       setPricingLoading(false);
+    }
+  };
+
+  const openPricingSettings = async () => {
+    if (pricingOpening) return;
+    setPricingOpening(true);
+    setPricingMessage("");
+    try {
+      const loaded = await fetchPricingSettings();
+      if (loaded) {
+        setAdminModal("pricing");
+      } else {
+        toast.error("Unable to load pricing settings.");
+      }
+    } finally {
+      setPricingOpening(false);
     }
   };
 
@@ -3587,6 +3608,15 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     setSocialLinksMessage("");
   };
 
+  const saveSocialLink = (index, url) => {
+    const nextLinks = socialLinks.map((item, itemIndex) => (
+      itemIndex === index ? { ...item, url } : item
+    ));
+    setSocialLinks(nextLinks);
+    persistSocialLinks(nextLinks);
+    setSocialLinksMessage("Social links saved");
+  };
+
   const savePaymentGatewaySettings = async (gateway, identifier) => {
     if (!identifier?.trim()) {
       setPaymentGatewayMessage("Please enter a valid identifier.");
@@ -3727,9 +3757,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   // Load admin settings on-demand when a modal opens
   useEffect(() => {
     if (!adminModal) return;
-    if (adminModal === 'pricing') {
-      fetchPricingSettings();
-    } else if (adminModal === 'freeAssets') {
+    if (adminModal === 'freeAssets') {
       fetchFreeAssetSettings();
     } else if (adminModal === 'subscriptionPlans') {
       fetchSubscriptionPlans();
@@ -7890,9 +7918,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 return (
                   <div key={`${item.platform}-${index}`} className="admin-panel-social-row">
                     <select
+                      aria-label={`Social media platform ${index + 1}`}
                       value={item.platform}
                       onChange={(e) => updateSocialLink(index, { platform: e.target.value })}
-                      style={{ padding: "8px 10px", borderRadius: "8px", border: "1px solid #ccc", background: "inherit", minWidth: "110px" }}
+                      style={{ padding: "8px 10px", borderRadius: "8px", border: "1px solid #ccc", background: "inherit" }}
                     >
                       {SOCIAL_LINK_OPTIONS.map((option) => (
                         <option
@@ -7904,13 +7933,24 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         </option>
                       ))}
                     </select>
-                    <input
-                      type="url"
-                      value={item.url}
-                      placeholder="https://"
-                      onChange={(e) => updateSocialLink(index, { url: e.target.value })}
-                      style={{ padding: "8px 10px", borderRadius: "8px", border: "1px solid #ccc", flex: 1, background: "inherit" }}
-                    />
+                    <button
+                      type="button"
+                      disabled={!item.platform}
+                      aria-label={`${item.url ? "Edit" : "Add"} link for ${SOCIAL_LINK_OPTIONS.find((option) => option.value === item.platform)?.label || "social media"}`}
+                      onClick={() => setSocialLinkModal({ index, url: item.url })}
+                      style={{
+                        minWidth: 0,
+                        padding: "8px 10px",
+                        borderRadius: "8px",
+                        border: "1px solid #ccc",
+                        background: "inherit",
+                        color: "inherit",
+                        cursor: item.platform ? "pointer" : "not-allowed",
+                        opacity: item.platform ? 1 : 0.55,
+                      }}
+                    >
+                      {item.url ? "Edit link" : "Add link"}
+                    </button>
                   </div>
                 );
               })}
@@ -7931,6 +7971,66 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               Save Social Links
             </button>
             {socialLinksMessage ? <div style={{ marginTop: "8px", color: "#8be28b", fontSize: "0.9rem" }}>{socialLinksMessage}</div> : null}
+            {socialLinkModal && createPortal(
+              <div
+                onClick={() => setSocialLinkModal(null)}
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  zIndex: 10000,
+                  display: "grid",
+                  placeItems: "center",
+                  padding: "16px",
+                  background: "rgba(15, 23, 42, 0.55)",
+                }}
+              >
+                <form
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Set social media link"
+                  onClick={(event) => event.stopPropagation()}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    saveSocialLink(socialLinkModal.index, socialLinkModal.url.trim());
+                    setSocialLinkModal(null);
+                  }}
+                  style={{
+                    display: "grid",
+                    gap: "14px",
+                    width: "100%",
+                    maxWidth: "420px",
+                    padding: "22px",
+                    borderRadius: "14px",
+                    background: isDarkMode ? "#0f172a" : "#fff",
+                    color: isDarkMode ? "#f8fafc" : "#0f172a",
+                    boxShadow: "0 24px 70px rgba(0,0,0,0.28)",
+                  }}
+                >
+                  <h3 style={{ margin: 0 }}>Set social media link</h3>
+                  <label style={{ display: "grid", gap: "6px" }}>
+                    Link URL
+                    <input
+                      autoFocus
+                      required
+                      type="url"
+                      placeholder="https://"
+                      value={socialLinkModal.url}
+                      onChange={(event) => setSocialLinkModal((current) => ({ ...current, url: event.target.value }))}
+                      style={{ boxSizing: "border-box", width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #94a3b8" }}
+                    />
+                  </label>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+                    <button type="button" onClick={() => setSocialLinkModal(null)} style={{ padding: "8px 12px", borderRadius: "8px", cursor: "pointer" }}>
+                      Cancel
+                    </button>
+                    <button type="submit" style={{ padding: "8px 12px", border: 0, borderRadius: "8px", background: "#1976d2", color: "#fff", cursor: "pointer" }}>
+                      Set link
+                    </button>
+                  </div>
+                </form>
+              </div>,
+              document.body
+            )}
           </CardWrapper>
 
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="email-management">
@@ -8371,7 +8471,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             </h3>
             <button
               type="button"
-              onClick={() => setAdminModal('pricing')}
+              onClick={openPricingSettings}
+              disabled={pricingOpening}
               style={{
                 marginTop: "12px",
                 background: "#1976d2",
@@ -8379,11 +8480,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 border: "none",
                 padding: "10px 18px",
                 borderRadius: "8px",
-                cursor: "pointer",
+                cursor: pricingOpening ? "wait" : "pointer",
                 width: "100%"
               }}
             >
-              Open Pricing Settings
+              {pricingOpening ? "Loading Pricing Settings..." : "Open Pricing Settings"}
             </button>
 
             <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>

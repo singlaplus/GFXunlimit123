@@ -16,7 +16,7 @@ async function fetchExchangeRates() {
 }
 
 // Update currency exchange rates in database
-async function updateCurrencyRates(pool) {
+async function updateCurrencyRates(pool, { force = false, fetchRates = fetchExchangeRates } = {}) {
   try {
     // Use passed pool or default to db module
     const poolRef = pool || require('../db');
@@ -31,12 +31,12 @@ async function updateCurrencyRates(pool) {
     }
 
     // Check if auto-update is enabled
-    if (!settings.auto_update_exchange_rate) {
+    if (!force && !settings.auto_update_exchange_rate) {
       console.log('Auto-update exchange rate is disabled');
       return null;
     }
 
-    const rates = await fetchExchangeRates();
+    const rates = await fetchRates();
     if (!rates) {
       console.log('Failed to fetch exchange rates from API');
       return null;
@@ -50,23 +50,18 @@ async function updateCurrencyRates(pool) {
       return null;
     }
 
-    // Update pricing_settings with new exchange rate and auto-updated USD/EUR amounts
-    const usdAmount = settings.inr_amount ? (Number(settings.inr_amount) / Number(exchangeRate)).toFixed(2) : settings.usd_amount;
-    const eurAmount = settings.inr_amount && rates.EUR ? (Number(settings.inr_amount) * (rates.EUR / rates.USD)).toFixed(2) : settings.eur_amount;
-
+    // Updating rates must not overwrite fixed prices configured by the admin.
     const updateRes = await poolRef.query(
       `UPDATE pricing_settings 
-       SET exchange_rate = $1, 
-           usd_amount = $2, 
-           eur_amount = $3,
+       SET exchange_rate = $1,
            updated_at = now() 
-       WHERE id = $4 
+       WHERE id = $2
        RETURNING *`,
-      [exchangeRate, usdAmount, eurAmount, settings.id]
+      [exchangeRate, settings.id]
     );
 
     console.log(`✅ Currency rates updated at ${new Date().toISOString()}`);
-    console.log(`Exchange Rate (INR/USD): ${exchangeRate}, USD: ${usdAmount}, EUR: ${eurAmount}`);
+    console.log(`Exchange Rate (INR/USD): ${exchangeRate}`);
 
     return updateRes.rows?.[0];
   } catch (err) {

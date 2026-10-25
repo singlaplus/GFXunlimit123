@@ -50,6 +50,7 @@ describe("AdminPanel collection controls", () => {
     window.history.pushState({}, "", "/");
     localStorage.removeItem("admin-assets-connection-card-count");
     localStorage.removeItem("admin-thumbnails-connection-card-count");
+    localStorage.removeItem("footer-social-links");
     useLocation.mockReturnValue({ search: "?tab=controls" });
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/categories")) {
@@ -80,6 +81,33 @@ describe("AdminPanel collection controls", () => {
     const linksCard = screen.getByRole("heading", { name: "Links and sitemap" }).closest(".admin-panel-card");
     expect(within(linksCard).getByRole("button", { name: "Links" })).toBeInTheDocument();
     expect(within(linksCard).getByRole("button", { name: "Sitemap" })).toBeInTheDocument();
+  });
+
+  it("sets social links through the add-link dialog without expanding the card", async () => {
+    render(<AdminPanel />);
+
+    const socialCard = screen.getByRole("heading", { name: "Social Media" }).closest(".admin-panel-card");
+    expect(socialCard).toHaveClass("admin-panel-card");
+
+    fireEvent.change(within(socialCard).getByRole("combobox", { name: "Social media platform 4" }), {
+      target: { value: "linkedin" },
+    });
+    fireEvent.click(within(socialCard).getByRole("button", { name: "Add link for LinkedIn" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Set social media link" });
+    fireEvent.change(within(dialog).getByLabelText("Link URL"), {
+      target: { value: "https://www.linkedin.com/company/example" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Set link" }));
+
+    await waitFor(() => {
+      expect(JSON.parse(localStorage.getItem("footer-social-links"))[3]).toEqual({
+        platform: "linkedin",
+        url: "https://www.linkedin.com/company/example",
+      });
+    });
+    expect(within(socialCard).getByRole("button", { name: "Edit link for LinkedIn" })).toBeInTheDocument();
+    expect(socialCard).toHaveClass("admin-panel-card");
   });
 
   it.each([
@@ -2933,6 +2961,42 @@ describe("AdminPanel collection controls", () => {
     await waitFor(() => {
       expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('/admin/settings/pricing'), expect.anything());
     });
+    expect(await screen.findByRole("heading", { name: "Pricing Settings" })).toBeInTheDocument();
+  });
+
+  it("waits for backend pricing values before showing the Pricing Settings modal", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls" });
+    let resolvePricingSettings;
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/settings/pricing")) {
+        return new Promise((resolve) => {
+          resolvePricingSettings = resolve;
+        });
+      }
+      if (url.includes("/admin/categories")) return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [{ id: 1, name: "Nature" }] });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /open pricing settings/i }));
+
+    expect(screen.queryByRole("heading", { name: "Pricing Settings" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Loading Pricing Settings..." })).toBeDisabled();
+
+    resolvePricingSettings({
+      data: {
+        enable_global_minimum_pricing: true,
+        inr_amount: 250,
+        usd_amount: 12,
+        eur_amount: 11,
+      },
+    });
+
+    expect(await screen.findByRole("heading", { name: "Pricing Settings" })).toBeInTheDocument();
+    const pricingModal = screen.getByRole("heading", { name: "Pricing Settings" }).closest(".admin-panel-modal-panel");
+    expect(within(pricingModal).getAllByRole("spinbutton", { name: "Amount" }).map((input) => input.value)).toEqual(["250", "12", "11"]);
   });
 
   it("adds a new custom currency row from the pricing modal", async () => {
@@ -2950,7 +3014,7 @@ describe("AdminPanel collection controls", () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /open pricing settings/i }));
 
-    fireEvent.click(screen.getByRole('button', { name: /add new currency/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /add currency/i }));
 
     expect(screen.getAllByRole('combobox', { name: /currency/i }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('spinbutton', { name: /amount/i }).length).toBeGreaterThan(0);

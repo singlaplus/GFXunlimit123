@@ -11,9 +11,12 @@ import { InactivitySessionProvider } from "./context/InactivitySessionContext";
 import { hasActiveSession, normalizeAuthToken, shouldTriggerAuthSessionExpired } from "./utils/authSession";
 import { readLastActivityAt } from "./utils/inactivitySession";
 import { API_BASE_URL } from "./utils/apiBaseUrl";
+import { trackBackendFetchRequests, trackBackendRequests } from "./utils/backendRequestLoading";
 import reportWebVitals from "./reportWebVitals";
 
 axios.defaults.withCredentials = true;
+trackBackendRequests(axios);
+trackBackendFetchRequests(window, API_BASE_URL);
 
 if ("scrollRestoration" in window.history) {
   window.history.scrollRestoration = "manual";

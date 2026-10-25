@@ -30,6 +30,11 @@ import { applyTheme, getInitialDarkMode } from "./utils/theme";
 import { WATCH_CONFIG_STORAGE_KEY, DEFAULT_WATCH_CONFIG } from "./utils/watchConfigOptions";
 import { getStoredExploreFilterState, saveExploreFilterState } from "./utils/exploreFilters";
 import { AUTH_BUSY_START, AUTH_BUSY_END } from "./utils/authBusyEvents";
+import {
+  BACKEND_REQUEST_FINISHED,
+  BACKEND_REQUEST_STARTED,
+  getPendingBackendRequestCount,
+} from "./utils/backendRequestLoading";
 import { getEffectiveAuthToken } from "./utils/authSession";
 import { API_BASE_URL } from "./utils/apiBaseUrl";
 
@@ -105,6 +110,7 @@ function App() {
   const [branding, setBranding] = useState({});
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [authBusyType, setAuthBusyType] = useState("");
+  const [isBackendBusy, setIsBackendBusy] = useState(false);
 
   const apiBaseUrl = API_BASE_URL;
 
@@ -165,6 +171,45 @@ function App() {
     return () => {
       window.removeEventListener(AUTH_BUSY_START, handleBusyStart);
       window.removeEventListener(AUTH_BUSY_END, handleBusyEnd);
+    };
+  }, []);
+
+  useEffect(() => {
+    let pendingRequests = getPendingBackendRequestCount();
+    let showLoaderTimeout = null;
+    if (pendingRequests > 0) {
+      showLoaderTimeout = window.setTimeout(() => {
+        showLoaderTimeout = null;
+        if (pendingRequests > 0) setIsBackendBusy(true);
+      }, 200);
+    }
+
+    const handleRequestStarted = (event) => {
+      pendingRequests = event.detail?.pendingRequests ?? pendingRequests + 1;
+      if (pendingRequests > 0 && showLoaderTimeout === null) {
+        showLoaderTimeout = window.setTimeout(() => {
+          showLoaderTimeout = null;
+          if (pendingRequests > 0) setIsBackendBusy(true);
+        }, 200);
+      }
+    };
+    const handleRequestFinished = (event) => {
+      pendingRequests = event.detail?.pendingRequests ?? Math.max(0, pendingRequests - 1);
+      if (pendingRequests === 0) {
+        if (showLoaderTimeout !== null) {
+          window.clearTimeout(showLoaderTimeout);
+          showLoaderTimeout = null;
+        }
+        setIsBackendBusy(false);
+      }
+    };
+
+    window.addEventListener(BACKEND_REQUEST_STARTED, handleRequestStarted);
+    window.addEventListener(BACKEND_REQUEST_FINISHED, handleRequestFinished);
+    return () => {
+      if (showLoaderTimeout !== null) window.clearTimeout(showLoaderTimeout);
+      window.removeEventListener(BACKEND_REQUEST_STARTED, handleRequestStarted);
+      window.removeEventListener(BACKEND_REQUEST_FINISHED, handleRequestFinished);
     };
   }, []);
 
@@ -648,8 +693,11 @@ const popupProps = {
   setSelectedCollection={setSelectedCollection}
 />
 
-      {isAuthBusy && (
+      {(isAuthBusy || isBackendBusy) && (
         <div
+          role={isBackendBusy ? "status" : undefined}
+          aria-label={isBackendBusy ? "Loading data from the server" : undefined}
+          data-testid={isBackendBusy ? "backend-loading-overlay" : undefined}
           style={{
             position: "fixed",
             inset: 0,
@@ -663,7 +711,7 @@ const popupProps = {
             pointerEvents: "all",
           }}
         >
-          {authBusyType === "logout" ? (
+          {isAuthBusy && authBusyType === "logout" ? (
             branding?.favicon || branding?.logo ? (
               <img
                 src={`${apiBaseUrl}${branding.favicon || branding.logo}`}

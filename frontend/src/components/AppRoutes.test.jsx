@@ -608,6 +608,23 @@ describe("AppRoutes", () => {
     mockLocation.search = "";
   });
 
+  it("does not show the availability-check message while the backend check is pending", async () => {
+    mockLocation.pathname = "/pricing";
+    mockLocation.search = "";
+    let resolveAvailability;
+    axios.get.mockReturnValue(new Promise((resolve) => {
+      resolveAvailability = resolve;
+    }));
+
+    const { container } = render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(screen.queryByText(/checking page availability/i)).not.toBeInTheDocument();
+    expect(container.querySelector("main")).toHaveAttribute("aria-busy", "true");
+
+    resolveAvailability({ data: { available: true, path: "/pricing", disabledLinks: [] } });
+    await waitFor(() => expect(container.querySelector("main")).not.toHaveAttribute("aria-busy", "true"));
+  });
+
   it("disables only the selected link on its source page", async () => {
     mockLocation.pathname = "/pricing";
     mockLocation.search = "";

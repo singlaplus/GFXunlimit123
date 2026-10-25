@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 import Pagination from './components/Pagination';
 import axios from 'axios';
+import { BACKEND_REQUEST_FINISHED, BACKEND_REQUEST_STARTED } from './utils/backendRequestLoading';
 
 jest.mock('axios');
 
@@ -73,6 +74,26 @@ test('pagination controls reset the browser position to the top when users move 
 test('renders the home hero content', () => {
   render(<App />);
   expect(screen.getByText(/Discover Millions of/i)).toBeInTheDocument();
+});
+
+test('shows the branded loading animation while backend data is pending', async () => {
+  render(<App />);
+
+  fireEvent(
+    window,
+    new CustomEvent(BACKEND_REQUEST_STARTED, { detail: { pendingRequests: 1 } })
+  );
+
+  expect(await screen.findByTestId('backend-loading-overlay')).toBeInTheDocument();
+
+  fireEvent(
+    window,
+    new CustomEvent(BACKEND_REQUEST_FINISHED, { detail: { pendingRequests: 0 } })
+  );
+
+  await waitFor(() => {
+    expect(screen.queryByTestId('backend-loading-overlay')).not.toBeInTheDocument();
+  });
 });
 
 test('uses the local brand title and favicon when branding is unavailable', async () => {

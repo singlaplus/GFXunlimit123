@@ -2,10 +2,12 @@ import axios from "axios";
 import { buildAuthHeaders, hasActiveSession, shouldTriggerAuthSessionExpired } from "../utils/authSession";
 import { readLastActivityAt } from "../utils/inactivitySession";
 import { API_BASE_URL } from "../utils/apiBaseUrl";
+import { trackBackendRequests } from "../utils/backendRequestLoading";
 
 const api = (axios && typeof axios.create === 'function')
   ? axios.create({ baseURL: API_BASE_URL })
   : axios;
+trackBackendRequests(api);
 
 if (api && api.interceptors && api.interceptors.response && typeof api.interceptors.response.use === 'function') {
   api.interceptors.request.use((config) => {

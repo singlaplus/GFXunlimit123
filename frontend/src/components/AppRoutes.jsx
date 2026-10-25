@@ -1511,7 +1511,7 @@ export default function AppRoutes(props) {
   }, [pageAvailability, pathname]);
 
   if (!isAdmin && pageAvailability?.pathname !== pathname) {
-    return <main aria-live="polite" style={{ minHeight: "60vh", display: "grid", placeItems: "center", color: "#64748b" }}>Checking page availability...</main>;
+    return <main aria-live="polite" aria-busy="true" style={{ minHeight: "60vh" }} />;
   }
 
   if (!isAdmin && pageAvailability?.error) {

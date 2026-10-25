@@ -3640,11 +3640,11 @@ app.post("/admin/settings/credit-price", verifySuperAdmin, async (req, res) => {
 });
 
 // Manual currency update endpoint (for admins to trigger update on-demand)
-app.post("/admin/settings/currency-update", async (req, res) => {
+app.post("/admin/settings/currency-update", verifySuperAdmin, async (req, res) => {
   try {
     const { updateCurrencyRates } = require('./currency/currencyScheduler');
     console.log('Currency update triggered manually');
-    const result = await updateCurrencyRates(pool);
+    const result = await updateCurrencyRates(pool, { force: true });
     
     if (result) {
       console.log('Currency update successful:', result);
