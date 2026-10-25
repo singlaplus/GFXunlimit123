@@ -1,13 +1,13 @@
 {
   "latest": {
-    "jobId": "67dd0b02-cd99-4448-ba4a-619390f3cd67",
+    "jobId": "5a7859dc-9b5d-4061-ab51-57e6b417e7e0",
     "siteOrigin": "https://www.gfxunlimit.com",
-    "primaryPath": "/Users/gfxunlimit/Documents/backup/Sitemap/2026/10/24/sitemap1.xml",
-    "primaryFilename": "sitemap1.xml",
-    "archiveId": "67dd0b02-cd99-4448-ba4a-619390f3cd67",
-    "archiveDirectory": "/Users/gfxunlimit/Documents/backup/Sitemap/2026/10/24",
+    "primaryPath": "/Users/gfxunlimit/Documents/backup/Sitemap/2026/10/25/sitemap.xml",
+    "primaryFilename": "sitemap.xml",
+    "archiveId": "5a7859dc-9b5d-4061-ab51-57e6b417e7e0",
+    "archiveDirectory": "/Users/gfxunlimit/Documents/backup/Sitemap/2026/10/25",
     "childFilenames": [],
-    "generatedAt": "2026-10-24T16:25:23.902Z",
+    "generatedAt": "2026-10-25T15:21:03.417Z",
     "totalUrls": 193,
     "fileCount": 1,
     "fileSizeBytes": 19484,
@@ -25,6 +25,12 @@
       "directory": "/Users/gfxunlimit/Documents/backup/Sitemap/2026/10/24",
       "filenames": [
         "sitemap1.xml"
+      ]
+    },
+    "5a7859dc-9b5d-4061-ab51-57e6b417e7e0": {
+      "directory": "/Users/gfxunlimit/Documents/backup/Sitemap/2026/10/25",
+      "filenames": [
+        "sitemap.xml"
       ]
     }
   }
