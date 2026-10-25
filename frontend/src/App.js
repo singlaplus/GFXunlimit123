@@ -38,6 +38,8 @@ import {
 import { getEffectiveAuthToken } from "./utils/authSession";
 import { API_BASE_URL } from "./utils/apiBaseUrl";
 
+const BACKEND_LOADING_OVERLAY_DELAY_MS = 800;
+
 function App() {
   const loc = useLocation();
   const location = loc || (typeof window !== 'undefined' ? window.location : { search: '', pathname: '/' });
@@ -181,7 +183,7 @@ function App() {
       showLoaderTimeout = window.setTimeout(() => {
         showLoaderTimeout = null;
         if (pendingRequests > 0) setIsBackendBusy(true);
-      }, 200);
+      }, BACKEND_LOADING_OVERLAY_DELAY_MS);
     }
 
     const handleRequestStarted = (event) => {
@@ -190,7 +192,7 @@ function App() {
         showLoaderTimeout = window.setTimeout(() => {
           showLoaderTimeout = null;
           if (pendingRequests > 0) setIsBackendBusy(true);
-        }, 200);
+        }, BACKEND_LOADING_OVERLAY_DELAY_MS);
       }
     };
     const handleRequestFinished = (event) => {

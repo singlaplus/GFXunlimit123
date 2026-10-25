@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 import Pagination from './components/Pagination';
 import axios from 'axios';
@@ -94,6 +94,28 @@ test('shows the branded loading animation while backend data is pending', async 
   await waitFor(() => {
     expect(screen.queryByTestId('backend-loading-overlay')).not.toBeInTheDocument();
   });
+});
+
+test('does not flash the branded loading animation for brief backend requests', () => {
+  render(<App />);
+  jest.useFakeTimers();
+
+  fireEvent(
+    window,
+    new CustomEvent(BACKEND_REQUEST_STARTED, { detail: { pendingRequests: 1 } })
+  );
+  act(() => jest.advanceTimersByTime(799));
+  expect(screen.queryByTestId('backend-loading-overlay')).not.toBeInTheDocument();
+
+  act(() => jest.advanceTimersByTime(1));
+  expect(screen.getByTestId('backend-loading-overlay')).toBeInTheDocument();
+
+  fireEvent(
+    window,
+    new CustomEvent(BACKEND_REQUEST_FINISHED, { detail: { pendingRequests: 0 } })
+  );
+  expect(screen.queryByTestId('backend-loading-overlay')).not.toBeInTheDocument();
+  jest.useRealTimers();
 });
 
 test('uses the local brand title and favicon when branding is unavailable', async () => {
