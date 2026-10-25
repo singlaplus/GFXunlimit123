@@ -696,6 +696,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       try {
         const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
         const res = await axios.get(`${API_BASE_URL}/admin/payment-settings`, {
+          skipGlobalLoading: true,
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         setPaymentGatewaySettings(res.data && typeof res.data === "object" ? res.data : {});

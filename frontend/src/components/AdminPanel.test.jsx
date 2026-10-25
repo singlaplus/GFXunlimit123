@@ -2135,6 +2135,17 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByText(/status:\s*disabled/i)).toBeInTheDocument();
   });
 
+  it("does not show the global loader for background payment-settings polling", async () => {
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/payment-settings"),
+        expect.objectContaining({ skipGlobalLoading: true })
+      );
+    });
+  });
+
   it("saves a Google Pay ID from the popup", async () => {
     render(<AdminPanel />);
 

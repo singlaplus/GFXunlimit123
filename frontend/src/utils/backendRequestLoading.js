@@ -26,6 +26,8 @@ export function trackBackendRequests(client) {
   }
 
   client.interceptors.request.use((config) => {
+    if (config.skipGlobalLoading) return config;
+
     if (!config[TRACKED_REQUEST]) {
       config[TRACKED_REQUEST] = true;
       startTrackingRequest();

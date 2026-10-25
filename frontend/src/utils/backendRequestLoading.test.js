@@ -49,6 +49,25 @@ describe("backend request loading tracker", () => {
     window.removeEventListener(BACKEND_REQUEST_FINISHED, onFinished);
   });
 
+  it("does not include background requests marked to skip the global loader", () => {
+    const client = createAxiosClient();
+    const events = [];
+    const onStarted = (event) => events.push(["started", event.detail.pendingRequests]);
+    const onFinished = (event) => events.push(["finished", event.detail.pendingRequests]);
+    window.addEventListener(BACKEND_REQUEST_STARTED, onStarted);
+    window.addEventListener(BACKEND_REQUEST_FINISHED, onFinished);
+    trackBackendRequests(client);
+
+    const request = client.requestHandlers[0]({ skipGlobalLoading: true });
+    expect(getPendingBackendRequestCount()).toBe(0);
+    client.responseHandlers[0].onSuccess({ config: request });
+
+    expect(getPendingBackendRequestCount()).toBe(0);
+    expect(events).toEqual([]);
+    window.removeEventListener(BACKEND_REQUEST_STARTED, onStarted);
+    window.removeEventListener(BACKEND_REQUEST_FINISHED, onFinished);
+  });
+
   it("tracks fetch requests to the configured backend origin only", async () => {
     const events = [];
     const onStarted = (event) => events.push(["started", event.detail.pendingRequests]);
