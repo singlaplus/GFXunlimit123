@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import axios from "axios";
 import AdminAnalyticsPage from "./AdminAnalyticsPage";
 
@@ -83,6 +83,46 @@ describe("AdminAnalyticsPage", () => {
     expect(screen.getByText("Active Customers")).toBeInTheDocument();
   });
 
+  it("counts analytics KPI values up to their formatted totals", async () => {
+    const queuedFrames = [];
+    const requestFrameSpy = jest.spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        queuedFrames.push(callback);
+        return queuedFrames.length;
+      });
+    const cancelFrameSpy = jest.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+    render(<AdminAnalyticsPage />);
+
+    await waitFor(() => expect(screen.getAllByLabelText("$125,000")).toHaveLength(2));
+    const totalRevenue = screen.getAllByLabelText("$125,000")[0];
+    expect(totalRevenue).toHaveTextContent("$0");
+
+    const runAnimationFrames = (timestamp) => {
+      queuedFrames.splice(0).forEach((callback) => callback(timestamp));
+    };
+    act(() => runAnimationFrames(0));
+    act(() => runAnimationFrames(600));
+    expect(totalRevenue).toHaveTextContent("$109,375");
+
+    act(() => runAnimationFrames(1200));
+    expect(totalRevenue).toHaveTextContent("$125,000");
+
+    requestFrameSpy.mockRestore();
+    cancelFrameSpy.mockRestore();
+  });
+
+  it("loads analytics for the selected date preset", async () => {
+    render(<AdminAnalyticsPage />);
+
+    expect(await screen.findByText("Total Revenue")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Date range" }), { target: { value: "yesterday" } });
+
+    await waitFor(() => {
+      expect(axios.get.mock.calls.some(([url]) => url.includes("range=yesterday"))).toBe(true);
+    });
+  });
+
   it("shows custom date range fields and exports CSV with selected dates", async () => {
     const originalFetch = global.fetch;
     const originalWindowFetch = window.fetch;
@@ -93,7 +133,7 @@ describe("AdminAnalyticsPage", () => {
     render(<AdminAnalyticsPage />);
 
     expect(await screen.findByText("Total Revenue")).toBeInTheDocument();
-    const rangeSelect = screen.getByDisplayValue(/30d/i);
+    const rangeSelect = screen.getByRole("combobox", { name: "Date range" });
     fireEvent.change(rangeSelect, { target: { value: "custom" } });
 
     const fromInput = await screen.findByLabelText(/from/i);

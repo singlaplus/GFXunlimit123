@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import Pagination from "../components/Pagination";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import "./AdminOrdersPage.css";
 import {
   ResponsiveContainer,
   LineChart,
@@ -71,6 +72,54 @@ const formatCurrency = (value, currency) => {
   const amount = Number(value || 0);
   return `${currency || "USD"} ${amount.toFixed(2)}`;
 };
+
+function AnimatedOrderValue({ value }) {
+  const displayValue = String(value ?? 0);
+  const match = displayValue.match(/^([^\d-]*)(-?[\d,]+(?:\.\d+)?)(.*)$/);
+  const target = match ? Number(match[2].replace(/,/g, "")) : null;
+  const prefix = match?.[1] || "";
+  const decimals = match?.[2].split(".")[1]?.length || 0;
+  const suffix = match?.[3] || "";
+  const formatValue = (number) => `${prefix}${number.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  })}${suffix}`;
+  const [animatedValue, setAnimatedValue] = useState(() => (
+    target === null ? displayValue : formatValue(0)
+  ));
+
+  useEffect(() => {
+    if (target === null) {
+      setAnimatedValue(displayValue);
+      return undefined;
+    }
+
+    const prefersReducedMotion = typeof window !== "undefined"
+      && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (prefersReducedMotion || target === 0) {
+      setAnimatedValue(displayValue);
+      return undefined;
+    }
+
+    let frameId;
+    let startTime;
+    setAnimatedValue(formatValue(0));
+
+    const animate = (timestamp) => {
+      if (startTime === undefined) startTime = timestamp;
+      const progress = Math.min((timestamp - startTime) / 1200, 1);
+      const easedProgress = 1 - (1 - progress) ** 3;
+      setAnimatedValue(formatValue(target * easedProgress));
+      if (progress < 1) frameId = window.requestAnimationFrame(animate);
+      else setAnimatedValue(displayValue);
+    };
+
+    frameId = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [decimals, displayValue, prefix, suffix, target]);
+
+  return <span aria-label={displayValue} aria-live="off">{animatedValue}</span>;
+}
 
 const toDateString = (value) => {
   if (!value) return "-";
@@ -547,9 +596,10 @@ export default function AdminOrdersPage() {
   }), [summary, total]);
 
   return (
-    <div style={{ minHeight: "100vh", padding: "24px", background: theme.pageBg, color: theme.text }}>
-      <header style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", marginBottom: "24px" }}>
+    <div className={`gfx-orders${isDarkMode ? " gfx-orders--dark" : ""}`} style={{ minHeight: "100vh", padding: "24px", background: theme.pageBg, color: theme.text }}>
+      <header className="gfx-orders__hero" style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", marginBottom: "24px" }}>
         <div style={{ minWidth: 0 }}>
+          <span className="gfx-orders__eyebrow">COMMERCE · OPERATIONS</span>
           <h1 style={{ margin: 0, fontSize: "2rem" }}>Orders Management</h1>
           <p style={{ margin: "10px 0 0", color: theme.muted, maxWidth: "760px" }}>
             Enterprise order lifecycle tools for tracking purchases, payments, downloads, refunds, invoices, contributors, and customer history.
@@ -565,7 +615,7 @@ export default function AdminOrdersPage() {
         </div>
       </header>
 
-      <section style={{ marginBottom: "20px" }}>
+      <section className="gfx-orders__summary" style={{ marginBottom: "20px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "14px", flexWrap: "wrap" }}>
           <div>
             <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Order Summary</h2>
@@ -584,17 +634,17 @@ export default function AdminOrdersPage() {
             { label: "Refunded Orders", value: orderSummary.refundedOrders },
             { label: "Returning Customers", value: orderSummary.returningCustomers }
           ].map((metric) => (
-            <div key={metric.label} style={{ padding: "20px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}` }}>
+            <div key={metric.label} className="gfx-orders__metric" style={{ padding: "20px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}` }}>
               <div style={{ fontSize: "0.95rem", color: theme.muted, marginBottom: "10px" }}>{metric.label}</div>
-              <div style={{ fontSize: "1.7rem", fontWeight: 700, color: theme.text }}>{metric.value}</div>
+              <div style={{ fontSize: "1.7rem", fontWeight: 700, color: theme.text }}><AnimatedOrderValue value={metric.value} /></div>
             </div>
           ))}
         </div>
       </section>
 
-      <section style={{ display: "grid", gap: "18px", marginBottom: "22px" }}>
-        <div style={{ display: "grid", gap: "14px", gridTemplateColumns: "1.5fr 0.9fr", alignItems: "start" }}>
-          <div style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, minHeight: "320px" }}>
+      <section className="gfx-orders__analytics" style={{ display: "grid", gap: "18px", marginBottom: "22px" }}>
+        <div className="gfx-orders__analytics-grid" style={{ display: "grid", gap: "14px", gridTemplateColumns: "1.5fr 0.9fr", alignItems: "start" }}>
+          <div className="gfx-orders__chart-card" style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, minHeight: "320px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", marginBottom: "18px" }}>
               <div>
                 <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Order Volume</h2>
@@ -618,7 +668,7 @@ export default function AdminOrdersPage() {
           </div>
 
           <div style={{ display: "grid", gap: "14px", alignContent: "start" }}>
-            <div style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}` }}>
+            <div className="gfx-orders__chart-card" style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
                 <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Top Customers</h2>
                 <button type="button" onClick={exportTopCustomersCsv} disabled={!Array.isArray(analytics.topCustomers) || analytics.topCustomers.length === 0} style={{ borderRadius: "14px", border: `1px solid ${theme.border}`, background: theme.surface, color: theme.text, padding: "10px 14px", cursor: "pointer", fontSize: "0.9rem" }}>
@@ -636,7 +686,7 @@ export default function AdminOrdersPage() {
               </div>
             </div>
 
-            <div style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}` }}>
+            <div className="gfx-orders__chart-card" style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
                 <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Gateway Mix</h2>
                 <button type="button" onClick={exportGatewayMixCsv} disabled={!Array.isArray(analytics.paymentGatewayDistribution) || analytics.paymentGatewayDistribution.length === 0} style={{ borderRadius: "14px", border: `1px solid ${theme.border}`, background: theme.surface, color: theme.text, padding: "10px 14px", cursor: "pointer", fontSize: "0.9rem" }}>
@@ -661,7 +711,7 @@ export default function AdminOrdersPage() {
         </div>
       </section>
 
-      <section style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, marginBottom: "24px" }}>
+      <section className="gfx-orders__filters" style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, marginBottom: "24px" }}>
         <div style={{ display: "grid", gap: "18px", marginBottom: "14px" }}>
           <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
             <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -718,7 +768,7 @@ export default function AdminOrdersPage() {
         </div>
       </section>
 
-      <section style={{ marginBottom: "20px" }}>
+      <section className="gfx-orders__orders" style={{ marginBottom: "20px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", marginBottom: "16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
             <button type="button" onClick={selectAll} style={{ minWidth: "120px", background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: "14px", color: theme.text, padding: "10px 14px", cursor: "pointer" }}>
@@ -738,8 +788,8 @@ export default function AdminOrdersPage() {
           </div>
         </div>
 
-        <div style={{ overflowX: "auto", border: `1px solid ${theme.border}`, borderRadius: "18px", background: theme.surface }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "1320px" }}>
+        <div className="gfx-orders__table-wrap" style={{ overflowX: "auto", border: `1px solid ${theme.border}`, borderRadius: "18px", background: theme.surface }}>
+          <table className="gfx-orders__table" style={{ width: "100%", borderCollapse: "collapse", minWidth: "1320px" }}>
             <thead>
               <tr style={{ background: theme.headerBg, color: theme.text, textAlign: "left" }}>
                 <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}` }}> <input type="checkbox" checked={selectedOrders.size > 0 && selectedOrders.size === orders.length} onChange={(event) => event.target.checked ? selectAll() : clearSelection()} /></th>

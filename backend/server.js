@@ -6815,21 +6815,53 @@ app.post("/analytics/events", async (req, res) => {
   }
 });
 
+const getAnalyticsDateClause = (column, range) => {
+  const dateColumn = column === "e.created_at" ? "e.created_at" : "o.created_at";
+  switch (range) {
+    case "today":
+      return `${dateColumn} >= CURRENT_DATE AND ${dateColumn} < CURRENT_DATE + INTERVAL '1 day'`;
+    case "yesterday":
+      return `${dateColumn} >= CURRENT_DATE - INTERVAL '1 day' AND ${dateColumn} < CURRENT_DATE`;
+    case "this_week":
+      return `${dateColumn} >= date_trunc('week', CURRENT_DATE)`;
+    case "this_month":
+      return `${dateColumn} >= date_trunc('month', CURRENT_DATE)`;
+    case "previous_month":
+      return `${dateColumn} >= date_trunc('month', CURRENT_DATE) - INTERVAL '1 month' AND ${dateColumn} < date_trunc('month', CURRENT_DATE)`;
+    case "this_quarter":
+      return `${dateColumn} >= date_trunc('quarter', CURRENT_DATE)`;
+    case "previous_quarter":
+      return `${dateColumn} >= date_trunc('quarter', CURRENT_DATE) - INTERVAL '3 months' AND ${dateColumn} < date_trunc('quarter', CURRENT_DATE)`;
+    case "this_year":
+      return `${dateColumn} >= date_trunc('year', CURRENT_DATE)`;
+    case "previous_year":
+      return `${dateColumn} >= date_trunc('year', CURRENT_DATE) - INTERVAL '1 year' AND ${dateColumn} < date_trunc('year', CURRENT_DATE)`;
+    case "lifetime":
+      return "";
+    case "24h":
+      return `${dateColumn} >= CURRENT_TIMESTAMP - INTERVAL '24 hours'`;
+    case "7d":
+      return `${dateColumn} >= CURRENT_DATE - INTERVAL '7 days'`;
+    case "90d":
+      return `${dateColumn} >= CURRENT_DATE - INTERVAL '90 days'`;
+    case "30d":
+    default:
+      return `${dateColumn} >= CURRENT_DATE - INTERVAL '30 days'`;
+  }
+};
+
 app.get("/admin/analytics/blogs", verifyAdmin, async (req, res) => {
   try {
     const range = String(req.query.range || "30d").trim();
     const fromDate = String(req.query.from || "").trim();
     const toDate = String(req.query.to || "").trim();
     const values = [];
-    let dateClause = "e.created_at >= CURRENT_DATE - INTERVAL '30 days'";
-    if (range === "24h") dateClause = "e.created_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'";
-    if (range === "7d") dateClause = "e.created_at >= CURRENT_DATE - INTERVAL '7 days'";
-    if (range === "90d") dateClause = "e.created_at >= CURRENT_DATE - INTERVAL '90 days'";
+    let dateClause = getAnalyticsDateClause("e.created_at", range) || "TRUE";
     if (range === "custom") {
       const clauses = [];
       if (fromDate) { values.push(fromDate); clauses.push(`e.created_at >= $${values.length}::date`); }
       if (toDate) { values.push(toDate); clauses.push(`e.created_at < ($${values.length}::date + INTERVAL '1 day')`); }
-      dateClause = clauses.join(" AND ") || dateClause;
+      dateClause = clauses.join(" AND ") || getAnalyticsDateClause("e.created_at", "30d");
     }
     const eventClause = `e.event_type = ANY($${values.length + 1}::text[]) AND ${dateClause}`;
     const eventValues = [...values, [...BLOG_ANALYTICS_EVENTS]];
@@ -6917,29 +6949,18 @@ app.get("/admin/analytics/dashboard", verifyAdmin, async (req, res) => {
     if (range === "custom") {
       if (fromDate) {
         values.push(fromDate);
-        filters.push(`o.created_at >= $${values.length}`);
+        filters.push(`o.created_at >= $${values.length}::date`);
       }
       if (toDate) {
         values.push(toDate);
-        filters.push(`o.created_at <= $${values.length}`);
+        filters.push(`o.created_at < ($${values.length}::date + INTERVAL '1 day')`);
       }
       if (!fromDate && !toDate) {
         filters.push(`o.created_at >= CURRENT_DATE - INTERVAL '30 days'`);
       }
     } else {
-      const rangeStart = (() => {
-        switch (range) {
-          case "24h":
-            return "CURRENT_TIMESTAMP - INTERVAL '24 hours'";
-          case "7d":
-            return "CURRENT_DATE - INTERVAL '7 days'";
-          case "90d":
-            return "CURRENT_DATE - INTERVAL '90 days'";
-          default:
-            return "CURRENT_DATE - INTERVAL '30 days'";
-        }
-      })();
-      filters.push(`o.created_at >= ${rangeStart}`);
+      const dateClause = getAnalyticsDateClause("o.created_at", range);
+      if (dateClause) filters.push(dateClause);
     }
 
     const regionConditions = {

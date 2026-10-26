@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
 import BlogAnalyticsPanel from "./BlogAnalyticsPanel";
+import "./AdminAnalyticsPage.css";
 
 const sections = [
   { key: "executive", label: "Executive Dashboard" },
@@ -14,6 +15,24 @@ const sections = [
   { key: "downloads", label: "Download Analytics" },
   { key: "support", label: "Support Analytics" },
   { key: "blog", label: "Blog Analytics" }
+];
+
+const ANALYTICS_DATE_RANGES = [
+  { value: "today", label: "Today" },
+  { value: "yesterday", label: "Yesterday" },
+  { value: "this_week", label: "This week" },
+  { value: "this_month", label: "This month" },
+  { value: "previous_month", label: "Previous month" },
+  { value: "this_quarter", label: "This quarter" },
+  { value: "previous_quarter", label: "Previous quarter" },
+  { value: "this_year", label: "This year" },
+  { value: "previous_year", label: "Previous year" },
+  { value: "lifetime", label: "Lifetime" },
+  { value: "24h", label: "Last 24 hours" },
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "90d", label: "Last 90 days" },
+  { value: "custom", label: "Custom range" }
 ];
 
 const getIsDarkMode = () => typeof document !== "undefined" && document.body.classList.contains("dark-mode");
@@ -56,6 +75,54 @@ const DARK_THEME = {
 
 const formatCurrency = (value) => `$${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 const formatNumber = (value) => Number(value || 0).toLocaleString();
+
+function AnimatedAnalyticsValue({ value }) {
+  const displayValue = String(value ?? "");
+  const match = displayValue.match(/^([₹$]?)(-?[\d,]+(?:\.\d+)?)(%?)$/);
+  const target = match ? Number(match[2].replace(/,/g, "")) : null;
+  const decimals = match?.[2].split(".")[1]?.length || 0;
+  const prefix = match?.[1] || "";
+  const suffix = match?.[3] || "";
+  const formatValue = (number) => `${prefix}${number.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  })}${suffix}`;
+  const [animatedValue, setAnimatedValue] = useState(() => (
+    target === null ? displayValue : formatValue(0)
+  ));
+
+  useEffect(() => {
+    if (target === null) {
+      setAnimatedValue(displayValue);
+      return undefined;
+    }
+
+    const prefersReducedMotion = typeof window !== "undefined"
+      && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (prefersReducedMotion || target === 0) {
+      setAnimatedValue(displayValue);
+      return undefined;
+    }
+
+    let frameId;
+    let startTime;
+    setAnimatedValue(formatValue(0));
+
+    const animate = (timestamp) => {
+      if (startTime === undefined) startTime = timestamp;
+      const progress = Math.min((timestamp - startTime) / 1200, 1);
+      const easedProgress = 1 - (1 - progress) ** 3;
+      setAnimatedValue(formatValue(target * easedProgress));
+      if (progress < 1) frameId = window.requestAnimationFrame(animate);
+      else setAnimatedValue(displayValue);
+    };
+
+    frameId = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [displayValue, target]);
+
+  return <span aria-label={displayValue} aria-live="off">{animatedValue}</span>;
+}
 
 const buildFallbackAnalytics = () => ({
   summary: {
@@ -274,6 +341,7 @@ export default function AdminAnalyticsPage() {
   const renderKpiCard = (title, value, subtitle, trend) => (
     <div
       key={title}
+      className="gfx-analytics__kpi"
       style={{
         padding: "18px",
         borderRadius: "20px",
@@ -288,7 +356,7 @@ export default function AdminAnalyticsPage() {
       <div style={{ position: "absolute", inset: 0, background: `radial-gradient(circle at top right, ${theme.glow}, transparent 55%)` }} />
       <div style={{ position: "relative" }}>
         <div style={{ fontSize: "0.8rem", color: theme.muted, marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.16em" }}>{title}</div>
-        <div style={{ fontSize: "1.55rem", fontWeight: 700, color: theme.text, lineHeight: 1.1 }}>{value}</div>
+        <div style={{ fontSize: "1.55rem", fontWeight: 700, color: theme.text, lineHeight: 1.1 }}><AnimatedAnalyticsValue value={value} /></div>
         <div style={{ fontSize: "0.84rem", color: theme.notice, marginTop: "8px" }}>{subtitle}</div>
         {trend ? <div style={{ marginTop: "8px", fontSize: "0.8rem", color: theme.accent, fontWeight: 700 }}>{trend}</div> : null}
       </div>
@@ -298,6 +366,7 @@ export default function AdminAnalyticsPage() {
   const renderMetricCard = (title, value, subtitle) => (
     <div
       key={title}
+      className="gfx-analytics__metric-card"
       style={{
         padding: "16px",
         borderRadius: "18px",
@@ -310,7 +379,7 @@ export default function AdminAnalyticsPage() {
       }}
     >
       <div style={{ fontSize: "0.8rem", color: theme.muted, textTransform: "uppercase", letterSpacing: "0.16em" }}>{title}</div>
-      <div style={{ fontSize: "1.15rem", fontWeight: 700, color: theme.text }}>{value}</div>
+      <div style={{ fontSize: "1.15rem", fontWeight: 700, color: theme.text }}><AnimatedAnalyticsValue value={value} /></div>
       <div style={{ fontSize: "0.84rem", color: theme.notice }}>{subtitle}</div>
     </div>
   );
@@ -485,7 +554,7 @@ export default function AdminAnalyticsPage() {
   const { sectionTitle, items: drilldownItems } = getDrilldownContent();
 
   const renderInsightPanel = () => (
-    <div style={{ padding: "18px", borderRadius: "24px", border: `1px solid ${theme.border}`, background: theme.surface, boxShadow: theme.shadow }}>
+    <div className="gfx-analytics__panel gfx-analytics__insights" style={{ padding: "18px", borderRadius: "24px", border: `1px solid ${theme.border}`, background: theme.surface, boxShadow: theme.shadow }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: "1rem" }}>Insight Recommendations</div>
@@ -506,7 +575,7 @@ export default function AdminAnalyticsPage() {
   );
 
   const renderDrilldownPanel = () => (
-    <div style={{ padding: "18px", borderRadius: "24px", border: `1px solid ${theme.border}`, background: theme.surface, boxShadow: theme.shadow }}>
+    <div className="gfx-analytics__panel gfx-analytics__drilldown" style={{ padding: "18px", borderRadius: "24px", border: `1px solid ${theme.border}`, background: theme.surface, boxShadow: theme.shadow }}>
       <div style={{ fontWeight: 700, fontSize: "1rem", marginBottom: "10px" }}>{sectionTitle} Drill-down</div>
       <div style={{ color: theme.muted, fontSize: "0.88rem", marginBottom: "14px" }}>Detailed metrics and segment-level insights for the selected analytics area.</div>
       <div style={{ display: "grid", gap: "10px" }}>
@@ -524,6 +593,7 @@ export default function AdminAnalyticsPage() {
   const renderChartWrapper = ({ title, subtitle, section, legendItems, chartElement }) => (
     <div
       key={title}
+      className="gfx-analytics__panel gfx-analytics__chart-card"
       style={{ padding: "16px", borderRadius: "20px", border: `1px solid ${theme.border}`, background: theme.surface, boxShadow: theme.shadow, cursor: "pointer" }}
       onClick={() => drillDown(section)}
     >
@@ -879,7 +949,7 @@ export default function AdminAnalyticsPage() {
   }[activeSection] || "Section-specific analytics overview.";
 
   const renderMiniMap = () => (
-    <div style={{ padding: "16px", borderRadius: "20px", border: `1px solid ${theme.border}`, background: theme.surface, boxShadow: theme.shadow }}>
+    <div className="gfx-analytics__panel gfx-analytics__geo" style={{ padding: "16px", borderRadius: "20px", border: `1px solid ${theme.border}`, background: theme.surface, boxShadow: theme.shadow }}>
       <div style={{ fontWeight: 700, marginBottom: "8px" }}>Geo Reach</div>
       <div style={{ color: theme.muted, fontSize: "0.86rem", marginBottom: "8px" }}>Top markets by revenue concentration</div>
       <div style={{ position: "relative", height: "140px", borderRadius: "16px", overflow: "hidden", background: isDarkMode ? "#071224" : "#f7f9fd", border: `1px solid ${theme.border}` }}>
@@ -907,7 +977,7 @@ export default function AdminAnalyticsPage() {
 
   const renderFilterBadges = () => {
     const activeFilters = [
-      { label: "Range", value: filters.range },
+      { label: "Range", value: ANALYTICS_DATE_RANGES.find((range) => range.value === filters.range)?.label || filters.range },
       { label: "Region", value: filters.region },
       { label: "Segment", value: filters.segment },
       { label: "Gateway", value: filters.gateway }
@@ -944,7 +1014,7 @@ export default function AdminAnalyticsPage() {
   };
 
   const renderList = (title, items) => (
-    <div style={{ padding: "16px", borderRadius: "20px", border: `1px solid ${theme.border}`, background: theme.surface, boxShadow: theme.shadow }}>
+    <div className="gfx-analytics__panel gfx-analytics__list" style={{ padding: "16px", borderRadius: "20px", border: `1px solid ${theme.border}`, background: theme.surface, boxShadow: theme.shadow }}>
       <div style={{ fontWeight: 700, marginBottom: "12px", color: theme.text }}>{title}</div>
       <div style={{ display: "grid", gap: "8px" }}>
         {(items || []).slice(0, 5).map((item, index) => (
@@ -958,7 +1028,7 @@ export default function AdminAnalyticsPage() {
   );
 
   return (
-    <div data-testid="admin-analytics-page" style={{ minHeight: "70vh", padding: "24px", background: theme.pageBg, color: theme.text }}>
+    <div data-testid="admin-analytics-page" className={`gfx-analytics${isDarkMode ? " gfx-analytics--dark" : ""}`} style={{ minHeight: "70vh", padding: "24px", background: theme.pageBg, color: theme.text }}>
       <style>{`
         @keyframes analyticsFadeIn {
           from { opacity: 0; transform: translateY(8px); }
@@ -969,41 +1039,46 @@ export default function AdminAnalyticsPage() {
           50% { transform: scale(1.2); opacity: 1; }
         }
       `}</style>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px", gap: "12px", flexWrap: "wrap" }}>
+      <div className="gfx-analytics__hero" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px", gap: "12px", flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: "0.8rem", color: theme.accent, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.22em" }}>Enterprise Analytics & BI Dashboard</div>
           <h2 style={{ margin: "4px 0 0", fontSize: "1.5rem", fontWeight: 800 }}>Real-time marketplace intelligence</h2>
         </div>
-        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ fontSize: "0.82rem", color: theme.muted }}>Last updated {lastUpdated.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        <div className="gfx-analytics__hero-actions" style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+          <div className="gfx-analytics__updated" style={{ fontSize: "0.82rem", color: theme.muted }}>Last updated {lastUpdated.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
+          <div className="gfx-analytics__export">
             <button type="button" onClick={exportAnalyticsCsv} disabled={exportDisabled} style={{ borderRadius: "999px", padding: "10px 15px", border: `1px solid ${theme.accent}`, background: theme.buttonBg, color: theme.buttonText, cursor: exportDisabled ? "not-allowed" : "pointer", opacity: exportDisabled ? 0.65 : 1, fontWeight: 700 }}>Export CSV</button>
-            <div style={{ fontSize: "0.82rem", color: getExportStatusColor(), minWidth: "170px" }}>
-              {exportStatus ? exportStatus : `Range: ${filters.range === "custom" ? `${filters.startDate || "start"} → ${filters.endDate || "end"}` : filters.range}`}
-            </div>
+            <label className="gfx-analytics__range" style={{ borderColor: theme.border, background: theme.surface, color: theme.text }}>
+              <span>Range</span>
+              <select
+                aria-label="Date range"
+                value={filters.range}
+                style={{ color: theme.text }}
+                onChange={(event) => {
+                  setError("");
+                  setFilters((current) => ({ ...current, range: event.target.value }));
+                }}
+              >
+                {ANALYTICS_DATE_RANGES.map((range) => <option key={range.value} value={range.value}>{range.label}</option>)}
+              </select>
+            </label>
+            {exportStatus ? <div className="gfx-analytics__export-status" role="status" style={{ fontSize: "0.82rem", color: getExportStatusColor() }}>{exportStatus}</div> : null}
           </div>
-          <div style={{ border: `1px solid ${theme.border}`, borderRadius: "999px", padding: "10px 15px", background: theme.surface, color: theme.muted, boxShadow: theme.shadow, display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className="gfx-analytics__live" style={{ border: `1px solid ${theme.border}`, borderRadius: "999px", padding: "10px 15px", background: theme.surface, color: theme.muted, boxShadow: theme.shadow, display: "flex", alignItems: "center", gap: "8px" }}>
             <span style={{ width: "8px", height: "8px", borderRadius: "999px", background: theme.accent, animation: "analyticsPulse 1.6s infinite" }} />
             <span>Revenue live</span>
           </div>
-          <div style={{ border: `1px solid ${theme.border}`, borderRadius: "999px", padding: "10px 15px", background: theme.surface, color: theme.muted, boxShadow: theme.shadow, display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className="gfx-analytics__live" style={{ border: `1px solid ${theme.border}`, borderRadius: "999px", padding: "10px 15px", background: theme.surface, color: theme.muted, boxShadow: theme.shadow, display: "flex", alignItems: "center", gap: "8px" }}>
             <span style={{ width: "8px", height: "8px", borderRadius: "999px", background: "#10b981", animation: "analyticsPulse 1.8s infinite" }} />
             <span>Traffic live</span>
           </div>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "16px", padding: "12px", borderRadius: "18px", background: theme.surface, border: `1px solid ${theme.border}`, boxShadow: theme.shadow }}>
+      <div className="gfx-analytics__filters" style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "16px", padding: "12px", borderRadius: "18px", background: theme.surface, border: `1px solid ${theme.border}`, boxShadow: theme.shadow }}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.88rem", color: theme.muted }}>
           <span style={{ fontWeight: 700, color: theme.text }}>Filters</span>
         </div>
-        <select value={filters.range} onChange={(event) => setFilters((current) => ({ ...current, range: event.target.value }))} style={{ borderRadius: "999px", border: `1px solid ${theme.border}`, background: theme.surfaceAlt, color: theme.text, padding: "8px 10px" }}>
-          <option value="24h">24h</option>
-          <option value="7d">7d</option>
-          <option value="30d">30d</option>
-          <option value="90d">90d</option>
-          <option value="custom">Custom range</option>
-        </select>
         {filters.range === "custom" ? (
           <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
             <label style={{ display: "flex", flexDirection: "column", fontSize: "0.82rem", color: theme.muted }}>
@@ -1059,8 +1134,8 @@ export default function AdminAnalyticsPage() {
       </div>
       {renderFilterBadges()}
 
-      <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
-        <aside style={{ width: "260px", background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: "24px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px", boxShadow: theme.shadow }}>
+      <div className="gfx-analytics__layout" style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
+        <aside className="gfx-analytics__sidebar" style={{ width: "260px", background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: "24px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px", boxShadow: theme.shadow }}>
           <h3 style={{ margin: "0 0 8px", fontSize: "1rem", fontWeight: 700 }}>Analytics</h3>
           {sections.map((section) => {
             const isActive = activeSection === section.key;
@@ -1068,6 +1143,7 @@ export default function AdminAnalyticsPage() {
               <button
                 key={section.key}
                 type="button"
+                className={`gfx-analytics__nav-item${isActive ? " is-active" : ""}`}
                 onClick={() => setActiveSection(section.key)}
                 style={{
                   textAlign: "left",
@@ -1087,7 +1163,7 @@ export default function AdminAnalyticsPage() {
           })}
         </aside>
 
-        <main style={{ flex: 1, display: "grid", gap: "16px" }}>
+        <main className="gfx-analytics__main" style={{ flex: 1, display: "grid", gap: "16px" }}>
           {loading ? (
             <div style={{ padding: "24px", borderRadius: "24px", background: theme.surface, border: `1px solid ${theme.border}`, color: theme.muted, boxShadow: theme.shadow }}>Loading enterprise analytics…</div>
           ) : error ? (
@@ -1097,26 +1173,26 @@ export default function AdminAnalyticsPage() {
               {activeSection === "blog" ? (
                 <BlogAnalyticsPanel filters={filters} theme={theme} />
               ) : activeSection === "executive" ? (
-                <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+                <div className="gfx-analytics__kpi-grid" style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
                   {sectionMetrics.executive.map((metric) => renderKpiCard(metric.title, metric.value, metric.subtitle))}
                 </div>
               ) : (
-                <div style={{ padding: "20px", borderRadius: "24px", background: theme.surface, border: `1px solid ${theme.border}`, boxShadow: theme.shadow }}>
+                <div className="gfx-analytics__section-panel" style={{ padding: "20px", borderRadius: "24px", background: theme.surface, border: `1px solid ${theme.border}`, boxShadow: theme.shadow }}>
                   <div style={{ fontSize: "1rem", fontWeight: 700, marginBottom: "8px" }}>{activeSectionTitle}</div>
                   <div style={{ color: theme.muted, fontSize: "0.9rem", marginBottom: "16px" }}>{activeSectionDescription}</div>
-                  <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                  <div className="gfx-analytics__metric-grid" style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
                     {activeSectionMetrics.map((metric) => renderMetricCard(metric.title, metric.value, metric.subtitle))}
                   </div>
                 </div>
               )}
 
-              <div style={{ display: "grid", gap: "16px", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
+              <div className="gfx-analytics__support-grid" style={{ display: "grid", gap: "16px", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
                 {renderMiniMap()}
                 {renderInsightPanel()}
                 {renderDrilldownPanel()}
               </div>
 
-              <div style={{ padding: "20px", borderRadius: "24px", background: theme.surface, border: `1px solid ${theme.border}`, boxShadow: theme.shadow }}>
+              <div className="gfx-analytics__summary" style={{ padding: "20px", borderRadius: "24px", background: theme.surface, border: `1px solid ${theme.border}`, boxShadow: theme.shadow }}>
                 <div style={{ fontSize: "1rem", fontWeight: 700, marginBottom: "10px" }}>Executive Summary</div>
                 <div style={{ color: theme.muted, lineHeight: 1.7 }}>
                   This analytics workspace centralizes revenue, sales, customer growth, contributor performance, asset health, downloads, support, and risk signals into a single enterprise-grade view. It is designed to support rapid executive review, operational monitoring, and next-best-action planning for the marketplace.

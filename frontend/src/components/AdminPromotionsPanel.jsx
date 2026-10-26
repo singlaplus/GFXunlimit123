@@ -143,6 +143,56 @@ const buildAuthHeaders = () => {
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
+const formatPromotionCount = (number, prefix, decimals, suffix) => (
+  `${prefix}${number.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  })}${suffix}`
+);
+
+function AnimatedPromotionValue({ value }) {
+  const displayValue = String(value ?? 0);
+  const match = displayValue.match(/^([^\d-]*)(-?[\d,]+(?:\.\d+)?)(.*)$/);
+  const target = match ? Number(match[2].replace(/,/g, "")) : null;
+  const prefix = match?.[1] || "";
+  const decimals = match?.[2].split(".")[1]?.length || 0;
+  const suffix = match?.[3] || "";
+  const [animatedValue, setAnimatedValue] = useState(() => (
+    target === null ? displayValue : formatPromotionCount(0, prefix, decimals, suffix)
+  ));
+
+  useEffect(() => {
+    if (target === null) {
+      setAnimatedValue(displayValue);
+      return undefined;
+    }
+
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (prefersReducedMotion || target === 0) {
+      setAnimatedValue(displayValue);
+      return undefined;
+    }
+
+    let frameId;
+    let startTime;
+    setAnimatedValue(formatPromotionCount(0, prefix, decimals, suffix));
+
+    const animate = (timestamp) => {
+      if (startTime === undefined) startTime = timestamp;
+      const progress = Math.min((timestamp - startTime) / 1200, 1);
+      const easedProgress = 1 - (1 - progress) ** 3;
+      setAnimatedValue(formatPromotionCount(target * easedProgress, prefix, decimals, suffix));
+      if (progress < 1) frameId = window.requestAnimationFrame(animate);
+      else setAnimatedValue(displayValue);
+    };
+
+    frameId = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [decimals, displayValue, prefix, suffix, target]);
+
+  return <span aria-label={displayValue} aria-live="off">{animatedValue}</span>;
+}
+
 function AdminPromotionsPanel() {
   const [activeSection, setActiveSection] = useState("dashboard");
   const [loading, setLoading] = useState(true);
@@ -391,7 +441,7 @@ function AdminPromotionsPanel() {
         {cards.map((card) => (
           <div key={card.label} className="promotions-card">
             <div className="promotions-card-label">{card.label}</div>
-            <div className="promotions-card-value">{card.value}</div>
+            <div className="promotions-card-value"><AnimatedPromotionValue value={card.value} /></div>
           </div>
         ))}
       </div>

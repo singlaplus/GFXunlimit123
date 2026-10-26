@@ -17,6 +17,7 @@ import {
   Cell,
   Legend
 } from "recharts";
+import "./AdminCommercePage.css";
 
 const getIsDarkMode = () => typeof document !== "undefined" && document.body.classList.contains("dark-mode");
 
@@ -87,6 +88,51 @@ const MENU_ENTRIES = [
 ];
 
 const COLORS = ["#ed2224", "#1976d2", "#43a047", "#f59e0b", "#8b5cf6", "#0ea5e9", "#f97316"];
+
+function AnimatedCommerceValue({ value }) {
+  const displayValue = String(value ?? 0);
+  const target = Number(displayValue.replace(/,/g, ""));
+  const decimals = displayValue.split(".")[1]?.length || 0;
+  const [animatedValue, setAnimatedValue] = useState(() => (
+    Number.isFinite(target) ? (0).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) : displayValue
+  ));
+
+  useEffect(() => {
+    if (!Number.isFinite(target)) {
+      setAnimatedValue(displayValue);
+      return undefined;
+    }
+
+    const prefersReducedMotion = typeof window !== "undefined"
+      && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (prefersReducedMotion || target === 0) {
+      setAnimatedValue(displayValue);
+      return undefined;
+    }
+
+    let frameId;
+    let startTime;
+    const formatValue = (number) => number.toLocaleString(undefined, {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
+    setAnimatedValue(formatValue(0));
+
+    const animate = (timestamp) => {
+      if (startTime === undefined) startTime = timestamp;
+      const progress = Math.min((timestamp - startTime) / 1200, 1);
+      const easedProgress = 1 - (1 - progress) ** 3;
+      setAnimatedValue(formatValue(target * easedProgress));
+      if (progress < 1) frameId = window.requestAnimationFrame(animate);
+      else setAnimatedValue(displayValue);
+    };
+
+    frameId = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [decimals, displayValue, target]);
+
+  return <span aria-label={displayValue} aria-live="off">{animatedValue}</span>;
+}
 
 export default function AdminCommercePage() {
   const [summary, setSummary] = useState(null);
@@ -185,9 +231,10 @@ export default function AdminCommercePage() {
   const theme = isDarkMode ? DARK_THEME : LIGHT_THEME;
 
   return (
-    <div style={{ minHeight: "100vh", padding: "24px", background: theme.pageBg, color: theme.text }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "18px", marginBottom: "22px" }}>
+    <div className={`gfx-commerce${isDarkMode ? " gfx-commerce--dark" : ""}`} style={{ minHeight: "100vh", padding: "24px", background: theme.pageBg, color: theme.text }}>
+      <div className="gfx-commerce__hero" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "18px", marginBottom: "22px" }}>
         <div style={{ maxWidth: "720px" }}>
+          <span className="gfx-commerce__eyebrow">COMMERCE · OPERATIONS</span>
           <h1 style={{ margin: 0, fontSize: "2rem", letterSpacing: "-0.02em" }}>Commerce</h1>
           <p style={{ margin: "10px 0 0", color: theme.muted, maxWidth: "680px", lineHeight: 1.7 }}>
             Monitor purchase performance, revenue trends, refunds and customer behavior from a single enterprise-grade commerce command center.
@@ -211,28 +258,28 @@ export default function AdminCommercePage() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gap: "18px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", marginBottom: "24px" }}>
+      <div className="gfx-commerce__metrics" style={{ display: "grid", gap: "18px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", marginBottom: "24px" }}>
         {STAT_CARDS.map((metric) => (
-          <div key={metric.key} style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, minHeight: "120px" }}>
+          <div key={metric.key} className="gfx-commerce__metric" style={{ padding: "22px", borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, minHeight: "120px" }}>
             <span style={{ display: "block", color: theme.muted, fontSize: "0.92rem", marginBottom: "10px" }}>{metric.label}</span>
             <span style={{ display: "block", fontSize: "1.9rem", fontWeight: 700, color: theme.text }}>
-              {metric.key.startsWith("total_") || metric.key.endsWith("orders") || metric.key.endsWith("customers")
+              <AnimatedCommerceValue value={metric.key.startsWith("total_") || metric.key.endsWith("orders") || metric.key.endsWith("customers")
                 ? Number(summary?.[metric.key] || 0).toLocaleString()
-                : Number(summary?.[metric.key] || 0).toFixed(2)}
+                : Number(summary?.[metric.key] || 0).toFixed(2)} />
             </span>
           </div>
         ))}
       </div>
 
-      <div style={{ display: "grid", gap: "18px", gridTemplateColumns: "3fr 2fr", marginBottom: "24px" }}>
-        <div style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px", minHeight: "360px" }}>
+      <div className="gfx-commerce__analytics" style={{ display: "grid", gap: "18px", gridTemplateColumns: "3fr 2fr", marginBottom: "24px" }}>
+        <div className="gfx-commerce__panel gfx-commerce__revenue" style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px", minHeight: "360px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", marginBottom: "20px" }}>
             <div>
               <h2 style={{ margin: 0, fontSize: "1.2rem" }}>Revenue Trend</h2>
               <p style={{ margin: "8px 0 0", color: theme.muted, fontSize: "0.94rem" }}>Daily revenue over the past 30 days.</p>
             </div>
           </div>
-          <div style={{ height: "280px" }}>
+          <div className="gfx-commerce__chart" style={{ height: "280px" }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={analytics?.revenueTrend || []} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke={theme.border} strokeDasharray="3 3" />
@@ -245,10 +292,10 @@ export default function AdminCommercePage() {
           </div>
         </div>
 
-        <div style={{ display: "grid", gap: "18px" }}>
-          <div style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px" }}>
+        <div className="gfx-commerce__side-panels" style={{ display: "grid", gap: "18px" }}>
+          <div className="gfx-commerce__panel" style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px" }}>
             <h2 style={{ margin: 0, fontSize: "1.2rem" }}>Top Categories</h2>
-            <div style={{ height: "240px", marginTop: "16px" }}>
+            <div className="gfx-commerce__chart gfx-commerce__category-chart" style={{ height: "240px", marginTop: "16px" }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={analytics?.salesByCategory || []} margin={{ top: 10, right: 0, left: -10, bottom: 0 }}>
                   <CartesianGrid stroke={theme.border} strokeDasharray="3 3" />
@@ -261,13 +308,13 @@ export default function AdminCommercePage() {
             </div>
           </div>
 
-          <div style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px" }}>
+          <div className="gfx-commerce__panel" style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px" }}>
             <h2 style={{ margin: 0, fontSize: "1.2rem" }}>Payment Gateways</h2>
-            <div style={{ display: "grid", gap: "14px", marginTop: "18px" }}>
+            <div className="gfx-commerce__gateways" style={{ display: "grid", gap: "14px", marginTop: "18px" }}>
               {(analytics?.paymentGatewayDistribution || []).map((entry, index) => (
                 <div key={entry.name || index} style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
                   <span style={{ color: theme.text }}>{entry.name || "Unknown"}</span>
-                  <span style={{ color: theme.muted }}>{entry.value}</span>
+                  <span style={{ color: theme.muted }}><AnimatedCommerceValue value={entry.value} /></span>
                 </div>
               ))}
             </div>
@@ -275,9 +322,9 @@ export default function AdminCommercePage() {
         </div>
       </div>
 
-      <div style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px", marginBottom: "24px" }}>
+      <div className="gfx-commerce__panel gfx-commerce__controls" style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px", marginBottom: "24px" }}>
         <h2 style={{ margin: "0 0 14px", fontSize: "1.2rem" }}>Commerce Control</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "14px" }}>
+        <div className="gfx-commerce__control-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "14px" }}>
           {MENU_ENTRIES.map((entry) => (
             <button
               key={entry.label}
@@ -307,18 +354,18 @@ export default function AdminCommercePage() {
         </div>
       </div>
 
-      <div id="requested-earnings" style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px", marginBottom: "24px" }}>
+      <div id="requested-earnings" className="gfx-commerce__panel gfx-commerce__payouts" style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px", marginBottom: "24px" }}>
         <h2 style={{ margin: "0 0 8px", fontSize: "1.2rem" }}>Requested Earnings</h2>
         <p style={{ margin: "0 0 18px", color: theme.muted }}>Review contributor payout details, cancelled-check uploads, and payment progress.</p>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "1100px" }}>
+        <div className="gfx-commerce__table-wrap" style={{ overflowX: "auto" }}>
+          <table className="gfx-commerce__table gfx-commerce__payout-table" style={{ width: "100%", borderCollapse: "collapse", minWidth: "1100px" }}>
             <thead><tr style={{ textAlign: "left", borderBottom: `1px solid ${theme.border}` }}><th style={{ padding: "12px" }}>Contributor</th><th style={{ padding: "12px" }}>Credits / Amount</th><th style={{ padding: "12px" }}>Contact</th><th style={{ padding: "12px" }}>Check</th><th style={{ padding: "12px" }}>Progress</th><th style={{ padding: "12px" }}>Actions</th></tr></thead>
             <tbody>{payoutRequests.length === 0 ? <tr><td colSpan="6" style={{ padding: "18px 12px", color: theme.muted }}>No requested earnings yet.</td></tr> : payoutRequests.map((request) => <tr key={request.id} style={{ borderBottom: `1px solid ${theme.border}` }}><td style={{ padding: "12px" }}>{request.username || request.account_email}</td><td style={{ padding: "12px" }}>{request.requested_credits} / ₹{Number(request.requested_credits).toFixed(2)}</td><td style={{ padding: "12px", color: theme.muted }}>{request.email}<br />{request.phone}<br />{request.whatsapp}</td><td style={{ padding: "12px" }}><a href={`${API_BASE_URL}/api/files/${request.cancelled_check_path}`} target="_blank" rel="noreferrer" style={{ color: theme.accent }}>View upload</a></td><td style={{ padding: "12px" }}>{request.status === "payment_done" ? "Payment done" : request.status.charAt(0).toUpperCase() + request.status.slice(1)}</td><td style={{ padding: "12px", display: "flex", gap: "6px", flexWrap: "wrap" }}>{["reviewed", "approved", "rejected", "payment_done"].map((status) => <button key={status} type="button" disabled={actionLoading} onClick={() => handlePayoutStatus(request.id, status)} style={{ border: "none", borderRadius: "8px", padding: "7px 9px", background: status === "rejected" ? "#dc2626" : theme.button, color: "#fff", cursor: "pointer", fontSize: "11px" }}>{status === "payment_done" ? "Payment done" : status.charAt(0).toUpperCase() + status.slice(1)}</button>)}</td></tr>)}</tbody>
           </table>
         </div>
       </div>
 
-      <div style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px", marginBottom: "24px" }}>
+      <div className="gfx-commerce__panel gfx-commerce__recent" style={{ borderRadius: "20px", background: theme.cardBg, border: `1px solid ${theme.border}`, padding: "22px", marginBottom: "24px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "18px", flexWrap: "wrap" }}>
           <div>
             <h2 style={{ margin: 0, fontSize: "1.2rem" }}>Recent Orders</h2>
@@ -333,8 +380,8 @@ export default function AdminCommercePage() {
           </button>
         </div>
 
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "900px" }}>
+        <div className="gfx-commerce__table-wrap" style={{ overflowX: "auto" }}>
+          <table className="gfx-commerce__table gfx-commerce__recent-table" style={{ width: "100%", borderCollapse: "collapse", minWidth: "900px" }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: `1px solid ${theme.border}` }}>
                 <th style={{ padding: "14px 12px", color: theme.muted, fontSize: "0.92rem" }}>Order</th>
