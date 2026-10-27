@@ -2,6 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const { enqueueEmail } = require('./email/queue');
 const { resolveNotificationEventKey } = require('./email/notificationRules');
+const { getZonedDateKey } = require('./utils/zonedDateTime');
 
 const EVENT_TYPES = new Set([
   'USER_REGISTERED', 'USER_LOGIN', 'USER_LOGOUT', 'USER_LOGIN_FAILED', 'PASSWORD_CHANGED',
@@ -725,7 +726,7 @@ function createMessagingRouter(pool, authenticateToken, verifyAdmin) {
     const header = ['id', 'event_type', 'user_id', 'user_role', 'username', 'email', 'description', 'success', 'created_at'];
     const csv = [header, ...result.rows.map((row) => header.map((field) => csvValue(row[field])))].map((row) => row.join(',')).join('\n');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="admin-activity-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="admin-activity-${getZonedDateKey(new Date(), 'Asia/Kolkata')}.csv"`);
     res.send(csv);
   });
 

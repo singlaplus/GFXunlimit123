@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import Pagination from "../components/Pagination";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import { formatIndiaDate, formatIndiaDateTime } from "../utils/indiaTime";
 import "./AdminOrdersPage.css";
 import {
   ResponsiveContainer,
@@ -123,16 +124,12 @@ function AnimatedOrderValue({ value }) {
 
 const toDateString = (value) => {
   if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleDateString();
+  return formatIndiaDate(value) || "-";
 };
 
 const toDateTimeString = (value) => {
   if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString();
+  return formatIndiaDateTime(value) || "-";
 };
 
 const readPaymentResponse = (payment) => {

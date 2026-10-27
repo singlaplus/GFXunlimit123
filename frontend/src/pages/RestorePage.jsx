@@ -4,6 +4,7 @@ import axios from 'axios';
 import { toast } from 'react-toastify';
 import { getEffectiveAuthToken } from '../utils/authSession';
 import Pagination from '../components/Pagination';
+import { formatIndiaDateTime } from '../utils/indiaTime';
 import './RestorePage.css';
 
 
@@ -746,7 +747,7 @@ function RestorePage() {
             <tbody>
               {history.map((entry) => (
                 <tr key={entry.id}>
-                  <td data-label="Date">{new Date(entry.uploaded_at).toLocaleString()}</td>
+                  <td data-label="Date">{formatIndiaDateTime(entry.uploaded_at)} IST</td>
                   <td className="filename" data-label="Backup File">{entry.backup_filename}</td>
                   <td data-label="Type">{entry.backup_type || '—'}</td>
                   <td className="number" data-label="Changes">{entry.total_changes || '—'}</td>

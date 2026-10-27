@@ -22,6 +22,7 @@ import TaxMailSMTPSettings from "./TaxMailSMTPSettings";
 import TaxMailTemplates from "./TaxMailTemplates";
 import { limitWords, formatKeywords } from "../utils/uploadInputLimits";
 import { getAssetPreviewUrl, getAssetThumbnailUrl } from "../utils/assetPreview";
+import { formatIndiaDate, formatIndiaDateTime } from "../utils/indiaTime";
 import AssetThumbnail from "./AssetThumbnail";
 import SitemapGenerationPanel from "./SitemapGenerationPanel";
 import LinksScanPanel from "./LinksScanPanel";
@@ -153,15 +154,11 @@ const formatDriveFreeSize = (bytes) => {
 };
 const formatTaxFormSubmittedAt = (submittedAt) => {
   if (!submittedAt) return "—";
-  const parsedDate = new Date(submittedAt);
-  return Number.isNaN(parsedDate.getTime()) ? "—" : parsedDate.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+  return formatIndiaDate(submittedAt, { day: "2-digit", month: "short", year: "numeric" }) || "—";
 };
 const formatAssetReviewDate = (reviewedAt) => {
   if (!reviewedAt) return "Date unavailable";
-  const parsedDate = new Date(reviewedAt);
-  return Number.isNaN(parsedDate.getTime())
-    ? "Date unavailable"
-    : parsedDate.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+  return formatIndiaDate(reviewedAt, { day: "2-digit", month: "short", year: "numeric" }) || "Date unavailable";
 };
 const formatTaxFormExpiresIn = (submittedAt, status, now = new Date()) => {
   if (String(status || "").toLowerCase() === "expired") return "Expired";
@@ -188,9 +185,9 @@ export const getTaxFormExpiryDate = (submittedAt) => {
 export const getTaxFormTemplateData = (user = {}, now = new Date()) => {
   const contributorName = user.full_name || user.username || user.email || "Contributor";
   const formType = user.tax_form_data?.formType || user.tax_form_type || "W-8BEN";
-  const submissionDate = user.tax_form_submitted_at ? new Date(user.tax_form_submitted_at).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "recent submission";
+  const submissionDate = user.tax_form_submitted_at ? formatIndiaDate(user.tax_form_submitted_at, { day: "2-digit", month: "short", year: "numeric" }) : "recent submission";
   const expiryDate = getTaxFormExpiryDate(user.tax_form_submitted_at);
-  const expiryDateText = expiryDate ? expiryDate.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "date unavailable";
+  const expiryDateText = expiryDate ? formatIndiaDate(expiryDate, { day: "2-digit", month: "short", year: "numeric" }) : "date unavailable";
   const daysLeftText = (() => {
     if (!expiryDate) return "0";
     const remainingMs = expiryDate.getTime() - now.getTime();
@@ -6004,7 +6001,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     const uploadLimit = hasConfiguredLimit ? getUploadLimitDisplay(permissions) : "20 GB";
                     return `Bulk upload: ${permissions.bulk_upload ? "Yes" : "No"}\nUpload limit: ${uploadLimit}`;
                   })() },
-                  { label: "Joining date", value: selectedContributor.created_at ? new Date(selectedContributor.created_at).toLocaleDateString() : "-" },
+                  { label: "Joining date", value: selectedContributor.created_at ? formatIndiaDate(selectedContributor.created_at) : "-" },
                   { label: "Reputation score", value: selectedContributor.reputation_score ?? selectedContributor.reputation ?? selectedContributor.score ?? "-" },
                   { label: "Total earnings", value: selectedContributor.total_earnings ?? selectedContributor.earnings ?? "-" },
                   { label: "Total downloads", value: selectedContributor.total_downloads ?? selectedContributor.downloads ?? "-" },
@@ -6078,7 +6075,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                               <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>{row.order_status || "-"}</td>
                               <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>{row.payment_status || "-"}</td>
                               <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>{row.total_price ?? "-"} {row.currency || ""}</td>
-                              <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>{row.created_at ? new Date(row.created_at).toLocaleDateString() : "-"}</td>
+                              <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>{row.created_at ? formatIndiaDate(row.created_at) : "-"}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -6092,7 +6089,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                           <div>
                             <strong>{row.title || `Asset ${row.id}`}</strong>
                             <div style={{ marginTop: "4px", fontSize: "0.85rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{row.status || "Unknown"} · Asset #{row.id}</div>
-                            {row.created_at && <div style={{ marginTop: "3px", fontSize: "0.8rem", color: isDarkMode ? "#94a3b8" : "#64748b" }}>{new Date(row.created_at).toLocaleDateString()}</div>}
+                            {row.created_at && <div style={{ marginTop: "3px", fontSize: "0.8rem", color: isDarkMode ? "#94a3b8" : "#64748b" }}>{formatIndiaDate(row.created_at)}</div>}
                           </div>
                         </div>
                       ))}
@@ -9005,7 +9002,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         <div>{request.email || "NA"} · {request.phone || "NA"}</div>
                         <div>Requested currently: {Number(request.credit_amount || 0) * Number(request.quantity || 1)} credits</div>
                         <div>Previously requested: {Number(request.previous_requested_credits || 0)} credits</div>
-                        <small>Previous request date: {request.previous_requested_at ? new Date(request.previous_requested_at).toLocaleString() : "NA"}</small>
+                        <small>Previous request date: {request.previous_requested_at ? `${formatIndiaDateTime(request.previous_requested_at)} IST` : "NA"}</small>
                         <div style={{ marginTop: 8 }}>Status: {String(request.order_status || "pending").replace(/_/g, " ")}</div>
                         {request.order_status === "pending" ? (
                           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>

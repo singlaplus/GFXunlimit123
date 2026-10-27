@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
+import { formatIndiaDate, formatIndiaDateTimeLocal, indiaDateTimeLocalToISOString } from "../utils/indiaTime";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
@@ -614,10 +615,7 @@ const formatDateTimeLocal = (value) => {
   if (!value) return "";
   const raw = String(value);
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(raw)) return raw;
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (part) => String(part).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return formatIndiaDateTimeLocal(raw);
 };
 
 function BlogDashboard() {
@@ -717,14 +715,14 @@ function BlogAddNewForm({ initialDraft = null, adminBasePath }) {
     const submitForm = async (event, action) => {
       event.preventDefault();
       if (action === "schedule") {
-        const scheduledTime = new Date(form.publishAt);
-        if (!form.publishAt || Number.isNaN(scheduledTime.getTime()) || scheduledTime <= new Date()) {
+        const scheduledTime = indiaDateTimeLocalToISOString(form.publishAt);
+        if (!scheduledTime || new Date(scheduledTime) <= new Date()) {
           setMessage("Choose a future date and time to schedule this post.");
           return;
         }
       }
       const draftPayload = action === "schedule"
-        ? { ...form, status: "scheduled", publishAt: new Date(form.publishAt).toISOString() }
+        ? { ...form, status: "scheduled", publishAt: indiaDateTimeLocalToISOString(form.publishAt) }
         : form;
       if (action === "preview") {
         try {
@@ -810,7 +808,7 @@ function BlogAddNewForm({ initialDraft = null, adminBasePath }) {
             <label style={labelStyle}>SEO description<textarea name="seoDescription" value={form.seoDescription} onChange={updateField} placeholder="Description for search engines" rows="3" style={{ ...inputStyle, resize: "vertical" }} /></label>
           </div>
           {scheduleOpen && <div style={{ display: "flex", alignItems: "end", gap: "10px", padding: "14px", border: "1px solid #cbd5e1", borderRadius: "6px", background: "#f8fafc" }}>
-            <label style={{ ...labelStyle, flex: "1 1 260px" }}>Schedule publish date and time<input aria-label="Schedule publish date and time" name="publishAt" type="datetime-local" value={form.publishAt} onChange={updateField} min={formatDateTimeLocal(new Date())} style={inputStyle} /></label>
+            <label style={{ ...labelStyle, flex: "1 1 260px" }}>Schedule publish date and time (IST)<input aria-label="Schedule publish date and time" name="publishAt" type="datetime-local" value={form.publishAt} onChange={updateField} min={formatDateTimeLocal(new Date())} style={inputStyle} /></label>
             <button type="button" onClick={() => setScheduleOpen(false)} style={{ padding: "10px 14px", border: "1px solid #cbd5e1", borderRadius: "6px", background: "#fff", color: "#334155", fontWeight: 700, cursor: "pointer" }}>Done</button>
           </div>}
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "10px", paddingTop: "4px" }}>
@@ -943,7 +941,7 @@ function BlogDrafts({ onEditDraft }) {
                   <td style={{ padding: "17px 16px", verticalAlign: "top" }}><strong style={{ display: "block", color: "#0f172a", fontSize: "0.95rem" }}>{draft.title || "Untitled draft"}</strong><span style={{ display: "block", marginTop: "5px", overflow: "hidden", color: "#64748b", fontSize: "0.82rem", lineHeight: 1.4, textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{draft.excerpt || "No excerpt added."}</span></td>
                   <td style={{ padding: "17px 16px", verticalAlign: "top", color: "#475569", fontSize: "0.84rem" }}>{draft.category || "-"}</td>
                   <td style={{ padding: "17px 16px", verticalAlign: "top", color: "#334155", fontSize: "0.84rem", fontWeight: 700 }}>{draft.addedBy || "Unknown username"}</td>
-                  <td style={{ padding: "17px 16px", verticalAlign: "top", color: "#64748b", fontSize: "0.78rem" }}>{new Date(draft.savedAt).toLocaleDateString()}</td>
+                  <td style={{ padding: "17px 16px", verticalAlign: "top", color: "#64748b", fontSize: "0.78rem" }}>{formatIndiaDate(draft.savedAt)}</td>
                   <td style={{ padding: "14px 16px", verticalAlign: "top" }}>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: "12px" }}>
                       <button type="button" aria-label="Edit" title="Edit" onClick={() => editDraft(draft)} style={{ width: "42px", height: "38px", border: "1px solid #bfdbfe", borderRadius: "6px", background: "#eff6ff", color: "#1d4ed8", fontSize: "1.15rem", fontWeight: 800, cursor: "pointer" }}>✎</button>
@@ -1125,7 +1123,7 @@ function PublicBlogDetailPage({ pathname }) {
         <div style={{ display: "flex", flexWrap: "wrap", gap: "12px 18px", padding: "14px 0", borderTop: "1px solid #e2e8f0", borderBottom: "1px solid #e2e8f0", color: "#64748b", fontSize: "0.82rem" }}>
           <span>By {post.author || post.addedBy || "GFXunlimit"}</span>
           <span>•</span>
-          <time dateTime={post.publishAt || post.updatedAt}>{new Date(post.publishAt || post.updatedAt).toLocaleDateString()}</time>
+          <time dateTime={post.publishAt || post.updatedAt}>{formatIndiaDate(post.publishAt || post.updatedAt)}</time>
         </div>
         <div onClick={handleBlogContentClick} style={{ marginTop: "30px", fontSize: "1.06rem", lineHeight: 1.8, color: "#0f172a" }} dangerouslySetInnerHTML={{ __html: renderRichTextContent(post.content) }} />
       </article>
@@ -1189,7 +1187,7 @@ function PublicBlogPage() {
                 <div style={{ display: "flex", gap: "5px", color: "#94a3b8", fontSize: "0.65rem" }}>
                   <span>By {post.author || post.addedBy || "GFXunlimit"}</span>
                   <span>on</span>
-                  <time dateTime={post.publishAt || post.updatedAt}>{new Date(post.publishAt || post.updatedAt).toLocaleDateString()}</time>
+                  <time dateTime={post.publishAt || post.updatedAt}>{formatIndiaDate(post.publishAt || post.updatedAt)}</time>
                 </div>
               </div>
             </article>
@@ -1294,7 +1292,7 @@ function BlogPublished({ onEditPost, status = "published" }) {
         <table style={{ width: "100%", minWidth: "820px", borderCollapse: "collapse", tableLayout: "fixed" }}>
           <colgroup><col style={{ width: "34%" }} /><col style={{ width: "16%" }} /><col style={{ width: "16%" }} /><col style={{ width: "17%" }} /><col style={{ width: "17%" }} /></colgroup>
           <thead><tr style={{ background: "#0f172a", color: "#e2e8f0" }}>{[["Blog post", "title"], ["Category", "category"], ["Added by", "addedBy"], ["Published", "published"], ["Actions", null]].map(([heading, key]) => <th key={heading} scope="col" aria-sort={key && sortConfig.key === key ? sortConfig.direction === "asc" ? "ascending" : "descending" : undefined} style={{ padding: "14px 16px", textAlign: "left", fontSize: "0.72rem", fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}>{key ? <button type="button" onClick={() => sortBlogs(key)} style={{ padding: 0, border: 0, background: "transparent", color: "inherit", font: "inherit", textAlign: "left", cursor: "pointer" }}>{heading} {sortConfig.key === key ? (sortConfig.direction === "asc" ? "↑" : "↓") : "↕"}</button> : heading}</th>)}</tr></thead>
-          <tbody>{posts.length === 0 ? <tr><td colSpan="5" style={{ height: "190px", padding: "28px", textAlign: "center", color: "#64748b", fontSize: "0.9rem" }}>No published blogs yet.</td></tr> : posts.map((post, index) => <tr key={post.id} style={{ background: index % 2 ? "#f8fafc" : "#fff", borderTop: "1px solid #e2e8f0" }}><td style={{ padding: "17px 16px", verticalAlign: "top" }}><strong style={{ display: "block", fontSize: "0.95rem" }}>{post.title || "Untitled post"}</strong><span style={{ display: "block", marginTop: "5px", overflow: "hidden", color: "#64748b", fontSize: "0.82rem", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{post.excerpt || "No excerpt added."}</span></td><td style={{ padding: "17px 16px", verticalAlign: "top", color: "#475569", fontSize: "0.84rem" }}>{post.category || "-"}</td><td style={{ padding: "17px 16px", verticalAlign: "top", color: "#334155", fontSize: "0.84rem", fontWeight: 700 }}>{post.addedBy || "Unknown username"}</td><td style={{ padding: "17px 16px", verticalAlign: "top", color: "#64748b", fontSize: "0.78rem" }}>{new Date(post.publishAt || post.updatedAt || post.savedAt).toLocaleDateString()}</td><td style={{ padding: "14px 16px", verticalAlign: "top" }}><div style={{ display: "flex", gap: "7px" }}><button type="button" onClick={() => setViewPost(post)} aria-label={`View ${post.title || "published blog"}`} title="View" style={{ width: "34px", height: "34px", display: "grid", placeItems: "center", border: "1px solid #cbd5e1", borderRadius: "7px", background: "#fff", color: "#334155", cursor: "pointer" }}><svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></svg></button><button type="button" onClick={() => onEditPost(post)} aria-label={`Edit ${post.title || "published blog"}`} title="Edit" style={{ width: "34px", height: "34px", display: "grid", placeItems: "center", border: "1px solid #bfdbfe", borderRadius: "7px", background: "#eff6ff", color: "#1d4ed8", cursor: "pointer" }}><svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m4 16.5-.8 3.8 3.8-.8L18.5 8a2.1 2.1 0 0 0-3-3L4 16.5Z" /><path d="m14.5 6.5 3 3" /></svg></button><button type="button" onClick={() => deletePost(post.id)} aria-label={`Delete ${post.title || "published blog"}`} title="Delete" style={{ width: "34px", height: "34px", display: "grid", placeItems: "center", border: "1px solid #fecaca", borderRadius: "7px", background: "#fff", color: "#b91c1c", cursor: "pointer" }}><svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16" /><path d="M9 7V4.5h6V7" /><path d="m7 7 .8 13h8.4L17 7" /><path d="M10 11v5M14 11v5" /></svg></button></div></td></tr>)}</tbody>
+          <tbody>{posts.length === 0 ? <tr><td colSpan="5" style={{ height: "190px", padding: "28px", textAlign: "center", color: "#64748b", fontSize: "0.9rem" }}>No published blogs yet.</td></tr> : posts.map((post, index) => <tr key={post.id} style={{ background: index % 2 ? "#f8fafc" : "#fff", borderTop: "1px solid #e2e8f0" }}><td style={{ padding: "17px 16px", verticalAlign: "top" }}><strong style={{ display: "block", fontSize: "0.95rem" }}>{post.title || "Untitled post"}</strong><span style={{ display: "block", marginTop: "5px", overflow: "hidden", color: "#64748b", fontSize: "0.82rem", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{post.excerpt || "No excerpt added."}</span></td><td style={{ padding: "17px 16px", verticalAlign: "top", color: "#475569", fontSize: "0.84rem" }}>{post.category || "-"}</td><td style={{ padding: "17px 16px", verticalAlign: "top", color: "#334155", fontSize: "0.84rem", fontWeight: 700 }}>{post.addedBy || "Unknown username"}</td><td style={{ padding: "17px 16px", verticalAlign: "top", color: "#64748b", fontSize: "0.78rem" }}>{formatIndiaDate(post.publishAt || post.updatedAt || post.savedAt)}</td><td style={{ padding: "14px 16px", verticalAlign: "top" }}><div style={{ display: "flex", gap: "7px" }}><button type="button" onClick={() => setViewPost(post)} aria-label={`View ${post.title || "published blog"}`} title="View" style={{ width: "34px", height: "34px", display: "grid", placeItems: "center", border: "1px solid #cbd5e1", borderRadius: "7px", background: "#fff", color: "#334155", cursor: "pointer" }}><svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></svg></button><button type="button" onClick={() => onEditPost(post)} aria-label={`Edit ${post.title || "published blog"}`} title="Edit" style={{ width: "34px", height: "34px", display: "grid", placeItems: "center", border: "1px solid #bfdbfe", borderRadius: "7px", background: "#eff6ff", color: "#1d4ed8", cursor: "pointer" }}><svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m4 16.5-.8 3.8 3.8-.8L18.5 8a2.1 2.1 0 0 0-3-3L4 16.5Z" /><path d="m14.5 6.5 3 3" /></svg></button><button type="button" onClick={() => deletePost(post.id)} aria-label={`Delete ${post.title || "published blog"}`} title="Delete" style={{ width: "34px", height: "34px", display: "grid", placeItems: "center", border: "1px solid #fecaca", borderRadius: "7px", background: "#fff", color: "#b91c1c", cursor: "pointer" }}><svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16" /><path d="M9 7V4.5h6V7" /><path d="m7 7 .8 13h8.4L17 7" /><path d="M10 11v5M14 11v5" /></svg></button></div></td></tr>)}</tbody>
         </table>
       </div>
       {totalPages > 1 && <Pagination currentPage={currentPage} totalPages={totalPages} totalImages={allPosts.length} setCurrentPage={changePage} darkMode={false} />}
@@ -1403,6 +1401,7 @@ export default function AppRoutes(props) {
   const [blogSection, setBlogSection] = useState(() => new URLSearchParams(search).get("section") || "");
   const [blogDraftId, setBlogDraftId] = useState(() => new URLSearchParams(search).get("draft") || "");
   const [selectedBlogDraft, setSelectedBlogDraft] = useState(null);
+  const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
 
   useEffect(() => {
     let active = true;
@@ -1510,6 +1509,17 @@ export default function AppRoutes(props) {
     };
   }, [pageAvailability, pathname]);
 
+  if (
+    pathname === `${adminBasePath}/search_console`
+    || pathname === `${adminBasePath}/google_analytics`
+  ) {
+    return (
+      <ProtectedRoute allowedRoles={["admin"]} userRole={normalizedUserRole}>
+        <main aria-label="Blank page" style={{ minHeight: "60vh" }} />
+      </ProtectedRoute>
+    );
+  }
+
   if (!isAdmin && pageAvailability?.pathname !== pathname) {
     return <main aria-live="polite" aria-busy="true" style={{ minHeight: "60vh" }} />;
   }
@@ -1544,7 +1554,6 @@ export default function AppRoutes(props) {
     return <div className="starttaxform-layout"><StartTaxFormMenu /><StartTaxFormOptions /></div>;
   }
 
-  const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
   const isExplorePath = pathname === "/explore" || /^\/explore\/\d+$/.test(pathname);
   const explorePaths = new Set(["/explore", "/search", "/photos", "/vectors", "/psd", "/psds", "/videos", "/templates"]);
 

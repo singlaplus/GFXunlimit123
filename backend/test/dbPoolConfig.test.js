@@ -7,6 +7,7 @@ test('default pool config stays conservative for local PostgreSQL limits', () =>
   const config = buildPoolConfig({});
   assert.equal(config.max, 4, 'Default DB pool size should stay at 4 connections');
   assert.equal(config.idleTimeoutMillis, 15000, 'Idle timeout should match the local safe default');
+  assert.equal(config.options, '-c timezone=Asia/Kolkata', 'Database calendar dates should use IST');
 });
 
 test('environment overrides can still raise the pool size when needed', () => {

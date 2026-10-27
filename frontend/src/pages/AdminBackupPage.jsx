@@ -3,6 +3,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import RestorePackagePanel from "../components/RestorePackagePanel";
 import { sha256ReadableStream } from "../utils/streamSha256";
+import { formatIndiaDateTime, INDIA_TIME_ZONE } from "../utils/indiaTime";
 import "./AdminBackupPage.css";
 
 const BACKUP_CATEGORIES = [
@@ -134,7 +135,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
     time: "02:00",
     weeklyDay: 0,
     monthlyDay: 1,
-    timezone: "UTC",
+    timezone: BACKUP_TIME_ZONE,
     nextRun: null,
     lastRun: null
   });
@@ -1045,13 +1046,8 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
   const formatScheduleTime = (value) => {
     const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(value || ""));
     if (!match) return "Time unavailable";
-    const date = new Date(Date.UTC(2000, 0, 1, Number(match[1]), Number(match[2])));
-    return `${new Intl.DateTimeFormat("en-IN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
-      timeZone: "UTC"
-    }).format(date)} IST`;
+    const hour = Number(match[1]);
+    return `${hour % 12 || 12}:${match[2]} ${hour < 12 ? "AM" : "PM"} IST`;
   };
 
   const activeJob = job?.status === "RUNNING";
@@ -1613,7 +1609,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
           <div style={{ display: "grid", gap: 8 }}>
             {history.map((entry) => (
               <div key={entry.id} className="gfx-backup-history-row" style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1.5fr) repeat(7, minmax(90px, 1fr))", gap: 10, alignItems: "center", padding: 11, borderRadius: 9, background: palette.panel, fontSize: 13 }}>
-                <span><strong>{entry.id}</strong><span style={{ display: "block", color: palette.muted }}>{entry.startedAt ? new Date(entry.startedAt).toLocaleString() : "Date unavailable"}</span></span>
+                <span><strong>{entry.id}</strong><span style={{ display: "block", color: palette.muted }}>{entry.startedAt ? `${formatIndiaDateTime(entry.startedAt)} IST` : "Date unavailable"}</span></span>
                 <span>{entry.backupType === "AUTOMATIC" ? `Automatic · ${entry.automaticFrequency || "schedule"}` : "Manual"}<span style={{ display: "block", color: palette.muted }}>Type</span></span>
                 <span style={{ color: statusColor(entry.status), fontWeight: 700 }}>{entry.status}</span>
                 <span>{formatBytes(entry.totalBytes)}<span style={{ display: "block", color: palette.muted }}>Total size</span></span>
@@ -1828,7 +1824,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 12, color: palette.muted }}>
           <span>Configured time: <strong style={{ color: palette.text }}>{formatScheduleTime(automaticSchedule.time)}</strong></span>
-          <span>Schedule timezone: <strong style={{ color: palette.text }}>IST (Asia/Kolkata)</strong></span>
+          <span>Schedule timezone: <strong style={{ color: palette.text }}>IST ({INDIA_TIME_ZONE})</strong></span>
           <span>Next Run: <strong style={{ color: palette.text }}>{automaticSchedule.enabled ? formatScheduleDate(automaticSchedule.nextRun) : "Disabled"}</strong></span>
           <span>Last Run: <strong style={{ color: palette.text }}>{automaticSchedule.lastRun?.startedAt ? formatScheduleDate(automaticSchedule.lastRun.startedAt) : "—"}</strong></span>
           <span>Last Status: <strong style={{ color: statusColor(automaticRunStatus) }}>{automaticRunStatus}</strong></span>

@@ -50,6 +50,7 @@ describe("AdminPanel collection controls", () => {
     window.history.pushState({}, "", "/");
     localStorage.removeItem("admin-assets-connection-card-count");
     localStorage.removeItem("admin-thumbnails-connection-card-count");
+    localStorage.removeItem("adminPromotionsActiveSection");
     localStorage.removeItem("footer-social-links");
     useLocation.mockReturnValue({ search: "?tab=controls" });
     axios.get.mockImplementation((url) => {
@@ -1154,6 +1155,7 @@ describe("AdminPanel collection controls", () => {
         expect.anything()
       );
     });
+
   });
 
   it("sends the saved reminder template email when the reminder button is clicked", async () => {
@@ -3169,8 +3171,31 @@ describe("AdminPanel collection controls", () => {
   it("renders a dedicated promotions hub tab for marketing management", async () => {
     useLocation.mockReturnValue({ search: "?tab=promotions" });
     axios.get.mockImplementation((url) => {
+      if (url.endsWith("/admin/promotions/customers")) {
+        return Promise.resolve({ data: [{ id: 7, username: "testcustomer" }, { id: 8, username: "othercustomer" }] });
+      }
       if (url.includes("/admin/promotions")) {
-        return Promise.resolve({ data: { dashboard: { active_campaigns: 3, scheduled_campaigns: 2 }, coupons: [], campaigns: [], flash_sales: [], banners: [], analytics: {} } });
+        return Promise.resolve({ data: {
+          dashboard: { active_campaigns: 3, scheduled_campaigns: 2 },
+          coupons: [{
+            id: 21,
+            name: "Assigned coupon",
+            code: "ASSIGNED21",
+            coupon_type: "auto",
+            discount_type: "percentage",
+            discount_value: 10,
+            status: "active",
+            metadata: {
+              restricted_user_id: 7,
+              restricted_username: "testcustomer",
+              delivery_email: "testcustomer@example.com",
+            },
+          }],
+          campaigns: [],
+          flash_sales: [],
+          banners: [],
+          analytics: {},
+        } });
       }
       if (url.includes("/admin/categories")) {
         return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
@@ -3181,11 +3206,339 @@ describe("AdminPanel collection controls", () => {
       return Promise.resolve({ data: [{ id: 1, title: "Live asset", status: "approved", filename: "asset.jpg", category: "Images", keywords: "", description: "", type: "image" }] });
     });
 
-    render(<AdminPanel />);
+    const { unmount } = render(<AdminPanel />);
 
     expect(await screen.findByText(/promotions hub/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /coupons/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^campaigns$/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^coupons$/i }));
+    await waitFor(() => expect(localStorage.getItem("adminPromotionsActiveSection")).toBe("coupons"));
+    expect(screen.getByText("Recipient: testcustomer • testcustomer@example.com")).toBeInTheDocument();
+    const couponCodeInput = screen.getByRole("textbox", { name: "Coupon code" });
+    const couponTypeSelect = screen.getByRole("combobox", { name: "Coupon type" });
+    expect(couponCodeInput).toBeEnabled();
+
+    fireEvent.change(couponTypeSelect, { target: { value: "auto" } });
+    expect(couponCodeInput).toBeDisabled();
+    const deliveryEmailInput = screen.getByLabelText("Send generated code to email");
+    const customerPicker = screen.getByRole("button", { name: "Or select a customer" });
+
+    fireEvent.click(customerPicker);
+    const customerSearch = screen.getByRole("searchbox", { name: "Search customers by username" });
+    expect(await screen.findByRole("option", { name: "testcustomer" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "othercustomer" })).toBeInTheDocument();
+    expect(axios.get).toHaveBeenCalledWith(expect.stringContaining("/admin/promotions/customers"), expect.anything());
+    fireEvent.change(customerSearch, { target: { value: "test" } });
+    expect(screen.getByRole("option", { name: "testcustomer" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "othercustomer" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "testcustomer" }));
+    expect(customerPicker).toHaveTextContent("testcustomer");
+    expect(deliveryEmailInput).toHaveValue("");
+    fireEvent.change(deliveryEmailInput, { target: { value: "delivery@example.com" } });
+    expect(customerPicker).toHaveTextContent("Choose a customer");
+    fireEvent.change(screen.getByPlaceholderText("Coupon name"), { target: { value: "Welcome coupon" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Coupon" }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/promotions"),
+        expect.objectContaining({
+          resource: "coupon",
+          action: "create",
+          data: expect.objectContaining({
+            coupon_type: "auto",
+            code: "",
+            delivery_email: "delivery@example.com",
+          }),
+        }),
+        expect.anything()
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Start date" }));
+    const startDateCalendar = screen.getByRole("dialog", { name: "Start date calendar" });
+    fireEvent.click(within(startDateCalendar).getByRole("button", { name: "Next month" }));
+    const firstOfNextMonth = within(startDateCalendar).getAllByRole("button").find((button) => (
+      / 1, \d{4}$/.test(button.getAttribute("aria-label") || "")
+    ));
+    fireEvent.click(firstOfNextMonth);
+    expect(screen.getByRole("button", { name: "Start date" })).not.toHaveTextContent("Choose a date");
+    expect(screen.queryByRole("dialog", { name: "Start date calendar" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(await screen.findByText("Current recipient: testcustomer • testcustomer@example.com")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Or select a customer" })).toHaveTextContent("testcustomer");
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenLastCalledWith(
+        expect.stringContaining("/admin/promotions"),
+        { resource: "coupon", action: "update", data: { id: 21, status: "archived" } },
+        expect.anything()
+      );
+    });
+
+    unmount();
+    render(<AdminPanel />);
+    expect(await screen.findByRole("button", { name: /^coupons$/i })).toHaveClass("is-active");
+  });
+
+  it("shows available category or collection targets for flash sale placement", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.get.mockImplementation((url) => {
+      if (url.endsWith("/categories")) {
+        return Promise.resolve({ data: [{ id: 9, name: "Nature" }] });
+      }
+      if (url.endsWith("/collections")) {
+        return Promise.resolve({ data: [{ id: 4, name: "Travel" }] });
+      }
+      if (url.includes("/admin/promotions")) {
+        return Promise.resolve({ data: { dashboard: {}, flash_sales: [] } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^flash sales$/i }));
+
+    const discountRuleSelect = screen.getByLabelText("Discount Rule");
+    [
+      ["percentage", "Percentage"],
+      ["fixed_amount", "Fixed Amount"],
+      ["BOGO", /BOGO.*Buy One Get One/],
+      ["BOG2", /BOG2.*Buy One Get Two/],
+      ["BOG3", /BOG3.*Buy One Get Three/],
+      ["BOG5", /BOG5.*Buy One Get Five/]
+    ].forEach(([value, name]) => {
+      expect(within(discountRuleSelect).getByRole("option", { name })).toHaveValue(value);
+    });
+    fireEvent.change(discountRuleSelect, { target: { value: "percentage" } });
+    fireEvent.change(screen.getByLabelText("Discount Percentage"), { target: { value: "15" } });
+    expect(screen.getByLabelText("Discount Percentage")).toHaveValue(15);
+    fireEvent.change(discountRuleSelect, { target: { value: "fixed_amount" } });
+    fireEvent.change(screen.getByLabelText("Discount Amount"), { target: { value: "25" } });
+    expect(screen.getByLabelText("Discount Amount")).toHaveValue(25);
+    fireEvent.change(discountRuleSelect, { target: { value: "BOGO" } });
+    expect(screen.queryByLabelText("Discount Percentage")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Discount Amount")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Featured Placement"), { target: { value: "category" } });
+    const categorySelect = await screen.findByLabelText("Active Category");
+    expect(within(categorySelect).getByRole("option", { name: "All" })).toBeInTheDocument();
+    expect(within(categorySelect).getByRole("option", { name: "Nature" })).toBeInTheDocument();
+    fireEvent.change(categorySelect, { target: { value: "all" } });
+    const keywordsInput = screen.getByLabelText("Keywords");
+    fireEvent.change(keywordsInput, { target: { value: "cat diwali holiday,building" } });
+    fireEvent.keyDown(keywordsInput, { key: "Tab" });
+    expect(keywordsInput).toHaveValue("cat, diwali, holiday, building");
+
+    fireEvent.change(screen.getByLabelText("Featured Placement"), { target: { value: "collection" } });
+    const collectionSelect = await screen.findByLabelText("Active Collection");
+    expect(within(collectionSelect).getByRole("option", { name: "All" })).toBeInTheDocument();
+    expect(within(collectionSelect).getByRole("option", { name: "Travel" })).toBeInTheDocument();
+    fireEvent.change(collectionSelect, { target: { value: "all" } });
+    expect(screen.getByLabelText("Keywords")).toHaveValue("cat, diwali, holiday, building");
+
+    fireEvent.click(screen.getByRole("button", { name: "Start Date" }));
+    const startDateCalendar = screen.getByRole("dialog", { name: "Start Date calendar" });
+    fireEvent.click(within(startDateCalendar).getByRole("button", { name: "Next month" }));
+    const firstOfNextMonth = within(startDateCalendar).getAllByRole("button").find((button) => (
+      / 1, \d{4}$/.test(button.getAttribute("aria-label") || "")
+    ));
+    fireEvent.click(firstOfNextMonth);
+    expect(screen.getByRole("button", { name: "Start Date" })).not.toHaveTextContent("Choose a date");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Flash Sale" }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/promotions"),
+        expect.objectContaining({
+          resource: "flash_sale",
+          action: "create",
+          data: expect.objectContaining({
+            start_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+            featured_placement: "collection",
+            discount_rule: "BOGO",
+            metadata: {
+              featured_category_id: null,
+              featured_collection_id: "all",
+              keywords: "cat, diwali, holiday, building",
+              discount_value: 0
+            }
+          })
+        }),
+        expect.anything()
+      );
+    });
+  });
+
+  it("requires a future start date for scheduled flash sales", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.get.mockImplementation((url) => {
+      if (url.endsWith("/categories") || url.endsWith("/collections")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/promotions")) return Promise.resolve({ data: { dashboard: {}, flash_sales: [] } });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^flash sales$/i }));
+    fireEvent.change(screen.getByLabelText("Discount Rule"), { target: { value: "BOGO" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Start Date" }));
+    const calendar = screen.getByRole("dialog", { name: "Start Date calendar" });
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const formatDateLabel = (date) => date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+
+    expect(within(calendar).getByRole("button", { name: formatDateLabel(today) })).toBeDisabled();
+    expect(within(calendar).getByRole("button", { name: formatDateLabel(yesterday) })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Create Flash Sale" }));
+    expect(await screen.findByText("Scheduled Flash Sales must have a start date later than today.")).toBeInTheDocument();
+    expect(axios.post).not.toHaveBeenCalled();
+
+    fireEvent.click(within(calendar).getByRole("button", { name: formatDateLabel(tomorrow) }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Flash Sale" }));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/promotions"),
+        expect.objectContaining({
+          resource: "flash_sale",
+          action: "create",
+          data: expect.objectContaining({ status: "scheduled", start_date: expect.any(String) })
+        }),
+        expect.anything()
+      );
+    });
+  });
+
+  it("preserves the selected IST start and end calendar dates", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.get.mockImplementation((url) => {
+      if (url.endsWith("/categories") || url.endsWith("/collections")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/promotions")) return Promise.resolve({ data: { dashboard: {}, flash_sales: [] } });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^flash sales$/i }));
+    fireEvent.change(screen.getByLabelText("Discount Rule"), { target: { value: "BOGO" } });
+
+    const now = new Date();
+    const istParts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(now).map(({ type, value }) => [type, value]));
+    const istToday = new Date(Number(istParts.year), Number(istParts.month) - 1, Number(istParts.day));
+    const startDate = new Date(istToday.getFullYear(), istToday.getMonth() + 1, 2);
+    const endDate = new Date(istToday.getFullYear(), istToday.getMonth() + 1, 3);
+    const toDateValue = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const toDateLabel = (date) => date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Start Date" }));
+    const startCalendar = screen.getByRole("dialog", { name: "Start Date calendar" });
+    fireEvent.click(within(startCalendar).getByRole("button", { name: "Next month" }));
+    fireEvent.click(within(startCalendar).getByRole("button", { name: toDateLabel(startDate) }));
+
+    fireEvent.click(screen.getByRole("button", { name: "End Date" }));
+    const endCalendar = screen.getByRole("dialog", { name: "End Date calendar" });
+    fireEvent.click(within(endCalendar).getByRole("button", { name: "Next month" }));
+    fireEvent.click(within(endCalendar).getByRole("button", { name: toDateLabel(endDate) }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Flash Sale" }));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/promotions"),
+        expect.objectContaining({
+          resource: "flash_sale",
+          action: "create",
+          data: expect.objectContaining({
+            start_date: toDateValue(startDate),
+            end_date: toDateValue(endDate)
+          })
+        }),
+        expect.anything()
+      );
+    });
+  });
+
+  it("shows flash event expiry details and filters active and expired events", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    const formatDate = (date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    };
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    axios.get.mockImplementation((url) => {
+      if (url.endsWith("/categories")) return Promise.resolve({ data: [{ id: 9, name: "Nature" }] });
+      if (url.endsWith("/collections")) return Promise.resolve({ data: [{ id: 4, name: "Travel" }] });
+      if (url.includes("/admin/promotions")) {
+        return Promise.resolve({ data: {
+          dashboard: {},
+          flash_sales: [
+            {
+              id: 101,
+              name: "Running Weekend Sale",
+              discount_rule: "percentage",
+              status: "running",
+              start_date: formatDate(today),
+              end_date: formatDate(tomorrow),
+              featured_placement: "collection",
+              metadata: { featured_collection_id: 4, discount_value: 15 }
+            },
+            {
+              id: 103,
+              name: "Starting Today Sale",
+              discount_rule: "BOGO",
+              status: "scheduled",
+              start_date: formatDate(today),
+              end_date: formatDate(tomorrow),
+              featured_placement: "homepage",
+              metadata: {}
+            },
+            {
+              id: 102,
+              name: "Expired Spring Sale",
+              discount_rule: "fixed_amount",
+              status: "running",
+              start_date: formatDate(yesterday),
+              end_date: formatDate(yesterday),
+              featured_placement: "homepage",
+              metadata: { discount_value: 20 }
+            }
+          ]
+        } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^flash sales$/i }));
+
+    expect(await screen.findByText("Running Weekend Sale")).toBeInTheDocument();
+    expect(screen.getByText("Starting Today Sale")).toBeInTheDocument();
+    expect(screen.getByText("15% off")).toBeInTheDocument();
+    expect(screen.getByText("Collection: Travel")).toBeInTheDocument();
+    expect(screen.getAllByText(new RegExp(`Expires ${tomorrow.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} at 11:59:59 PM IST`)).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Time remaining").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Expired Spring Sale")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Flash event status filter" }), { target: { value: "expired" } });
+    expect(await screen.findByText("Expired Spring Sale")).toBeInTheDocument();
+    expect(screen.queryByText("Running Weekend Sale")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/Expired/).length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders a users tab for admin user management", async () => {

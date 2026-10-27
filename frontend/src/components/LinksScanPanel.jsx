@@ -3,6 +3,7 @@ import axios from "axios";
 import Pagination from "./Pagination";
 import { API_BASE_URL } from "../utils/apiBaseUrl";
 import { buildAuthHeaders } from "../utils/authSession";
+import { getIndiaDateKey } from "../utils/indiaTime";
 
 const LINKS_PER_PAGE = 100;
 const getAppPagePath = (pageUrl) => {
@@ -185,7 +186,7 @@ export default function LinksScanPanel({ isDarkMode = false }) {
       const objectUrl = window.URL.createObjectURL(response.data);
       const link = document.createElement("a");
       link.href = objectUrl;
-      link.download = `app-links-${new Date().toISOString().slice(0, 10)}.csv`;
+      link.download = `app-links-${getIndiaDateKey()}.csv`;
       document.body.appendChild(link);
       link.click();
       link.remove();

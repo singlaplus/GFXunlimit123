@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { formatIndiaDateTime } from '../utils/indiaTime';
 
 
 const AdminThumbnailPanel = () => {
@@ -393,7 +394,7 @@ const AdminThumbnailPanel = () => {
                     </span>
                   </td>
                   <td style={{ padding: '10px', border: '1px solid #ddd' }}>
-                    {new Date(job.created_at).toLocaleString()}
+                    {formatIndiaDateTime(job.created_at)} IST
                   </td>
                   <td style={{ padding: '10px', border: '1px solid #ddd' }}>
                     {job.status === 'FAILED' && (
@@ -446,7 +447,7 @@ const AdminThumbnailPanel = () => {
                   </td>
                   <td style={{ padding: '10px', border: '1px solid #ddd' }}>{log.stage}</td>
                   <td style={{ padding: '10px', border: '1px solid #ddd' }}>
-                    {new Date(log.created_at).toLocaleString()}
+                    {formatIndiaDateTime(log.created_at)} IST
                   </td>
                 </tr>
               ))}

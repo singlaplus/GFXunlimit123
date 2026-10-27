@@ -44,6 +44,15 @@ describe("AppRoutes", () => {
     expect(screen.getByText("Admin Analytics")).toBeInTheDocument();
   });
 
+  it.each(["search_console", "google_analytics"])("renders a blank admin page for %s", (page) => {
+    mockLocation.pathname = `/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/${page}`;
+
+    const { container } = render(<AppRoutes userRole="admin" activePage="home" />);
+
+    expect(screen.getByRole("main", { name: "Blank page" })).toBeEmptyDOMElement();
+    expect(container).toHaveTextContent("");
+  });
+
   it("renders a blank protected page with the blog sidebar menu", () => {
     mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
     mockLocation.search = "?tab=controls_blog";

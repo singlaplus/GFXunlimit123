@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import Pagination from "../components/Pagination";
+import { formatIndiaDate, formatIndiaDateTime, formatIndiaTime } from "../utils/indiaTime";
 
 function formatCurrency(value, currency = "USD") {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
@@ -12,25 +13,19 @@ function formatCurrency(value, currency = "USD") {
 
 function formatDetailedDate(dateString) {
   if (!dateString) return "—";
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return "—";
-
-  return date.toLocaleDateString("en-US", {
+  return formatIndiaDate(dateString, {
     month: "short",
     day: "numeric",
     year: "numeric",
-  });
+  }) || "—";
 }
 
 function formatDetailedTime(dateString) {
   if (!dateString) return "—";
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return "—";
-
-  return date.toLocaleTimeString("en-US", {
+  return formatIndiaTime(dateString, {
     hour: "2-digit",
     minute: "2-digit",
-  });
+  }) || "—";
 }
 
 export default function OrderHistoryPage({ darkMode = false }) {
@@ -287,7 +282,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
                   <strong>Refund status:</strong> {orderDetail.order.refund_status}
                 </p>
                 <p>
-                  <strong>Created:</strong> {new Date(orderDetail.order.created_at).toLocaleString()}
+                  <strong>Created:</strong> {formatIndiaDateTime(orderDetail.order.created_at)} IST
                 </p>
                 <p>
                   <strong>Total:</strong> {formatCurrency(orderDetail.order.total_amount, orderDetail.order.currency)}
@@ -420,7 +415,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
                   <ul style={{ margin: 0, paddingLeft: "20px" }}>
                     {orderDetail.payments.map((payment) => (
                       <li key={payment.id}>
-                        {new Date(payment.created_at).toLocaleString()} — {payment.payment_gateway || payment.method || "Payment"} — {formatCurrency(payment.amount, payment.currency)} — Transaction ID: {payment.transaction_id || "-"}
+                        {formatIndiaDateTime(payment.created_at)} IST — {payment.payment_gateway || payment.method || "Payment"} — {formatCurrency(payment.amount, payment.currency)} — Transaction ID: {payment.transaction_id || "-"}
                       </li>
                     ))}
                   </ul>
@@ -433,7 +428,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
                   <ul style={{ margin: 0, paddingLeft: "20px" }}>
                     {orderDetail.refunds.map((refund) => (
                       <li key={refund.id}>
-                        {new Date(refund.created_at).toLocaleString()} — {formatCurrency(refund.amount, refund.currency)} — {refund.status}
+                        {formatIndiaDateTime(refund.created_at)} IST — {formatCurrency(refund.amount, refund.currency)} — {refund.status}
                       </li>
                     ))}
                   </ul>

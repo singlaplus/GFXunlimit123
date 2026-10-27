@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../utils/authSession";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
+import { formatIndiaDateTime } from "../utils/indiaTime";
 import Pagination from "./Pagination";
 
 function MyDownloads({ darkMode = false }) {
@@ -243,7 +244,7 @@ function MyDownloads({ darkMode = false }) {
                 </strong>
 
                 <p style={{ margin: 0, fontSize: '0.95rem', color: darkMode ? '#cbd5e1' : '#475569' }}>
-                  {image.downloaded_at ? new Date(image.downloaded_at).toLocaleString() : ''}
+                  {image.downloaded_at ? `${formatIndiaDateTime(image.downloaded_at)} IST` : ''}
                 </p>
                 <div style={{ marginTop: 10 }}>
                   {(() => {

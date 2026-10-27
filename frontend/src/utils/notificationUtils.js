@@ -1,3 +1,5 @@
+import { formatIndiaTime } from "./indiaTime";
+
 export const addNotification = (
   notifications,
   message
@@ -7,7 +9,7 @@ export const addNotification = (
     {
       id: Date.now(),
       message,
-      time: new Date().toLocaleTimeString(),
+      time: `${formatIndiaTime(new Date())} IST`,
     },
     ...notifications,
   ];

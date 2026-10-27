@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from 'react';
 import axios from 'axios';
+import { formatIndiaDateTime } from '../utils/indiaTime';
 
 export default function PaymentsPage() {
   const [loading, setLoading] = useState(true);
@@ -108,7 +109,7 @@ export default function PaymentsPage() {
           <h3>Redeem Requests</h3>
           <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 24 }}>
             <thead><tr><th style={{ textAlign: 'left', padding: 8 }}>Submitted</th><th style={{ textAlign: 'left', padding: 8 }}>Credits</th><th style={{ textAlign: 'left', padding: 8 }}>Amount</th><th style={{ textAlign: 'left', padding: 8 }}>Status</th></tr></thead>
-            <tbody>{payoutRequests.map((request) => <tr key={request.id} style={{ borderTop: '1px solid #eee' }}><td style={{ padding: 8 }}>{new Date(request.created_at).toLocaleString()}</td><td style={{ padding: 8 }}>{request.requested_credits}</td><td style={{ padding: 8 }}>₹ {Number(request.requested_credits).toFixed(2)}</td><td style={{ padding: 8 }}>{request.status === 'payment_done' ? 'Payment done' : request.status.charAt(0).toUpperCase() + request.status.slice(1)}</td></tr>)}</tbody>
+            <tbody>{payoutRequests.map((request) => <tr key={request.id} style={{ borderTop: '1px solid #eee' }}><td style={{ padding: 8 }}>{formatIndiaDateTime(request.created_at)} IST</td><td style={{ padding: 8 }}>{request.requested_credits}</td><td style={{ padding: 8 }}>₹ {Number(request.requested_credits).toFixed(2)}</td><td style={{ padding: 8 }}>{request.status === 'payment_done' ? 'Payment done' : request.status.charAt(0).toUpperCase() + request.status.slice(1)}</td></tr>)}</tbody>
           </table>
         </>
       )}
@@ -125,7 +126,7 @@ export default function PaymentsPage() {
         </thead>
         <tbody>
           {payments.map((p) => {
-            const date = new Date(p.created_at).toLocaleString();
+            const date = `${formatIndiaDateTime(p.created_at)} IST`;
             const purchased = p.amount_paid !== null && p.amount_paid !== undefined;
             const type = purchased ? 'Purchased' : 'Provided by Admin';
             const amount = purchased ? `${p.amount_paid} ${p.currency || ''}` : '-';

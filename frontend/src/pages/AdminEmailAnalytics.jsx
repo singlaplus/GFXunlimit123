@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { getEffectiveAuthToken } from '../utils/authSession';
+import { getIndiaDateKey } from '../utils/indiaTime';
 
 function getBarColor(index, total) {
   const colors = ['#38bdf8', '#2563eb', '#818cf8', '#14b8a6', '#f59e0b'];
@@ -70,9 +71,7 @@ const DARK_THEME = {
 
 function formatDateValue(value) {
   if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toISOString().slice(0, 10);
+  return getIndiaDateKey(value);
 }
 
 export default function AdminEmailAnalytics() {

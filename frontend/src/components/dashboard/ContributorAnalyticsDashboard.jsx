@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { getAssetPreviewUrl } from "../../utils/assetPreview";
 import { getContributorReputationTier } from "../../utils/statsUtils";
 import { calculateLoyaltyPoints } from "../../utils/loyaltyPoints";
+import { formatIndiaDate } from "../../utils/indiaTime";
+import { getIndiaDateKey } from "../../utils/indiaTime";
 import "./ContributorAnalyticsDashboard.css";
 
 const periods = ["Today", "7 Days", "30 Days", "90 Days", "365 Days", "Custom Range"];
@@ -22,7 +24,7 @@ const categoryValues = (asset) => {
 const categoryOf = (asset) => categoryValues(asset).join(", ");
 const categoryKey = (value) => String(value || "").trim().toLowerCase();
 const statusOf = (asset) => String(asset?.status || "pending").replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-const dateOf = (value) => value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "-";
+const dateOf = (value) => value ? formatIndiaDate(value, { month: "short", day: "numeric", year: "numeric" }) || "-" : "-";
 export const getPeriodWindowMs = (period) => {
   const map = {
     Today: 24 * 60 * 60 * 1000,
@@ -171,7 +173,7 @@ export default function ContributorAnalyticsDashboard({ darkMode, profile = {}, 
     });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    link.download = `contributor-analytics-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `contributor-analytics-${getIndiaDateKey()}.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
   };

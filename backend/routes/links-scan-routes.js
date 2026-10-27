@@ -1,4 +1,5 @@
 const express = require("express");
+const { getZonedDateKey } = require("../utils/zonedDateTime");
 
 function escapeCsvCell(value) {
   let cell = String(value ?? "");
@@ -144,7 +145,7 @@ function createLinksScanRouter({ scanner, verifyAdmin, allowedOrigins, pool }) {
       const disabledLinkKeys = new Set(disabledRows.rows.map((link) => (
         getDisabledLinkKey(link.source_path, link.href, link.link_text)
       )));
-      const date = new Date().toISOString().slice(0, 10);
+      const date = getZonedDateKey(new Date(), "Asia/Kolkata");
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader("Content-Disposition", `attachment; filename="app-links-${date}.csv"`);
       return res.send(`\uFEFF${createLinksCsv(results.links, disabledLinkKeys)}`);

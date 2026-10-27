@@ -9,6 +9,7 @@ function buildPoolConfig(env = process.env) {
     host: env.DB_HOST || env.PGHOST || "localhost",
     database: env.DB_NAME || env.PGDATABASE || "stocksite",
     port: Number(env.DB_PORT || 5432),
+    options: "-c timezone=Asia/Kolkata",
     ssl: false,
     max: Number.isFinite(poolMax) && poolMax > 0 ? poolMax : 4,
     idleTimeoutMillis: Number.isFinite(idleTimeoutMillis) && idleTimeoutMillis > 0 ? idleTimeoutMillis : 15000,

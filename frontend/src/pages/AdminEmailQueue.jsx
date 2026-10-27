@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { getEffectiveAuthToken } from '../utils/authSession';
+import { formatIndiaDateTime } from '../utils/indiaTime';
 
 
 const getIsDarkMode = () => typeof document !== 'undefined' && document.body.classList.contains('dark-mode');
@@ -130,7 +131,7 @@ export default function AdminEmailQueue() {
                     <div style={{ marginTop: 4, color: theme.muted, fontSize: '0.8rem' }}>{item.status} · {item.retryCount} retries</div>
                   </div>
                 </div>
-                <div style={{ marginTop: 9, color: theme.muted, fontSize: '0.78rem' }}>Queued {item.queuedAt ? new Date(item.queuedAt).toLocaleString() : '—'}{item.sentAt ? ` · Sent ${new Date(item.sentAt).toLocaleString()}` : ''}{item.failedAt ? ` · Failed ${new Date(item.failedAt).toLocaleString()}` : ''}</div>
+                <div style={{ marginTop: 9, color: theme.muted, fontSize: '0.78rem' }}>Queued {item.queuedAt ? formatIndiaDateTime(item.queuedAt) : '—'}{item.sentAt ? ` · Sent ${formatIndiaDateTime(item.sentAt)}` : ''}{item.failedAt ? ` · Failed ${formatIndiaDateTime(item.failedAt)}` : ''} IST</div>
                 {(item.error || item.relatedUserId || item.relatedOrderId || item.relatedAssetId) && <div style={{ marginTop: 6, color: item.error ? '#ef4444' : theme.muted, fontSize: '0.78rem' }}>{item.error || `Related user ${item.relatedUserId || '—'} · order ${item.relatedOrderId || '—'} · asset ${item.relatedAssetId || '—'}`}</div>}
               </div>
             ))}

@@ -1,4 +1,10 @@
-import { calculateCartTotals, normalizeCouponCode } from './cartCheckout';
+import {
+  calculateCartTotals,
+  calculateFlashSaleDiscount,
+  getFlashSaleEligibleItems,
+  getFlashSaleRequiredAssetCount,
+  normalizeCouponCode
+} from './cartCheckout';
 
 describe('calculateCartTotals', () => {
   it('normalizes coupon codes across casing and whitespace', () => {
@@ -107,5 +113,62 @@ describe('calculateCartTotals', () => {
 
     expect(result.tax).toBe(23);
     expect(result.total).toBe(123);
+  });
+
+  it('includes a Flash Sale discount with the coupon discount without exceeding subtotal', () => {
+    const result = calculateCartTotals([{ unitPrice: 100 }], {
+      coupon: { discountType: 'flat', discountValue: 80 },
+      flashSaleDiscount: 50,
+    });
+
+    expect(result.discount).toBe(100);
+    expect(result.total).toBe(0);
+  });
+});
+
+describe('Flash Sale calculations', () => {
+  const items = [
+    { id: 1, title: 'Asset 1', unitPrice: 100, category: 'Nature', keywords: 'cat holiday' },
+    { id: 2, title: 'Asset 2', unitPrice: 40, category: 'Nature', keywords: 'diwali' },
+    { id: 3, title: 'Asset 3', unitPrice: 30, category: 'Nature', keywords: 'building' },
+    { id: 4, title: 'Asset 4', unitPrice: 25, category: 'Travel', keywords: 'cat' },
+  ];
+
+  it('maps BOGO rules to the required number of selected assets', () => {
+    expect(getFlashSaleRequiredAssetCount('BOGO')).toBe(2);
+    expect(getFlashSaleRequiredAssetCount('BOG2')).toBe(3);
+    expect(getFlashSaleRequiredAssetCount('BOG3')).toBe(4);
+    expect(getFlashSaleRequiredAssetCount('BOG5')).toBe(6);
+  });
+
+  it('charges the highest-priced selected BOG2 asset and discounts the other two', () => {
+    const sale = { discount_rule: 'BOG2', featured_placement: 'homepage', metadata: {} };
+
+    expect(calculateFlashSaleDiscount(items, sale, [1, 2])).toBe(0);
+    expect(calculateFlashSaleDiscount(items, sale, [1, 2, 3])).toBe(70);
+  });
+
+  it('limits percentage discounts to assets matching the placement and keywords', () => {
+    const sale = {
+      discount_rule: 'percentage',
+      featured_placement: 'category',
+      featured_category_name: 'Nature',
+      metadata: { featured_category_id: '1', discount_value: 10, keywords: 'cat, building' },
+    };
+
+    expect(getFlashSaleEligibleItems(items, sale).map((item) => item.id)).toEqual([1, 3]);
+    expect(calculateFlashSaleDiscount(items, sale)).toBe(13);
+  });
+
+  it('caps a fixed-amount discount to the eligible asset subtotal', () => {
+    const sale = {
+      discount_rule: 'fixed_amount',
+      featured_placement: 'collection',
+      featured_collection_name: 'Nature Collection',
+      metadata: { featured_collection_id: '2', discount_value: 500 },
+    };
+    const collectionItems = items.slice(0, 3).map((item) => ({ ...item, collection: 'Nature Collection' }));
+
+    expect(calculateFlashSaleDiscount(collectionItems, sale)).toBe(170);
   });
 });

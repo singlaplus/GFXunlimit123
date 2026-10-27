@@ -449,7 +449,7 @@ export default function SitemapGenerationPanel({ isDarkMode = false }) {
                 ))}
               </div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-                <span style={{ color: textColor, fontSize: "0.72rem" }}>India Standard Time · UTC+05:30</span>
+                <span style={{ color: textColor, fontSize: "0.72rem" }}>India Standard Time (IST)</span>
                 <button
                   type="button"
                   onClick={() => setTimePickerOpen(false)}

@@ -259,6 +259,7 @@ export default function AssetPage(props) {
         title: image.title,
         filename: image.filename,
         collection: image.collection,
+        keywords: image.keywords || "",
         category: image.category,
         thumbnail_url: image.thumbnail_url || null,
         thumbnail_status: image.thumbnail_status || null,

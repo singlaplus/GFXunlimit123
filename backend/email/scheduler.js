@@ -1,6 +1,9 @@
 const { sendMail, renderTemplate } = require('./mailer');
 const { buildDailyWebsiteSummary, renderDailyWebsiteSummaryHtml } = require('./routes');
 const { getDailyReportSubject } = require('./daily-report-subject');
+const { getZonedDateKey, getZonedTimeKey } = require('../utils/zonedDateTime');
+
+const DAILY_REPORT_TIME_ZONE = 'Asia/Kolkata';
 
 async function processDueScheduledBlogs({
   poolRef = require('../db'),
@@ -30,10 +33,10 @@ async function processDueDailyReportSchedules({
     "UPDATE daily_report_schedules SET report_settings = (SELECT daily_report_settings FROM users WHERE role = 'admin' AND daily_report_settings IS NOT NULL ORDER BY id LIMIT 1) WHERE report_settings IS NULL"
   );
   const schedulesResult = await poolRef.query(
-    'SELECT id, time, frequency, report_settings, last_sent_date FROM daily_report_schedules'
+    'SELECT id, time, frequency, report_settings, last_sent_date::text AS last_sent_date FROM daily_report_schedules'
   );
-  const today = now.toISOString().slice(0, 10);
-  const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const today = getZonedDateKey(now, DAILY_REPORT_TIME_ZONE);
+  const currentTime = getZonedTimeKey(now, DAILY_REPORT_TIME_ZONE);
   const settingsResult = await poolRef.query(
     "SELECT id, daily_report_settings FROM users WHERE role = 'admin' AND daily_report_settings IS NOT NULL ORDER BY ((daily_report_settings->'reportSmtp'->>'smtp_host') IS NOT NULL) DESC, id LIMIT 1"
   );
@@ -46,9 +49,7 @@ async function processDueDailyReportSchedules({
 
     try {
     const scheduleTime = String(schedule.time || '').slice(0, 5);
-    const lastSentDate = schedule.last_sent_date instanceof Date
-      ? schedule.last_sent_date.toISOString().slice(0, 10)
-      : String(schedule.last_sent_date || '').slice(0, 10);
+    const lastSentDate = String(schedule.last_sent_date || '').slice(0, 10);
     const sentDate = lastSentDate ? new Date(`${lastSentDate}T00:00:00Z`) : null;
     const currentDate = new Date(`${today}T00:00:00Z`);
     const elapsedDays = sentDate ? Math.floor((currentDate - sentDate) / (24 * 60 * 60 * 1000)) : null;

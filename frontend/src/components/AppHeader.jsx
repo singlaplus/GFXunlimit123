@@ -15,6 +15,54 @@ import { clearExploreFilterState } from "../utils/exploreFilters";
 import { isAdminRole, isContributorRole, normalizeRole } from "../utils/role";
 import { clearAuthSessionStorage, getEffectiveAuthToken, hasActiveSession } from "../utils/authSession";
 import { loadCartItems, saveCartItems } from "../utils/cartPersistence";
+import { INDIA_TIME_ZONE } from "../utils/indiaTime";
+
+const getFlashSaleDateParts = (value) => {
+  const dateValue = String(value || "");
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(dateValue)
+    ? new Date(`${dateValue}T00:00:00+05:30`)
+    : new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: INDIA_TIME_ZONE,
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).formatToParts(date);
+  return Object.fromEntries(parts.map(({ type, value: partValue }) => [type, partValue]));
+};
+
+const getOrdinalSuffix = (day) => {
+  const dayNumber = Number(day);
+  if (dayNumber % 100 >= 11 && dayNumber % 100 <= 13) return "th";
+  return { 1: "st", 2: "nd", 3: "rd" }[dayNumber % 10] || "th";
+};
+
+const getFlashSaleCountdown = (startDate, now) => {
+  const startTime = Date.parse(`${startDate}T00:00:00+05:30`);
+  if (!Number.isFinite(startTime)) return "";
+
+  return getTimeRemainingLabel(startTime, now);
+};
+
+const getLiveFlashSaleCountdown = (endDate, now) => {
+  const endTime = Date.parse(`${endDate}T23:59:59+05:30`);
+  if (!Number.isFinite(endTime)) return "";
+
+  return getTimeRemainingLabel(endTime, now);
+};
+
+const getTimeRemainingLabel = (targetTime, now) => {
+  const remainingSeconds = Math.max(0, Math.floor((targetTime - now) / 1000));
+  const days = Math.floor(remainingSeconds / 86400);
+  const hours = Math.floor((remainingSeconds % 86400) / 3600);
+  const minutes = Math.floor((remainingSeconds % 3600) / 60);
+  const seconds = remainingSeconds % 60;
+
+  if (remainingSeconds === 0) return "Starting now";
+  return `Time left ${days}d ${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
+};
 
 export default function AppHeader({
   showNotifications,
@@ -46,7 +94,23 @@ export default function AppHeader({
   const location = loc || (typeof window !== 'undefined' ? window.location : { pathname: '/' });
   const [searchTerm, setSearchTerm] = useState("");
   const [notificationOpen, setNotificationOpen] = useState(Boolean(showNotifications));
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
+  const [seoMenuOpen, setSeoMenuOpen] = useState(false);
+  const [upcomingFlashSales, setUpcomingFlashSales] = useState([]);
+  const [activeFlashSales, setActiveFlashSales] = useState([]);
+  const [flashSaleCountdownNow, setFlashSaleCountdownNow] = useState(Date.now());
+  const [flashSaleGroupWidth, setFlashSaleGroupWidth] = useState(0);
+  const [flashSaleAvailableWidth, setFlashSaleAvailableWidth] = useState(0);
+  const flashSaleRibbonRef = useRef(null);
+  const flashSaleGroupRef = useRef(null);
+  const flashSaleLivePanelRef = useRef(null);
   const notificationWrapRef = useRef(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => setFlashSaleCountdownNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
   const storedRole = typeof window !== "undefined" ? localStorage.getItem("userRole") || "" : "";
   const resolvedRole = userRole || storedRole || "";
   const normalizedRole = normalizeRole(resolvedRole);
@@ -111,9 +175,92 @@ export default function AppHeader({
       window.removeEventListener("messages-updated", loadMessageCount);
     };
   }, [token, isCustomerUser, isContributorUser, isAdminUser]);
+
+  useEffect(() => {
+    let active = true;
+    const loadUpcomingFlashSales = async () => {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/promotions/upcoming-flash-sales`);
+        if (active) {
+          setUpcomingFlashSales(Array.isArray(response.data?.sales) ? response.data.sales : []);
+        }
+      } catch (error) {
+        console.debug("Upcoming Flash Sales unavailable", error?.message || error);
+      }
+    };
+
+    loadUpcomingFlashSales();
+    const timer = setInterval(loadUpcomingFlashSales, 5 * 60 * 1000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadActiveFlashSales = async () => {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/checkout/active-flash-sales`);
+        if (active) {
+          setActiveFlashSales(Array.isArray(response.data?.sales) ? response.data.sales : []);
+        }
+      } catch (error) {
+        console.debug("Active Flash Sales unavailable", error?.message || error);
+      }
+    };
+
+    loadActiveFlashSales();
+    const timer = setInterval(loadActiveFlashSales, 5 * 60 * 1000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    const updateRepeatCount = () => {
+      const ribbonWidth = flashSaleRibbonRef.current?.clientWidth;
+      const groupWidth = flashSaleGroupRef.current?.getBoundingClientRect().width;
+      const livePanelWidth = flashSaleLivePanelRef.current?.getBoundingClientRect().width || 0;
+      const availableWidth = Math.max(0, ribbonWidth - 120 - livePanelWidth);
+      if (ribbonWidth > 0 && groupWidth > 0) {
+        setFlashSaleGroupWidth(groupWidth);
+        setFlashSaleAvailableWidth(availableWidth);
+      }
+    };
+
+    updateRepeatCount();
+    const observer = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(updateRepeatCount);
+    if (observer) {
+      if (flashSaleRibbonRef.current) observer.observe(flashSaleRibbonRef.current);
+      if (flashSaleGroupRef.current) observer.observe(flashSaleGroupRef.current);
+      if (flashSaleLivePanelRef.current) observer.observe(flashSaleLivePanelRef.current);
+    } else {
+      window.addEventListener("resize", updateRepeatCount);
+    }
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateRepeatCount);
+    };
+  }, [upcomingFlashSales, activeFlashSales]);
   const isExplorePage = /^\/explore(?:\/\d+)?$/.test(location.pathname);
   const shouldShowCustomerSearch = isCustomerUser && !isHomePage && !isExplorePage;
   const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
+  const getFlashSaleDiscountLabel = (sale) => {
+    const rule = String(sale.discount_rule || "").toUpperCase();
+    const discountValue = Number(sale.metadata?.discount_value || 0);
+    if (rule === "PERCENTAGE" && discountValue > 0) return `${discountValue}% off`;
+    if (rule === "FIXED_AMOUNT") return discountValue > 0 ? `₹${discountValue} Fixed Off` : "Fixed Off";
+    if (rule === "BOGO") return "Buy One Get One";
+    if (rule === "BOG2") return "Buy One Get Two";
+    if (rule === "BOG3") return "Buy One Get Three";
+    if (rule === "BOG5") return "Buy One Get Five";
+    return sale.discount_rule || "Discount";
+  };
 
   const handleLogoClick = () => {
     navigate("/");
@@ -496,9 +643,77 @@ export default function AppHeader({
               <button className="header-notification-button" type="button" onClick={() => setNotificationOpen((open) => !open)} aria-expanded={notificationOpen} aria-label={`Notifications, ${unreadNotificationCount} unread`}>
                 <span aria-hidden="true">🔔</span><strong>{unreadNotificationCount}</strong>
               </button>
-              <button className="nav-link-btn" onClick={() => handleNavigate("/messages")} aria-label={`Messages, ${messageUnreadCount} unread`}>
-                Messages ({messageUnreadCount})
-              </button>
+              {isAdminUser ? (
+                <>
+                  <div
+                    className={`admin-menu-wrap${adminMenuOpen ? " is-open" : ""}`}
+                    onMouseEnter={() => setAdminMenuOpen(true)}
+                    onMouseLeave={() => setAdminMenuOpen(false)}
+                    onFocus={() => setAdminMenuOpen(true)}
+                    onBlur={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget)) {
+                        setAdminMenuOpen(false);
+                      }
+                    }}
+                  >
+                    <button className="nav-link-btn" type="button">
+                      Admin
+                    </button>
+                    <div className="admin-menu-dropdown">
+                      <button
+                        className="nav-link-btn"
+                        onClick={() => {
+                          setAdminMenuOpen(false);
+                          handleNavigate("/messages");
+                        }}
+                        aria-label={`Messages, ${messageUnreadCount} unread`}
+                      >
+                        Messages ({messageUnreadCount})
+                      </button>
+                      <button
+                        className="nav-link-btn"
+                        onClick={() => {
+                          setAdminMenuOpen(false);
+                          handleNavigate(`${adminBasePath}?tab=admin_dashboard`, "admin");
+                        }}
+                      >
+                        Dashboard
+                      </button>
+                      <button
+                        className="nav-link-btn"
+                        onClick={() => {
+                          setAdminMenuOpen(false);
+                          handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=controls", "admin");
+                        }}
+                      >
+                        Controls
+                      </button>
+                      <button
+                        className="nav-link-btn"
+                        onClick={() => {
+                          setAdminMenuOpen(false);
+                          handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=live-assets", "admin");
+                        }}
+                      >
+                        Live Assets
+                      </button>
+                      <button
+                        className="nav-link-btn"
+                        onClick={() => {
+                          setAdminMenuOpen(false);
+                          handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=users", "admin");
+                        }}
+                      >
+                        Users
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <button className="nav-link-btn" onClick={() => handleNavigate("/messages")} aria-label={`Messages, ${messageUnreadCount} unread`}>
+                  Messages ({messageUnreadCount})
+                </button>
+              )}
               <NotificationsPanel showNotifications={notificationOpen} notifications={notifications || []} clearAllNotifications={clearAllNotifications} darkMode={darkMode} userRole={resolvedRole} />
             </div>
           )}
@@ -658,54 +873,95 @@ export default function AppHeader({
                   <option value="rejected">Rejected</option>
                 </select>
               </div>
-              <button
-                className="nav-link-btn"
-                onClick={() => handleNavigate(`${adminBasePath}?tab=admin_dashboard`, "admin")}
+              <div
+                className={`tools-menu-wrap${toolsMenuOpen ? " is-open" : ""}`}
+                onMouseEnter={() => setToolsMenuOpen(true)}
+                onMouseLeave={() => setToolsMenuOpen(false)}
+                onFocus={() => setToolsMenuOpen(true)}
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) {
+                    setToolsMenuOpen(false);
+                  }
+                }}
               >
-                Dashboard
-              </button>
-              <button
-                className="nav-link-btn"
-                onClick={() => handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=controls", "admin")}
+                <button className="nav-link-btn" type="button" aria-haspopup="menu" aria-expanded={toolsMenuOpen}>
+                  Tools
+                </button>
+                <div className="tools-menu-dropdown" role="menu" aria-label="Tools menu">
+                  <button
+                    className="nav-link-btn"
+                    onClick={() => {
+                      setToolsMenuOpen(false);
+                      window.localStorage.removeItem("adminPromotionsActiveSection");
+                      handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=promotions", "admin");
+                    }}
+                  >
+                    Promotions
+                  </button>
+                  <button
+                    className="nav-link-btn"
+                    onClick={() => {
+                      setToolsMenuOpen(false);
+                      handleNavigate(`${adminBasePath}/analytics`);
+                    }}
+                  >
+                    Analytics
+                  </button>
+                  <button
+                    className="nav-link-btn"
+                    onClick={() => {
+                      setToolsMenuOpen(false);
+                      handleNavigate(`${adminBasePath}/commerce`);
+                    }}
+                  >
+                    Commerce
+                  </button>
+                  <button
+                    className="nav-link-btn"
+                    onClick={() => {
+                      setToolsMenuOpen(false);
+                      handleNavigate(`${adminBasePath}/orders`);
+                    }}
+                  >
+                    Orders
+                  </button>
+                </div>
+              </div>
+              <div
+                className={`tools-menu-wrap${seoMenuOpen ? " is-open" : ""}`}
+                onMouseEnter={() => setSeoMenuOpen(true)}
+                onMouseLeave={() => setSeoMenuOpen(false)}
+                onFocus={() => setSeoMenuOpen(true)}
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) {
+                    setSeoMenuOpen(false);
+                  }
+                }}
               >
-                Controls
-              </button>
-              <button
-                className="nav-link-btn"
-                onClick={() => handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=live-assets", "admin")}
-              >
-                Live Assets
-              </button>
-              <button
-                className="nav-link-btn"
-                onClick={() => handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=users", "admin")}
-              >
-                Users
-              </button>
-              <button
-                className="nav-link-btn"
-                onClick={() => handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=promotions", "admin")}
-              >
-                Promotions
-              </button>
-              <button
-                className="nav-link-btn"
-                onClick={() => handleNavigate(`${adminBasePath}/analytics`)}
-              >
-                Analytics
-              </button>
-              <button
-                className="nav-link-btn"
-                onClick={() => handleNavigate(`${adminBasePath}/commerce`)}
-              >
-                Commerce
-              </button>
-              <button
-                className="nav-link-btn"
-                onClick={() => handleNavigate(`${adminBasePath}/orders`)}
-              >
-                Orders
-              </button>
+                <button className="nav-link-btn" type="button" aria-haspopup="menu" aria-expanded={seoMenuOpen}>
+                  SEO
+                </button>
+                <div className="tools-menu-dropdown" role="menu" aria-label="SEO menu">
+                  <button
+                    className="nav-link-btn"
+                    onClick={() => {
+                      setSeoMenuOpen(false);
+                      handleNavigate(`${adminBasePath}/search_console`);
+                    }}
+                  >
+                    Google Search Console
+                  </button>
+                  <button
+                    className="nav-link-btn"
+                    onClick={() => {
+                      setSeoMenuOpen(false);
+                      handleNavigate(`${adminBasePath}/google_analytics`);
+                    }}
+                  >
+                    Google Analytics
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -796,6 +1052,59 @@ export default function AppHeader({
             )}
           </div>
         </div>
+        {(upcomingFlashSales.length > 0 || activeFlashSales.length > 0) && (
+          <div
+            className="upcoming-flash-sale-ribbon"
+            aria-label="Upcoming Flash Sales"
+            ref={flashSaleRibbonRef}
+          >
+            <strong className="upcoming-flash-sale-label">FLASH SALE</strong>
+            {upcomingFlashSales.length > 0 && (
+              <div
+                className="upcoming-flash-sale-track"
+                style={{
+                  "--flash-sale-shift": `${flashSaleGroupWidth}px`,
+                  "--flash-sale-available-width": `${flashSaleAvailableWidth}px`,
+                }}
+              >
+                <div className="upcoming-flash-sale-group" ref={flashSaleGroupRef}>
+                  {upcomingFlashSales.map((sale) => {
+                    const startDateParts = getFlashSaleDateParts(sale.start_date);
+                    return (
+                      <span
+                        className="upcoming-flash-sale-item"
+                        key={sale.id}
+                      >
+                        <span>{sale.name}</span>
+                        <strong className="upcoming-flash-sale-discount">{getFlashSaleDiscountLabel(sale)}</strong>
+                        {startDateParts && (
+                          <span>
+                            Starts on {startDateParts.day}<sup>{getOrdinalSuffix(startDateParts.day)}</sup> {startDateParts.month} {startDateParts.year} IST
+                          </span>
+                        )}
+                        <span>{getFlashSaleCountdown(sale.start_date, flashSaleCountdownNow)}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {activeFlashSales.length > 0 && (
+              <div
+                className="upcoming-flash-sale-live-panel"
+                aria-label="Live Flash Sale details"
+                ref={flashSaleLivePanelRef}
+              >
+                {activeFlashSales.map((sale) => (
+                  <span className="upcoming-flash-sale-live-item" key={sale.id}>
+                    <strong className="upcoming-flash-sale-discount">{getFlashSaleDiscountLabel(sale)}</strong>
+                    <span> · {getLiveFlashSaleCountdown(sale.end_date, flashSaleCountdownNow)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </header>
 
       {/* =========================

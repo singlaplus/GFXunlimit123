@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { formatIndiaDateTime } from "../utils/indiaTime";
 
 const HELPER_DEFAULT = "http://127.0.0.1:43127";
 const INITIAL_CONFIGURATION = {
@@ -253,7 +254,7 @@ export default function RestoreWizard({ apiBaseUrl }) {
           <h4 style={{ margin: 0 }}>Step 3 — Review before restore</h4>
           {validation && (
             <>
-              <p role="status" style={{ margin: 0, color: "#15803d" }}>Local path and archive checks passed at {new Date(validation.checkedAt).toLocaleString()}. Directory source bytes: website {validation.requiredBytes.website.toLocaleString()}, originals {validation.requiredBytes.assets.toLocaleString()}, thumbnails {validation.requiredBytes.thumbnails.toLocaleString()}.</p>
+              <p role="status" style={{ margin: 0, color: "#15803d" }}>Local path and archive checks passed at {formatIndiaDateTime(validation.checkedAt)} IST. Directory source bytes: website {validation.requiredBytes.website.toLocaleString()}, originals {validation.requiredBytes.assets.toLocaleString()}, thumbnails {validation.requiredBytes.thumbnails.toLocaleString()}.</p>
               <div style={{ display: "grid", gap: 8, overflowWrap: "anywhere" }}>
                 {Object.entries(validation.sources).map(([key, value]) => <span key={key}>Source {key}: <strong>{value}</strong></span>)}
                 {Object.entries(validation.destinations).map(([key, value]) => <span key={key}>Destination {key}: <strong>{value}</strong></span>)}

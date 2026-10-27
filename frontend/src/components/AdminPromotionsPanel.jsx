@@ -1,7 +1,8 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import { formatIndiaDate } from "../utils/indiaTime";
 import "./AdminPromotionsPanel.css";
 
 const SECTION_ITEMS = [
@@ -24,6 +25,17 @@ const SECTION_ITEMS = [
   { key: "settings", label: "Settings" },
   { key: "activity", label: "Activity Log" }
 ];
+const ACTIVE_SECTION_STORAGE_KEY = "adminPromotionsActiveSection";
+
+function getCouponMetadata(coupon) {
+  return typeof coupon?.metadata === "string"
+    ? JSON.parse(coupon.metadata)
+    : coupon?.metadata || {};
+}
+
+function getCouponDeliveryEmail(coupon) {
+  return String(getCouponMetadata(coupon)?.delivery_email || "").trim();
+}
 
 const initialCouponForm = {
   name: "",
@@ -57,8 +69,21 @@ const initialFlashForm = {
   status: "scheduled",
   start_date: "",
   end_date: "",
-  featured_placement: "homepage"
+  featured_placement: "homepage",
+  featured_category_id: "",
+  featured_collection_id: "",
+  keywords: "",
+  discount_value: ""
 };
+
+const FLASH_SALE_DISCOUNT_RULES = [
+  { value: "percentage", label: "Percentage" },
+  { value: "fixed_amount", label: "Fixed Amount" },
+  { value: "BOGO", label: "BOGO — Buy One Get One" },
+  { value: "BOG2", label: "BOG2 — Buy One Get Two" },
+  { value: "BOG3", label: "BOG3 — Buy One Get Three" },
+  { value: "BOG5", label: "BOG5 — Buy One Get Five" }
+];
 
 const initialReferralForm = {
   name: "",
@@ -193,8 +218,238 @@ function AnimatedPromotionValue({ value }) {
   return <span aria-label={displayValue} aria-live="off">{animatedValue}</span>;
 }
 
+function parseLocalDate(value) {
+  if (!value) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function formatLocalDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getISTDateString(date = new Date()) {
+  const dateParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const partValues = Object.fromEntries(dateParts.map(({ type, value }) => [type, value]));
+  return `${partValues.year}-${partValues.month}-${partValues.day}`;
+}
+
+function getISTDateStart(value) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day) - (5 * 60 + 30) * 60 * 1000);
+}
+
+function getFlashEventTiming(sale, now = new Date()) {
+  const startDateValue = sale.start_date ? String(sale.start_date).slice(0, 10) : "";
+  const endDateValue = sale.end_date ? String(sale.end_date).slice(0, 10) : "";
+  const startDate = startDateValue ? parseLocalDate(startDateValue) : null;
+  const endDate = endDateValue ? parseLocalDate(endDateValue) : null;
+  const startAt = startDateValue ? getISTDateStart(startDateValue) : null;
+  const expiresAt = endDateValue
+    ? new Date(getISTDateStart(endDateValue).getTime() + 24 * 60 * 60 * 1000 - 1)
+    : null;
+  const savedStatus = String(sale.status || "").trim().toLowerCase();
+
+  if (savedStatus === "expired" || (expiresAt && now > expiresAt)) {
+    return { status: "expired", startDate, endDate, expiresAt };
+  }
+  if ((startAt && now < startAt) || (savedStatus === "scheduled" && (!startAt || now < startAt))) {
+    return { status: "scheduled", startDate, endDate, expiresAt };
+  }
+  if (savedStatus === "scheduled" && startAt && now >= startAt) {
+    return { status: "active", startDate, endDate, expiresAt };
+  }
+  return { status: savedStatus === "running" ? "active" : savedStatus || "scheduled", startDate, endDate, expiresAt };
+}
+
+function formatFlashEventDate(date) {
+  return date
+    ? formatIndiaDate(date, { month: "short", day: "numeric", year: "numeric" })
+    : "Not set";
+}
+
+function formatFlashEventCountdown(milliseconds) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  return `${days}d ${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m ${String(remainingSeconds).padStart(2, "0")}s`;
+}
+
+function getFlashEventRuleDetails(sale) {
+  const rule = String(sale.discount_rule || "").toUpperCase();
+  const metadata = typeof sale.metadata === "string" ? JSON.parse(sale.metadata || "{}") : sale.metadata || {};
+  const discountValue = Number(metadata.discount_value || 0);
+
+  if (rule === "PERCENTAGE") return `${discountValue}% off`;
+  if (rule === "FIXED_AMOUNT") return `Fixed amount discount • ${discountValue}`;
+  if (rule === "BOGO") return "Buy one, get one";
+  if (rule === "BOG2") return "Buy one, get two";
+  if (rule === "BOG3") return "Buy one, get three";
+  if (rule === "BOG5") return "Buy one, get five";
+  return sale.discount_rule || "Discount";
+}
+
+function CouponDatePicker({ id, label, value, onChange, helpText, className = "", minDate = "" }) {
+  const pickerRef = useRef(null);
+  const selectedDate = parseLocalDate(value);
+  const [isOpen, setIsOpen] = useState(false);
+  const [visibleMonth, setVisibleMonth] = useState(() => {
+    const initialDate = selectedDate || parseLocalDate(getISTDateString());
+    return new Date(initialDate.getFullYear(), initialDate.getMonth(), 1);
+  });
+  const monthLabel = formatIndiaDate(visibleMonth, { month: "long", year: "numeric" });
+  const monthStart = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1);
+  const firstVisibleDate = new Date(monthStart);
+  firstVisibleDate.setDate(1 - monthStart.getDay());
+  const calendarDays = Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(firstVisibleDate);
+    date.setDate(firstVisibleDate.getDate() + index);
+    return date;
+  });
+  const todayValue = getISTDateString();
+  const today = parseLocalDate(todayValue);
+  const minimumDate = minDate ? parseLocalDate(minDate) : null;
+  const minimumMonth = minimumDate ? new Date(minimumDate.getFullYear(), minimumDate.getMonth(), 1) : null;
+  const openCalendar = () => {
+    if (!isOpen) {
+      const dateToShow = selectedDate || today;
+      setVisibleMonth(new Date(dateToShow.getFullYear(), dateToShow.getMonth(), 1));
+    }
+    setIsOpen(!isOpen);
+  };
+
+  return (
+    <div
+      ref={pickerRef}
+      className={`promotions-field-group promotions-date-picker ${className}${isOpen ? " is-open" : ""}`}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setIsOpen(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") setIsOpen(false);
+      }}
+    >
+      <label id={`${id}-label`}>{label}</label>
+      <button
+        id={id}
+        type="button"
+        className="promotions-date-picker-trigger"
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        aria-labelledby={`${id}-label`}
+        onClick={openCalendar}
+      >
+        <span className={value ? "" : "is-placeholder"}>
+          {selectedDate
+            ? formatIndiaDate(selectedDate, { month: "short", day: "numeric", year: "numeric" })
+            : "Choose a date"}
+        </span>
+        <svg className="promotions-date-picker-icon" aria-hidden="true" viewBox="0 0 20 20" fill="none">
+          <rect x="2.75" y="4.25" width="14.5" height="13" rx="2.25" />
+          <path d="M6.5 2.75v3M13.5 2.75v3M3 8h14" />
+          <path d="M6.5 11h.01M10 11h.01M13.5 11h.01M6.5 14.25h.01M10 14.25h.01" />
+        </svg>
+      </button>
+      {isOpen && (
+        <div className="promotions-date-picker-popover" role="dialog" aria-label={`${label} calendar`}>
+          <div className="promotions-date-picker-header">
+            <button
+              type="button"
+              aria-label="Previous month"
+              disabled={Boolean(minimumMonth && new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1) < minimumMonth)}
+              onClick={() => setVisibleMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1))}
+            >
+              ‹
+            </button>
+            <strong>{monthLabel}</strong>
+            <button
+              type="button"
+              aria-label="Next month"
+              onClick={() => setVisibleMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1))}
+            >
+              ›
+            </button>
+          </div>
+          <div className="promotions-date-picker-grid promotions-date-picker-weekdays" aria-hidden="true">
+            {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((day) => <span key={day}>{day}</span>)}
+          </div>
+          <div className="promotions-date-picker-grid promotions-date-picker-days">
+            {calendarDays.map((date) => {
+              const dateValue = formatLocalDate(date);
+              const isSelected = dateValue === value;
+              const isToday = dateValue === todayValue;
+              const isCurrentMonth = date.getMonth() === visibleMonth.getMonth();
+              const isBeforeMinimum = Boolean(minDate && dateValue < minDate);
+              return (
+                <button
+                  key={dateValue}
+                  type="button"
+                  aria-label={formatIndiaDate(date, { month: "long", day: "numeric", year: "numeric" })}
+                  aria-pressed={isSelected}
+                  disabled={isBeforeMinimum}
+                  className={[
+                    isCurrentMonth ? "" : "is-outside-month",
+                    isToday ? "is-today" : "",
+                    isSelected ? "is-selected" : "",
+                    isBeforeMinimum ? "is-disabled" : "",
+                  ].filter(Boolean).join(" ")}
+                  onClick={() => {
+                    onChange(dateValue);
+                    setVisibleMonth(new Date(date.getFullYear(), date.getMonth(), 1));
+                    setIsOpen(false);
+                  }}
+                >
+                  {date.getDate()}
+                </button>
+              );
+            })}
+          </div>
+          <div className="promotions-date-picker-footer">
+            <button
+              type="button"
+              disabled={Boolean(minDate && todayValue < minDate)}
+              onClick={() => {
+                onChange(todayValue);
+                setVisibleMonth(new Date(today.getFullYear(), today.getMonth(), 1));
+                setIsOpen(false);
+              }}
+            >
+              Today
+            </button>
+            {value && (
+              <button
+                type="button"
+                onClick={() => {
+                  onChange("");
+                  setIsOpen(false);
+                }}
+              >
+                Clear date
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      <span className="promotions-field-help">{helpText}</span>
+    </div>
+  );
+}
+
 function AdminPromotionsPanel() {
-  const [activeSection, setActiveSection] = useState("dashboard");
+  const [activeSection, setActiveSection] = useState(() => {
+    const savedSection = window.localStorage.getItem(ACTIVE_SECTION_STORAGE_KEY);
+    return SECTION_ITEMS.some((item) => item.key === savedSection) ? savedSection : "dashboard";
+  });
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [dashboard, setDashboard] = useState({
@@ -218,8 +473,11 @@ function AdminPromotionsPanel() {
     coupon_redemption_rate: 0
   });
   const [coupons, setCoupons] = useState([]);
+  const [customers, setCustomers] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [flashSales, setFlashSales] = useState([]);
+  const [flashEventFilter, setFlashEventFilter] = useState("active");
+  const [flashEventsNow, setFlashEventsNow] = useState(() => Date.now());
   const [referrals, setReferrals] = useState([]);
   const [loyalty, setLoyalty] = useState([]);
   const [giftCards, setGiftCards] = useState([]);
@@ -234,6 +492,8 @@ function AdminPromotionsPanel() {
   const [couponDraft, setCouponDraft] = useState(initialCouponForm);
   const [campaignDraft, setCampaignDraft] = useState(initialCampaignForm);
   const [flashDraft, setFlashDraft] = useState(initialFlashForm);
+  const [flashCategories, setFlashCategories] = useState([]);
+  const [flashCollections, setFlashCollections] = useState([]);
   const [referralDraft, setReferralDraft] = useState(initialReferralForm);
   const [loyaltyDraft, setLoyaltyDraft] = useState(initialLoyaltyForm);
   const [giftCardDraft, setGiftCardDraft] = useState(initialGiftCardForm);
@@ -246,9 +506,24 @@ function AdminPromotionsPanel() {
   const [automationDraft, setAutomationDraft] = useState(initialAutomationForm);
   const [couponSearch, setCouponSearch] = useState("");
   const [couponFilter, setCouponFilter] = useState("all");
+  const [couponDeliveryEmail, setCouponDeliveryEmail] = useState("");
+  const [couponDeliveryUserId, setCouponDeliveryUserId] = useState("");
+  const [couponCustomerSearch, setCouponCustomerSearch] = useState("");
+  const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
+  const [isLoadingCouponCustomers, setIsLoadingCouponCustomers] = useState(false);
+  const [couponCustomerLoadError, setCouponCustomerLoadError] = useState("");
   const [editingCouponId, setEditingCouponId] = useState(null);
   const [editingCampaignId, setEditingCampaignId] = useState(null);
   const [editingFlashId, setEditingFlashId] = useState(null);
+
+  useEffect(() => {
+    window.localStorage.setItem(ACTIVE_SECTION_STORAGE_KEY, activeSection);
+  }, [activeSection]);
+
+  useEffect(() => {
+    const timerId = window.setInterval(() => setFlashEventsNow(Date.now()), 1000);
+    return () => window.clearInterval(timerId);
+  }, []);
 
   const loadPromotions = async () => {
     try {
@@ -284,6 +559,62 @@ function AdminPromotionsPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (activeSection !== "flash-sales") return undefined;
+
+    let active = true;
+    const loadFlashPlacementOptions = async () => {
+      try {
+        const [categoriesResponse, collectionsResponse] = await Promise.all([
+          axios.get(`${API_BASE_URL}/categories`),
+          axios.get(`${API_BASE_URL}/collections`)
+        ]);
+        if (!Array.isArray(categoriesResponse.data) || !Array.isArray(collectionsResponse.data)) {
+          throw new Error("Flash sale placement options response was invalid.");
+        }
+        if (active) {
+          setFlashCategories(categoriesResponse.data);
+          setFlashCollections(collectionsResponse.data);
+        }
+      } catch (err) {
+        console.error("Failed to load flash sale placement options", err);
+        if (active) {
+          setMessage(err.response?.data?.error || "Unable to load categories and collections for flash sales.");
+        }
+      }
+    };
+
+    loadFlashPlacementOptions();
+    return () => {
+      active = false;
+    };
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (!isCustomerPickerOpen && !editingCouponId) return undefined;
+
+    let active = true;
+    const loadCustomers = async () => {
+      setIsLoadingCouponCustomers(true);
+      setCouponCustomerLoadError("");
+      try {
+        const response = await axios.get(`${API_BASE_URL}/admin/promotions/customers`, { headers: buildAuthHeaders() });
+        if (!Array.isArray(response.data)) {
+          throw new Error("Active customer response was invalid.");
+        }
+        if (active) setCustomers(response.data);
+      } catch (error) {
+        console.error("Unable to load active customers for generated coupons", error);
+        if (active) setCouponCustomerLoadError(error.response?.data?.error || "Unable to load active customers. Please close and reopen the list to try again.");
+      } finally {
+        if (active) setIsLoadingCouponCustomers(false);
+      }
+    };
+
+    loadCustomers();
+    return () => { active = false; };
+  }, [isCustomerPickerOpen, editingCouponId]);
+
   const filteredCoupons = useMemo(() => {
     return coupons.filter((coupon) => {
       const matchesSearch = !couponSearch || String(coupon.name || coupon.code || "").toLowerCase().includes(couponSearch.toLowerCase());
@@ -291,6 +622,23 @@ function AdminPromotionsPanel() {
       return matchesSearch && matchesFilter;
     });
   }, [coupons, couponSearch, couponFilter]);
+
+  const filteredCouponCustomers = useMemo(() => {
+    const query = couponCustomerSearch.trim().toLowerCase();
+    return customers.filter((customer) => String(customer.username || "").toLowerCase().includes(query));
+  }, [customers, couponCustomerSearch]);
+
+  const editingCoupon = coupons.find((coupon) => String(coupon.id) === String(editingCouponId));
+  const editingCouponMetadata = editingCoupon ? getCouponMetadata(editingCoupon) : {};
+  const editingCouponRecipientUser = customers.find(
+    (customer) => String(customer.id) === String(editingCouponMetadata.restricted_user_id || "")
+  );
+  const editingCouponRecipient = editingCoupon?.coupon_type === "auto"
+    ? [
+      editingCouponRecipientUser?.username || editingCouponMetadata.restricted_username,
+      getCouponDeliveryEmail(editingCoupon)
+    ].filter(Boolean).join(" • ")
+    : "";
 
   const persistResource = async (resource, action, data, successMessage) => {
     try {
@@ -307,8 +655,24 @@ function AdminPromotionsPanel() {
 
   const handleCouponSubmit = async (event) => {
     event.preventDefault();
+    const isAutoGenerated = couponDraft.coupon_type === "auto";
+    const deliveryEmail = couponDeliveryEmail.trim();
+    const deliveryUserId = couponDeliveryUserId;
+    if (isAutoGenerated && !editingCouponId && Boolean(deliveryEmail) === Boolean(deliveryUserId)) {
+      setMessage("Choose either an email address or a customer for the generated coupon.");
+      return;
+    }
+    if (!isAutoGenerated && !couponDraft.code.trim()) {
+      setMessage("Enter a coupon code for a manual coupon.");
+      return;
+    }
     const payload = {
       ...couponDraft,
+      ...(isAutoGenerated ? {
+        code: "",
+        delivery_email: deliveryEmail || undefined,
+        delivery_user_id: deliveryUserId || undefined,
+      } : {}),
       discount_value: Number(couponDraft.discount_value || 0),
       usage_limit: Number(couponDraft.usage_limit || 0)
     };
@@ -318,12 +682,17 @@ function AdminPromotionsPanel() {
       setCouponDraft(initialCouponForm);
       return;
     }
-    await persistResource("coupon", "create", payload, "Coupon created.");
+    await persistResource("coupon", "create", payload, isAutoGenerated ? "Generated coupon created and sent." : "Coupon created.");
     setCouponDraft(initialCouponForm);
+    setCouponDeliveryEmail("");
+    setCouponDeliveryUserId("");
   };
 
   const startEditingCoupon = (coupon) => {
     setEditingCouponId(coupon.id);
+    const metadata = getCouponMetadata(coupon);
+    setCouponDeliveryEmail(metadata?.restricted_user_id ? "" : String(metadata?.delivery_email || ""));
+    setCouponDeliveryUserId(metadata?.restricted_user_id == null ? "" : String(metadata.restricted_user_id));
     setCouponDraft({
       name: coupon.name || "",
       code: coupon.code || "",
@@ -341,6 +710,10 @@ function AdminPromotionsPanel() {
 
   const toggleCouponStatus = async (coupon, nextStatus) => {
     await persistResource("coupon", "update", { id: coupon.id, status: nextStatus }, "Coupon status updated.");
+  };
+
+  const archiveCoupon = async (coupon) => {
+    await persistResource("coupon", "update", { id: coupon.id, status: "archived" }, "Coupon archived.");
   };
 
   const duplicateCoupon = async (coupon) => {
@@ -386,33 +759,85 @@ function AdminPromotionsPanel() {
 
   const handleFlashSubmit = async (event) => {
     event.preventDefault();
+    const today = getISTDateString();
+    if (flashDraft.status === "scheduled" && (!flashDraft.start_date || flashDraft.start_date <= today)) {
+      setMessage("Scheduled Flash Sales must have a start date later than today.");
+      return;
+    }
+    const payload = {
+      ...flashDraft,
+      metadata: {
+        featured_category_id: flashDraft.featured_placement === "category" ? flashDraft.featured_category_id || null : null,
+        featured_collection_id: flashDraft.featured_placement === "collection" ? flashDraft.featured_collection_id || null : null,
+        keywords: (
+          (flashDraft.featured_placement === "category" && flashDraft.featured_category_id === "all")
+          || (flashDraft.featured_placement === "collection" && flashDraft.featured_collection_id === "all")
+        ) ? flashDraft.keywords : "",
+        discount_value: ["percentage", "fixed_amount"].includes(flashDraft.discount_rule)
+          ? Number(flashDraft.discount_value || 0)
+          : 0
+      }
+    };
     if (editingFlashId) {
-      await persistResource("flash_sale", "update", { ...flashDraft, id: editingFlashId }, "Flash sale updated.");
+      await persistResource("flash_sale", "update", { ...payload, id: editingFlashId }, "Flash sale updated.");
       setEditingFlashId(null);
       setFlashDraft(initialFlashForm);
       return;
     }
-    await persistResource("flash_sale", "create", flashDraft, "Flash sale created.");
+    await persistResource("flash_sale", "create", payload, "Flash sale created.");
     setFlashDraft(initialFlashForm);
   };
 
   const startEditingFlash = (sale) => {
     setEditingFlashId(sale.id);
+    const metadata = typeof sale.metadata === "string" ? JSON.parse(sale.metadata) : sale.metadata || {};
     setFlashDraft({
       name: sale.name || "",
       discount_rule: sale.discount_rule || "",
       status: sale.status || "scheduled",
       start_date: sale.start_date ? String(sale.start_date).slice(0, 10) : "",
       end_date: sale.end_date ? String(sale.end_date).slice(0, 10) : "",
-      featured_placement: sale.featured_placement || "homepage"
+      featured_placement: sale.featured_placement || "homepage",
+      featured_category_id: metadata.featured_category_id == null ? "" : String(metadata.featured_category_id),
+      featured_collection_id: metadata.featured_collection_id == null ? "" : String(metadata.featured_collection_id),
+      keywords: metadata.keywords || "",
+      discount_value: metadata.discount_value ?? ""
     });
     setActiveSection("flash-sales");
   };
+
+  const scheduledStartMinimum = (() => {
+    const tomorrow = parseLocalDate(getISTDateString());
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return formatLocalDate(tomorrow);
+  })();
 
   const saveSectionItem = async (resource, draft, setter, resetForm, successMessage) => {
     await persistResource(resource, "create", draft, successMessage);
     setter(resetForm);
   };
+
+  const flashEventRecords = flashSales.map((sale) => {
+    const metadata = typeof sale.metadata === "string" ? JSON.parse(sale.metadata || "{}") : sale.metadata || {};
+    const timing = getFlashEventTiming(sale, new Date(flashEventsNow));
+    const placement = String(sale.featured_placement || "homepage").toLowerCase();
+    const targetLabel = placement === "category"
+      ? `Category: ${metadata.featured_category_id === "all" ? "All categories" : flashCategories.find((category) => String(category.id) === String(metadata.featured_category_id))?.name || "Selected category"}`
+      : placement === "collection"
+        ? `Collection: ${metadata.featured_collection_id === "all" ? "All collections" : flashCollections.find((collection) => String(collection.id) === String(metadata.featured_collection_id))?.name || "Selected collection"}`
+        : "Homepage";
+    return {
+      sale,
+      metadata,
+      timing,
+      targetLabel,
+      ruleDetails: getFlashEventRuleDetails(sale),
+      remaining: timing.expiresAt ? timing.expiresAt.getTime() - flashEventsNow : null
+    };
+  });
+  const filteredFlashEvents = flashEventRecords.filter(({ timing }) => (
+    flashEventFilter === "all" || timing.status === flashEventFilter
+  ));
 
   const renderKpiCards = () => {
     const cards = [
@@ -472,32 +897,161 @@ function AdminPromotionsPanel() {
                 <h3>Coupon Management</h3>
                 <span>Create, edit, duplicate, enable, disable, archive, and search coupons.</span>
               </div>
-              <form className="promotions-form-grid" onSubmit={handleCouponSubmit}>
-                <input value={couponDraft.name} onChange={(e) => setCouponDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Coupon name" />
-                <input value={couponDraft.code} onChange={(e) => setCouponDraft((prev) => ({ ...prev, code: e.target.value }))} placeholder="Coupon code" />
-                <select value={couponDraft.coupon_type} onChange={(e) => setCouponDraft((prev) => ({ ...prev, coupon_type: e.target.value }))}>
-                  <option value="manual">Manual</option>
-                  <option value="auto">Auto Generated</option>
-                  <option value="referral">Referral</option>
-                  <option value="first_order">First Order</option>
-                </select>
-                <select value={couponDraft.discount_type} onChange={(e) => setCouponDraft((prev) => ({ ...prev, discount_type: e.target.value }))}>
-                  <option value="percentage">Percentage</option>
-                  <option value="fixed">Fixed Amount</option>
-                  <option value="free_asset">Free Asset</option>
-                  <option value="gift_credit">Gift Credits</option>
-                </select>
-                <input type="number" value={couponDraft.discount_value} onChange={(e) => setCouponDraft((prev) => ({ ...prev, discount_value: e.target.value }))} placeholder="Discount value" />
-                <input type="date" value={couponDraft.start_at} onChange={(e) => setCouponDraft((prev) => ({ ...prev, start_at: e.target.value }))} />
-                <input type="date" value={couponDraft.end_at} onChange={(e) => setCouponDraft((prev) => ({ ...prev, end_at: e.target.value }))} />
-                <input type="number" value={couponDraft.usage_limit} onChange={(e) => setCouponDraft((prev) => ({ ...prev, usage_limit: e.target.value }))} placeholder="Usage limit" />
-                <select value={couponDraft.status} onChange={(e) => setCouponDraft((prev) => ({ ...prev, status: e.target.value }))}>
-                  <option value="active">Active</option>
-                  <option value="disabled">Disabled</option>
-                  <option value="archived">Archived</option>
-                  <option value="draft">Draft</option>
-                </select>
-                <textarea value={couponDraft.notes} onChange={(e) => setCouponDraft((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Notes" />
+              <form className="promotions-form-grid promotions-coupon-form" onSubmit={handleCouponSubmit}>
+                <div className="promotions-field-group">
+                  <label htmlFor="coupon-name">Coupon name</label>
+                  <input id="coupon-name" value={couponDraft.name} onChange={(e) => setCouponDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Coupon name" />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="coupon-code">Coupon code</label>
+                  <input
+                    id="coupon-code"
+                    value={couponDraft.code}
+                    onChange={(e) => setCouponDraft((prev) => ({ ...prev, code: e.target.value }))}
+                    placeholder={couponDraft.coupon_type === "auto" ? "Generated when coupon is created" : "Enter coupon code"}
+                    disabled={couponDraft.coupon_type === "auto"}
+                  />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="coupon-type">Coupon type</label>
+                  <select
+                    id="coupon-type"
+                    value={couponDraft.coupon_type}
+                    onChange={(e) => {
+                      const couponType = e.target.value;
+                      setCouponDraft((prev) => ({ ...prev, coupon_type: couponType, code: couponType === "auto" ? "" : prev.code }));
+                      if (couponType !== "auto") {
+                        setCouponDeliveryEmail("");
+                        setCouponDeliveryUserId("");
+                      }
+                    }}
+                  >
+                    <option value="manual">Manual</option>
+                    <option value="auto">Auto Generated</option>
+                    <option value="first_order">First Order</option>
+                  </select>
+                </div>
+                <div className={`promotions-auto-fields${couponDraft.coupon_type === "auto" ? " is-open" : ""}`} aria-hidden={couponDraft.coupon_type !== "auto"}>
+                  <div className="promotions-auto-fields-inner">
+                    <div className="promotions-field-group promotions-coupon-recipient">
+                      <label htmlFor="coupon-delivery-email">Send generated code to email</label>
+                      <input
+                        id="coupon-delivery-email"
+                        type="email"
+                        value={couponDeliveryEmail}
+                        onChange={(e) => {
+                          setCouponDeliveryEmail(e.target.value);
+                          if (e.target.value) setCouponDeliveryUserId("");
+                        }}
+                        placeholder="customer@example.com"
+                      />
+                    </div>
+                    <div
+                      className={`promotions-field-group promotions-coupon-recipient promotions-customer-picker${isCustomerPickerOpen ? " is-open" : ""}`}
+                      onBlur={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget)) {
+                          setIsCustomerPickerOpen(false);
+                        }
+                      }}
+                    >
+                      <label id="coupon-delivery-customer-label">Or select a customer</label>
+                      <button
+                        type="button"
+                        className="promotions-customer-picker-trigger"
+                        aria-haspopup="listbox"
+                        aria-expanded={isCustomerPickerOpen}
+                        aria-labelledby="coupon-delivery-customer-label"
+                        onClick={() => setIsCustomerPickerOpen((open) => !open)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") setIsCustomerPickerOpen(false);
+                        }}
+                      >
+                        {customers.find((customer) => String(customer.id) === couponDeliveryUserId)?.username || "Choose a customer"}
+                      </button>
+                      {isCustomerPickerOpen && (
+                        <div className="promotions-customer-picker-menu" role="listbox" aria-label="Active customers">
+                          <input
+                            type="search"
+                            aria-label="Search customers by username"
+                            placeholder="Search username..."
+                            value={couponCustomerSearch}
+                            onChange={(event) => setCouponCustomerSearch(event.target.value)}
+                            autoFocus
+                          />
+                          <div className="promotions-customer-picker-options">
+                            {isLoadingCouponCustomers ? (
+                              <span className="promotions-customer-picker-empty">Loading active customers...</span>
+                            ) : couponCustomerLoadError ? (
+                              <span className="promotions-customer-picker-empty" role="alert">{couponCustomerLoadError}</span>
+                            ) : filteredCouponCustomers.length ? filteredCouponCustomers.map((customer) => (
+                              <button
+                                key={customer.id}
+                                type="button"
+                                role="option"
+                                aria-selected={String(customer.id) === couponDeliveryUserId}
+                                onClick={() => {
+                                  setCouponDeliveryUserId(String(customer.id));
+                                  setCouponDeliveryEmail("");
+                                  setCouponCustomerSearch("");
+                                  setIsCustomerPickerOpen(false);
+                                }}
+                              >
+                                {customer.username}
+                              </button>
+                            )) : <span className="promotions-customer-picker-empty">No active customers found.</span>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {editingCouponRecipient ? (
+                      <div className="promotions-field-help promotions-coupon-recipient">
+                        Current recipient: {editingCouponRecipient}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="coupon-discount-type">Discount type</label>
+                  <select id="coupon-discount-type" value={couponDraft.discount_type} onChange={(e) => setCouponDraft((prev) => ({ ...prev, discount_type: e.target.value }))}>
+                    <option value="percentage">Percentage</option>
+                    <option value="fixed">Fixed Amount</option>
+                  </select>
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="coupon-discount-value">Discount value</label>
+                  <input id="coupon-discount-value" type="number" value={couponDraft.discount_value} onChange={(e) => setCouponDraft((prev) => ({ ...prev, discount_value: e.target.value }))} placeholder="Enter value" />
+                </div>
+                <CouponDatePicker
+                  id="coupon-start-date"
+                  label="Start date"
+                  value={couponDraft.start_at}
+                  onChange={(start_at) => setCouponDraft((prev) => ({ ...prev, start_at }))}
+                  helpText="The coupon becomes available on this date."
+                />
+                <CouponDatePicker
+                  id="coupon-end-date"
+                  label="End date"
+                  value={couponDraft.end_at}
+                  onChange={(end_at) => setCouponDraft((prev) => ({ ...prev, end_at }))}
+                  helpText="The coupon expires at the start of this date, so it may not be usable on the selected end date."
+                />
+                <div className="promotions-field-group">
+                  <label htmlFor="coupon-usage-limit">Usage limit</label>
+                  <input id="coupon-usage-limit" type="number" value={couponDraft.usage_limit} onChange={(e) => setCouponDraft((prev) => ({ ...prev, usage_limit: e.target.value }))} placeholder="Unlimited" />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="coupon-status">Status</label>
+                  <select id="coupon-status" value={couponDraft.status} onChange={(e) => setCouponDraft((prev) => ({ ...prev, status: e.target.value }))}>
+                    <option value="active">Active</option>
+                    <option value="disabled">Disabled</option>
+                    <option value="archived">Archived</option>
+                    <option value="draft">Draft</option>
+                  </select>
+                </div>
+                <div className="promotions-field-group promotions-coupon-notes">
+                  <label htmlFor="coupon-notes">Notes</label>
+                  <textarea id="coupon-notes" value={couponDraft.notes} onChange={(e) => setCouponDraft((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Notes" />
+                </div>
                 <button type="submit">{editingCouponId ? "Update Coupon" : "Create Coupon"}</button>
               </form>
             </div>
@@ -530,6 +1084,14 @@ function AdminPromotionsPanel() {
                         <div className="promotions-muted">
                           {coupon.code} • {String(coupon.discount_type || '').replace(/^(flat|fixed)$/i, 'Fixed Amount').replace(/^percentage$/i, 'Percentage')} • {coupon.status}
                         </div>
+                        {String(coupon.coupon_type || '').toLowerCase() === "auto" && (
+                          <div className="promotions-muted">
+                            Recipient: {[
+                              getCouponMetadata(coupon).restricted_username,
+                              getCouponDeliveryEmail(coupon)
+                            ].filter(Boolean).join(" • ") || "Not recorded"}
+                          </div>
+                        )}
                         <div className="promotions-muted">
                           {usageLimit > 0 ? `Remaining: ${remainingUses}/${usageLimit}` : 'Remaining: Unlimited'} • {expiryText}
                         </div>
@@ -538,6 +1100,7 @@ function AdminPromotionsPanel() {
                         <button type="button" onClick={() => startEditingCoupon(coupon)}>Edit</button>
                         <button type="button" onClick={() => duplicateCoupon(coupon)}>Duplicate</button>
                         <button type="button" onClick={() => toggleCouponStatus(coupon, coupon.status === "active" ? "disabled" : "active")}>{coupon.status === "active" ? "Disable" : "Enable"}</button>
+                        <button type="button" disabled={coupon.status === "archived"} onClick={() => archiveCoupon(coupon)}>{coupon.status === "archived" ? "Archived" : "Archive"}</button>
                         <button type="button" onClick={() => deleteCoupon(coupon.id)}>Delete</button>
                       </div>
                     </div>
@@ -555,30 +1118,60 @@ function AdminPromotionsPanel() {
                 <h3>Campaigns</h3>
                 <span>Plan launches, budgets, audiences, and notes in one place.</span>
               </div>
-              <form className="promotions-form-grid" onSubmit={handleCampaignSubmit}>
-                <input value={campaignDraft.name} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Campaign name" />
-                <input value={campaignDraft.objective} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, objective: e.target.value }))} placeholder="Objective" />
-                <select value={campaignDraft.campaign_type} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, campaign_type: e.target.value }))}>
-                  <option value="launch">Launch</option>
-                  <option value="festival">Festival</option>
-                  <option value="seasonal">Seasonal</option>
-                  <option value="vip">VIP</option>
-                </select>
-                <input type="number" value={campaignDraft.budget} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, budget: e.target.value }))} placeholder="Budget" />
-                <input type="date" value={campaignDraft.start_date} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, start_date: e.target.value }))} />
-                <input type="date" value={campaignDraft.end_date} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, end_date: e.target.value }))} />
-                <input value={campaignDraft.audience} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, audience: e.target.value }))} placeholder="Target audience" />
-                <select value={campaignDraft.priority} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, priority: e.target.value }))}>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
-                <select value={campaignDraft.status} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, status: e.target.value }))}>
-                  <option value="planned">Planned</option>
-                  <option value="running">Running</option>
-                  <option value="completed">Completed</option>
-                </select>
-                <textarea value={campaignDraft.notes} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Notes" />
+              <form className="promotions-form-grid promotions-campaign-form" onSubmit={handleCampaignSubmit}>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-name">Campaign Name</label>
+                  <input id="campaign-name" value={campaignDraft.name} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Campaign name" />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-objective">Objective</label>
+                  <input id="campaign-objective" value={campaignDraft.objective} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, objective: e.target.value }))} placeholder="Objective" />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-type">Campaign Type</label>
+                  <select id="campaign-type" value={campaignDraft.campaign_type} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, campaign_type: e.target.value }))}>
+                    <option value="launch">Launch</option>
+                    <option value="festival">Festival</option>
+                    <option value="seasonal">Seasonal</option>
+                    <option value="vip">VIP</option>
+                  </select>
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-budget">Budget</label>
+                  <input id="campaign-budget" type="number" value={campaignDraft.budget} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, budget: e.target.value }))} placeholder="Budget" />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-start-date">Start Date</label>
+                  <input id="campaign-start-date" type="date" value={campaignDraft.start_date} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, start_date: e.target.value }))} />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-end-date">End Date</label>
+                  <input id="campaign-end-date" type="date" value={campaignDraft.end_date} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, end_date: e.target.value }))} />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-audience">Target Audience</label>
+                  <input id="campaign-audience" value={campaignDraft.audience} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, audience: e.target.value }))} placeholder="Target audience" />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-priority">Priority</label>
+                  <select id="campaign-priority" value={campaignDraft.priority} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, priority: e.target.value }))}>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-status">Status</label>
+                  <select id="campaign-status" value={campaignDraft.status} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, status: e.target.value }))}>
+                    <option value="planned">Planned</option>
+                    <option value="running">Running</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </div>
+                <div className="promotions-field-group promotions-campaign-notes">
+                  <label htmlFor="campaign-notes">Notes</label>
+                  <textarea id="campaign-notes" value={campaignDraft.notes} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Notes" />
+                </div>
                 <button type="submit">{editingCampaignId ? "Update Campaign" : "Create Campaign"}</button>
               </form>
             </div>
@@ -612,33 +1205,205 @@ function AdminPromotionsPanel() {
                 <span>Build urgency, countdown rules, and featured placement.</span>
               </div>
               <form className="promotions-form-grid" onSubmit={handleFlashSubmit}>
-                <input value={flashDraft.name} onChange={(e) => setFlashDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Flash sale name" />
-                <input value={flashDraft.discount_rule} onChange={(e) => setFlashDraft((prev) => ({ ...prev, discount_rule: e.target.value }))} placeholder="Discount rule" />
-                <input type="date" value={flashDraft.start_date} onChange={(e) => setFlashDraft((prev) => ({ ...prev, start_date: e.target.value }))} />
-                <input type="date" value={flashDraft.end_date} onChange={(e) => setFlashDraft((prev) => ({ ...prev, end_date: e.target.value }))} />
-                <select value={flashDraft.featured_placement} onChange={(e) => setFlashDraft((prev) => ({ ...prev, featured_placement: e.target.value }))}>
-                  <option value="homepage">Homepage</option>
-                  <option value="category">Category</option>
-                  <option value="collection">Collection</option>
-                </select>
-                <select value={flashDraft.status} onChange={(e) => setFlashDraft((prev) => ({ ...prev, status: e.target.value }))}>
-                  <option value="scheduled">Scheduled</option>
-                  <option value="running">Running</option>
-                  <option value="expired">Expired</option>
-                </select>
-                <button type="submit">{editingFlashId ? "Update Flash Sale" : "Create Flash Sale"}</button>
+                <div className="promotions-field-group">
+                  <label htmlFor="flash-sale-name">Flash Sale Name</label>
+                  <input id="flash-sale-name" value={flashDraft.name} onChange={(e) => setFlashDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Flash sale name" />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="flash-sale-discount-rule">Discount Rule</label>
+                  <select
+                    id="flash-sale-discount-rule"
+                    value={flashDraft.discount_rule}
+                    onChange={(e) => setFlashDraft((prev) => ({ ...prev, discount_rule: e.target.value }))}
+                    required
+                  >
+                    <option value="">Select a discount rule</option>
+                    {!FLASH_SALE_DISCOUNT_RULES.some((rule) => rule.value === flashDraft.discount_rule)
+                      && flashDraft.discount_rule
+                      && <option value={flashDraft.discount_rule}>{flashDraft.discount_rule}</option>}
+                    {FLASH_SALE_DISCOUNT_RULES.map((rule) => (
+                      <option key={rule.value} value={rule.value}>{rule.label}</option>
+                    ))}
+                  </select>
+                </div>
+                {["percentage", "fixed_amount"].includes(flashDraft.discount_rule) && (
+                  <div key="flash-discount-value-field" className="promotions-field-group promotions-conditional-field">
+                    <label htmlFor="flash-sale-discount-value">
+                      {flashDraft.discount_rule === "percentage" ? "Discount Percentage" : "Discount Amount"}
+                    </label>
+                    <input
+                      id="flash-sale-discount-value"
+                      type="number"
+                      min="0.01"
+                      max={flashDraft.discount_rule === "percentage" ? "100" : undefined}
+                      step="0.01"
+                      value={flashDraft.discount_value}
+                      onChange={(e) => setFlashDraft((prev) => ({ ...prev, discount_value: e.target.value }))}
+                      required
+                      placeholder={flashDraft.discount_rule === "percentage" ? "Enter percentage" : "Enter amount"}
+                    />
+                  </div>
+                )}
+                <CouponDatePicker
+                  id="flash-sale-start-date"
+                  label="Start Date"
+                  value={flashDraft.start_date}
+                  onChange={(start_date) => setFlashDraft((prev) => ({ ...prev, start_date }))}
+                  minDate={flashDraft.status === "scheduled" ? scheduledStartMinimum : ""}
+                  helpText={flashDraft.status === "scheduled"
+                    ? "Scheduled sales must start after today. Dates follow IST (Asia/Kolkata)."
+                    : "Dates follow IST (Asia/Kolkata)."}
+                  className="promotions-date-picker--flash-sale"
+                />
+                <CouponDatePicker
+                  id="flash-sale-end-date"
+                  label="End Date"
+                  value={flashDraft.end_date}
+                  onChange={(end_date) => setFlashDraft((prev) => ({ ...prev, end_date }))}
+                  helpText="The end date is inclusive through 11:59:59 PM IST."
+                  className="promotions-date-picker--flash-sale"
+                />
+                <div className="promotions-field-group">
+                  <label htmlFor="flash-sale-placement">Featured Placement</label>
+                  <select id="flash-sale-placement" value={flashDraft.featured_placement} onChange={(e) => setFlashDraft((prev) => ({ ...prev, featured_placement: e.target.value }))}>
+                    <option value="homepage">Homepage</option>
+                    <option value="category">Category</option>
+                    <option value="collection">Collection</option>
+                  </select>
+                </div>
+                {flashDraft.featured_placement === "category" && (
+                  <div key="flash-category-field" className="promotions-field-group promotions-conditional-field">
+                    <label htmlFor="flash-sale-category">Active Category</label>
+                    <select
+                      id="flash-sale-category"
+                      value={flashDraft.featured_category_id}
+                      onChange={(e) => setFlashDraft((prev) => ({ ...prev, featured_category_id: e.target.value }))}
+                      required
+                    >
+                      <option value="all">All</option>
+                      <option value="">Select a category</option>
+                      {flashCategories.map((category) => (
+                        <option key={category.id} value={category.id}>{category.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {flashDraft.featured_placement === "collection" && (
+                  <div key="flash-collection-field" className="promotions-field-group promotions-conditional-field">
+                    <label htmlFor="flash-sale-collection">Active Collection</label>
+                    <select
+                      id="flash-sale-collection"
+                      value={flashDraft.featured_collection_id}
+                      onChange={(e) => setFlashDraft((prev) => ({ ...prev, featured_collection_id: e.target.value }))}
+                      required
+                    >
+                      <option value="all">All</option>
+                      <option value="">Select a collection</option>
+                      {flashCollections.map((collection) => (
+                        <option key={collection.id} value={collection.id}>{collection.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {((flashDraft.featured_placement === "category" && flashDraft.featured_category_id === "all")
+                  || (flashDraft.featured_placement === "collection" && flashDraft.featured_collection_id === "all")) && (
+                  <div key="flash-keywords-field" className="promotions-field-group promotions-conditional-field">
+                    <label htmlFor="flash-sale-keywords">Keywords</label>
+                    <input
+                      id="flash-sale-keywords"
+                      type="text"
+                      value={flashDraft.keywords}
+                      onChange={(e) => setFlashDraft((prev) => ({ ...prev, keywords: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if (e.key === "Tab") {
+                          const keywords = e.currentTarget.value
+                            .split(/[,\s]+/)
+                            .map((keyword) => keyword.trim())
+                            .filter(Boolean)
+                            .join(", ");
+                          setFlashDraft((prev) => ({ ...prev, keywords }));
+                        }
+                      }}
+                      placeholder="Enter keywords separated by spaces or commas"
+                    />
+                  </div>
+                )}
+                <div className="promotions-field-group">
+                  <label htmlFor="flash-sale-status">Status</label>
+                  <select
+                    id="flash-sale-status"
+                    value={flashDraft.status}
+                    onChange={(e) => {
+                      const status = e.target.value;
+                      setFlashDraft((prev) => ({
+                        ...prev,
+                        status,
+                        start_date: status === "scheduled" && prev.start_date <= getISTDateString() ? "" : prev.start_date
+                      }));
+                    }}
+                  >
+                    <option value="scheduled">Scheduled</option>
+                    <option value="running">Running</option>
+                    <option value="expired">Expired</option>
+                  </select>
+                </div>
+                <button className="flash-sale-submit" type="submit">
+                  {editingFlashId ? "Update Flash Sale" : "Create Flash Sale"}
+                </button>
               </form>
             </div>
             <div className="promotions-card">
-              <div className="promotions-card-header">
-                <h3>Flash Events</h3>
+              <div className="promotions-card-header flash-events-header">
+                <div>
+                  <h3>Flash Events</h3>
+                  <span>{filteredFlashEvents.length} {flashEventFilter === "all" ? "events" : `${flashEventFilter} events`}</span>
+                </div>
+                <div className="flash-events-filter">
+                  <label htmlFor="flash-events-status-filter">Show</label>
+                  <select
+                    id="flash-events-status-filter"
+                    aria-label="Flash event status filter"
+                    value={flashEventFilter}
+                    onChange={(event) => setFlashEventFilter(event.target.value)}
+                  >
+                    <option value="active">Active</option>
+                    <option value="expired">Expired</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="all">All events</option>
+                  </select>
+                </div>
               </div>
               <div className="promotions-list">
-                {flashSales.length === 0 ? <p>No flash sales yet.</p> : flashSales.map((sale) => (
-                  <div key={sale.id} className="promotions-list-item">
-                    <div>
-                      <strong>{sale.name}</strong>
-                      <div className="promotions-muted">{sale.discount_rule} • {sale.status}</div>
+                {flashSales.length === 0 ? <p>No flash sales yet.</p> : filteredFlashEvents.length === 0 ? (
+                  <p>No {flashEventFilter === "all" ? "" : `${flashEventFilter} `}flash events found.</p>
+                ) : filteredFlashEvents.map(({ sale, timing, targetLabel, ruleDetails, remaining }) => (
+                  <div key={sale.id} className="promotions-list-item flash-event-item">
+                    <div className="flash-event-content">
+                      <div className="flash-event-title-row">
+                        <strong>{sale.name || "Flash Sale"}</strong>
+                        <span className={`flash-event-status is-${timing.status}`}>{timing.status}</span>
+                      </div>
+                      <div className="flash-event-details">
+                        <span>{ruleDetails}</span>
+                        <span>{targetLabel}</span>
+                        <span>Starts {formatFlashEventDate(timing.startDate)}</span>
+                        {timing.endDate ? (
+                          <span>
+                            {timing.status === "expired" ? "Expired" : "Expires"} {formatFlashEventDate(timing.endDate)} at 11:59:59 PM IST
+                          </span>
+                        ) : (
+                          <span>No expiry date set</span>
+                        )}
+                      </div>
+                      {timing.status === "active" && remaining !== null && remaining > 0 && (
+                        <div className="flash-event-countdown" aria-live="off">
+                          <span>Time remaining</span>
+                          <strong>{formatFlashEventCountdown(remaining)}</strong>
+                        </div>
+                      )}
+                      {timing.status === "active" && remaining !== null && remaining <= 0 && (
+                        <div className="flash-event-countdown is-expired">Expiry reached</div>
+                      )}
                     </div>
                     <div className="promotions-inline-actions">
                       <button type="button" onClick={() => startEditingFlash(sale)}>Edit</button>

@@ -19,9 +19,14 @@ const getDailyReportSubject = ({ siteName = 'GFXunlimit', metrics = {}, date = n
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: true
+    hour12: true,
+    timeZone: 'Asia/Kolkata'
   }).format(date).replace(' ', ': ');
-  return `${siteName} daily website summary${sectionText} ${date.toDateString()} - ${timeText}`;
+  const dateText = new Intl.DateTimeFormat('en-IN', {
+    dateStyle: 'medium',
+    timeZone: 'Asia/Kolkata'
+  }).format(date);
+  return `${siteName} daily website summary${sectionText} ${dateText} IST - ${timeText}`;
 };
 
 module.exports = { getDailyReportSubject };

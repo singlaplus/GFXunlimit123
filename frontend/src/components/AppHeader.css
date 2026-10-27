@@ -18,6 +18,108 @@
   border-bottom: 1px solid #2d2d2d;
 }
 
+.upcoming-flash-sale-ribbon {
+  --flash-sale-label-width: 120px;
+  position: relative;
+  height: 30px;
+  overflow: hidden;
+  background: #dc2626;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.upcoming-flash-sale-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  width: var(--flash-sale-label-width);
+  height: 100%;
+  align-items: center;
+  padding-left: 16px;
+  background: #dc2626;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  transform-origin: left center;
+  animation: upcoming-flash-sale-pulse 2.4s ease-in-out infinite;
+}
+
+.upcoming-flash-sale-live-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  max-width: 45%;
+  height: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  overflow: hidden;
+  padding: 0 16px 0 12px;
+  background: #fff;
+  color: #dc2626;
+  font-size: 0.75rem;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.upcoming-flash-sale-live-item {
+  flex: 0 0 auto;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.upcoming-flash-sale-track {
+  position: absolute;
+  top: 0;
+  left: var(--flash-sale-label-width);
+  display: flex;
+  width: max-content;
+  height: 100%;
+  align-items: center;
+  animation: upcoming-flash-sale-scroll 28s linear infinite;
+}
+
+.upcoming-flash-sale-group {
+  display: flex;
+  flex: 0 0 auto;
+  height: 100%;
+  align-items: center;
+}
+
+.upcoming-flash-sale-item {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  padding: 0 28px;
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.upcoming-flash-sale-discount {
+  font-weight: 800;
+}
+
+@keyframes upcoming-flash-sale-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.07); }
+}
+
+@keyframes upcoming-flash-sale-scroll {
+  from { transform: translateX(calc(0px - var(--flash-sale-shift))); }
+  to { transform: translateX(var(--flash-sale-available-width)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upcoming-flash-sale-track { animation: none; }
+  .upcoming-flash-sale-label { animation: none; }
+}
+
 .app-header-container {
   width: 100%;
   max-width: none;
@@ -761,6 +863,105 @@
 }
 
 .header-notification-wrap { position: relative; display: flex; align-items: center; gap: 10px; }
+.admin-menu-wrap { position: relative; z-index: 32; }
+.admin-menu-dropdown { display: none; position: absolute; z-index: 31; top: 100%; left: 0; width: max-content; max-width: none; flex-direction: column; align-items: flex-start; gap: 4px; }
+.admin-menu-wrap.is-open .admin-menu-dropdown {
+  display: flex;
+  animation: admin-menu-reveal 180ms ease-out both;
+}
+.tools-menu-wrap { position: relative; z-index: 32; }
+.tools-menu-dropdown {
+  display: none;
+  position: absolute;
+  z-index: 31;
+  top: 100%;
+  left: 0;
+  width: max-content;
+  max-width: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.tools-menu-wrap.is-open .tools-menu-dropdown {
+  display: flex;
+  animation: admin-menu-reveal 180ms ease-out both;
+}
+.tools-menu-dropdown .nav-link-btn {
+  width: max-content;
+  max-width: none;
+  white-space: nowrap;
+  position: relative;
+  overflow: hidden;
+  background-color: #f5f5f5;
+  background-image: none;
+}
+.tools-menu-dropdown .nav-link-btn:hover,
+.tools-menu-dropdown .nav-link-btn:focus-visible {
+  background-color: #f5f5f5;
+  background-image:
+    radial-gradient(ellipse 2px 3px, rgba(65, 137, 184, .5) 75%, transparent 80%),
+    radial-gradient(ellipse 2px 3px, rgba(65, 137, 184, .38) 75%, transparent 80%),
+    radial-gradient(ellipse 2px 3px, rgba(65, 137, 184, .44) 75%, transparent 80%);
+  background-repeat: no-repeat;
+  background-size: 5px 12px, 5px 14px, 5px 11px;
+  background-position: 18px -14px, 50% -16px, calc(100% - 18px) -13px;
+  animation: admin-menu-rain .7s linear infinite;
+}
+.admin-menu-dropdown .nav-link-btn { width: max-content; max-width: none; white-space: nowrap; }
+.admin-menu-dropdown .nav-link-btn {
+  position: relative;
+  overflow: hidden;
+  background-color: #f5f5f5;
+  background-image: none;
+}
+.admin-menu-dropdown .nav-link-btn:hover,
+.admin-menu-dropdown .nav-link-btn:focus-visible {
+  background-color: #f5f5f5;
+  background-image:
+    radial-gradient(ellipse 2px 3px, rgba(65, 137, 184, .5) 75%, transparent 80%),
+    radial-gradient(ellipse 2px 3px, rgba(65, 137, 184, .38) 75%, transparent 80%),
+    radial-gradient(ellipse 2px 3px, rgba(65, 137, 184, .44) 75%, transparent 80%);
+  background-repeat: no-repeat;
+  background-size: 5px 12px, 5px 14px, 5px 11px;
+  background-position: 18px -14px, 50% -16px, calc(100% - 18px) -13px;
+  animation: admin-menu-rain .7s linear infinite;
+}
+.app-header.dark .admin-menu-dropdown .nav-link-btn,
+.app-header.dark .admin-menu-dropdown .nav-link-btn:hover,
+.app-header.dark .admin-menu-dropdown .nav-link-btn:focus-visible {
+  background-color: rgba(255, 255, 255, .08);
+}
+@keyframes admin-menu-rain {
+  to {
+    background-position: 18px 44px, 50% 46px, calc(100% - 18px) 43px;
+  }
+}
+@keyframes admin-menu-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .admin-menu-wrap.is-open .admin-menu-dropdown {
+    animation: none;
+  }
+  .tools-menu-wrap.is-open .tools-menu-dropdown {
+    animation: none;
+  }
+  .tools-menu-dropdown .nav-link-btn:hover,
+  .tools-menu-dropdown .nav-link-btn:focus-visible {
+    animation: none;
+  }
+  .admin-menu-dropdown .nav-link-btn:hover,
+  .admin-menu-dropdown .nav-link-btn:focus-visible {
+    animation: none;
+  }
+}
 .header-notification-button { display: inline-flex; align-items: center; gap: 7px; padding: 9px 11px; color: #202020; background: transparent; border: 1px solid #e5e5e5; border-radius: 999px; font: inherit; font-size: 14px; cursor: pointer; }
 .header-notification-button:hover { color: #ed2224; border-color: #ed2224; }
 .header-notification-button strong { min-width: 16px; color: #fff; background: #ed2224; border-radius: 999px; font-size: 10px; line-height: 16px; text-align: center; }

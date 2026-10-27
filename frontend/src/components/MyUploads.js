@@ -5,6 +5,7 @@ import { toast } from "react-toastify";
 import AssetThumbnail from "./AssetThumbnail";
 import Upload from "../Upload";
 import { buildAuthHeaders } from "../utils/authSession";
+import { formatIndiaDate } from "../utils/indiaTime";
 
 function MyUploads({ darkMode = false }) {
   const isDarkMode = Boolean(darkMode);
@@ -207,17 +208,11 @@ function MyUploads({ darkMode = false }) {
   const formatDate = (value) => {
     if (!value) return "—";
 
-    const date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) {
-      return "—";
-    }
-
-    return date.toLocaleDateString("en-IN", {
+    return formatIndiaDate(value, {
       day: "2-digit",
       month: "short",
       year: "numeric"
-    });
+    }) || "—";
   };
 
   const getDaysLeft = (image) => {

@@ -15,6 +15,7 @@ import "./ContributorDashboard.css";
 import "./TaxCenter.css";
 import TaxW8BenForm from "./TaxW8BenForm";
 import { getContributorReputationTier } from "../../utils/statsUtils";
+import { formatIndiaDate } from "../../utils/indiaTime";
 
 const navGroups = [
   { label: "", items: [["overview", "Home"]] },
@@ -52,24 +53,18 @@ const number = (value) => Number(value || 0).toLocaleString();
 const money = (value) => `₹${Number(value || 0).toFixed(2)}`;
 const dateLabel = (value) =>
   value
-    ? new Date(value).toLocaleDateString(undefined, {
+    ? formatIndiaDate(value, {
         month: "short",
         day: "numeric",
         year: "numeric",
-      })
+      }) || "-"
     : "-";
 const shortDateLabel = (value) => {
   if (!value) return "-";
-  const rawValue = String(value);
-  const parsedDate = new Date(
-    rawValue.length === 10 ? `${rawValue}T00:00:00` : rawValue,
-  );
-  return Number.isNaN(parsedDate.getTime())
-    ? "-"
-    : parsedDate.toLocaleDateString(undefined, {
+  return formatIndiaDate(value, {
         month: "short",
         day: "numeric",
-      });
+      }) || "-";
 };
 const statusLabel = (value) =>
   String(value || "pending")

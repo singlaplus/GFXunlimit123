@@ -5,6 +5,7 @@ import axios from "axios";
 import { getAssetPreviewUrl } from "../../utils/assetPreview";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../../utils/authSession";
 import { loadCartItems } from "../../utils/cartPersistence";
+import { formatIndiaDate } from "../../utils/indiaTime";
 import "./CustomerDashboard.css";
 
 const sections = [
@@ -24,11 +25,11 @@ const accountSections = [
 
 function dateLabel(value) {
   if (!value) return "—";
-  return new Date(value).toLocaleDateString(undefined, {
+  return formatIndiaDate(value, {
     month: "short",
     day: "numeric",
     year: "numeric",
-  });
+  }) || "—";
 }
 function assetUrl(asset) {
   const slug = String(asset?.title || "asset")

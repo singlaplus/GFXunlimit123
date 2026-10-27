@@ -16,6 +16,7 @@ const { pipeline } = require("node:stream/promises");
 const sanitizeHtml = require("sanitize-html");
 const { sendMail } = require("./email/mailer");
 const { normalizeRecipients, resolveNotificationEventKey, buildNotificationEmailContent } = require("./email/notificationRules");
+const { getZonedDateKey, getZonedDateTimeParts, getZonedTimeKey } = require("./utils/zonedDateTime");
 const { createMessagingRouter, createAssetNotifications, createCouponNotifications, createDirectMessage, recordEvent, recordBusinessEvent, publishEvent } = require("./messaging");
 const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { registerOrderRoutes } = require("./orders");
@@ -1564,6 +1565,62 @@ try {
   console.warn('Cron setup skipped', err.message || err);
 }
 
+const syncFlashSaleStatuses = async (poolRef = pool) => {
+  const istToday = "(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date";
+  await poolRef.query(
+    `UPDATE flash_sales
+     SET status = 'expired', updated_at = NOW()
+     WHERE LOWER(BTRIM(COALESCE(status, ''))) IN ('scheduled', 'running')
+       AND end_date IS NOT NULL
+       AND end_date < ${istToday}`
+  );
+  await poolRef.query(
+    `UPDATE flash_sales
+     SET status = 'running', updated_at = NOW()
+     WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'scheduled'
+       AND start_date IS NOT NULL
+       AND start_date <= ${istToday}
+       AND (end_date IS NULL OR end_date >= ${istToday})`
+  );
+};
+
+const validateScheduledFlashSale = async (status, startDate) => {
+  if (String(status || '').trim().toLowerCase() !== 'scheduled') return null;
+  const dateValue = String(startDate || '');
+  const dateParts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateValue);
+  if (!dateParts) return 'Scheduled Flash Sales must have a start date later than today.';
+  const [year, month, day] = dateParts.slice(1).map(Number);
+  const parsedDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    parsedDate.getUTCFullYear() !== year
+    || parsedDate.getUTCMonth() !== month - 1
+    || parsedDate.getUTCDate() !== day
+  ) {
+    return 'Scheduled Flash Sales must have a valid start date later than today.';
+  }
+  const result = await pool.query(
+    "SELECT $1::date > (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date AS is_future",
+    [dateValue]
+  );
+  return result.rows[0]?.is_future ? null : 'Scheduled Flash Sales must have a start date later than today.';
+};
+
+try {
+  const cron = require('node-cron');
+  cron.schedule('* * * * *', async () => {
+    try {
+      await syncFlashSaleStatuses();
+    } catch (err) {
+      console.error('Flash Sale status scheduler error:', err);
+    }
+  });
+  syncFlashSaleStatuses().catch((err) => {
+    console.error('Flash Sale startup status sync failed:', err);
+  });
+} catch (err) {
+  console.warn('Flash Sale scheduler setup skipped', err.message || err);
+}
+
 // Currency exchange rate scheduler (runs daily at 10 AM)
 try {
   const cron = require('node-cron');
@@ -1580,7 +1637,7 @@ try {
       } catch (err) {
         console.error('Currency scheduler error:', err);
       }
-    });
+    }, { timezone: 'Asia/Kolkata' });
 
     // Also run on startup to ensure rates are current
     console.log('Currency scheduler initialized (runs daily at 10:00 AM)');
@@ -1735,15 +1792,22 @@ const sendDailyWebsiteSummary = async ({ poolRef = pool, now = new Date() } = {}
 
   const scheduleTime = (rule.schedule_time || (rule.metadata && rule.metadata.schedule_time) || '11:00').trim();
   const [hour, minute] = scheduleTime.split(':').map((part) => Number(part || 0));
-  const localHour = now.getHours();
-  const localMinute = now.getMinutes();
+  const [localHour, localMinute] = getZonedTimeKey(now, 'Asia/Kolkata').split(':').map(Number);
   const isDue = (localHour === hour && localMinute === minute) || (localHour === hour && localMinute === minute + 1);
   if (!isDue) return false;
 
   const metadata = (rule.metadata && typeof rule.metadata === 'object' && !Array.isArray(rule.metadata)) ? rule.metadata : {};
   const lastSentKey = metadata.last_sent_date || metadata.last_sent_at || null;
-  const todayKey = now.toISOString().slice(0, 10);
-  if (lastSentKey && String(lastSentKey).slice(0, 10) === todayKey) {
+  const todayKey = getZonedDateKey(now, 'Asia/Kolkata');
+  const lastSentTimestamp = metadata.last_sent_at && !metadata.last_sent_date
+    ? new Date(lastSentKey)
+    : null;
+  const lastSentDateKey = lastSentKey && metadata.last_sent_at && !metadata.last_sent_date
+    ? Number.isFinite(lastSentTimestamp.getTime())
+      ? getZonedDateKey(lastSentTimestamp, 'Asia/Kolkata')
+      : String(lastSentKey).slice(0, 10)
+    : String(lastSentKey || '').slice(0, 10);
+  if (lastSentDateKey === todayKey) {
     return false;
   }
 
@@ -1759,7 +1823,11 @@ const sendDailyWebsiteSummary = async ({ poolRef = pool, now = new Date() } = {}
   const hasSmtp = Boolean(settings.smtp_host || settings.smtp_user || settings.sender_email);
   if (!hasSmtp) return false;
 
-  const subject = `${summary.siteName} daily website summary - ${new Date().toDateString()}`;
+  const subjectDate = new Intl.DateTimeFormat('en-IN', {
+    dateStyle: 'medium',
+    timeZone: 'Asia/Kolkata'
+  }).format(now);
+  const subject = `${summary.siteName} daily website summary - ${subjectDate} IST`;
   const html = renderDailyWebsiteSummaryHtml(summary);
 
   await sendMail(settings, {
@@ -1952,12 +2020,13 @@ const getSubscriptionOrderNumber = async (db = pool) => {
 
 const getSubscriptionInvoiceNumber = async (db = pool) => {
   const now = new Date();
-  const dd = String(now.getDate()).padStart(2, '0');
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const yy = String(now.getFullYear()).slice(-2);
-  const dayAbbr = now.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+  const { year, month, day } = getZonedDateTimeParts(now, 'Asia/Kolkata');
+  const dd = String(day).padStart(2, '0');
+  const mm = String(month).padStart(2, '0');
+  const yy = String(year).slice(-2);
+  const dayAbbr = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'Asia/Kolkata' }).format(now).toUpperCase();
   const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-  const monthCode = [((now.getMonth() - 2 + 12) % 12), ((now.getMonth() - 1 + 12) % 12), now.getMonth()].map((index) => monthNames[index][0]).join('');
+  const monthCode = [((month - 3 + 12) % 12), ((month - 2 + 12) % 12), month - 1].map((index) => monthNames[index][0]).join('');
   const prefix = `GFXSUB${dd}${mm}${yy}${dayAbbr}${monthCode}`;
   const existingResult = await db.query(
     `SELECT invoice_number FROM invoices WHERE invoice_number LIKE $1
@@ -3862,6 +3931,104 @@ app.get("/subscription-plans", async (req, res) => {
   }
 });
 
+function getCouponRestrictedUserId(coupon) {
+  const metadata = typeof coupon?.metadata === "string"
+    ? JSON.parse(coupon.metadata)
+    : coupon?.metadata;
+  const restrictedUserId = metadata?.restricted_user_id;
+  return restrictedUserId === undefined || restrictedUserId === null ? null : String(restrictedUserId);
+}
+
+function getCouponDeliveryEmail(coupon) {
+  const metadata = typeof coupon?.metadata === "string"
+    ? JSON.parse(coupon.metadata)
+    : coupon?.metadata;
+  return String(metadata?.delivery_email || "").trim().toLowerCase();
+}
+
+async function isCouponAssignedToUser(coupon, userId) {
+  if (String(coupon?.coupon_type || "").toLowerCase() !== "auto") return true;
+
+  const restrictedUserId = getCouponRestrictedUserId(coupon);
+  if (restrictedUserId) return restrictedUserId === String(userId);
+
+  const deliveryEmail = getCouponDeliveryEmail(coupon);
+  if (!deliveryEmail) return true;
+
+  const userResult = await pool.query("SELECT email FROM users WHERE id = $1", [userId]);
+  return String(userResult.rows[0]?.email || "").trim().toLowerCase() === deliveryEmail;
+}
+
+function countDistinctCouponAssets(items) {
+  return new Set(
+    (Array.isArray(items) ? items : [])
+      .filter((item) => !item?.creditPackage && !item?.subscription && item?.id != null)
+      .map((item) => String(item.id))
+  ).size;
+}
+
+function getFlashSaleRequiredAssetCount(discountRule) {
+  const rule = String(discountRule || "").toUpperCase();
+  if (rule === "BOGO") return 2;
+  if (rule === "BOG2") return 3;
+  if (rule === "BOG3") return 4;
+  if (rule === "BOG5") return 6;
+  return 0;
+}
+
+function getFlashSaleMetadata(flashSale) {
+  if (typeof flashSale?.metadata === "string") {
+    try {
+      return JSON.parse(flashSale.metadata);
+    } catch (error) {
+      console.error("Invalid Flash Sale metadata", error);
+      return {};
+    }
+  }
+  return flashSale?.metadata && typeof flashSale.metadata === "object" ? flashSale.metadata : {};
+}
+
+async function getAvailableFirstOrderCoupon(userId) {
+  const customerResult = await pool.query(
+    "SELECT id FROM users WHERE id = $1 AND LOWER(BTRIM(COALESCE(role, ''))) = 'customer' AND LOWER(BTRIM(COALESCE(status, ''))) = 'active'",
+    [userId]
+  );
+  if (!customerResult.rows.length) return null;
+
+  const orderHistory = await pool.query(
+    `SELECT EXISTS (
+       SELECT 1 FROM orders
+       WHERE customer_id = $1
+           AND LOWER(COALESCE(order_status, '')) NOT IN ('cancelled', 'canceled', 'failed', 'refunded')
+           AND LOWER(COALESCE(payment_status, '')) NOT IN ('cancelled', 'canceled', 'failed', 'refunded')
+     ) OR EXISTS (
+       SELECT 1
+       FROM coupon_redemptions redemption
+       JOIN coupon_codes coupon ON coupon.id = redemption.coupon_id
+       WHERE redemption.user_id = $1
+         AND LOWER(COALESCE(coupon.coupon_type, '')) = 'first_order'
+     ) AS has_previous_order`,
+    [userId]
+  );
+  if (orderHistory.rows[0]?.has_previous_order) return null;
+
+  const couponResult = await pool.query(
+    `SELECT id, name, code, coupon_type, discount_type, discount_value, start_at, end_at
+     FROM coupon_codes
+     WHERE LOWER(BTRIM(COALESCE(coupon_type, ''))) = 'first_order'
+       AND LOWER(BTRIM(COALESCE(status, ''))) = 'active'
+       AND (start_at IS NULL OR start_at <= CURRENT_DATE)
+       AND (end_at IS NULL OR end_at >= CURRENT_DATE)
+       AND (
+         COALESCE(usage_limit, 0) <= 0
+         OR (SELECT COUNT(*) FROM coupon_redemptions WHERE coupon_id = coupon_codes.id) < usage_limit
+       )
+     ORDER BY start_at DESC NULLS LAST, created_at DESC, id DESC
+     LIMIT 1`
+  );
+  return couponResult.rows[0] || null;
+}
+
 app.post("/checkout/subscribe", (req, res, next) => authenticateToken(req, res, next), async (req, res) => {
   try {
     const { planId, duration, currency: requestedCurrency, paymentMethod, billing = {}, couponCode = '' } = req.body || {};
@@ -3880,15 +4047,21 @@ app.post("/checkout/subscribe", (req, res, next) => authenticateToken(req, res, 
       const couponResult = await pool.query(`SELECT * FROM coupon_codes WHERE LOWER(code) = LOWER($1) LIMIT 1`, [String(couponCode).trim()]);
       coupon = couponResult.rows[0] || null;
       if (!coupon || String(coupon.status || '').toLowerCase() !== 'active') return res.status(400).json({ error: "Coupon is not active or could not be found" });
+      if (String(coupon.coupon_type || '').toLowerCase() === 'first_order') {
+        return res.status(400).json({ error: "First Order coupons can only be used for asset purchases." });
+      }
+      if (!(await isCouponAssignedToUser(coupon, req.user.id))) {
+        return res.status(400).json({ error: "This coupon was issued to a different customer" });
+      }
       if (coupon.discount_type === 'percentage') amount = Math.max(0, amount - (amount * Number(coupon.discount_value || 0) / 100));
       if (coupon.discount_type === 'flat') amount = Math.max(0, amount - Number(coupon.discount_value || 0));
     }
     const downloadLimit = Number(plan.download_limits?.downloads ?? 0);
     const planSettings = plan.plan_settings || {};
-    const subscriptionStart = duration === "limited" ? planSettings.start_date : new Date().toISOString().slice(0, 10);
+    const subscriptionStart = duration === "limited" ? planSettings.start_date : getZonedDateKey(new Date(), 'Asia/Kolkata');
     const subscriptionEnd = duration === "limited"
       ? planSettings.end_date
-      : new Date(Date.now() + ({ monthly: 30, "3_months": 90, "6_months": 180, "1_year": 365, yearly: 365 }[duration] || 30) * 86400000).toISOString().slice(0, 10);
+      : getZonedDateKey(new Date(Date.now() + ({ monthly: 30, "3_months": 90, "6_months": 180, "1_year": 365, yearly: 365 }[duration] || 30) * 86400000), 'Asia/Kolkata');
     if (duration === "limited" && (!subscriptionStart || !subscriptionEnd || new Date(subscriptionEnd) < new Date(subscriptionStart) || new Date() < new Date(subscriptionStart) || new Date() > new Date(`${subscriptionEnd}T23:59:59`))) {
       return res.status(400).json({ error: "This limited-time plan is not currently available" });
     }
@@ -4585,11 +4758,11 @@ app.post("/admin/custom-subscriptions/assign", verifySuperAdmin, async (req, res
     const selectedDuration = duration || Object.keys(prices)[0] || plan.plan_settings?.duration || "monthly";
     const amount = Number(prices[selectedDuration] ?? plan.pricing?.amount ?? 0);
     const planSettings = plan.plan_settings || {};
-    const startDate = new Date().toISOString().slice(0, 10);
+    const startDate = getZonedDateKey(new Date(), 'Asia/Kolkata');
     const durationDays = { monthly: 30, "3_months": 90, "6_months": 180, "1_year": 365, yearly: 365 }[selectedDuration] || 30;
     const endDate = selectedDuration === "limited" && planSettings.end_date
       ? planSettings.end_date
-      : new Date(Date.now() + durationDays * 86400000).toISOString().slice(0, 10);
+      : getZonedDateKey(new Date(Date.now() + durationDays * 86400000), 'Asia/Kolkata');
     const downloadLimit = Number(plan.download_limits?.downloads ?? 0);
 
     await dbClient.query("BEGIN");
@@ -6426,8 +6599,27 @@ app.post("/forgot-password/confirm-otp", async (req, res) => {
 
 /* ---------------- DASHBOARD ---------------- */
 
+app.get("/admin/promotions/customers", verifyAdmin, async (req, res) => {
+  try {
+    const customers = await pool.query(
+      `SELECT id, username
+       FROM users
+       WHERE LOWER(BTRIM(COALESCE(role, ''))) = 'customer'
+         AND LOWER(BTRIM(COALESCE(status, ''))) = 'active'
+         AND NULLIF(BTRIM(username), '') IS NOT NULL
+         AND NULLIF(BTRIM(email), '') IS NOT NULL
+       ORDER BY LOWER(username), id`
+    );
+    return res.json(customers.rows);
+  } catch (err) {
+    console.error("Failed to load active promotion customers", err);
+    return res.status(500).json({ error: "Failed to load active customers." });
+  }
+});
+
 app.get("/admin/promotions", verifyAdmin, async (req, res) => {
   try {
+    await syncFlashSaleStatuses();
     const dashboard = {
       active_campaigns: (await pool.query("SELECT COUNT(*)::int AS count FROM marketing_campaigns WHERE status = 'active'")) .rows[0].count,
       scheduled_campaigns: (await pool.query("SELECT COUNT(*)::int AS count FROM marketing_campaigns WHERE status = 'scheduled'")) .rows[0].count,
@@ -6452,7 +6644,12 @@ app.get("/admin/promotions", verifyAdmin, async (req, res) => {
     const [coupons, campaigns, flashSales, referrals, loyalty, giftCards, bundles, newsletters, banners, popups, announcements, pushNotifications, automations, activityLogs] = await Promise.all([
       pool.query("SELECT * FROM coupon_codes ORDER BY created_at DESC"),
       pool.query("SELECT * FROM marketing_campaigns ORDER BY created_at DESC"),
-      pool.query("SELECT * FROM flash_sales ORDER BY created_at DESC"),
+      pool.query(
+        `SELECT id, name, discount_rule, status, start_date::text AS start_date,
+                end_date::text AS end_date, featured_placement, metadata, created_at, updated_at
+         FROM flash_sales
+         ORDER BY created_at DESC`
+      ),
       pool.query("SELECT * FROM referral_programs ORDER BY created_at DESC"),
       pool.query("SELECT * FROM loyalty_programs ORDER BY created_at DESC"),
       pool.query("SELECT * FROM gift_cards ORDER BY created_at DESC"),
@@ -6530,11 +6727,55 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
 
     if (resource === "coupon") {
       if (action === "create") {
-        const normalizedCode = String(data.code || `PROMO${Date.now()}`).trim().toUpperCase();
+        const couponType = String(data.coupon_type || "manual").toLowerCase();
+        const isAutoGenerated = couponType === "auto";
+        const deliveryEmail = String(data.delivery_email || "").trim();
+        let recipientUser = null;
+        if (isAutoGenerated) {
+          if (Boolean(deliveryEmail) === Boolean(data.delivery_user_id)) {
+            return res.status(400).json({ error: "Choose either an email address or a customer for the generated coupon." });
+          }
+          if (data.delivery_user_id) {
+            const recipientResult = await pool.query(
+              "SELECT id, email, full_name, username FROM users WHERE id = $1 AND LOWER(BTRIM(COALESCE(role, ''))) = 'customer' AND LOWER(BTRIM(COALESCE(status, ''))) = 'active' AND email IS NOT NULL AND BTRIM(email) <> ''",
+              [data.delivery_user_id]
+            );
+            recipientUser = recipientResult.rows[0] || null;
+            if (!recipientUser) {
+              return res.status(400).json({ error: "Select a valid customer with an email address." });
+            }
+          } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(deliveryEmail)) {
+            return res.status(400).json({ error: "Enter a valid email address for the generated coupon." });
+          }
+        } else if (!String(data.code || "").trim()) {
+          return res.status(400).json({ error: "Coupon code is required for a manual coupon." });
+        }
+
+        let normalizedCode;
+        if (isAutoGenerated) {
+          const couponCodeCharacters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+          do {
+            normalizedCode = Array.from(
+              { length: 21 },
+              () => couponCodeCharacters[crypto.randomInt(0, couponCodeCharacters.length)]
+            ).join("");
+          } while ((await pool.query("SELECT 1 FROM coupon_codes WHERE code = $1 LIMIT 1", [normalizedCode])).rows.length > 0);
+        } else {
+          normalizedCode = String(data.code).trim().toUpperCase();
+        }
+        const emailRecipient = recipientUser?.email || deliveryEmail;
+        const couponMetadata = {
+          ...(data.metadata || {}),
+          ...(recipientUser ? {
+            restricted_user_id: recipientUser.id,
+            restricted_username: recipientUser.username
+          } : {}),
+          ...(isAutoGenerated ? { delivery_email: emailRecipient } : {})
+        };
         const record = await insertIntoTable("coupon_codes", {
           name: data.name || "Coupon",
           code: normalizedCode,
-          coupon_type: data.coupon_type || "manual",
+          coupon_type: couponType,
           discount_type: data.discount_type || "percentage",
           discount_value: data.discount_value ?? 0,
           status: data.status || "active",
@@ -6542,11 +6783,11 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
           end_at: data.end_at || null,
           usage_limit: data.usage_limit ?? 0,
           notes: data.notes || "",
-          metadata: JSON.stringify(data.metadata || {})
+          metadata: JSON.stringify(couponMetadata)
         }, [
           data.name || "Coupon",
           normalizedCode,
-          data.coupon_type || "manual",
+          couponType,
           data.discount_type || "percentage",
           data.discount_value ?? 0,
           data.status || "active",
@@ -6554,8 +6795,31 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
           data.end_at || null,
           data.usage_limit ?? 0,
           data.notes || "",
-          JSON.stringify(data.metadata || {})
+          JSON.stringify(couponMetadata)
         ]);
+        if (isAutoGenerated) {
+          try {
+            const settingsResult = await pool.query("SELECT * FROM email_settings ORDER BY id DESC LIMIT 1");
+            const recipientName = recipientUser?.full_name || recipientUser?.username || "there";
+            const safeRecipientName = String(recipientName).replace(/[&<>"']/g, (character) => ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;"
+            })[character]);
+            await sendMail(settingsResult.rows[0] || {}, {
+              to: emailRecipient,
+              subject: "Your GFXunlimit coupon code",
+              text: `Hello ${recipientName},\n\nYour coupon code is ${normalizedCode}.\n`,
+              html: `<p>Hello ${safeRecipientName},</p><p>Your GFXunlimit coupon code is:</p><p style="font-size:24px;font-weight:bold;letter-spacing:2px">${normalizedCode}</p>`
+            });
+          } catch (mailError) {
+            await pool.query("DELETE FROM coupon_codes WHERE id = $1", [record.id]);
+            console.error("Failed to send generated coupon email", mailError);
+            return res.status(502).json({ error: "Coupon email could not be sent. Check the email configuration and try again." });
+          }
+        }
         await logActivity("coupon_created", `Created coupon ${record.code}`, { couponId: record.id });
         await createCouponNotifications(pool, {
           userIds: [req.user.id],
@@ -6676,6 +6940,8 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
 
     if (resource === "flash_sale") {
       if (action === "create") {
+        const scheduleError = await validateScheduledFlashSale(data.status || "scheduled", data.start_date);
+        if (scheduleError) return res.status(400).json({ error: scheduleError });
         const record = await insertIntoTable("flash_sales", {
           name: data.name || "Flash Sale",
           discount_rule: data.discount_rule || "",
@@ -6697,6 +6963,17 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
         return res.json(record);
       }
       if (action === "update") {
+        const existingSale = await pool.query(
+          "SELECT status, start_date::text AS start_date FROM flash_sales WHERE id = $1",
+          [data.id]
+        );
+        const currentSale = existingSale.rows[0] || {};
+        const effectiveStatus = data.status ?? currentSale.status;
+        const effectiveStartDate = Object.prototype.hasOwnProperty.call(data, "start_date")
+          ? data.start_date
+          : currentSale.start_date;
+        const scheduleError = await validateScheduledFlashSale(effectiveStatus, effectiveStartDate);
+        if (scheduleError) return res.status(400).json({ error: scheduleError });
         const record = await updateTable("flash_sales", data.id, {
           name: data.name,
           discount_rule: data.discount_rule,
@@ -10034,9 +10311,86 @@ app.get('/subscription-history', authenticateToken, async (req, res) => {
   }
 });
 
+app.get("/checkout/available-coupons", authenticateToken, async (req, res) => {
+  try {
+    const userResult = await pool.query("SELECT email FROM users WHERE id = $1", [req.user.id]);
+    const email = String(userResult.rows[0]?.email || "").trim().toLowerCase();
+    const coupons = await pool.query(
+      `SELECT id, name, code, coupon_type, discount_type, discount_value
+       FROM coupon_codes
+       WHERE LOWER(BTRIM(COALESCE(coupon_type, ''))) = 'auto'
+         AND LOWER(BTRIM(COALESCE(status, ''))) = 'active'
+         AND (start_at IS NULL OR start_at <= CURRENT_DATE)
+         AND (end_at IS NULL OR end_at > CURRENT_DATE)
+         AND (
+           COALESCE(metadata->>'restricted_user_id', '') = $1
+           OR (
+             COALESCE(metadata->>'restricted_user_id', '') = ''
+             AND $2 <> ''
+             AND LOWER(BTRIM(COALESCE(metadata->>'delivery_email', ''))) = $2
+           )
+         )
+         AND (
+           COALESCE(usage_limit, 0) <= 0
+           OR (SELECT COUNT(*) FROM coupon_redemptions WHERE coupon_id = coupon_codes.id AND user_id = $1::integer) < usage_limit
+         )
+       ORDER BY created_at DESC, id DESC`,
+      [String(req.user.id), email]
+    );
+    res.json(coupons.rows);
+  } catch (error) {
+    console.error("Failed to load available coupons", error);
+    res.status(500).json({ error: "Failed to load available coupons" });
+  }
+});
+
+app.get("/checkout/active-flash-sales", async (req, res) => {
+  try {
+    await syncFlashSaleStatuses();
+    const [sales, categories, collections] = await Promise.all([
+      pool.query(
+        `SELECT id, name, discount_rule, status, start_date::text AS start_date,
+                end_date::text AS end_date, featured_placement, metadata
+         FROM flash_sales
+         WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'running'
+           AND (start_date IS NULL OR start_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)
+           AND (end_date IS NULL OR end_date >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)
+         ORDER BY created_at DESC, id DESC`
+      ),
+      pool.query("SELECT id, name FROM categories ORDER BY name"),
+      pool.query("SELECT id, name FROM collections ORDER BY name")
+    ]);
+    res.json({
+      sales: sales.rows,
+      categories: categories.rows,
+      collections: collections.rows
+    });
+  } catch (error) {
+    console.error("Failed to load active Flash Sales", error);
+    res.status(500).json({ error: "Failed to load active Flash Sales" });
+  }
+});
+
+app.get("/promotions/upcoming-flash-sales", async (req, res) => {
+  try {
+    await syncFlashSaleStatuses();
+    const sales = await pool.query(
+      `SELECT id, name, discount_rule, metadata, start_date::text AS start_date
+       FROM flash_sales
+       WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'scheduled'
+         AND start_date > (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+       ORDER BY start_date ASC, created_at DESC, id DESC`
+    );
+    res.json({ sales: sales.rows });
+  } catch (error) {
+    console.error("Failed to load upcoming Flash Sales", error);
+    res.status(500).json({ error: "Failed to load upcoming Flash Sales" });
+  }
+});
+
 app.post("/checkout/validate-coupon", authenticateToken, async (req, res) => {
   try {
-    const { code } = req.body || {};
+    const { code, items = [] } = req.body || {};
     if (!code) {
       return res.status(400).json({ error: "Coupon code is required" });
     }
@@ -10055,15 +10409,36 @@ app.post("/checkout/validate-coupon", authenticateToken, async (req, res) => {
     if (String(coupon.status || '').toLowerCase() !== 'active') {
       return res.status(400).json({ error: "Coupon is not active" });
     }
-
-    const today = new Date();
-    const startAt = coupon.start_at ? new Date(coupon.start_at) : null;
-    const endAt = coupon.end_at ? new Date(coupon.end_at) : null;
-    if (startAt && startAt > today) {
-      return res.status(400).json({ error: "Coupon is not available yet" });
+    if (String(coupon.coupon_type || '').toLowerCase() === 'first_order') {
+      const availableCoupon = await getAvailableFirstOrderCoupon(req.user.id);
+      if (!availableCoupon || String(availableCoupon.id) !== String(coupon.id)) {
+        return res.status(400).json({ error: "This First Order coupon is only available to customers placing their first order." });
+      }
+      if (!Array.isArray(items) || items.some((item) => item?.creditPackage || item?.subscription)) {
+        return res.status(400).json({ error: "First Order coupons can only be used for asset purchases." });
+      }
+      const distinctAssetCount = countDistinctCouponAssets(items);
+      if (distinctAssetCount > 2) {
+        const removeCount = distinctAssetCount - 2;
+        return res.status(400).json({
+          error: `Remove ${removeCount} asset${removeCount === 1 ? '' : 's'} to apply the First Order discount. If you place this order without it, the coupon will not be available on later orders.`
+        });
+      }
     }
-    if (endAt && endAt < today) {
-      return res.status(400).json({ error: "Coupon has expired" });
+    if (!(await isCouponAssignedToUser(coupon, req.user.id))) {
+      return res.status(400).json({ error: "This coupon was issued to a different customer" });
+    }
+
+    if (String(coupon.coupon_type || '').toLowerCase() !== 'first_order') {
+      const today = new Date();
+      const startAt = coupon.start_at ? new Date(coupon.start_at) : null;
+      const endAt = coupon.end_at ? new Date(coupon.end_at) : null;
+      if (startAt && startAt > today) {
+        return res.status(400).json({ error: "Coupon is not available yet" });
+      }
+      if (endAt && endAt < today) {
+        return res.status(400).json({ error: "Coupon has expired" });
+      }
     }
 
     const usageCountResult = await pool.query(
@@ -10081,6 +10456,7 @@ app.post("/checkout/validate-coupon", authenticateToken, async (req, res) => {
         id: coupon.id,
         code: coupon.code,
         name: coupon.name,
+        couponType: coupon.coupon_type,
         discountType: coupon.discount_type,
         discountValue: Number(coupon.discount_value || 0),
       },
@@ -10092,9 +10468,52 @@ app.post("/checkout/validate-coupon", authenticateToken, async (req, res) => {
   }
 });
 
+app.post("/checkout/first-order-coupon", authenticateToken, async (req, res) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!items.length || items.some((item) => item?.creditPackage || item?.subscription)) {
+      return res.json({ coupon: null, eligible: false });
+    }
+    const coupon = await getAvailableFirstOrderCoupon(req.user.id);
+    if (!coupon) return res.json({ coupon: null, eligible: false });
+
+    const distinctAssetCount = countDistinctCouponAssets(items);
+    const couponData = {
+      id: coupon.id,
+      code: coupon.code,
+      name: coupon.name,
+      couponType: coupon.coupon_type,
+      discountType: coupon.discount_type,
+      discountValue: Number(coupon.discount_value || 0),
+    };
+    if (distinctAssetCount > 2) {
+      const removeCount = distinctAssetCount - 2;
+      return res.json({
+        coupon: couponData,
+        eligible: false,
+        message: `Remove ${removeCount} asset${removeCount === 1 ? '' : 's'} to apply the First Order discount. If you place this order without it, the coupon will not be available on later orders.`
+      });
+    }
+
+    return res.json({ coupon: couponData, eligible: true, message: "Your First Order coupon has been applied automatically." });
+  } catch (error) {
+    console.error("First Order coupon lookup failed", error);
+    return res.status(500).json({ error: "Unable to check First Order coupon availability" });
+  }
+});
+
 app.post("/checkout/place-order", authenticateToken, async (req, res) => {
   try {
-    const { items = [], billing = {}, paymentMethod = 'development', couponCode = '', currency = 'USD', taxRate = 0.1 } = req.body || {};
+    const {
+      items = [],
+      billing = {},
+      paymentMethod = 'development',
+      couponCode = '',
+      flashSaleId = null,
+      flashSaleAssetIds = [],
+      currency = 'USD',
+      taxRate = 0.1
+    } = req.body || {};
     const normalizedItems = Array.isArray(items) ? items : [];
     if (!normalizedItems.length) {
       return res.status(400).json({ error: "Cart is empty" });
@@ -10127,19 +10546,172 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Your active subscription is valid until its download limit is reached or the plan expires" });
     }
 
+    const subtotal = normalizedItems.reduce((sum, item) => {
+      const quantity = Math.max(1, Number(item.quantity || 1));
+      const unitPrice = Number(item.unitPrice ?? item.price ?? 0);
+      return sum + unitPrice * quantity;
+    }, 0);
+
+    let flashSale = null;
+    let flashSaleDiscount = 0;
+    const flashSaleFreeAssetIds = new Set();
+    if (flashSaleId != null) {
+      if (subscriptionEntitlement || isCreditPurchase || normalizedItems.some((item) => item.subscription)) {
+        return res.status(400).json({ error: "Flash Sales are not available with an active subscription or subscription purchase." });
+      }
+
+      await syncFlashSaleStatuses();
+      const activeFlashSales = await pool.query(
+        `SELECT id, name, discount_rule, status, start_date::text AS start_date,
+                end_date::text AS end_date, featured_placement, metadata
+         FROM flash_sales
+         WHERE id = $1
+           AND LOWER(BTRIM(COALESCE(status, ''))) = 'running'
+           AND (start_date IS NULL OR start_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)
+           AND (end_date IS NULL OR end_date >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)
+         LIMIT 1`,
+        [flashSaleId]
+      );
+      if (!activeFlashSales.rows.length) {
+        return res.status(400).json({ error: "This Flash Sale is no longer active." });
+      }
+
+      flashSale = activeFlashSales.rows[0];
+      const metadata = getFlashSaleMetadata(flashSale);
+      const placement = String(flashSale.featured_placement || "homepage").toLowerCase();
+      const targetIds = normalizedItems
+        .filter((item) => !item.creditPackage && !item.subscription && item.id != null)
+        .map((item) => Number(item.id))
+        .filter(Number.isInteger);
+      const [assetResult, categoryResult, collectionResult] = await Promise.all([
+        targetIds.length
+          ? pool.query("SELECT id, category, collection, keywords FROM images WHERE id = ANY($1::int[])", [targetIds])
+          : Promise.resolve({ rows: [] }),
+        pool.query("SELECT id, name FROM categories"),
+        pool.query("SELECT id, name FROM collections")
+      ]);
+      const assetDetails = new Map(assetResult.rows.map((asset) => [String(asset.id), asset]));
+      const selectedCategory = categoryResult.rows.find((category) => String(category.id) === String(metadata.featured_category_id));
+      const selectedCollection = collectionResult.rows.find((collection) => String(collection.id) === String(metadata.featured_collection_id));
+      const saleKeywords = String(metadata.keywords || "").split(/[,\s]+/).map((word) => word.trim().toLowerCase()).filter(Boolean);
+      const eligibleItems = normalizedItems.filter((item) => {
+        if (item.creditPackage || item.subscription || item.freeAsset || item.isFree) return false;
+        const unitPrice = Number(item.unitPrice ?? item.price ?? 0);
+        if (!Number.isFinite(unitPrice) || unitPrice <= 0) return false;
+        const asset = assetDetails.get(String(item.id));
+        if (!asset) return false;
+
+        let matchesPlacement = placement === "homepage";
+        if (placement === "category") {
+          matchesPlacement = metadata.featured_category_id === "all"
+            ? Boolean(String(asset.category || "").trim())
+            : String(asset.category || "").trim().toLowerCase() === String(selectedCategory?.name || "").trim().toLowerCase();
+        } else if (placement === "collection") {
+          matchesPlacement = metadata.featured_collection_id === "all"
+            ? Boolean(String(asset.collection || "").trim())
+            : String(asset.collection || "").trim().toLowerCase() === String(selectedCollection?.name || "").trim().toLowerCase();
+        }
+        if (!matchesPlacement) return false;
+        if (!saleKeywords.length) return true;
+        const assetKeywords = new Set(String(asset.keywords || "").split(/[,\s]+/).map((word) => word.trim().toLowerCase()).filter(Boolean));
+        return saleKeywords.some((keyword) => assetKeywords.has(keyword));
+      });
+
+      const rule = String(flashSale.discount_rule || "").toLowerCase();
+      if (rule === "percentage") {
+        const percentage = Number(metadata.discount_value);
+        if (!Number.isFinite(percentage) || percentage <= 0 || percentage > 100) {
+          return res.status(400).json({ error: "This Flash Sale has an invalid percentage discount." });
+        }
+        const eligibleSubtotal = eligibleItems.reduce(
+          (sum, item) => sum + Number(item.unitPrice ?? item.price ?? 0) * Math.max(1, Number(item.quantity || 1)),
+          0
+        );
+        flashSaleDiscount = Number((eligibleSubtotal * percentage / 100).toFixed(2));
+      } else if (rule === "fixed_amount") {
+        const amount = Number(metadata.discount_value);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          return res.status(400).json({ error: "This Flash Sale has an invalid fixed-amount discount." });
+        }
+        const eligibleSubtotal = eligibleItems.reduce(
+          (sum, item) => sum + Number(item.unitPrice ?? item.price ?? 0) * Math.max(1, Number(item.quantity || 1)),
+          0
+        );
+        flashSaleDiscount = Number(Math.min(eligibleSubtotal, amount).toFixed(2));
+      } else {
+        const requiredCount = getFlashSaleRequiredAssetCount(rule);
+        if (!requiredCount) {
+          return res.status(400).json({ error: "This Flash Sale has an unsupported discount rule." });
+        }
+        const selectedIds = [...new Set((Array.isArray(flashSaleAssetIds) ? flashSaleAssetIds : []).map(String))];
+        if (selectedIds.length !== requiredCount) {
+          return res.status(400).json({ error: `Select exactly ${requiredCount} eligible assets for this Flash Sale.` });
+        }
+        const selectedItems = eligibleItems.filter((item) => selectedIds.includes(String(item.id)));
+        if (selectedItems.length !== requiredCount) {
+          return res.status(400).json({ error: "The selected assets are not eligible for this Flash Sale." });
+        }
+        if (selectedItems.some((item) => Math.max(1, Number(item.quantity || 1)) !== 1)) {
+          return res.status(400).json({ error: "BOGO Flash Sales require one of each selected asset." });
+        }
+        const selectedPrices = selectedItems.map((item) => Number(item.unitPrice ?? item.price ?? 0));
+        const highestPrice = Math.max(...selectedPrices);
+        flashSaleDiscount = Number(Math.max(0, selectedPrices.reduce((sum, price) => sum + price, 0) - highestPrice).toFixed(2));
+        const highestPriceIndex = selectedPrices.indexOf(highestPrice);
+        selectedItems.forEach((item, index) => {
+          if (index !== highestPriceIndex) flashSaleFreeAssetIds.add(String(item.id));
+        });
+      }
+
+      if (flashSaleDiscount <= 0) {
+        return res.status(400).json({ error: "This Flash Sale does not apply to the current cart." });
+      }
+    }
+
     let coupon = null;
     let discount = 0;
-    if (couponCode) {
+    let selectedCouponCode = String(couponCode || '').trim();
+    const distinctAssetCount = countDistinctCouponAssets(normalizedItems);
+    const hasOnlyAssetItems = normalizedItems.every((item) => !item.creditPackage && !item.subscription);
+    if (!selectedCouponCode && hasOnlyAssetItems && distinctAssetCount <= 2) {
+      const firstOrderCoupon = await getAvailableFirstOrderCoupon(req.user.id);
+      selectedCouponCode = firstOrderCoupon?.code || '';
+    }
+    if (selectedCouponCode) {
       const couponResult = await pool.query(
         `SELECT * FROM coupon_codes WHERE LOWER(code) = LOWER($1) LIMIT 1`,
-        [String(couponCode).trim()]
+        [selectedCouponCode]
       );
       if (couponResult.rows.length > 0) {
         coupon = couponResult.rows[0];
-        if (coupon.discount_type === 'percentage') {
-          discount = 0;
-        } else if (coupon.discount_type === 'flat') {
-          discount = Number(coupon.discount_value || 0);
+        if (String(coupon.coupon_type || '').toLowerCase() === 'first_order') {
+          if (!hasOnlyAssetItems) {
+            return res.status(400).json({ error: "First Order coupons can only be used for asset purchases." });
+          }
+          const availableCoupon = await getAvailableFirstOrderCoupon(req.user.id);
+          if (!availableCoupon || String(availableCoupon.id) !== String(coupon.id)) {
+            return res.status(400).json({ error: "This First Order coupon is only available to customers placing their first order." });
+          }
+          if (distinctAssetCount > 2) {
+            const removeCount = distinctAssetCount - 2;
+            return res.status(400).json({
+              error: `Remove ${removeCount} asset${removeCount === 1 ? '' : 's'} to apply the First Order discount. If you place this order without it, the coupon will not be available on later orders.`
+            });
+          }
+          if (coupon.discount_type === 'percentage') {
+            discount = Math.max(0, subtotal * Number(coupon.discount_value || 0) / 100);
+          } else if (['flat', 'fixed', 'fixed_amount', 'amount'].includes(String(coupon.discount_type || '').toLowerCase())) {
+            discount = Math.min(subtotal, Number(coupon.discount_value || 0));
+          }
+        } else {
+          if (!(await isCouponAssignedToUser(coupon, req.user.id))) {
+            return res.status(400).json({ error: "This coupon was issued to a different customer" });
+          }
+          if (coupon.discount_type === 'percentage') {
+            discount = Math.max(0, subtotal * Number(coupon.discount_value || 0) / 100);
+          } else if (coupon.discount_type === 'flat') {
+            discount = Number(coupon.discount_value || 0);
+          }
         }
       }
     }
@@ -10166,13 +10738,8 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Request to Admin is only available for credit packages' });
     }
 
-    const subtotal = normalizedItems.reduce((sum, item) => {
-      const quantity = Math.max(1, Number(item.quantity || 1));
-      const unitPrice = Number(item.unitPrice ?? item.price ?? 0);
-      return sum + unitPrice * quantity;
-    }, 0);
-
-    const normalizedDiscount = Math.min(subtotal, Number(discount || 0));
+    const couponDiscount = Math.min(subtotal, Math.max(0, Number(discount || 0)));
+    const normalizedDiscount = Math.min(subtotal, Number((couponDiscount + flashSaleDiscount).toFixed(2)));
     const tax = Number(((Math.max(0, subtotal - normalizedDiscount)) * Number(taxRate || 0)).toFixed(2));
     const total = Number(Math.max(0, subtotal - normalizedDiscount + tax).toFixed(2));
     const creditsToDeduct = Math.max(0, Math.ceil(total));
@@ -10223,13 +10790,14 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
 
     async function generateInvoiceNumber() {
       const now = new Date();
-      const dd = String(now.getDate()).padStart(2, '0');
-      const mm = String(now.getMonth() + 1).padStart(2, '0');
-      const yy = String(now.getFullYear()).slice(-2);
-      const dayAbbr = now.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+      const { year, month, day } = getZonedDateTimeParts(now, 'Asia/Kolkata');
+      const dd = String(day).padStart(2, '0');
+      const mm = String(month).padStart(2, '0');
+      const yy = String(year).slice(-2);
+      const dayAbbr = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'Asia/Kolkata' }).format(now).toUpperCase();
 
       const monthNames = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-      const idxs = [ (now.getMonth() - 2 + 12) % 12, (now.getMonth() - 1 + 12) % 12, now.getMonth() ];
+      const idxs = [ (month - 3 + 12) % 12, (month - 2 + 12) % 12, month - 1 ];
       const monthCode = idxs.map(i => monthNames[i][0]).join('');
 
       const countRes = await pool.query(`SELECT COUNT(*)::int AS c FROM invoices WHERE DATE(issued_at) = CURRENT_DATE`);
@@ -10348,8 +10916,10 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
         }
         const image = imageResult.rows[0];
         const unitPrice = Number(item.unitPrice ?? item.price ?? 0);
-        const lineTotal = Number((unitPrice * quantity).toFixed(2));
-        const freeAsset = Boolean(item.freeAsset || item.isFree || unitPrice <= 0);
+        const flashSaleFree = flashSaleFreeAssetIds.has(String(assetId));
+        const orderUnitPrice = flashSaleFree ? 0 : unitPrice;
+        const lineTotal = Number((orderUnitPrice * quantity).toFixed(2));
+        const freeAsset = Boolean(item.freeAsset || item.isFree || unitPrice <= 0 || flashSaleFree);
         const normalizedLicense = String(item.license || 'Standard license').trim();
 
         const contributorId = image.contributor_id || null;
@@ -10369,7 +10939,7 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
             download_status,
             created_at
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())`,
-          [orderId, assetId, image.title, image.category || item.category || null, normalizedLicense, contributorId, image.contributor_username || null, quantity, unitPrice, lineTotal, String(currency).toUpperCase(), freeAsset ? 'available' : 'pending']
+          [orderId, assetId, image.title, image.category || item.category || null, normalizedLicense, contributorId, image.contributor_username || null, quantity, orderUnitPrice, lineTotal, String(currency).toUpperCase(), freeAsset ? 'available' : 'pending']
         );
 
         // Always create a customer_downloads record with secure token and 100-day expiry
@@ -10442,7 +11012,7 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
       if (coupon) {
         await pool.query(
           `INSERT INTO coupon_redemptions (coupon_id, user_id, amount, redeemed_at, metadata) VALUES ($1,$2,$3,NOW(),$4)`,
-          [coupon.id, req.user.id, Number(normalizedDiscount.toFixed(2)), JSON.stringify({ orderId })]
+          [coupon.id, req.user.id, Number(couponDiscount.toFixed(2)), JSON.stringify({ orderId })]
         );
       }
 

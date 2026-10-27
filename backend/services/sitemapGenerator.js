@@ -4,6 +4,7 @@ const net = require("node:net");
 const crypto = require("node:crypto");
 const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
+const { getZonedDateTimeParts } = require("../utils/zonedDateTime");
 const { SaxesParser } = require("saxes");
 
 const SITEMAP_NAMESPACE = "http://www.sitemaps.org/schemas/sitemap/0.9";
@@ -473,9 +474,10 @@ function createSitemapGenerator({
       if (Number.isNaN(generatedAt.getTime())) {
         throw new SitemapGenerationError("The sitemap generation clock returned an invalid date.");
       }
-      const year = String(generatedAt.getUTCFullYear());
-      const month = String(generatedAt.getUTCMonth() + 1).padStart(2, "0");
-      const day = String(generatedAt.getUTCDate()).padStart(2, "0");
+      const { year: indiaYear, month: indiaMonth, day: indiaDay } = getZonedDateTimeParts(generatedAt, "Asia/Kolkata");
+      const year = String(indiaYear);
+      const month = String(indiaMonth).padStart(2, "0");
+      const day = String(indiaDay).padStart(2, "0");
       const dateDirectory = path.join(storageRoot, year, month, day);
       await fs.promises.mkdir(dateDirectory, { recursive: true });
       const archiveId = job.id;

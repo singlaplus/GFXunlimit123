@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { getEffectiveAuthToken } from '../utils/authSession';
+import { formatIndiaDateTime } from '../utils/indiaTime';
 
 export default function AdminEmailLogs() {
   const [logs, setLogs] = useState([]);
@@ -23,7 +24,7 @@ export default function AdminEmailLogs() {
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead><tr><th>Email ID</th><th>Recipient</th><th>Event</th><th>Template</th><th>Subject</th><th>Status</th><th>Queued</th><th>Sent</th><th>Failed</th><th>Retries</th><th>Error</th><th>Related</th><th>Action</th></tr></thead>
         <tbody>
-          {logs.map(l => <tr key={l.id}><td>{l.email_id}</td><td>{l.recipient}</td><td>{l.event}</td><td>{l.template_id || '—'}</td><td>{l.subject}</td><td>{l.status}</td><td>{l.queued_at ? new Date(l.queued_at).toLocaleString() : '—'}</td><td>{l.sent_at ? new Date(l.sent_at).toLocaleString() : '—'}</td><td>{l.failed_at ? new Date(l.failed_at).toLocaleString() : '—'}</td><td>{l.retry_count}</td><td>{l.error || '—'}</td><td>{[l.related_user_id && `User #${l.related_user_id}`, l.related_order_id && `Order #${l.related_order_id}`, l.related_asset_id && `Asset #${l.related_asset_id}`].filter(Boolean).join(' · ') || '—'}</td><td>{l.status === 'FAILED' && <button type="button" onClick={() => retry(l.id)}>Retry</button>}</td></tr>)}
+          {logs.map(l => <tr key={l.id}><td>{l.email_id}</td><td>{l.recipient}</td><td>{l.event}</td><td>{l.template_id || '—'}</td><td>{l.subject}</td><td>{l.status}</td><td>{l.queued_at ? formatIndiaDateTime(l.queued_at) : '—'}</td><td>{l.sent_at ? formatIndiaDateTime(l.sent_at) : '—'}</td><td>{l.failed_at ? formatIndiaDateTime(l.failed_at) : '—'}</td><td>{l.retry_count}</td><td>{l.error || '—'}</td><td>{[l.related_user_id && `User #${l.related_user_id}`, l.related_order_id && `Order #${l.related_order_id}`, l.related_asset_id && `Asset #${l.related_asset_id}`].filter(Boolean).join(' · ') || '—'}</td><td>{l.status === 'FAILED' && <button type="button" onClick={() => retry(l.id)}>Retry</button>}</td></tr>)}
         </tbody>
       </table>
     </div>

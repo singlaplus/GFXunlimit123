@@ -1,10 +1,12 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { calculateCartTotals, readAppliedCoupon, writeAppliedCoupon, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
+import { calculateCartTotals, countDistinctAssetItems, getFlashSaleEligibleItems, getFlashSaleRequiredAssetCount, readAppliedCoupon, writeAppliedCoupon, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
 import { loadCartItems, saveCartItems } from '../utils/cartPersistence';
 import { getAssetPreviewUrl } from '../utils/assetPreview';
+import FlashSaleOffer from '../components/FlashSaleOffer';
+import './CartPage.css';
 
 
 function formatCurrency(value, currency = null) {
@@ -31,9 +33,30 @@ export default function CartPage({ darkMode = false }) {
   const [couponCode, setCouponCode] = useState('');
   const [coupon, setCoupon] = useState(null);
   const [couponMessage, setCouponMessage] = useState('');
+  const [appliedFlashSale, setAppliedFlashSale] = useState(null);
+  const [showBogoCheckoutDialog, setShowBogoCheckoutDialog] = useState(false);
+  const [bogoCheckoutAssetIds, setBogoCheckoutAssetIds] = useState([]);
+  const [availableCoupons, setAvailableCoupons] = useState([]);
+  const [availableCouponsError, setAvailableCouponsError] = useState('');
   const [loading, setLoading] = useState(false);
   const [taxSettings, setTaxSettings] = useState([{ enabled: true, rate: 18, label: 'GST', id: 1 }]);
   const [subscriptionRestricted, setSubscriptionRestricted] = useState(false);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    axios.get(`${API_BASE_URL}/checkout/available-coupons`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((response) => {
+        setAvailableCoupons(Array.isArray(response.data) ? response.data : []);
+      })
+      .catch((error) => {
+        console.error('Failed to load available coupons:', error);
+        setAvailableCouponsError(error.response?.data?.error || 'Unable to load your available coupons.');
+      });
+  }, []);
 
   // Load cart on mount
   useEffect(() => {
@@ -64,7 +87,8 @@ export default function CartPage({ darkMode = false }) {
 
       try {
         const token = localStorage.getItem('token');
-        const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: savedCoupon.code }, {
+        const savedItems = await loadCartItems();
+        const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: savedCoupon.code, items: savedItems }, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         const nextCoupon = res.data?.coupon || null;
@@ -117,22 +141,61 @@ export default function CartPage({ darkMode = false }) {
     window.dispatchEvent(new Event('cartUpdated'));
   }, [items]);
 
+  useEffect(() => {
+    if (!hasLoadedCart.current || !items.length || items.some((item) => item.creditPackage || item.subscription)) return;
+    const syncFirstOrderCoupon = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await axios.post(`${API_BASE_URL}/checkout/first-order-coupon`, { items }, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        const { coupon: firstOrderCoupon, eligible, message } = response.data || {};
+        if (!firstOrderCoupon) return;
+        if (eligible) {
+          setCouponCode(firstOrderCoupon.code);
+          setCoupon(firstOrderCoupon);
+          setCouponMessage(message || 'Your First Order coupon has been applied automatically.');
+          writeAppliedCoupon(firstOrderCoupon.code, firstOrderCoupon);
+          return;
+        }
+        setCoupon(null);
+        setCouponCode('');
+        setCouponMessage(message || '');
+        clearAppliedCoupon();
+      } catch (error) {
+        console.error('Failed to check First Order coupon:', error);
+        setCouponMessage(error.response?.data?.error || 'Unable to check First Order coupon availability.');
+      }
+    };
+    syncFirstOrderCoupon();
+  }, [items]);
+
   const cartCurrency = useMemo(
     () => items.find((item) => item.currency)?.currency || null,
     [items]
   );
 
-  const totals = useMemo(() => calculateCartTotals(items, { coupon, taxSettings, currency: cartCurrency }), [items, coupon, taxSettings, cartCurrency]);
+  const handleFlashSaleChange = useCallback((flashSale) => {
+    setAppliedFlashSale(flashSale);
+  }, []);
 
-  const validateCoupon = async () => {
-    const nextCode = normalizeCouponCode(couponCode);
+  const totals = useMemo(() => calculateCartTotals(items, {
+    coupon,
+    flashSaleDiscount: appliedFlashSale?.discount || 0,
+    taxSettings,
+    currency: cartCurrency
+  }), [items, coupon, appliedFlashSale, taxSettings, cartCurrency]);
+
+  const validateCoupon = async (couponCodeToApply = couponCode) => {
+    const nextCode = normalizeCouponCode(couponCodeToApply);
     if (!nextCode) return;
     try {
       const token = localStorage.getItem('token');
-      const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: nextCode }, {
+      const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: nextCode, items }, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const nextCoupon = res.data.coupon || null;
+      setCouponCode(nextCode);
       setCoupon(nextCoupon);
       setCouponMessage(res.data.message || 'Coupon applied');
       writeAppliedCoupon(nextCode, nextCoupon);
@@ -157,11 +220,122 @@ export default function CartPage({ darkMode = false }) {
 
   const proceedToCheckout = () => {
     if (!items.length || (subscriptionRestricted && !items.every((item) => item.creditPackage))) return;
+    const sale = appliedFlashSale?.sale;
+    const requiredCount = getFlashSaleRequiredAssetCount(sale?.discount_rule);
+    if (sale && requiredCount > 0) {
+      const eligibleItems = getFlashSaleEligibleItems(items, sale);
+      if (eligibleItems.length > requiredCount) {
+        const existingSelection = (appliedFlashSale.selectedAssetIds || []).map(String);
+        const selectionIsEligible = existingSelection.length === requiredCount
+          && existingSelection.every((id) => eligibleItems.some((item) => String(item.id) === id));
+        const initialSelection = selectionIsEligible
+          ? existingSelection
+          : eligibleItems
+            .slice()
+            .sort((a, b) => Number(b.unitPrice ?? b.price ?? 0) - Number(a.unitPrice ?? a.price ?? 0))
+            .slice(0, requiredCount)
+            .map((item) => String(item.id));
+        setBogoCheckoutAssetIds(initialSelection);
+        setShowBogoCheckoutDialog(true);
+        return;
+      }
+    }
+    navigate('/checkout');
+  };
+
+  const toggleBogoCheckoutAsset = (assetId) => {
+    const normalizedId = String(assetId);
+    setBogoCheckoutAssetIds((current) => {
+      if (current.includes(normalizedId)) return current.filter((id) => id !== normalizedId);
+      const requiredCount = getFlashSaleRequiredAssetCount(appliedFlashSale?.sale?.discount_rule);
+      return current.length < requiredCount ? [...current, normalizedId] : current;
+    });
+  };
+
+  const continueWithBogoSelection = () => {
+    const sale = appliedFlashSale?.sale;
+    const requiredCount = getFlashSaleRequiredAssetCount(sale?.discount_rule);
+    if (!sale || bogoCheckoutAssetIds.length !== requiredCount) return;
+    localStorage.setItem('appliedFlashSale', JSON.stringify({
+      saleId: sale.id,
+      selectedAssetIds: bogoCheckoutAssetIds
+    }));
+    setShowBogoCheckoutDialog(false);
     navigate('/checkout');
   };
 
   return (
     <div style={{ minHeight: '100vh', padding: '32px 20px 48px', background: darkMode ? '#020617' : '#f8fafc', color: darkMode ? '#f8fafc' : '#0f172a' }}>
+      {showBogoCheckoutDialog && appliedFlashSale?.sale && (
+        <div className={`cart-bogo-dialog-backdrop${darkMode ? ' is-dark' : ''}`} role="presentation">
+          <section
+            className="cart-bogo-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cart-bogo-dialog-title"
+            aria-describedby="cart-bogo-dialog-description"
+          >
+            <div className="cart-bogo-dialog-accent" aria-hidden="true">✦</div>
+            <div className="cart-bogo-dialog-heading">
+              <span className="cart-bogo-dialog-eyebrow">FLASH SALE</span>
+              <h2 id="cart-bogo-dialog-title">Choose your BOGO assets</h2>
+              <p id="cart-bogo-dialog-description">
+                Choose {getFlashSaleRequiredAssetCount(appliedFlashSale.sale.discount_rule)} eligible assets. The highest-priced asset is charged; the rest are free.
+              </p>
+            </div>
+            <div className="cart-bogo-dialog-list">
+              {getFlashSaleEligibleItems(items, appliedFlashSale.sale).map((item) => {
+                const assetId = String(item.id);
+                const checked = bogoCheckoutAssetIds.includes(assetId);
+                const limitReached = bogoCheckoutAssetIds.length >= getFlashSaleRequiredAssetCount(appliedFlashSale.sale.discount_rule);
+                const selectedItems = getFlashSaleEligibleItems(items, appliedFlashSale.sale)
+                  .filter((eligibleItem) => bogoCheckoutAssetIds.includes(String(eligibleItem.id)));
+                const highestSelectedPrice = selectedItems.reduce(
+                  (highest, selectedItem) => Math.max(highest, Number(selectedItem.unitPrice ?? selectedItem.price ?? 0)),
+                  0
+                );
+                const itemPrice = Number(item.unitPrice ?? item.price ?? 0);
+                const wouldBeCharged = checked
+                  ? itemPrice >= highestSelectedPrice
+                  : itemPrice > highestSelectedPrice;
+                return (
+                  <label key={assetId} className="cart-bogo-dialog-asset">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={!checked && limitReached}
+                      onChange={() => toggleBogoCheckoutAsset(assetId)}
+                    />
+                    <span className="cart-bogo-dialog-asset-name">{item.title || `Asset ${item.id}`}</span>
+                    <span className="cart-bogo-dialog-asset-price">{formatCurrency(itemPrice, item.currency || cartCurrency)}</span>
+                    {checked && (
+                      <span className={`cart-bogo-dialog-asset-status${wouldBeCharged ? ' is-charged' : ' is-free'}`}>
+                        {wouldBeCharged ? 'Charged' : 'Free'}
+                      </span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+            <div className="cart-bogo-dialog-footer">
+              <span>{bogoCheckoutAssetIds.length} of {getFlashSaleRequiredAssetCount(appliedFlashSale.sale.discount_rule)} selected</span>
+              <div>
+                <button type="button" className="cart-bogo-dialog-cancel" onClick={() => setShowBogoCheckoutDialog(false)}>
+                  Back to cart
+                </button>
+                <button
+                  type="button"
+                  className="cart-bogo-dialog-continue"
+                  disabled={bogoCheckoutAssetIds.length !== getFlashSaleRequiredAssetCount(appliedFlashSale.sale.discount_rule)}
+                  onClick={continueWithBogoSelection}
+                >
+                  Continue to checkout
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
       <div style={{ maxWidth: 1280, margin: '0 auto', display: 'grid', gap: 24 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
           <div>
@@ -208,7 +382,12 @@ export default function CartPage({ darkMode = false }) {
             <h2 style={{ marginTop: 0 }}>Order summary</h2>
             <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Subtotal</span><span>{formatCurrency(totals.subtotal, cartCurrency)}</span></div>
-              {totals.discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Discount</span><span>-{formatCurrency(totals.discount, cartCurrency)}</span></div>}
+              {totals.discount > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: appliedFlashSale?.discount > 0 ? (darkMode ? '#6ee7b7' : '#047857') : undefined, fontWeight: appliedFlashSale?.discount > 0 ? 700 : undefined }}>
+                  <span>{appliedFlashSale?.discount > 0 ? (coupon ? 'Coupon + Flash Sale' : 'Flash Sale discount') : 'Coupon discount'}</span>
+                  <span>-{formatCurrency(totals.discount, cartCurrency)}</span>
+                </div>
+              )}
               <div style={{ display: 'grid', gap: 8 }}>
                 {(totals.taxBreakdown || []).map((tax, idx) => (
                   <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.95rem', color: darkMode ? '#cbd5e1' : '#64748b' }}>
@@ -221,18 +400,61 @@ export default function CartPage({ darkMode = false }) {
               <div style={{ paddingTop: 8, marginTop: 6, borderTop: darkMode ? '1px solid rgba(255,255,255,0.12)' : '1px solid rgba(226,232,240,1)', display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '1.08rem' }}><span>Total</span><span>{formatCurrency(totals.total, cartCurrency)}</span></div>
             </div>
 
-            <div style={{ marginTop: 16 }}>
-              <label style={{ display: 'block', fontWeight: 700, marginBottom: 8 }}>Coupon</label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input value={couponCode} onChange={(e) => setCouponCode(e.target.value)} placeholder="WELCOME10" style={{ flex: 1, borderRadius: 12, border: '1px solid #cbd5e1', padding: '10px 12px' }} />
-                {coupon ? (
-                  <button onClick={clearCoupon} style={{ border: 'none', background: '#64748b', color: '#fff', borderRadius: 12, padding: '10px 14px', cursor: 'pointer', fontWeight: 700 }}>Remove coupon</button>
-                ) : (
-                  <button onClick={validateCoupon} style={{ border: 'none', background: '#ED2224', color: '#fff', borderRadius: 12, padding: '10px 14px', cursor: 'pointer', fontWeight: 700 }}>Apply</button>
-                )}
+            <FlashSaleOffer
+                items={items}
+                subscriptionRestricted={subscriptionRestricted}
+                darkMode={darkMode}
+                onChange={handleFlashSaleChange}
+                variant="cart"
+                currency={cartCurrency}
+            />
+
+            {!(appliedFlashSale?.discount > 0) && (
+              <div style={{ marginTop: 16 }}>
+                <label style={{ display: 'block', fontWeight: 700, marginBottom: 8 }}>Coupon</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input value={couponCode} onChange={(e) => setCouponCode(e.target.value)} placeholder="WELCOME10" style={{ flex: 1, borderRadius: 12, border: '1px solid #cbd5e1', padding: '10px 12px' }} />
+                  {coupon ? (
+                    <button onClick={clearCoupon} style={{ border: 'none', background: '#64748b', color: '#fff', borderRadius: 12, padding: '10px 14px', cursor: 'pointer', fontWeight: 700 }}>Remove coupon</button>
+                  ) : (
+                    <button onClick={validateCoupon} style={{ border: 'none', background: '#ED2224', color: '#fff', borderRadius: 12, padding: '10px 14px', cursor: 'pointer', fontWeight: 700 }}>Apply</button>
+                  )}
+                </div>
+                {couponMessage ? <div style={{ marginTop: 8, color: coupon ? '#16a34a' : '#DC2626', fontSize: '0.95rem' }}>{couponMessage}</div> : null}
+                {availableCouponsError ? <div role="alert" style={{ marginTop: 8, color: '#DC2626', fontSize: '0.95rem' }}>{availableCouponsError}</div> : null}
+                {availableCoupons.length > 0 ? (
+                  <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+                    <strong>Your available coupons</strong>
+                    {availableCoupons.map((availableCoupon) => {
+                      const isApplied = String(coupon?.id) === String(availableCoupon.id);
+                      return (
+                        <div key={availableCoupon.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 10, borderRadius: 12, background: darkMode ? 'rgba(255,255,255,0.06)' : '#f8fafc' }}>
+                          <div>
+                            <div>{availableCoupon.code}</div>
+                            <div style={{ fontSize: '0.8rem', color: darkMode ? '#cbd5e1' : '#64748b' }}>
+                              {String(availableCoupon.discount_type || '').toLowerCase() === 'percentage'
+                                ? `${Number(availableCoupon.discount_value || 0)}% off`
+                                : String(availableCoupon.discount_type || '').toLowerCase() === 'free_asset'
+                                  ? 'Free asset'
+                                  : `${String(availableCoupon.discount_type || 'Discount').replace(/_/g, ' ')}: ${Number(availableCoupon.discount_value || 0)}`}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            aria-label={`Apply coupon ${availableCoupon.code}`}
+                            disabled={isApplied}
+                            onClick={() => validateCoupon(availableCoupon.code)}
+                            style={{ border: 'none', background: isApplied ? '#64748b' : '#ED2224', color: '#fff', borderRadius: 10, padding: '8px 12px', cursor: isApplied ? 'default' : 'pointer', fontWeight: 700 }}
+                          >
+                            {isApplied ? 'Applied' : 'Apply'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
-              {couponMessage ? <div style={{ marginTop: 8, color: coupon ? '#16a34a' : '#DC2626', fontSize: '0.95rem' }}>{couponMessage}</div> : null}
-            </div>
+            )}
 
             {subscriptionRestricted && !items.every((item) => item.creditPackage) && <div style={{ marginTop: 16, color: '#b45309', fontWeight: 700 }}>Your active subscription is currently valid. New purchases are available after the download limit is reached or the plan expires.</div>}
             <button disabled={!items.length || loading || (subscriptionRestricted && !items.every((item) => item.creditPackage))} onClick={proceedToCheckout} style={{ width: '100%', marginTop: 18, border: 'none', borderRadius: 16, padding: '14px 16px', background: '#ED2224', color: '#fff', fontWeight: 800, cursor: 'pointer' }}>

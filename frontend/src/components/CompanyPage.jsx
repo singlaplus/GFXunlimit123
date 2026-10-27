@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { hasActiveSession } from "../utils/authSession";
+import { getIndiaDateKey } from "../utils/indiaTime";
 import "./CompanyPage.css";
 
 const createDefaultButtons = () => [
@@ -90,7 +91,7 @@ const pageContent = {
     highlights: [
       "Email: hello@gfxunlimit.com",
       "Phone: +1 (800) 555-0148",
-      "Hours: Mon–Fri, 8:00 AM to 6:00 PM UTC"
+      "Hours: Mon–Fri, 1:30 PM to 11:30 PM IST"
     ],
     stats: [
       { label: "Response time", value: "< 1 hr" },
@@ -322,7 +323,7 @@ export default function CompanyPage({ slug = "about" }) {
       customer_phone: customPlanForm.mobileNumber,
       base_plan: "Custom Subscription",
       custom_duration: customPlanForm.planDuration,
-      custom_start_date: new Date().toISOString().slice(0, 10),
+      custom_start_date: getIndiaDateKey(),
       custom_end_date: null,
       custom_pricing: {
         requested_assets_per_month: Number(customPlanForm.assetsPerMonth) || 0,

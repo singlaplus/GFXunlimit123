@@ -44,6 +44,11 @@ function App() {
   const loc = useLocation();
   const location = loc || (typeof window !== 'undefined' ? window.location : { search: '', pathname: '/' });
   const isStartTaxFormPage = location.pathname === "/dashboard" && new URLSearchParams(location.search).get("tab") === "starttaxform";
+  const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
+  const isBlankSeoPage = [
+    `${adminBasePath}/search_console`,
+    `${adminBasePath}/google_analytics`,
+  ].includes(location.pathname);
 
   const [authVersion, setAuthVersion] = useState(0);
   const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
@@ -695,7 +700,7 @@ const popupProps = {
   setSelectedCollection={setSelectedCollection}
 />
 
-      {(isAuthBusy || isBackendBusy) && (
+      {!isBlankSeoPage && (isAuthBusy || isBackendBusy) && (
         <div
           role={isBackendBusy ? "status" : undefined}
           aria-label={isBackendBusy ? "Loading data from the server" : undefined}
@@ -815,11 +820,13 @@ const popupProps = {
   draggable={true}
   theme={darkMode ? "dark" : "light"}
 />
-      <FloatingAuth
-  darkMode={darkMode}
-  setShowLoginModal={setShowLoginModal}
-  setShowJoinModal={setShowJoinModal}
-/>
+      {!isBlankSeoPage && (
+        <FloatingAuth
+          darkMode={darkMode}
+          setShowLoginModal={setShowLoginModal}
+          setShowJoinModal={setShowJoinModal}
+        />
+      )}
       <Footer
   onOpenLogin={() => setShowLoginModal(true)}
   onOpenJoin={(type) => {
@@ -829,7 +836,7 @@ const popupProps = {
   isLoggedIn={Boolean(token)}
       />
 
-        <div
+        {!isBlankSeoPage && <div
         style={{
           marginTop: "24px",
           padding: "20px",
@@ -883,7 +890,7 @@ const popupProps = {
             </div>
           </div>
         ))}
-      </div>
+      </div>}
     </div>
 
   );

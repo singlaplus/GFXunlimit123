@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { getEffectiveAuthToken } from '../utils/authSession';
+import { formatIndiaDateTime, formatIndiaDateTimeLocal, indiaDateTimeLocalToISOString } from '../utils/indiaTime';
 
 const getIsDarkMode = () => typeof document !== 'undefined' && document.body.classList.contains('dark-mode');
 
@@ -66,19 +67,24 @@ export default function AdminEmailScheduled() {
 
     try {
       const token = typeof window !== 'undefined' ? getEffectiveAuthToken() : null;
+      const scheduledInstant = scheduledAt ? indiaDateTimeLocalToISOString(scheduledAt) : null;
+      if (scheduledAt && !scheduledInstant) {
+        setFeedback('Please enter a valid schedule date and time in IST.');
+        return;
+      }
       const payloadToSend = {
         to: recipient,
         subject,
         body,
         imageUrl,
-        scheduledAt: scheduledAt || undefined,
+        scheduledAt: scheduledInstant || undefined,
       };
 
       if (editingId) {
-        await axios.put(`${API_BASE_URL}/admin/email/scheduled/${editingId}`, { name, payload: payloadToSend, cron_expression: cron, next_run: scheduledAt ? new Date(scheduledAt).toISOString() : null, active: true }, { headers: { Authorization: `Bearer ${token}` } });
+        await axios.put(`${API_BASE_URL}/admin/email/scheduled/${editingId}`, { name, payload: payloadToSend, cron_expression: cron, next_run: scheduledInstant, active: true }, { headers: { Authorization: `Bearer ${token}` } });
         setFeedback('Schedule updated successfully.');
       } else {
-        await axios.post(`${API_BASE_URL}/admin/email/scheduled`, { name, payload: payloadToSend, cron_expression: cron, next_run: scheduledAt ? new Date(scheduledAt).toISOString() : null, active: true }, { headers: { Authorization: `Bearer ${token}` } });
+        await axios.post(`${API_BASE_URL}/admin/email/scheduled`, { name, payload: payloadToSend, cron_expression: cron, next_run: scheduledInstant, active: true }, { headers: { Authorization: `Bearer ${token}` } });
         setFeedback('Schedule created successfully.');
       }
 
@@ -100,7 +106,7 @@ export default function AdminEmailScheduled() {
     setBody(item.payload?.body || '');
     setImageUrl(item.payload?.imageUrl || '');
     setCron(item.cron_expression || '');
-    setScheduledAt(item.next_run ? new Date(item.next_run).toISOString().slice(0, 16) : '');
+    setScheduledAt(item.next_run ? formatIndiaDateTimeLocal(item.next_run) : '');
     setFeedback('Editing existing schedule.');
   };
 
@@ -225,8 +231,7 @@ export default function AdminEmailScheduled() {
                   if (!scheduledAt) {
                     const now = new Date();
                     now.setMinutes(now.getMinutes() + 5);
-                    const value = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-                    setScheduledAt(value);
+                    setScheduledAt(formatIndiaDateTimeLocal(now));
                   }
                 }}
                 style={{ padding: '10px 14px', borderRadius: 10, border: `1px solid ${theme.border}`, background: theme.panel, color: theme.text, cursor: 'pointer', fontWeight: 700 }}
@@ -270,7 +275,7 @@ export default function AdminEmailScheduled() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
                   <div>
                     <div style={{ fontWeight: 700 }}>{item.name}</div>
-                    <div style={{ marginTop: 4, color: theme.muted, fontSize: '0.9rem' }}>Next run: {item.next_run ? new Date(item.next_run).toLocaleString() : 'n/a'}</div>
+                    <div style={{ marginTop: 4, color: theme.muted, fontSize: '0.9rem' }}>Next run (IST): {item.next_run ? formatIndiaDateTime(item.next_run) : 'n/a'}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <div style={{ padding: '6px 10px', borderRadius: 999, background: isDark ? 'rgba(56, 189, 248, 0.16)' : 'rgba(25, 118, 210, 0.1)', color: isDark ? '#7dd3fc' : '#2563eb', fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>

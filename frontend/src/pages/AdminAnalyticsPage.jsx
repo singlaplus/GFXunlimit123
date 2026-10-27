@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import { formatIndiaTime } from "../utils/indiaTime";
 import BlogAnalyticsPanel from "./BlogAnalyticsPanel";
 import "./AdminAnalyticsPage.css";
 
@@ -1045,7 +1046,7 @@ export default function AdminAnalyticsPage() {
           <h2 style={{ margin: "4px 0 0", fontSize: "1.5rem", fontWeight: 800 }}>Real-time marketplace intelligence</h2>
         </div>
         <div className="gfx-analytics__hero-actions" style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
-          <div className="gfx-analytics__updated" style={{ fontSize: "0.82rem", color: theme.muted }}>Last updated {lastUpdated.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
+          <div className="gfx-analytics__updated" style={{ fontSize: "0.82rem", color: theme.muted }}>Last updated {formatIndiaTime(lastUpdated)} IST</div>
           <div className="gfx-analytics__export">
             <button type="button" onClick={exportAnalyticsCsv} disabled={exportDisabled} style={{ borderRadius: "999px", padding: "10px 15px", border: `1px solid ${theme.accent}`, background: theme.buttonBg, color: theme.buttonText, cursor: exportDisabled ? "not-allowed" : "pointer", opacity: exportDisabled ? 0.65 : 1, fontWeight: 700 }}>Export CSV</button>
             <label className="gfx-analytics__range" style={{ borderColor: theme.border, background: theme.surface, color: theme.text }}>

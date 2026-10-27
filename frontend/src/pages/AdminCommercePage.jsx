@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import { formatIndiaDate } from "../utils/indiaTime";
 import {
   ResponsiveContainer,
   LineChart,
@@ -413,7 +414,7 @@ export default function AdminCommercePage() {
                   <td style={{ padding: "14px 12px", color: theme.muted }}>{order.customer_name || order.customer_email || "Unknown"}</td>
                   <td style={{ padding: "14px 12px", color: theme.text }}>{order.order_status || order.status || "Pending"}</td>
                   <td style={{ padding: "14px 12px", color: theme.text }}>{formatCurrency(order.total_amount, order.currency)}</td>
-                  <td style={{ padding: "14px 12px", color: theme.muted }}>{new Date(order.created_at).toLocaleDateString()}</td>
+                  <td style={{ padding: "14px 12px", color: theme.muted }}>{formatIndiaDate(order.created_at)}</td>
                   <td style={{ padding: "14px 12px", display: "flex", gap: "6px", flexWrap: "wrap" }}>
                     {RECENT_ORDER_ACTIONS.map((action) => (
                       <button

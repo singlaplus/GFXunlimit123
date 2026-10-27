@@ -1,9 +1,10 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { calculateCartTotals, readAppliedCoupon, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
 import { loadCartItems, saveCartItems, clearCartItems } from '../utils/cartPersistence';
+import FlashSaleOffer from '../components/FlashSaleOffer';
 
 const REQUEST_ADMIN_PAYMENT_METHOD = "Request to Admin";
 const GFX_CREDITS_PAYMENT_METHOD = "GFX's Credits";
@@ -32,6 +33,9 @@ export default function CheckoutPage({ darkMode = false }) {
   const [couponCode, setCouponCode] = useState('');
   const [coupon, setCoupon] = useState(null);
   const [couponMessage, setCouponMessage] = useState('');
+  const [appliedFlashSale, setAppliedFlashSale] = useState(null);
+  const [availableCoupons, setAvailableCoupons] = useState([]);
+  const [availableCouponsError, setAvailableCouponsError] = useState('');
   const [billing, setBilling] = useState({ fullName: '', email: '', phone: '', address: '', city: '', country: 'India' });
   const [paymentMethod, setPaymentMethod] = useState('');
   const [hasCreditPackage, setHasCreditPackage] = useState(false);
@@ -61,6 +65,22 @@ export default function CheckoutPage({ darkMode = false }) {
   };
 
   const [availablePaymentMethods, setAvailablePaymentMethods] = useState([]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    axios.get(`${API_BASE_URL}/checkout/available-coupons`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((response) => {
+        setAvailableCoupons(Array.isArray(response.data) ? response.data : []);
+      })
+      .catch((error) => {
+        console.error('Failed to load available coupons:', error);
+        setAvailableCouponsError(error.response?.data?.error || 'Unable to load your available coupons.');
+      });
+  }, []);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -130,7 +150,8 @@ export default function CheckoutPage({ darkMode = false }) {
 
       try {
         const token = localStorage.getItem('token');
-        const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: savedCoupon.code }, {
+        const savedItems = await loadCartItems();
+        const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: savedCoupon.code, items: savedItems }, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         const nextCoupon = res.data?.coupon || null;
@@ -192,12 +213,50 @@ export default function CheckoutPage({ darkMode = false }) {
     window.dispatchEvent(new Event('cartUpdated'));
   }, [items]);
 
+  useEffect(() => {
+    if (!hasLoadedCart.current || !items.length || items.some((item) => item.creditPackage || item.subscription)) return;
+    const syncFirstOrderCoupon = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await axios.post(`${API_BASE_URL}/checkout/first-order-coupon`, { items }, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        const { coupon: firstOrderCoupon, eligible, message } = response.data || {};
+        if (!firstOrderCoupon) return;
+        if (eligible) {
+          setCouponCode(firstOrderCoupon.code);
+          setCoupon(firstOrderCoupon);
+          setCouponMessage(message || 'Your First Order coupon has been applied automatically.');
+          localStorage.setItem('appliedCoupon', JSON.stringify({ code: firstOrderCoupon.code, coupon: firstOrderCoupon }));
+          return;
+        }
+        setCoupon(null);
+        setCouponCode('');
+        setCouponMessage(message || '');
+        clearAppliedCoupon();
+      } catch (error) {
+        console.error('Failed to check First Order coupon:', error);
+        setCouponMessage(error.response?.data?.error || 'Unable to check First Order coupon availability.');
+      }
+    };
+    syncFirstOrderCoupon();
+  }, [items]);
+
   const cartCurrency = useMemo(
     () => items.find((item) => item.currency)?.currency || null,
     [items]
   );
 
-  const totals = useMemo(() => calculateCartTotals(items, { coupon, taxSettings, currency: cartCurrency }), [items, coupon, taxSettings, cartCurrency]);
+  const handleFlashSaleChange = useCallback((flashSale) => {
+    setAppliedFlashSale(flashSale);
+  }, []);
+
+  const totals = useMemo(() => calculateCartTotals(items, {
+    coupon,
+    flashSaleDiscount: appliedFlashSale?.discount || 0,
+    taxSettings,
+    currency: cartCurrency
+  }), [items, coupon, appliedFlashSale, taxSettings, cartCurrency]);
   const creditsRequired = Math.ceil(totals.total);
   const hasEnoughCredits = availableCredits !== null && availableCredits >= creditsRequired;
 
@@ -223,15 +282,16 @@ export default function CheckoutPage({ darkMode = false }) {
     });
   }, [availablePaymentMethods, hasEnoughCredits]);
 
-  const applyCoupon = async () => {
-    const nextCode = normalizeCouponCode(couponCode);
+  const applyCoupon = async (couponCodeToApply = couponCode) => {
+    const nextCode = normalizeCouponCode(couponCodeToApply);
     if (!nextCode) return;
     try {
       const token = localStorage.getItem('token');
-      const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: nextCode }, {
+      const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: nextCode, items }, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const nextCoupon = res.data.coupon || null;
+      setCouponCode(nextCode);
       setCoupon(nextCoupon);
       setCouponMessage(res.data.message || 'Coupon applied');
       localStorage.setItem('appliedCoupon', JSON.stringify({ code: nextCode, coupon: nextCoupon }));
@@ -274,8 +334,12 @@ export default function CheckoutPage({ darkMode = false }) {
         billing,
         paymentMethod: totals.total === 0 ? 'free' : paymentMethod,
         couponCode: coupon?.code || couponCode.trim(),
+        flashSaleId: appliedFlashSale?.sale?.id || null,
+        flashSaleAssetIds: appliedFlashSale?.selectedAssetIds || [],
         currency: cartCurrency,
-        taxRate: totals.tax > 0 ? Number((totals.tax / Math.max(1, totals.subtotal || 1)).toFixed(4)) : 0,
+        taxRate: totals.tax > 0
+          ? Number((totals.tax / Math.max(1, totals.subtotal - totals.discount)).toFixed(4))
+          : 0,
         taxBreakdown: totals.taxBreakdown || [],
       };
       const res = await axios.post(`${API_BASE_URL}/checkout/place-order`, payload, {
@@ -406,18 +470,61 @@ export default function CheckoutPage({ darkMode = false }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '1.08rem', paddingTop: 8, borderTop: darkMode ? '1px solid rgba(255,255,255,0.12)' : '1px solid rgba(226,232,240,1)' }}><span>Total</span><span>{formatCurrency(totals.total, cartCurrency)}</span></div>
             </div>
 
-            <div style={{ marginTop: 16 }}>
-              <label style={{ display: 'block', fontWeight: 700, marginBottom: 8 }}>Coupon</label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input value={couponCode} onChange={(e) => setCouponCode(e.target.value)} placeholder="WELCOME10" style={{ flex: 1, borderRadius: 12, border: '1px solid #cbd5e1', padding: '10px 12px' }} />
-                {coupon ? (
-                  <button onClick={removeCoupon} style={{ border: 'none', background: '#64748b', color: '#fff', borderRadius: 12, padding: '10px 14px', cursor: 'pointer', fontWeight: 700 }}>Remove coupon</button>
-                ) : (
-                  <button onClick={applyCoupon} style={{ border: 'none', background: '#ED2224', color: '#fff', borderRadius: 12, padding: '10px 14px', cursor: 'pointer', fontWeight: 700 }}>Apply</button>
-                )}
+            <FlashSaleOffer
+              items={items}
+              subscriptionRestricted={subscriptionRestricted}
+              darkMode={darkMode}
+              onChange={handleFlashSaleChange}
+              variant="checkout"
+              currency={cartCurrency}
+            />
+
+            {!(appliedFlashSale?.discount > 0) && (
+              <div style={{ marginTop: 16 }}>
+                <label style={{ display: 'block', fontWeight: 700, marginBottom: 8 }}>Coupon</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input value={couponCode} onChange={(e) => setCouponCode(e.target.value)} placeholder="WELCOME10" style={{ flex: 1, borderRadius: 12, border: '1px solid #cbd5e1', padding: '10px 12px' }} />
+                  {coupon ? (
+                    <button onClick={removeCoupon} style={{ border: 'none', background: '#64748b', color: '#fff', borderRadius: 12, padding: '10px 14px', cursor: 'pointer', fontWeight: 700 }}>Remove coupon</button>
+                  ) : (
+                    <button onClick={applyCoupon} style={{ border: 'none', background: '#ED2224', color: '#fff', borderRadius: 12, padding: '10px 14px', cursor: 'pointer', fontWeight: 700 }}>Apply</button>
+                  )}
+                </div>
+                {couponMessage ? <div style={{ marginTop: 8, color: coupon ? '#16a34a' : '#DC2626', fontSize: '0.95rem' }}>{couponMessage}</div> : null}
+                {availableCouponsError ? <div role="alert" style={{ marginTop: 8, color: '#DC2626', fontSize: '0.95rem' }}>{availableCouponsError}</div> : null}
+                {availableCoupons.length > 0 ? (
+                  <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+                    <strong>Your available coupons</strong>
+                    {availableCoupons.map((availableCoupon) => {
+                      const isApplied = String(coupon?.id) === String(availableCoupon.id);
+                      return (
+                        <div key={availableCoupon.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 10, borderRadius: 12, background: darkMode ? 'rgba(255,255,255,0.06)' : '#f8fafc' }}>
+                          <div>
+                            <div>{availableCoupon.code}</div>
+                            <div style={{ fontSize: '0.8rem', color: darkMode ? '#cbd5e1' : '#64748b' }}>
+                              {String(availableCoupon.discount_type || '').toLowerCase() === 'percentage'
+                                ? `${Number(availableCoupon.discount_value || 0)}% off`
+                                : String(availableCoupon.discount_type || '').toLowerCase() === 'free_asset'
+                                  ? 'Free asset'
+                                  : `${String(availableCoupon.discount_type || 'Discount').replace(/_/g, ' ')}: ${Number(availableCoupon.discount_value || 0)}`}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            aria-label={`Apply coupon ${availableCoupon.code}`}
+                            disabled={isApplied}
+                            onClick={() => applyCoupon(availableCoupon.code)}
+                            style={{ border: 'none', background: isApplied ? '#64748b' : '#ED2224', color: '#fff', borderRadius: 10, padding: '8px 12px', cursor: isApplied ? 'default' : 'pointer', fontWeight: 700 }}
+                          >
+                            {isApplied ? 'Applied' : 'Apply'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
-              {couponMessage ? <div style={{ marginTop: 8, color: coupon ? '#16a34a' : '#DC2626', fontSize: '0.95rem' }}>{couponMessage}</div> : null}
-            </div>
+            )}
 
             <button disabled={submitting || !items.length || (totals.total > 0 && (!paymentMethod || (paymentMethod === GFX_CREDITS_PAYMENT_METHOD && !hasEnoughCredits)))} onClick={submitOrder} style={{ width: '100%', marginTop: 18, border: 'none', borderRadius: 16, padding: '14px 16px', background: '#ED2224', color: '#fff', fontWeight: 800, cursor: 'pointer' }}>
               {submitting ? 'Placing order…' : 'Place order'}
