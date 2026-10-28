@@ -3169,7 +3169,8 @@ describe("AdminPanel collection controls", () => {
   });
 
   it("renders a dedicated promotions hub tab for marketing management", async () => {
-    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    useLocation.mockReturnValue({ search: "?tab=promotions"     });
+
     axios.get.mockImplementation((url) => {
       if (url.endsWith("/admin/promotions/customers")) {
         return Promise.resolve({ data: [{ id: 7, username: "testcustomer" }, { id: 8, username: "othercustomer" }] });
@@ -3210,7 +3211,17 @@ describe("AdminPanel collection controls", () => {
 
     expect(await screen.findByText(/promotions hub/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /coupons/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^campaigns$/i })).toBeInTheDocument();
+    const contributorOffersTab = screen.getByRole("button", { name: /^contributor offers$/i });
+    expect(contributorOffersTab).toBeInTheDocument();
+
+    fireEvent.click(contributorOffersTab);
+    expect(await screen.findByLabelText("Offer name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Benefit type")).toBeInTheDocument();
+    expect(screen.getByLabelText("Benefit value")).toBeInTheDocument();
+    expect(screen.getByLabelText("Eligible contributors")).toBeInTheDocument();
+    expect(screen.getByLabelText("Eligibility requirements")).toBeInTheDocument();
+    expect(screen.getByLabelText("Eligibility requirement value")).toBeDisabled();
+    expect(screen.getByLabelText("Status")).toHaveValue("active");
 
     fireEvent.click(screen.getByRole("button", { name: /^coupons$/i }));
     await waitFor(() => expect(localStorage.getItem("adminPromotionsActiveSection")).toBe("coupons"));
@@ -3281,6 +3292,353 @@ describe("AdminPanel collection controls", () => {
     unmount();
     render(<AdminPanel />);
     expect(await screen.findByRole("button", { name: /^coupons$/i })).toHaveClass("is-active");
+  });
+
+  it("saves Contributor Offer fields as campaign metadata", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.get.mockImplementation((url) => {
+      if (url.endsWith("/admin/promotions/contributors")) {
+        return Promise.resolve({
+          data: [
+            { id: 2, username: "creator", live_asset_count: 11 },
+            { id: 3, username: "another_creator", live_asset_count: 4 },
+          ],
+        });
+      }
+      if (url.includes("/admin/promotions")) return Promise.resolve({ data: { campaigns: [] } });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^contributor offers$/i }));
+    const offerStartDate = screen.getByLabelText("Start Date");
+    const offerEndDate = screen.getByLabelText("End Date");
+    expect(offerStartDate).toHaveAttribute("aria-required", "true");
+    fireEvent.click(offerStartDate);
+    const offerStartCalendar = screen.getByRole("dialog", { name: "Start Date calendar" });
+    fireEvent.click(within(offerStartCalendar).getByRole("button", { name: "Today" }));
+    fireEvent.click(offerEndDate);
+    const offerEndCalendar = screen.getByRole("dialog", { name: "End Date calendar" });
+    expect(offerEndDate).toHaveAttribute("aria-expanded", "true");
+    expect(offerEndCalendar).toBeInTheDocument();
+    fireEvent.click(offerEndDate);
+    fireEvent.change(screen.getByLabelText("Offer name"), { target: { value: "Upload bonus" } });
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Reward eligible uploads" } });
+    fireEvent.change(screen.getByLabelText("Benefit type"), { target: { value: "bonus_payout" } });
+    fireEvent.change(screen.getByLabelText("Benefit value"), { target: { value: "500" } });
+    fireEvent.change(screen.getByLabelText("Eligible contributors"), { target: { value: "selected" } });
+    expect(screen.getByText("Choose Active Contributor")).toBeInTheDocument();
+    const contributorPicker = await screen.findByRole("button", { name: "Select active contributors" });
+    expect(contributorPicker).toHaveTextContent("Select contributors");
+    fireEvent.click(contributorPicker);
+    expect(await screen.findByRole("option", { name: "creator (11)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "another_creator (4)" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "creator (11)" }));
+    fireEvent.click(screen.getByRole("option", { name: "another_creator (4)" }));
+    expect(contributorPicker).toHaveTextContent("2 contributors selected");
+    const eligibilityRequirement = screen.getByLabelText("Eligibility requirements");
+    const requirementValue = screen.getByLabelText("Eligibility requirement value");
+    fireEvent.change(eligibilityRequirement, { target: { value: "earnings" } });
+    expect(requirementValue).toHaveAttribute("step", "any");
+    fireEvent.change(eligibilityRequirement, { target: { value: "uploads" } });
+    expect(requirementValue).toBeEnabled();
+    expect(requirementValue).toHaveAttribute("step", "1");
+    fireEvent.change(requirementValue, { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Status", { selector: "#campaign-status" }), { target: { value: "scheduled" } });
+    fireEvent.change(screen.getByLabelText("Admin notes"), { target: { value: "October offer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Offer" }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/promotions"),
+        expect.objectContaining({
+          resource: "campaign",
+          action: "create",
+          data: expect.objectContaining({
+            name: "Upload bonus",
+            campaign_type: "contributor_offer",
+            objective: "Reward eligible uploads",
+            status: "scheduled",
+            start_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+            audience: "Selected contributors: creator, another_creator",
+            notes: "October offer",
+            metadata: expect.objectContaining({
+              benefit_type: "bonus_payout",
+              benefit_value: 500,
+              eligibility_scope: "selected",
+              eligible_contributors: "creator, another_creator",
+              eligible_contributor_ids: ["2", "3"],
+              eligibility_requirements: "uploads",
+              eligibility_requirement_value: 10,
+            }),
+          }),
+        }),
+        expect.anything()
+      );
+    });
+  });
+
+  it("shows Contributor Offer details in the library", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/promotions")) {
+        return Promise.resolve({
+          data: {
+            campaigns: [{
+              id: 45,
+              name: "Contributor bonus",
+              objective: "Reward contributors for their work",
+              status: "active",
+              start_date: "2026-10-28",
+              end_date: null,
+              audience: "Selected contributors: varsha",
+              notes: "October campaign",
+              metadata: {
+                benefit_type: "bonus_payout",
+                benefit_value: 500,
+                eligibility_scope: "selected",
+                eligible_contributors: "varsha",
+                eligibility_requirements: "uploads",
+                eligibility_requirement_value: 11,
+              },
+            }],
+            contributor_applications: [{
+              id: 8,
+              offer_id: 45,
+              contributor_id: 2,
+              username: "varsha",
+              full_name: "Varsha",
+              email: "varsha@example.com",
+              offer_name: "Contributor bonus",
+              status: "pending",
+              created_at: "2026-10-28T10:00:00.000Z",
+              eligibility_requirements: "uploads",
+              eligibility_requirement_value: "100",
+              progress_count: 0,
+            }],
+          },
+        });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^contributor offers$/i }));
+
+    expect(await screen.findAllByText("Contributor bonus")).toHaveLength(2);
+    expect(screen.getByText("Reward contributors for their work")).toBeInTheDocument();
+    expect(screen.getByText("Benefit:").parentElement).toHaveTextContent("Bonus payout · 500");
+    expect(screen.getByText("Eligible contributors:").parentElement).toHaveTextContent("varsha");
+    expect(screen.getByText("Requirement:").parentElement).toHaveTextContent("Uploads · 11");
+    expect(screen.getByText("Dates:").parentElement).toHaveTextContent("2026-10-28 – No end date");
+    expect(screen.getByText("Admin notes:").parentElement).toHaveTextContent("October campaign");
+    expect(screen.getByRole("heading", { name: "Contributor Applications" })).toBeInTheDocument();
+    expect(screen.getByText("Varsha")).toBeInTheDocument();
+    const applicationDetails = screen.getByText("Email:").parentElement.parentElement;
+    expect(applicationDetails).toHaveTextContent("varsha@example.com");
+    expect(screen.getByText("Offer:").parentElement).toHaveTextContent("Contributor bonus");
+    expect(within(applicationDetails).getByText("Status:").parentElement).toHaveTextContent("active");
+    expect(screen.getByText("Uploads progress:").parentElement).toHaveTextContent("0/100");
+    fireEvent.change(screen.getByLabelText("Contributor application status filter"), { target: { value: "all" } });
+    const withdrawButton = screen.getByRole("button", { name: "Withdraw application from varsha" });
+    fireEvent.click(withdrawButton);
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/promotions/applications/8/withdraw"),
+        {},
+        expect.anything()
+      );
+    });
+    await waitFor(() => expect(within(applicationDetails).getByText("Status:").parentElement).toHaveTextContent("withdrawn"));
+    expect(screen.queryByRole("button", { name: "Withdraw application from varsha" })).not.toBeInTheDocument();
+  });
+
+  it("filters Contributor Applications by active, completed, ended, and withdrawn status", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/promotions")) {
+        return Promise.resolve({
+          data: {
+            campaigns: [],
+            contributor_applications: [
+              {
+                id: 1,
+                username: "active-contributor",
+                status: "pending",
+                offer_status: "active",
+                eligibility_requirements: "uploads",
+                eligibility_requirement_value: "10",
+                progress_count: 2,
+              },
+              {
+                id: 2,
+                username: "completed-contributor",
+                status: "completed",
+                offer_status: "active",
+                eligibility_requirements: "uploads",
+                eligibility_requirement_value: "10",
+                progress_count: 10,
+              },
+              {
+                id: 3,
+                username: "ended-contributor",
+                status: "ended",
+                offer_status: "expired",
+                eligibility_requirements: "uploads",
+                eligibility_requirement_value: "10",
+                progress_count: 2,
+              },
+              {
+                id: 4,
+                username: "withdrawn-contributor",
+                status: "withdrawn",
+                offer_status: "active",
+                eligibility_requirements: "uploads",
+                eligibility_requirement_value: "10",
+                progress_count: 2,
+              },
+            ],
+          },
+        });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^contributor offers$/i }));
+    const filter = await screen.findByLabelText("Contributor application status filter");
+    const applications = screen.getByRole("heading", { name: "Contributor Applications" }).parentElement.parentElement;
+
+    expect(filter).toHaveValue("active");
+    expect(within(applications).getAllByText("active-contributor").length).toBeGreaterThan(0);
+    expect(within(applications).queryByText("completed-contributor")).not.toBeInTheDocument();
+    expect(within(filter).getByRole("option", { name: "All" })).toBeInTheDocument();
+    expect(within(filter).getByRole("option", { name: "Active" })).toBeInTheDocument();
+    expect(within(filter).getByRole("option", { name: "Completed" })).toBeInTheDocument();
+    expect(within(filter).getByRole("option", { name: "Ended" })).toBeInTheDocument();
+    expect(within(filter).getByRole("option", { name: "Withdrawn" })).toBeInTheDocument();
+
+    fireEvent.change(filter, { target: { value: "all" } });
+    expect(within(applications).getAllByText("completed-contributor").length).toBeGreaterThan(0);
+    [
+      ["active", "active-contributor", "completed-contributor"],
+      ["completed", "completed-contributor", "active-contributor"],
+      ["ended", "ended-contributor", "active-contributor"],
+      ["withdrawn", "withdrawn-contributor", "active-contributor"],
+    ].forEach(([status, visibleContributor, hiddenContributor]) => {
+      fireEvent.change(filter, { target: { value: status } });
+      expect(within(applications).getAllByText(visibleContributor).length).toBeGreaterThan(0);
+      expect(within(applications).queryAllByText(hiddenContributor)).toHaveLength(0);
+    });
+  });
+
+  it("credits the bonus to unpaid earnings when approving the completed application", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.post.mockResolvedValue({
+      data: {
+        application: {
+          id: 8,
+          status: "ended",
+          benefit_approved: true,
+          benefit_amount: 500,
+          benefit_earning_id: 99,
+        },
+        alreadyApproved: false,
+      },
+    });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/promotions")) {
+        return Promise.resolve({
+          data: {
+            campaigns: [],
+            contributor_applications: [{
+              id: 8,
+              offer_id: 45,
+              contributor_id: 2,
+              username: "varsha",
+              full_name: "Varsha",
+              email: "varsha@example.com",
+              offer_name: "Contributor bonus",
+              status: "completed",
+              benefit_type: "bonus_payout",
+              benefit_value: "500",
+              eligibility_requirements: "uploads",
+              eligibility_requirement_value: "100",
+              progress_count: 100,
+            }],
+          },
+        });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^contributor offers$/i }));
+    fireEvent.change(await screen.findByLabelText("Contributor application status filter"), { target: { value: "completed" } });
+    fireEvent.click(await screen.findByRole("button", { name: "View completed application for varsha" }));
+
+    expect(screen.getByRole("dialog", { name: "Contributor bonus payout" })).toHaveTextContent("Varsha");
+    expect(screen.getByText("Benefit to add: ₹500.00")).toBeInTheDocument();
+    expect(screen.getByText(/Approving adds this bonus to the contributor's unpaid earnings/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/promotions/applications/8/approve-benefit"),
+        {},
+        expect.anything()
+      );
+    });
+    expect(await screen.findByText("Bonus approved and credited to unpaid earnings.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Contributor application status filter"), { target: { value: "ended" } });
+    expect(within(screen.getByText("Email:").parentElement.parentElement).getByText("Status:").parentElement).toHaveTextContent("ended");
+    expect(screen.getByText("Remarks:").parentElement).toHaveTextContent("Paid ₹500.00");
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View completed application for varsha" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Withdraw application from varsha" })).not.toBeInTheDocument();
+    expect(axios.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("filters Contributor Offer Library by status", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/promotions")) {
+        return Promise.resolve({
+          data: {
+            campaigns: [
+              { id: 51, name: "Active offer", status: "active", campaign_type: "contributor_offer", metadata: {} },
+              { id: 52, name: "Scheduled offer", status: "scheduled", campaign_type: "contributor_offer", metadata: {} },
+              { id: 53, name: "Draft offer", status: "planned", campaign_type: "contributor_offer", metadata: {} },
+              { id: 54, name: "Ended offer", status: "expired", campaign_type: "contributor_offer", metadata: {} },
+            ],
+          },
+        });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^contributor offers$/i }));
+    const statusFilter = await screen.findByLabelText("Contributor offer status filter");
+
+    expect(screen.getByText("Active offer")).toBeInTheDocument();
+    expect(statusFilter).toHaveValue("active");
+    expect(screen.queryByText("Scheduled offer")).not.toBeInTheDocument();
+    fireEvent.change(statusFilter, { target: { value: "all" } });
+    expect(screen.getByText("Scheduled offer")).toBeInTheDocument();
+    expect(screen.getByText("Draft offer")).toBeInTheDocument();
+    expect(screen.getByText("Ended offer")).toBeInTheDocument();
+
+    fireEvent.change(statusFilter, { target: { value: "active" } });
+    expect(screen.getByText("Active offer")).toBeInTheDocument();
+    expect(screen.queryByText("Scheduled offer")).not.toBeInTheDocument();
+
+    fireEvent.change(statusFilter, { target: { value: "draft" } });
+    expect(screen.getByText("Draft offer")).toBeInTheDocument();
+    expect(screen.queryByText("Active offer")).not.toBeInTheDocument();
+
+    fireEvent.change(statusFilter, { target: { value: "ended" } });
+    expect(screen.getByText("Ended offer")).toBeInTheDocument();
+    expect(screen.queryByText("Draft offer")).not.toBeInTheDocument();
   });
 
   it("shows available category or collection targets for flash sale placement", async () => {

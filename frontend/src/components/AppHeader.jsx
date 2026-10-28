@@ -13,7 +13,7 @@ import JoinModal from "./JoinModal";
 import NotificationsPanel from "./NotificationsPanel";
 import { clearExploreFilterState } from "../utils/exploreFilters";
 import { isAdminRole, isContributorRole, normalizeRole } from "../utils/role";
-import { clearAuthSessionStorage, getEffectiveAuthToken, hasActiveSession } from "../utils/authSession";
+import { buildAuthHeaders, clearAuthSessionStorage, getEffectiveAuthToken, hasActiveSession } from "../utils/authSession";
 import { loadCartItems, saveCartItems } from "../utils/cartPersistence";
 import { INDIA_TIME_ZONE } from "../utils/indiaTime";
 
@@ -64,6 +64,32 @@ const getTimeRemainingLabel = (targetTime, now) => {
   return `Time left ${days}d ${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
 };
 
+const getContributorOfferRibbonText = (offer) => {
+  const benefitLabels = {
+    bonus_payout: "Bonus payout",
+    commission_increase: "Commission increase",
+    fee_waiver: "Fee waiver"
+  };
+  const benefitType = offer.benefit_type;
+  const benefitLabel = benefitLabels[benefitType] || benefitType || "Contributor offer";
+  const benefitValue = offer.benefit_value;
+  const benefitSuffix = benefitValue === null || benefitValue === undefined || benefitValue === ""
+    ? ""
+    : ` · ${benefitLabel}${["bonus_payout", "fee_waiver"].includes(benefitType) ? " ₹" : " "}${benefitValue}${benefitType === "commission_increase" ? "%" : ""}`;
+  const requirement = offer.eligibility_requirements;
+  const requirementValue = offer.eligibility_requirement_value;
+  const requirementLabel = requirement ? `${requirement.charAt(0).toUpperCase()}${requirement.slice(1)}` : "";
+  const requirementProgress = requirement === "uploads" && offer.is_applied
+    ? ` ${Number(offer.progress_count) || 0}/${requirementValue ?? 0}`
+    : requirementValue === null || requirementValue === undefined || requirementValue === ""
+      ? ""
+      : ` ${requirement === "earnings" ? "₹" : ""}${requirementValue}`;
+  const requirementSuffix = requirement
+    ? ` · ${requirementLabel}${requirementProgress}`
+    : "";
+  return `${offer.name || "Contributor offer"}${benefitSuffix}${requirementSuffix}`;
+};
+
 export default function AppHeader({
   showNotifications,
   setShowNotifications,
@@ -99,6 +125,9 @@ export default function AppHeader({
   const [seoMenuOpen, setSeoMenuOpen] = useState(false);
   const [upcomingFlashSales, setUpcomingFlashSales] = useState([]);
   const [activeFlashSales, setActiveFlashSales] = useState([]);
+  const [activeContributorOffers, setActiveContributorOffers] = useState([]);
+  const [appliedContributorOfferId, setAppliedContributorOfferId] = useState(null);
+  const [submittingContributorOfferId, setSubmittingContributorOfferId] = useState(null);
   const [flashSaleCountdownNow, setFlashSaleCountdownNow] = useState(Date.now());
   const [flashSaleGroupWidth, setFlashSaleGroupWidth] = useState(0);
   const [flashSaleAvailableWidth, setFlashSaleAvailableWidth] = useState(0);
@@ -182,7 +211,7 @@ export default function AppHeader({
       try {
         const response = await axios.get(`${API_BASE_URL}/promotions/upcoming-flash-sales`);
         if (active) {
-          setUpcomingFlashSales(Array.isArray(response.data?.sales) ? response.data.sales : []);
+          setUpcomingFlashSales(Array.isArray(response.data?.sales) ? response.data.sales.slice(0, 1) : []);
         }
       } catch (error) {
         console.debug("Upcoming Flash Sales unavailable", error?.message || error);
@@ -217,6 +246,70 @@ export default function AppHeader({
       clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (!token || !isContributorUser) {
+      setActiveContributorOffers([]);
+      setAppliedContributorOfferId(null);
+      return undefined;
+    }
+
+    let active = true;
+    const loadActiveContributorOffers = async () => {
+      try {
+        const response = await axios.get(
+          `${API_BASE_URL}/promotions/active-contributor-offers`,
+          { headers: buildAuthHeaders(token) }
+        );
+        if (active) {
+          const offers = Array.isArray(response.data?.offers) ? response.data.offers : [];
+          setActiveContributorOffers(offers);
+          const previouslyApplied = offers.find((offer) => offer.is_applied);
+          setAppliedContributorOfferId(previouslyApplied?.id ?? null);
+        }
+      } catch (error) {
+        console.debug("Active Contributor Offers unavailable", error?.message || error);
+        if (active) setActiveContributorOffers([]);
+      }
+    };
+
+    loadActiveContributorOffers();
+    const timer = setInterval(loadActiveContributorOffers, 30 * 1000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [token, isContributorUser]);
+
+  const applyToContributorOffer = async (offer) => {
+    if (!token || submittingContributorOfferId !== null) return;
+    setSubmittingContributorOfferId(offer.id);
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/promotions/active-contributor-offers/${offer.id}/apply`,
+        {},
+        { headers: buildAuthHeaders(token) }
+      );
+      setAppliedContributorOfferId(offer.id);
+      setActiveContributorOffers((offers) => offers.map((item) => (
+        String(item.id) === String(offer.id)
+          ? {
+            ...item,
+            is_applied: true,
+            progress_count: Number(response.data?.application?.progress_count) || 0
+          }
+          : item
+      )));
+      toast.success(response.data?.alreadyApplied
+        ? "You have already applied to this Contributor Offer."
+        : "Your Contributor Offer application has been submitted.");
+    } catch (error) {
+      console.error("Unable to apply to Contributor Offer", error);
+      toast.error(error.response?.data?.error || "Unable to submit your Contributor Offer application.");
+    } finally {
+      setSubmittingContributorOfferId(null);
+    }
+  };
 
   useEffect(() => {
     const updateRepeatCount = () => {
@@ -1052,7 +1145,7 @@ export default function AppHeader({
             )}
           </div>
         </div>
-        {(upcomingFlashSales.length > 0 || activeFlashSales.length > 0) && (
+        {!isContributorUser && (upcomingFlashSales.length > 0 || activeFlashSales.length > 0) && (
           <div
             className="upcoming-flash-sale-ribbon"
             aria-label="Upcoming Flash Sales"
@@ -1105,6 +1198,48 @@ export default function AppHeader({
             )}
           </div>
         )}
+        {isContributorUser && activeContributorOffers.length > 0 && (() => {
+          const appliedOffer = activeContributorOffers.find(
+            (offer) => String(offer.id) === String(appliedContributorOfferId)
+          );
+          const isCompletedOffer = appliedOffer?.application_status === "completed"
+            || Boolean(appliedOffer?.benefit_approved);
+          return (
+            <div
+              className={`contributor-offer-ribbon${appliedOffer ? " is-applied" : ""}${isCompletedOffer ? " is-completed" : ""}`}
+              aria-label={isCompletedOffer
+                ? "Completed Contributor Offer"
+                : appliedOffer ? "Applied Contributor Offer" : "Active Contributor Offers"}
+            >
+              <strong className="contributor-offer-ribbon-label">CONTRIBUTOR OFFER</strong>
+              <div className="contributor-offer-ribbon-track">
+                <div className="contributor-offer-ribbon-list">
+                  {(appliedOffer ? [appliedOffer] : activeContributorOffers).map((offer) => (
+                    <span className="contributor-offer-ribbon-item" key={offer.id}>
+                      <span>{getContributorOfferRibbonText(offer)}</span>
+                      <button
+                        type="button"
+                        disabled={offer.is_applied || submittingContributorOfferId !== null}
+                        onClick={() => applyToContributorOffer(offer)}
+                      >
+                        {offer.is_applied
+                          ? offer.application_status === "completed" || offer.benefit_approved ? "Completed" : "Applied"
+                          : String(offer.id) === String(submittingContributorOfferId) ? "Applying..." : "Apply"}
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+              {appliedOffer && (
+                <span className="contributor-offer-countdown" aria-label="Contributor offer time remaining">
+                  {appliedOffer.end_date
+                    ? getLiveFlashSaleCountdown(appliedOffer.end_date, flashSaleCountdownNow)
+                    : "No expiry"}
+                </span>
+              )}
+            </div>
+          );
+        })()}
       </header>
 
       {/* =========================

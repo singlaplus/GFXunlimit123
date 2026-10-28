@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axios from 'axios';
 import AppHeader from './AppHeader';
@@ -614,7 +614,10 @@ describe('AppHeader customer navigation', () => {
   it('shows the upcoming Flash Sale ribbon with its IST start date', async () => {
     axios.get.mockImplementation((url) => (
       url.endsWith('/promotions/upcoming-flash-sales')
-        ? Promise.resolve({ data: { sales: [{ id: 8, name: 'BOG Photos', discount_rule: 'BOGO', start_date: '2026-11-02' }] } })
+        ? Promise.resolve({ data: { sales: [
+          { id: 8, name: 'BOG Photos', discount_rule: 'BOGO', start_date: '2026-11-02' },
+          { id: 11, name: 'Later Sale', discount_rule: 'PERCENTAGE', metadata: { discount_value: 20 }, start_date: '2026-11-09' },
+        ] } })
         : url.endsWith('/checkout/active-flash-sales')
           ? Promise.resolve({ data: { sales: [
             { id: 9, name: 'Current Sale', discount_rule: 'PERCENTAGE', metadata: { discount_value: 15 }, end_date: '2026-10-30' },
@@ -645,6 +648,7 @@ describe('AppHeader customer navigation', () => {
     expect(ribbon).toHaveClass('upcoming-flash-sale-ribbon');
     expect(ribbon.querySelector('.upcoming-flash-sale-label')).toHaveTextContent('FLASH SALE');
     expect(ribbon).toHaveTextContent('BOG Photos');
+    expect(ribbon).not.toHaveTextContent('Later Sale');
     expect(ribbon).toHaveTextContent('Buy One Get One');
     expect(ribbon.querySelector('.upcoming-flash-sale-discount')).toHaveTextContent('Buy One Get One');
     expect(ribbon).toHaveTextContent('Starts on 2nd Nov 2026 IST');
@@ -659,6 +663,219 @@ describe('AppHeader customer navigation', () => {
     expect(liveSaleDetails).toHaveClass('upcoming-flash-sale-live-panel');
     expect(liveSaleDetails.querySelector('.upcoming-flash-sale-discount')).toHaveTextContent('15% off');
     expect(liveSaleDetails.querySelector('.upcoming-flash-sale-live-item > span')).toHaveTextContent(/Time left/);
+  });
+
+  it('hides the Flash Sale banner from logged-in contributors', async () => {
+    localStorage.setItem('token', 'demo-token');
+    localStorage.setItem('userRole', 'contributor');
+    axios.get.mockImplementation((url) => (
+      url.endsWith('/promotions/upcoming-flash-sales')
+        ? Promise.resolve({ data: { sales: [{ id: 8, name: 'BOG Photos', discount_rule: 'BOGO', start_date: '2026-11-02' }] } })
+        : url.endsWith('/checkout/active-flash-sales')
+          ? Promise.resolve({ data: { sales: [{ id: 9, name: 'Current Sale', discount_rule: 'BOGO', end_date: '2026-10-30' }] } })
+          : Promise.resolve({ data: {} })
+    ));
+
+    render(
+      <AppHeader
+        showNotifications={false}
+        setShowNotifications={jest.fn()}
+        notificationCount={0}
+        setNotificationCount={jest.fn()}
+        setShowLoginModal={jest.fn()}
+        setShowJoinModal={jest.fn()}
+        showLoginModal={false}
+        showJoinModal={false}
+        joinModalAccountType=""
+        setJoinModalAccountType={jest.fn()}
+        darkMode={false}
+        notifications={[]}
+        setDarkMode={jest.fn()}
+        userRole="contributor"
+      />
+    );
+
+    await waitFor(() => {
+      expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('/promotions/upcoming-flash-sales'));
+    });
+    expect(screen.queryByLabelText('Upcoming Flash Sales')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Live Flash Sale details')).not.toBeInTheDocument();
+  });
+
+  it('shows active Contributor Offers in a blue ribbon for logged-in contributors', async () => {
+    localStorage.setItem('token', 'demo-token');
+    localStorage.setItem('userRole', 'contributor');
+    axios.get.mockImplementation((url) => (
+      url.endsWith('/promotions/active-contributor-offers')
+        ? Promise.resolve({
+          data: {
+            offers: [{
+              id: 45,
+              name: 'Upload bonus',
+              end_date: '2026-11-02',
+              benefit_type: 'bonus_payout',
+              benefit_value: 500,
+              eligibility_requirements: 'uploads',
+              eligibility_requirement_value: 10,
+              is_applied: false,
+              progress_count: 0,
+            }],
+          },
+        })
+        : Promise.resolve({ data: {} })
+    ));
+
+    render(
+      <AppHeader
+        showNotifications={false}
+        setShowNotifications={jest.fn()}
+        notificationCount={0}
+        setNotificationCount={jest.fn()}
+        setShowLoginModal={jest.fn()}
+        setShowJoinModal={jest.fn()}
+        showLoginModal={false}
+        showJoinModal={false}
+        joinModalAccountType=""
+        setJoinModalAccountType={jest.fn()}
+        darkMode={false}
+        notifications={[]}
+        setDarkMode={jest.fn()}
+        userRole="contributor"
+      />
+    );
+
+    const ribbon = await screen.findByLabelText('Active Contributor Offers');
+    expect(ribbon).toHaveClass('contributor-offer-ribbon');
+    expect(ribbon).toHaveTextContent('Upload bonus · Bonus payout ₹500 · Uploads 10');
+    expect(ribbon.parentElement).toHaveClass('app-header');
+    expect(ribbon.querySelector('.contributor-offer-ribbon-label')).toHaveTextContent('CONTRIBUTOR OFFER');
+    expect(ribbon.querySelector('.contributor-offer-ribbon-list')).toHaveClass('contributor-offer-ribbon-list');
+    const applyButton = screen.getByRole('button', { name: 'Apply' });
+    expect(applyButton).toBeInTheDocument();
+    expect(ribbon).not.toHaveClass('is-applied');
+    await userEvent.click(applyButton);
+    expect(await screen.findByLabelText('Applied Contributor Offer')).toHaveClass('is-applied');
+    expect(screen.getByRole('button', { name: 'Applied' })).toBeDisabled();
+    expect(screen.getByLabelText('Contributor offer time remaining')).toHaveTextContent(/Time left \d+d \d{2}h \d{2}m \d{2}s/);
+    expect(ribbon).toHaveTextContent('Uploads 0/10');
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining('/promotions/active-contributor-offers/45/apply'),
+      {},
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer demo-token' }) })
+    );
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/promotions/active-contributor-offers'),
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer demo-token' }) })
+    );
+  });
+
+  it('returns a withdrawn Contributor Offer ribbon to the blue Apply state', async () => {
+    jest.useFakeTimers();
+    localStorage.setItem('token', 'demo-token');
+    localStorage.setItem('userRole', 'contributor');
+    let applicationStatus = 'pending';
+    axios.get.mockImplementation((url) => (
+      url.endsWith('/promotions/active-contributor-offers')
+        ? Promise.resolve({
+          data: {
+            offers: [{
+              id: 45,
+              name: 'Upload bonus',
+              end_date: '2026-11-02',
+              eligibility_requirements: 'uploads',
+              eligibility_requirement_value: 10,
+              is_applied: applicationStatus !== 'withdrawn',
+              application_status: applicationStatus,
+              progress_count: 2,
+            }],
+          },
+        })
+        : Promise.resolve({ data: {} })
+    ));
+
+    const { unmount } = render(
+      <AppHeader
+        showNotifications={false}
+        setShowNotifications={jest.fn()}
+        notificationCount={0}
+        setNotificationCount={jest.fn()}
+        setShowLoginModal={jest.fn()}
+        setShowJoinModal={jest.fn()}
+        showLoginModal={false}
+        showJoinModal={false}
+        joinModalAccountType=""
+        setJoinModalAccountType={jest.fn()}
+        darkMode={false}
+        notifications={[]}
+        setDarkMode={jest.fn()}
+        userRole="contributor"
+      />
+    );
+
+    try {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByLabelText('Applied Contributor Offer')).toHaveClass('is-applied');
+      expect(screen.getByRole('button', { name: 'Applied' })).toBeDisabled();
+
+      applicationStatus = 'completed';
+      await act(async () => {
+        jest.advanceTimersByTime(30 * 1000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const completedRibbon = screen.getByLabelText('Completed Contributor Offer');
+      expect(completedRibbon).toHaveClass('is-applied', 'is-completed');
+      expect(screen.getByRole('button', { name: 'Completed' })).toBeDisabled();
+      expect(screen.getByLabelText('Contributor offer time remaining')).toHaveTextContent(/Time left \d+d \d{2}h \d{2}m \d{2}s/);
+
+      applicationStatus = 'withdrawn';
+      await act(async () => {
+        jest.advanceTimersByTime(30 * 1000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByLabelText('Active Contributor Offers')).not.toHaveClass('is-applied');
+      expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+      expect(screen.queryByLabelText('Contributor offer time remaining')).not.toBeInTheDocument();
+    } finally {
+      unmount();
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not request or show Contributor Offers for non-contributors', () => {
+    localStorage.setItem('token', 'demo-token');
+    localStorage.setItem('userRole', 'customer');
+
+    render(
+      <AppHeader
+        showNotifications={false}
+        setShowNotifications={jest.fn()}
+        notificationCount={0}
+        setNotificationCount={jest.fn()}
+        setShowLoginModal={jest.fn()}
+        setShowJoinModal={jest.fn()}
+        showLoginModal={false}
+        showJoinModal={false}
+        joinModalAccountType=""
+        setJoinModalAccountType={jest.fn()}
+        darkMode={false}
+        notifications={[]}
+        setDarkMode={jest.fn()}
+        userRole="customer"
+      />
+    );
+
+    expect(screen.queryByLabelText('Active Contributor Offers')).not.toBeInTheDocument();
+    expect(axios.get).not.toHaveBeenCalledWith(
+      expect.stringContaining('/promotions/active-contributor-offers'),
+      expect.anything()
+    );
   });
 
   it('clears unpaid earnings after a successful payout submission', async () => {

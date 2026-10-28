@@ -20,6 +20,7 @@ const { getZonedDateKey, getZonedDateTimeParts, getZonedTimeKey } = require("./u
 const { createMessagingRouter, createAssetNotifications, createCouponNotifications, createDirectMessage, recordEvent, recordBusinessEvent, publishEvent } = require("./messaging");
 const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { registerOrderRoutes } = require("./orders");
+const { registerContributorOfferBenefitRoutes } = require("./routes/contributor-offer-benefit");
 const { summarizeContributorDownloadWindowCounts, summarizeContributorUploadWindowCounts } = require("./dashboardStats");
 const { createAssetServingHandler, encodeAssetPath, resolveAssetFile, sendAssetFile } = require("./utils/assetServing");
 const { sanitizePublicAsset, sanitizePublicAssets } = require("./utils/publicAssetSerializer");
@@ -1584,6 +1585,119 @@ const syncFlashSaleStatuses = async (poolRef = pool) => {
   );
 };
 
+const syncContributorOfferStatuses = async (poolRef = pool) => {
+  const istToday = "(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date";
+  await poolRef.query(
+    `UPDATE marketing_campaigns
+     SET status = 'expired', updated_at = NOW()
+     WHERE campaign_type = 'contributor_offer'
+       AND LOWER(BTRIM(COALESCE(status, ''))) IN ('planned', 'scheduled', 'active')
+       AND end_date IS NOT NULL
+       AND end_date <= ${istToday}`
+  );
+  await poolRef.query(
+    `UPDATE marketing_campaigns
+     SET status = 'active', updated_at = NOW()
+     WHERE campaign_type = 'contributor_offer'
+       AND LOWER(BTRIM(COALESCE(status, ''))) = 'scheduled'
+       AND start_date <= ${istToday}
+       AND (end_date IS NULL OR end_date > ${istToday})`
+  );
+};
+
+const syncContributorOfferApplicationStatuses = async (poolRef = pool) => {
+  const istToday = "(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date";
+  await poolRef.query(
+    `WITH application_progress AS (
+       SELECT
+         applications.id,
+         campaigns.end_date,
+         CASE
+           WHEN campaigns.metadata->>'eligibility_requirement_value' ~ '^\\d+(\\.\\d+)?$'
+             THEN (campaigns.metadata->>'eligibility_requirement_value')::numeric
+           ELSE NULL
+         END AS target_value,
+         CASE campaigns.metadata->>'eligibility_requirements'
+           WHEN 'uploads' THEN (
+             SELECT COUNT(*)::numeric
+             FROM images
+             WHERE images.uploaded_by = applications.contributor_id
+               AND images.id > applications.baseline_asset_id
+           )
+           WHEN 'downloads' THEN (
+             SELECT COUNT(*)::numeric
+             FROM downloads
+             JOIN images ON images.id = downloads.image_id
+             WHERE images.uploaded_by = applications.contributor_id
+               AND downloads.downloaded_at > applications.created_at
+           )
+           WHEN 'earnings' THEN (
+             SELECT COALESCE(SUM(earnings.amount), 0)::numeric
+             FROM earnings
+             WHERE earnings.contributor_id = applications.contributor_id
+               AND earnings.status <> 'rejected'
+               AND earnings.created_at > applications.created_at
+           )
+           ELSE 0::numeric
+         END AS progress_value
+       FROM contributor_offer_applications applications
+       JOIN marketing_campaigns campaigns ON campaigns.id = applications.offer_id
+       WHERE campaigns.campaign_type = 'contributor_offer'
+         AND applications.status = 'pending'
+     )
+     UPDATE contributor_offer_applications applications
+     SET status = CASE
+       WHEN application_progress.target_value > 0
+         AND application_progress.progress_value >= application_progress.target_value THEN 'completed'
+       WHEN application_progress.end_date IS NOT NULL
+         AND application_progress.end_date <= ${istToday} THEN 'ended'
+       ELSE applications.status
+     END
+     FROM application_progress
+     WHERE applications.id = application_progress.id
+       AND (
+         (
+           application_progress.target_value > 0
+           AND application_progress.progress_value >= application_progress.target_value
+         )
+         OR (
+           application_progress.end_date IS NOT NULL
+           AND application_progress.end_date <= ${istToday}
+         )
+       )`
+  );
+};
+
+const isValidDateOnly = (value) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!match) return false;
+  const [year, month, day] = match.slice(1).map(Number);
+  const parsedDate = new Date(Date.UTC(year, month - 1, day));
+  return parsedDate.getUTCFullYear() === year
+    && parsedDate.getUTCMonth() === month - 1
+    && parsedDate.getUTCDate() === day;
+};
+
+const validateContributorOfferDates = (data) => {
+  if (!isValidDateOnly(data.start_date)) {
+    return "Contributor Offers require a valid start date.";
+  }
+  if (data.end_date && !isValidDateOnly(data.end_date)) {
+    return "Offer end date must be a valid date.";
+  }
+  if (data.end_date && data.end_date < data.start_date) {
+    return "Offer end date must be on or after the start date.";
+  }
+  return null;
+};
+
+const getContributorOfferStatusForSave = (status) => {
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  if (normalizedStatus === "draft" || normalizedStatus === "planned") return "planned";
+  if (normalizedStatus === "ended" || normalizedStatus === "expired") return "expired";
+  return "scheduled";
+};
+
 const validateScheduledFlashSale = async (status, startDate) => {
   if (String(status || '').trim().toLowerCase() !== 'scheduled') return null;
   const dateValue = String(startDate || '');
@@ -1610,12 +1724,18 @@ try {
   cron.schedule('* * * * *', async () => {
     try {
       await syncFlashSaleStatuses();
+      await syncContributorOfferStatuses();
+      await syncContributorOfferApplicationStatuses();
     } catch (err) {
-      console.error('Flash Sale status scheduler error:', err);
+      console.error('Promotion status scheduler error:', err);
     }
   });
-  syncFlashSaleStatuses().catch((err) => {
-    console.error('Flash Sale startup status sync failed:', err);
+  Promise.all([
+    syncFlashSaleStatuses(),
+    syncContributorOfferStatuses(),
+    syncContributorOfferApplicationStatuses()
+  ]).catch((err) => {
+    console.error('Promotion startup status sync failed:', err);
   });
 } catch (err) {
   console.warn('Flash Sale scheduler setup skipped', err.message || err);
@@ -5295,6 +5415,29 @@ if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
     `);
 
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS contributor_offer_applications (
+        id SERIAL PRIMARY KEY,
+        offer_id INTEGER NOT NULL REFERENCES marketing_campaigns(id) ON DELETE CASCADE,
+        contributor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        baseline_asset_id BIGINT NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (offer_id, contributor_id)
+      );
+    `);
+    await pool.query("ALTER TABLE contributor_offer_applications ADD COLUMN IF NOT EXISTS baseline_asset_id BIGINT");
+    await pool.query(`
+      UPDATE contributor_offer_applications applications
+      SET baseline_asset_id = COALESCE(
+        (SELECT MAX(images.id) FROM images WHERE images.uploaded_by = applications.contributor_id),
+        0
+      )
+      WHERE baseline_asset_id IS NULL
+    `);
+    await pool.query("ALTER TABLE contributor_offer_applications ALTER COLUMN baseline_asset_id SET DEFAULT 0");
+    await pool.query("ALTER TABLE contributor_offer_applications ALTER COLUMN baseline_asset_id SET NOT NULL");
+
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS coupon_codes (
         id SERIAL PRIMARY KEY,
         name TEXT,
@@ -5796,6 +5939,14 @@ if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
         status TEXT DEFAULT 'pending',
         created_at TIMESTAMPTZ DEFAULT now()
       );
+    `);
+    await pool.query(`
+      ALTER TABLE contributor_offer_applications
+      ADD COLUMN IF NOT EXISTS benefit_earning_id INTEGER REFERENCES earnings(id) ON DELETE SET NULL
+    `);
+    await pool.query(`
+      ALTER TABLE contributor_offer_applications
+      ADD COLUMN IF NOT EXISTS benefit_approved_at TIMESTAMPTZ
     `);
 
     await pool.query(`
@@ -6617,9 +6768,61 @@ app.get("/admin/promotions/customers", verifyAdmin, async (req, res) => {
   }
 });
 
+app.get("/admin/promotions/contributors", verifyAdmin, async (req, res) => {
+  try {
+    const contributors = await pool.query(
+      `SELECT
+         users.id,
+         users.username,
+         COUNT(images.id) FILTER (
+           WHERE LOWER(BTRIM(COALESCE(images.status, ''))) IN ('approved', 'published', 'live')
+         )::int AS live_asset_count
+       FROM users
+       LEFT JOIN images ON images.uploaded_by = users.id
+       WHERE LOWER(BTRIM(COALESCE(users.role, ''))) = 'contributor'
+         AND LOWER(BTRIM(COALESCE(users.status, ''))) = 'active'
+         AND NULLIF(BTRIM(users.username), '') IS NOT NULL
+       GROUP BY users.id, users.username
+       ORDER BY LOWER(users.username), users.id`
+    );
+    return res.json(contributors.rows);
+  } catch (err) {
+    console.error("Failed to load active promotion contributors", err);
+    return res.status(500).json({ error: "Failed to load active contributors." });
+  }
+});
+
+app.post("/admin/promotions/applications/:applicationId/withdraw", verifyAdmin, async (req, res) => {
+  try {
+    const applicationId = Number(req.params.applicationId);
+    if (!Number.isInteger(applicationId) || applicationId <= 0) {
+      return res.status(400).json({ error: "Invalid Contributor Offer application." });
+    }
+
+    const result = await pool.query(
+      `UPDATE contributor_offer_applications
+       SET status = 'withdrawn'
+       WHERE id = $1
+       RETURNING id, offer_id, contributor_id, status, created_at`,
+      [applicationId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Contributor Offer application not found." });
+    }
+    return res.json({ application: result.rows[0] });
+  } catch (error) {
+    console.error("Failed to withdraw Contributor Offer application", error);
+    return res.status(500).json({ error: "Failed to withdraw Contributor Offer application." });
+  }
+});
+
+registerContributorOfferBenefitRoutes(app, pool, verifyAdmin);
+
 app.get("/admin/promotions", verifyAdmin, async (req, res) => {
   try {
     await syncFlashSaleStatuses();
+    await syncContributorOfferStatuses();
+    await syncContributorOfferApplicationStatuses();
     const dashboard = {
       active_campaigns: (await pool.query("SELECT COUNT(*)::int AS count FROM marketing_campaigns WHERE status = 'active'")) .rows[0].count,
       scheduled_campaigns: (await pool.query("SELECT COUNT(*)::int AS count FROM marketing_campaigns WHERE status = 'scheduled'")) .rows[0].count,
@@ -6641,7 +6844,7 @@ app.get("/admin/promotions", verifyAdmin, async (req, res) => {
       coupon_redemption_rate: (await pool.query("SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE ROUND((SELECT COUNT(*) FROM coupon_redemptions)::numeric / COUNT(*) * 100, 2) END AS rate FROM coupon_codes")).rows[0].rate || 0
     };
 
-    const [coupons, campaigns, flashSales, referrals, loyalty, giftCards, bundles, newsletters, banners, popups, announcements, pushNotifications, automations, activityLogs] = await Promise.all([
+    const [coupons, campaigns, flashSales, referrals, loyalty, giftCards, bundles, newsletters, banners, popups, announcements, pushNotifications, automations, activityLogs, contributorApplications] = await Promise.all([
       pool.query("SELECT * FROM coupon_codes ORDER BY created_at DESC"),
       pool.query("SELECT * FROM marketing_campaigns ORDER BY created_at DESC"),
       pool.query(
@@ -6660,7 +6863,50 @@ app.get("/admin/promotions", verifyAdmin, async (req, res) => {
       pool.query("SELECT * FROM announcement_bar ORDER BY created_at DESC"),
       pool.query("SELECT * FROM promotion_push_notifications ORDER BY created_at DESC"),
       pool.query("SELECT * FROM automation_rules ORDER BY created_at DESC"),
-      pool.query("SELECT * FROM promotion_activity_logs ORDER BY created_at DESC LIMIT 50")
+      pool.query("SELECT * FROM promotion_activity_logs ORDER BY created_at DESC LIMIT 50"),
+      pool.query(
+        `SELECT applications.id, applications.offer_id, applications.contributor_id,
+                applications.status, applications.created_at,
+                applications.benefit_earning_id,
+                applications.benefit_approved_at,
+                (applications.benefit_earning_id IS NOT NULL) AS benefit_approved,
+                approved_earning.amount AS paid_amount,
+                users.username, users.email, users.full_name,
+                campaigns.name AS offer_name, campaigns.status AS offer_status,
+                campaigns.end_date::text AS offer_end_date,
+                campaigns.metadata->>'eligibility_requirements' AS eligibility_requirements,
+                campaigns.metadata->>'eligibility_requirement_value' AS eligibility_requirement_value,
+                campaigns.metadata->>'benefit_type' AS benefit_type,
+                campaigns.metadata->>'benefit_value' AS benefit_value,
+                CASE campaigns.metadata->>'eligibility_requirements'
+                  WHEN 'uploads' THEN COALESCE(progress.upload_count, 0)::numeric
+                  WHEN 'downloads' THEN COALESCE(progress.download_count, 0)::numeric
+                  WHEN 'earnings' THEN COALESCE(progress.earnings_count, 0)::numeric
+                  ELSE 0::numeric
+                END AS progress_count
+         FROM contributor_offer_applications applications
+         JOIN users ON users.id = applications.contributor_id
+         JOIN marketing_campaigns campaigns ON campaigns.id = applications.offer_id
+         LEFT JOIN earnings approved_earning ON approved_earning.id = applications.benefit_earning_id
+         LEFT JOIN LATERAL (
+           SELECT
+             (SELECT COUNT(*)::int
+              FROM images
+              WHERE images.uploaded_by = applications.contributor_id
+                AND images.id > applications.baseline_asset_id) AS upload_count,
+             (SELECT COUNT(*)::int
+              FROM downloads
+              JOIN images ON images.id = downloads.image_id
+              WHERE images.uploaded_by = applications.contributor_id
+                AND downloads.downloaded_at > applications.created_at) AS download_count,
+             (SELECT COALESCE(SUM(earnings.amount), 0)::numeric
+              FROM earnings
+              WHERE earnings.contributor_id = applications.contributor_id
+                AND earnings.status <> 'rejected'
+                AND earnings.created_at > applications.created_at) AS earnings_count
+         ) progress ON TRUE
+         ORDER BY applications.created_at DESC, applications.id DESC`
+      )
     ]);
 
     return res.json({
@@ -6678,6 +6924,7 @@ app.get("/admin/promotions", verifyAdmin, async (req, res) => {
       announcements: announcements.rows,
       push_notifications: pushNotifications.rows,
       automation_rules: automations.rows,
+      contributor_applications: contributorApplications.rows,
       activity_logs: activityLogs.rows
     });
   } catch (err) {
@@ -6885,12 +7132,17 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
     }
 
     if (resource === "campaign") {
+      if (data.campaign_type === "contributor_offer") {
+        const dateError = validateContributorOfferDates(data);
+        if (dateError) return res.status(400).json({ error: dateError });
+      }
       if (action === "create") {
+        const isContributorOffer = data.campaign_type === "contributor_offer";
         const record = await insertIntoTable("marketing_campaigns", {
           name: data.name || "Campaign",
           campaign_type: data.campaign_type || "launch",
           objective: data.objective || "",
-          status: data.status || "planned",
+          status: isContributorOffer ? getContributorOfferStatusForSave(data.status) : data.status || "planned",
           budget: data.budget ?? 0,
           start_date: data.start_date || null,
           end_date: data.end_date || null,
@@ -6911,15 +7163,17 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
           data.notes || "",
           JSON.stringify(data.metadata || {})
         ]);
+        if (isContributorOffer) await syncContributorOfferStatuses();
         await logActivity("campaign_created", `Created campaign ${record.name}`, { campaignId: record.id });
         return res.json(record);
       }
       if (action === "update") {
+        const isContributorOffer = data.campaign_type === "contributor_offer";
         const record = await updateTable("marketing_campaigns", data.id, {
           name: data.name,
           campaign_type: data.campaign_type,
           objective: data.objective,
-          status: data.status,
+          status: isContributorOffer ? getContributorOfferStatusForSave(data.status) : data.status,
           budget: data.budget,
           start_date: data.start_date || null,
           end_date: data.end_date || null,
@@ -6928,6 +7182,7 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
           notes: data.notes,
           metadata: data.metadata ? JSON.stringify(data.metadata) : undefined
         });
+        if (isContributorOffer) await syncContributorOfferStatuses();
         await logActivity("campaign_updated", `Updated campaign ${data.id}`, { campaignId: data.id });
         return res.json(record || { ok: true });
       }
@@ -10371,6 +10626,181 @@ app.get("/checkout/active-flash-sales", async (req, res) => {
   }
 });
 
+app.get("/promotions/active-contributor-offers", authenticateToken, async (req, res) => {
+  try {
+    const userResult = await pool.query(
+      `SELECT role, status
+       FROM users
+       WHERE id = $1`,
+      [req.user.id]
+    );
+    const user = userResult.rows[0];
+    if (
+      String(user?.role || "").trim().toLowerCase() !== "contributor"
+      || String(user?.status || "").trim().toLowerCase() !== "active"
+    ) {
+      return res.status(403).json({ error: "Active contributor access is required." });
+    }
+
+    await syncContributorOfferStatuses();
+    await syncContributorOfferApplicationStatuses();
+    const offersResult = await pool.query(
+      `SELECT campaigns.id, campaigns.name, campaigns.objective,
+              campaigns.start_date::text AS start_date,
+              campaigns.end_date::text AS end_date, campaigns.metadata,
+              applications.status AS application_status,
+              (applications.benefit_earning_id IS NOT NULL) AS benefit_approved,
+              CASE campaigns.metadata->>'eligibility_requirements'
+                WHEN 'uploads' THEN COALESCE(progress.upload_count, 0)::numeric
+                WHEN 'downloads' THEN COALESCE(progress.download_count, 0)::numeric
+                WHEN 'earnings' THEN COALESCE(progress.earnings_count, 0)::numeric
+                ELSE 0::numeric
+              END AS progress_count
+       FROM marketing_campaigns campaigns
+       LEFT JOIN contributor_offer_applications applications
+         ON applications.offer_id = campaigns.id
+        AND applications.contributor_id = $1
+       LEFT JOIN LATERAL (
+         SELECT
+           (SELECT COUNT(*)::int
+            FROM images
+            WHERE applications.id IS NOT NULL
+              AND images.uploaded_by = applications.contributor_id
+              AND images.id > applications.baseline_asset_id) AS upload_count,
+           (SELECT COUNT(*)::int
+            FROM downloads
+            JOIN images ON images.id = downloads.image_id
+            WHERE applications.id IS NOT NULL
+              AND images.uploaded_by = applications.contributor_id
+              AND downloads.downloaded_at > applications.created_at) AS download_count,
+           (SELECT COALESCE(SUM(earnings.amount), 0)::numeric
+            FROM earnings
+            WHERE applications.id IS NOT NULL
+              AND earnings.contributor_id = applications.contributor_id
+              AND earnings.status <> 'rejected'
+              AND earnings.created_at > applications.created_at) AS earnings_count
+       ) progress ON TRUE
+       WHERE campaigns.campaign_type = 'contributor_offer'
+         AND LOWER(BTRIM(COALESCE(campaigns.status, ''))) = 'active'
+         AND campaigns.start_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+         AND (campaigns.end_date IS NULL OR campaigns.end_date > (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)
+       ORDER BY campaigns.created_at DESC, campaigns.id DESC`,
+      [req.user.id]
+    );
+
+    const eligibleOffers = offersResult.rows.flatMap((offer) => {
+      const metadata = typeof offer.metadata === "string"
+        ? JSON.parse(offer.metadata)
+        : offer.metadata || {};
+      const isEligible = metadata.eligibility_scope !== "selected"
+        || (Array.isArray(metadata.eligible_contributor_ids)
+          && metadata.eligible_contributor_ids.some((id) => Number(id) === Number(req.user.id)));
+      if (!isEligible) return [];
+      return [{
+        id: offer.id,
+        name: offer.name,
+        description: offer.objective,
+        start_date: offer.start_date,
+        end_date: offer.end_date,
+        benefit_type: metadata.benefit_type || "",
+        benefit_value: metadata.benefit_value ?? null,
+        eligibility_requirements: metadata.eligibility_requirements || "",
+        eligibility_requirement_value: metadata.eligibility_requirement_value ?? null,
+        is_applied: Boolean(offer.application_status && offer.application_status !== "withdrawn"),
+        application_status: offer.application_status || null,
+        progress_count: Number(offer.progress_count) || 0
+      }];
+    });
+
+    return res.json({ offers: eligibleOffers });
+  } catch (error) {
+    console.error("Failed to load active Contributor Offers", error);
+    return res.status(500).json({ error: "Failed to load active Contributor Offers." });
+  }
+});
+
+app.post("/promotions/active-contributor-offers/:offerId/apply", authenticateToken, async (req, res) => {
+  try {
+    const userResult = await pool.query(
+      `SELECT role, status
+       FROM users
+       WHERE id = $1`,
+      [req.user.id]
+    );
+    const user = userResult.rows[0];
+    if (
+      String(user?.role || "").trim().toLowerCase() !== "contributor"
+      || String(user?.status || "").trim().toLowerCase() !== "active"
+    ) {
+      return res.status(403).json({ error: "Active contributor access is required." });
+    }
+
+    await syncContributorOfferStatuses();
+    const offerId = Number(req.params.offerId);
+    if (!Number.isInteger(offerId) || offerId <= 0) {
+      return res.status(400).json({ error: "Invalid Contributor Offer." });
+    }
+    const offerResult = await pool.query(
+      `SELECT metadata
+       FROM marketing_campaigns
+       WHERE id = $1
+         AND campaign_type = 'contributor_offer'
+         AND LOWER(BTRIM(COALESCE(status, ''))) = 'active'
+         AND start_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+         AND (end_date IS NULL OR end_date > (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)`,
+      [offerId]
+    );
+    const offer = offerResult.rows[0];
+    if (!offer) {
+      return res.status(404).json({ error: "This Contributor Offer is no longer active." });
+    }
+    const metadata = typeof offer.metadata === "string" ? JSON.parse(offer.metadata) : offer.metadata || {};
+    const isEligible = metadata.eligibility_scope !== "selected"
+      || (Array.isArray(metadata.eligible_contributor_ids)
+        && metadata.eligible_contributor_ids.some((id) => Number(id) === Number(req.user.id)));
+    if (!isEligible) {
+      return res.status(403).json({ error: "You are not eligible for this Contributor Offer." });
+    }
+
+    let applicationResult = await pool.query(
+      `INSERT INTO contributor_offer_applications (offer_id, contributor_id, baseline_asset_id)
+       SELECT $1, $2, COALESCE(MAX(images.id), 0)
+       FROM images
+       WHERE images.uploaded_by = $2
+       ON CONFLICT (offer_id, contributor_id) DO UPDATE
+       SET status = 'pending',
+           baseline_asset_id = EXCLUDED.baseline_asset_id,
+           created_at = now()
+       WHERE contributor_offer_applications.status = 'withdrawn'
+       RETURNING id, offer_id, contributor_id, baseline_asset_id, status, created_at`,
+      [offerId, req.user.id]
+    );
+    const alreadyApplied = applicationResult.rows.length === 0;
+    if (alreadyApplied) {
+      applicationResult = await pool.query(
+        `SELECT id, offer_id, contributor_id, baseline_asset_id, status, created_at
+         FROM contributor_offer_applications
+         WHERE offer_id = $1 AND contributor_id = $2`,
+        [offerId, req.user.id]
+      );
+    }
+    const application = applicationResult.rows[0];
+    const progressResult = await pool.query(
+      `SELECT COUNT(*)::int AS progress_count
+       FROM images
+       WHERE uploaded_by = $1 AND id > $2`,
+      [req.user.id, application.baseline_asset_id]
+    );
+    return res.json({
+      application: { ...application, progress_count: progressResult.rows[0].progress_count },
+      alreadyApplied
+    });
+  } catch (error) {
+    console.error("Failed to submit Contributor Offer application", error);
+    return res.status(500).json({ error: "Failed to submit Contributor Offer application." });
+  }
+});
+
 app.get("/promotions/upcoming-flash-sales", async (req, res) => {
   try {
     await syncFlashSaleStatuses();
@@ -10379,7 +10809,8 @@ app.get("/promotions/upcoming-flash-sales", async (req, res) => {
        FROM flash_sales
        WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'scheduled'
          AND start_date > (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
-       ORDER BY start_date ASC, created_at DESC, id DESC`
+       ORDER BY start_date ASC, created_at DESC, id DESC
+       LIMIT 1`
     );
     res.json({ sales: sales.rows });
   } catch (error) {

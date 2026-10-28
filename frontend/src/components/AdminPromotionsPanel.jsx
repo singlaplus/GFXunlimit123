@@ -8,7 +8,7 @@ import "./AdminPromotionsPanel.css";
 const SECTION_ITEMS = [
   { key: "dashboard", label: "Dashboard" },
   { key: "coupons", label: "Coupons" },
-  { key: "campaigns", label: "Campaigns" },
+  { key: "campaigns", label: "Contributor Offers" },
   { key: "flash-sales", label: "Flash Sales" },
   { key: "referrals", label: "Referral Program" },
   { key: "loyalty", label: "Loyalty Rewards" },
@@ -33,6 +33,30 @@ function getCouponMetadata(coupon) {
     : coupon?.metadata || {};
 }
 
+function getCampaignMetadata(campaign) {
+  if (typeof campaign?.metadata !== "string") {
+    return campaign?.metadata || {};
+  }
+  try {
+    return JSON.parse(campaign.metadata);
+  } catch (error) {
+    console.error("Invalid Contributor Offer metadata", error);
+    return {};
+  }
+}
+
+function getCampaignDisplayStatus(status) {
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  if (normalizedStatus === "planned") return "draft";
+  if (normalizedStatus === "expired") return "ended";
+  return normalizedStatus;
+}
+
+function getContributorApplicationDisplayStatus(application) {
+  const applicationStatus = String(application?.status || "pending").trim().toLowerCase();
+  return ["completed", "ended", "withdrawn"].includes(applicationStatus) ? applicationStatus : "active";
+}
+
 function getCouponDeliveryEmail(coupon) {
   return String(getCouponMetadata(coupon)?.delivery_email || "").trim();
 }
@@ -52,15 +76,18 @@ const initialCouponForm = {
 
 const initialCampaignForm = {
   name: "",
-  campaign_type: "launch",
-  objective: "",
-  status: "planned",
-  budget: "",
+  description: "",
+  benefit_type: "bonus_payout",
+  benefit_value: "",
+  eligibility_scope: "all",
+  eligible_contributors: "",
+  eligible_contributor_ids: [],
+  eligibility_requirements: "",
+  eligibility_requirement_value: "",
   start_date: "",
   end_date: "",
-  audience: "",
-  priority: "medium",
-  notes: ""
+  status: "active",
+  admin_notes: ""
 };
 
 const initialFlashForm = {
@@ -299,7 +326,7 @@ function getFlashEventRuleDetails(sale) {
   return sale.discount_rule || "Discount";
 }
 
-function CouponDatePicker({ id, label, value, onChange, helpText, className = "", minDate = "" }) {
+function CouponDatePicker({ id, label, value, onChange, helpText, className = "", minDate = "", required = false }) {
   const pickerRef = useRef(null);
   const selectedDate = parseLocalDate(value);
   const [isOpen, setIsOpen] = useState(false);
@@ -346,6 +373,7 @@ function CouponDatePicker({ id, label, value, onChange, helpText, className = ""
         className="promotions-date-picker-trigger"
         aria-haspopup="dialog"
         aria-expanded={isOpen}
+        aria-required={required}
         aria-labelledby={`${id}-label`}
         onClick={openCalendar}
       >
@@ -475,9 +503,13 @@ function AdminPromotionsPanel() {
   const [coupons, setCoupons] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
+  const [contributorApplications, setContributorApplications] = useState([]);
+  const [selectedBonusApplication, setSelectedBonusApplication] = useState(null);
+  const [approvingBonusApplicationId, setApprovingBonusApplicationId] = useState(null);
   const [flashSales, setFlashSales] = useState([]);
   const [flashEventFilter, setFlashEventFilter] = useState("active");
   const [flashEventsNow, setFlashEventsNow] = useState(() => Date.now());
+  const [contributorApplicationFilter, setContributorApplicationFilter] = useState("active");
   const [referrals, setReferrals] = useState([]);
   const [loyalty, setLoyalty] = useState([]);
   const [giftCards, setGiftCards] = useState([]);
@@ -506,12 +538,18 @@ function AdminPromotionsPanel() {
   const [automationDraft, setAutomationDraft] = useState(initialAutomationForm);
   const [couponSearch, setCouponSearch] = useState("");
   const [couponFilter, setCouponFilter] = useState("all");
+  const [campaignStatusFilter, setCampaignStatusFilter] = useState("active");
   const [couponDeliveryEmail, setCouponDeliveryEmail] = useState("");
   const [couponDeliveryUserId, setCouponDeliveryUserId] = useState("");
   const [couponCustomerSearch, setCouponCustomerSearch] = useState("");
   const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
   const [isLoadingCouponCustomers, setIsLoadingCouponCustomers] = useState(false);
   const [couponCustomerLoadError, setCouponCustomerLoadError] = useState("");
+  const [activeContributors, setActiveContributors] = useState([]);
+  const [contributorSearch, setContributorSearch] = useState("");
+  const [isContributorPickerOpen, setIsContributorPickerOpen] = useState(false);
+  const [isLoadingContributors, setIsLoadingContributors] = useState(false);
+  const [contributorLoadError, setContributorLoadError] = useState("");
   const [editingCouponId, setEditingCouponId] = useState(null);
   const [editingCampaignId, setEditingCampaignId] = useState(null);
   const [editingFlashId, setEditingFlashId] = useState(null);
@@ -533,6 +571,7 @@ function AdminPromotionsPanel() {
       setDashboard(payload.dashboard || dashboard);
       setCoupons(Array.isArray(payload.coupons) ? payload.coupons : []);
       setCampaigns(Array.isArray(payload.campaigns) ? payload.campaigns : []);
+      setContributorApplications(Array.isArray(payload.contributor_applications) ? payload.contributor_applications : []);
       setFlashSales(Array.isArray(payload.flash_sales) ? payload.flash_sales : []);
       setReferrals(Array.isArray(payload.referrals) ? payload.referrals : []);
       setLoyalty(Array.isArray(payload.loyalty) ? payload.loyalty : []);
@@ -558,6 +597,29 @@ function AdminPromotionsPanel() {
     loadPromotions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "campaigns") return undefined;
+    let active = true;
+    const refreshContributorApplications = async () => {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/admin/promotions`, { headers: buildAuthHeaders() });
+        if (active) {
+          setContributorApplications(Array.isArray(response.data?.contributor_applications)
+            ? response.data.contributor_applications
+            : []);
+        }
+      } catch (error) {
+        console.error("Failed to refresh Contributor Offer applications", error);
+        if (active) setMessage(error.response?.data?.error || "Unable to refresh Contributor Offer applications.");
+      }
+    };
+    const timerId = window.setInterval(refreshContributorApplications, 30 * 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timerId);
+    };
+  }, [activeSection]);
 
   useEffect(() => {
     if (activeSection !== "flash-sales") return undefined;
@@ -615,6 +677,35 @@ function AdminPromotionsPanel() {
     return () => { active = false; };
   }, [isCustomerPickerOpen, editingCouponId]);
 
+  useEffect(() => {
+    if (activeSection !== "campaigns" || campaignDraft.eligibility_scope !== "selected" || activeContributors.length > 0) {
+      return undefined;
+    }
+
+    let active = true;
+    const loadActiveContributors = async () => {
+      setIsLoadingContributors(true);
+      setContributorLoadError("");
+      try {
+        const response = await axios.get(`${API_BASE_URL}/admin/promotions/contributors`, { headers: buildAuthHeaders() });
+        if (!Array.isArray(response.data)) {
+          throw new Error("Active contributors response was invalid.");
+        }
+        if (active) setActiveContributors(response.data);
+      } catch (error) {
+        console.error("Unable to load active contributors for offers", error);
+        if (active) {
+          setContributorLoadError(error.response?.data?.error || "Unable to load active contributors. Please retry.");
+        }
+      } finally {
+        if (active) setIsLoadingContributors(false);
+      }
+    };
+
+    loadActiveContributors();
+    return () => { active = false; };
+  }, [activeSection, campaignDraft.eligibility_scope, activeContributors.length]);
+
   const filteredCoupons = useMemo(() => {
     return coupons.filter((coupon) => {
       const matchesSearch = !couponSearch || String(coupon.name || coupon.code || "").toLowerCase().includes(couponSearch.toLowerCase());
@@ -623,10 +714,26 @@ function AdminPromotionsPanel() {
     });
   }, [coupons, couponSearch, couponFilter]);
 
+  const filteredCampaigns = useMemo(() => campaigns.filter((campaign) => (
+    campaignStatusFilter === "all" || getCampaignDisplayStatus(campaign.status) === campaignStatusFilter
+  )), [campaigns, campaignStatusFilter]);
+
+  const filteredContributorApplications = useMemo(() => contributorApplications.filter((application) => (
+    contributorApplicationFilter === "all"
+    || getContributorApplicationDisplayStatus(application) === contributorApplicationFilter
+  )), [contributorApplications, contributorApplicationFilter]);
+
   const filteredCouponCustomers = useMemo(() => {
     const query = couponCustomerSearch.trim().toLowerCase();
     return customers.filter((customer) => String(customer.username || "").toLowerCase().includes(query));
   }, [customers, couponCustomerSearch]);
+
+  const filteredActiveContributors = useMemo(() => {
+    const query = contributorSearch.trim().toLowerCase();
+    return activeContributors.filter((contributor) => (
+      String(contributor.username || "").toLowerCase().includes(query)
+    ));
+  }, [activeContributors, contributorSearch]);
 
   const editingCoupon = coupons.find((coupon) => String(coupon.id) === String(editingCouponId));
   const editingCouponMetadata = editingCoupon ? getCouponMetadata(editingCoupon) : {};
@@ -650,6 +757,53 @@ function AdminPromotionsPanel() {
       console.error(err);
       setMessage(err.response?.data?.error || "Request failed.");
       throw err;
+    }
+  };
+
+  const withdrawContributorApplication = async (application) => {
+    try {
+      await axios.post(
+        `${API_BASE_URL}/admin/promotions/applications/${application.id}/withdraw`,
+        {},
+        { headers: buildAuthHeaders() }
+      );
+      setContributorApplications((currentApplications) => currentApplications.map((item) => (
+        String(item.id) === String(application.id) ? { ...item, status: "withdrawn" } : item
+      )));
+      setMessage("Contributor application withdrawn.");
+    } catch (error) {
+      console.error("Failed to withdraw Contributor Offer application", error);
+      setMessage(error.response?.data?.error || "Failed to withdraw Contributor Offer application.");
+    }
+  };
+
+  const approveContributorBonus = async (application) => {
+    if (approvingBonusApplicationId !== null || application.benefit_approved) return;
+    setApprovingBonusApplicationId(application.id);
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/admin/promotions/applications/${application.id}/approve-benefit`,
+        {},
+        { headers: buildAuthHeaders() }
+      );
+      const approvedApplication = {
+        ...application,
+        ...response.data?.application,
+        paid_amount: response.data?.application?.benefit_amount ?? application.paid_amount,
+        benefit_approved: true
+      };
+      setContributorApplications((currentApplications) => currentApplications.map((item) => (
+        String(item.id) === String(application.id) ? approvedApplication : item
+      )));
+      setSelectedBonusApplication(approvedApplication);
+      setMessage(response.data?.alreadyApproved
+        ? "This Contributor Offer bonus was already approved and credited."
+        : "Contributor Offer bonus approved and added to unpaid earnings.");
+    } catch (error) {
+      console.error("Failed to approve Contributor Offer bonus", error);
+      setMessage(error.response?.data?.error || "Failed to approve Contributor Offer bonus.");
+    } finally {
+      setApprovingBonusApplicationId(null);
     }
   };
 
@@ -726,33 +880,75 @@ function AdminPromotionsPanel() {
 
   const handleCampaignSubmit = async (event) => {
     event.preventDefault();
+    if (!campaignDraft.start_date) {
+      setMessage("Contributor Offers require a start date.");
+      return;
+    }
+    if (campaignDraft.eligibility_scope === "selected" && campaignDraft.eligible_contributor_ids.length === 0) {
+      setMessage("Select at least one active contributor for this offer.");
+      return;
+    }
+    if (campaignDraft.end_date && campaignDraft.end_date < campaignDraft.start_date) {
+      setMessage("Offer end date must be on or after the start date.");
+      return;
+    }
+    const selectedContributors = activeContributors.filter((contributor) => (
+      campaignDraft.eligible_contributor_ids.includes(String(contributor.id))
+    ));
     const payload = {
-      ...campaignDraft,
-      budget: Number(campaignDraft.budget || 0)
+      name: campaignDraft.name,
+      campaign_type: "contributor_offer",
+      objective: campaignDraft.description,
+      status: ({ draft: "planned", ended: "expired", active: "scheduled" })[campaignDraft.status] || campaignDraft.status,
+      budget: 0,
+      start_date: campaignDraft.start_date || null,
+      end_date: campaignDraft.end_date || null,
+      audience: campaignDraft.eligibility_scope === "all"
+        ? "All contributors"
+        : `Selected contributors: ${selectedContributors.map((contributor) => contributor.username).join(", ")}`,
+      priority: "medium",
+      notes: campaignDraft.admin_notes,
+      metadata: {
+        benefit_type: campaignDraft.benefit_type,
+        benefit_value: campaignDraft.benefit_value === "" ? null : Number(campaignDraft.benefit_value),
+        eligibility_scope: campaignDraft.eligibility_scope,
+        eligible_contributors: selectedContributors.map((contributor) => contributor.username).join(", "),
+        eligible_contributor_ids: campaignDraft.eligible_contributor_ids,
+        eligibility_requirements: campaignDraft.eligibility_requirements,
+        eligibility_requirement_value: campaignDraft.eligibility_requirement_value === ""
+          ? null
+          : Number(campaignDraft.eligibility_requirement_value)
+      }
     };
     if (editingCampaignId) {
-      await persistResource("campaign", "update", { ...payload, id: editingCampaignId }, "Campaign updated.");
+      await persistResource("campaign", "update", { ...payload, id: editingCampaignId }, "Contributor offer updated.");
       setEditingCampaignId(null);
       setCampaignDraft(initialCampaignForm);
       return;
     }
-    await persistResource("campaign", "create", payload, "Campaign created.");
+    await persistResource("campaign", "create", payload, "Contributor offer created.");
     setCampaignDraft(initialCampaignForm);
   };
 
   const startEditingCampaign = (campaign) => {
+    const metadata = getCampaignMetadata(campaign);
     setEditingCampaignId(campaign.id);
     setCampaignDraft({
       name: campaign.name || "",
-      campaign_type: campaign.campaign_type || "launch",
-      objective: campaign.objective || "",
-      status: campaign.status || "planned",
-      budget: campaign.budget ?? "",
+      description: campaign.objective || "",
+      benefit_type: metadata.benefit_type || "bonus_payout",
+      benefit_value: metadata.benefit_value ?? "",
+      eligibility_scope: metadata.eligibility_scope || "all",
+      eligible_contributors: metadata.eligible_contributors || "",
+      eligible_contributor_ids: Array.isArray(metadata.eligible_contributor_ids)
+        ? metadata.eligible_contributor_ids.map(String)
+        : [],
+      eligibility_requirements: metadata.eligibility_requirements || "",
+      eligibility_requirement_value: metadata.eligibility_requirement_value ?? "",
       start_date: campaign.start_date ? String(campaign.start_date).slice(0, 10) : "",
       end_date: campaign.end_date ? String(campaign.end_date).slice(0, 10) : "",
-      audience: campaign.audience || "",
-      priority: campaign.priority || "medium",
-      notes: campaign.notes || ""
+      status: ({ planned: "draft", running: "active", completed: "ended", expired: "ended" })[campaign.status] || campaign.status || "draft",
+      admin_notes: campaign.notes || ""
     });
     setActiveSection("campaigns");
   };
@@ -1115,81 +1311,335 @@ function AdminPromotionsPanel() {
           <div className="promotions-stack">
             <div className="promotions-card">
               <div className="promotions-card-header">
-                <h3>Campaigns</h3>
-                <span>Plan launches, budgets, audiences, and notes in one place.</span>
+                <h3>Contributor Offers</h3>
+                <span>Configure benefits and eligibility for contributor offers.</span>
               </div>
               <form className="promotions-form-grid promotions-campaign-form" onSubmit={handleCampaignSubmit}>
                 <div className="promotions-field-group">
-                  <label htmlFor="campaign-name">Campaign Name</label>
-                  <input id="campaign-name" value={campaignDraft.name} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Campaign name" />
+                  <label htmlFor="campaign-name">Offer name</label>
+                  <input id="campaign-name" value={campaignDraft.name} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Offer name" required />
                 </div>
                 <div className="promotions-field-group">
-                  <label htmlFor="campaign-objective">Objective</label>
-                  <input id="campaign-objective" value={campaignDraft.objective} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, objective: e.target.value }))} placeholder="Objective" />
+                  <label htmlFor="campaign-description">Description</label>
+                  <textarea id="campaign-description" value={campaignDraft.description} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, description: e.target.value }))} placeholder="Describe this offer" />
                 </div>
                 <div className="promotions-field-group">
-                  <label htmlFor="campaign-type">Campaign Type</label>
-                  <select id="campaign-type" value={campaignDraft.campaign_type} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, campaign_type: e.target.value }))}>
-                    <option value="launch">Launch</option>
-                    <option value="festival">Festival</option>
-                    <option value="seasonal">Seasonal</option>
-                    <option value="vip">VIP</option>
+                  <label htmlFor="campaign-benefit-type">Benefit type</label>
+                  <select id="campaign-benefit-type" value={campaignDraft.benefit_type} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, benefit_type: e.target.value }))}>
+                    <option value="bonus_payout">Bonus payout</option>
+                    <option value="commission_increase">Commission increase</option>
+                    <option value="fee_waiver">Fee waiver</option>
                   </select>
                 </div>
                 <div className="promotions-field-group">
-                  <label htmlFor="campaign-budget">Budget</label>
-                  <input id="campaign-budget" type="number" value={campaignDraft.budget} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, budget: e.target.value }))} placeholder="Budget" />
+                  <label htmlFor="campaign-benefit-value">Benefit value</label>
+                  <input id="campaign-benefit-value" type="number" min="0" step="any" value={campaignDraft.benefit_value} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, benefit_value: e.target.value }))} placeholder="Amount or percentage" />
                 </div>
+                <CouponDatePicker
+                  id="campaign-start-date"
+                  label="Start Date"
+                  value={campaignDraft.start_date}
+                  onChange={(value) => setCampaignDraft((prev) => ({ ...prev, start_date: value }))}
+                  required
+                  className="promotions-date-picker--contributor-offer"
+                />
+                <CouponDatePicker
+                  id="campaign-end-date"
+                  label="End Date"
+                  value={campaignDraft.end_date}
+                  onChange={(value) => setCampaignDraft((prev) => ({ ...prev, end_date: value }))}
+                  minDate={campaignDraft.start_date}
+                  className="promotions-date-picker--contributor-offer"
+                />
                 <div className="promotions-field-group">
-                  <label htmlFor="campaign-start-date">Start Date</label>
-                  <input id="campaign-start-date" type="date" value={campaignDraft.start_date} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, start_date: e.target.value }))} />
-                </div>
-                <div className="promotions-field-group">
-                  <label htmlFor="campaign-end-date">End Date</label>
-                  <input id="campaign-end-date" type="date" value={campaignDraft.end_date} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, end_date: e.target.value }))} />
-                </div>
-                <div className="promotions-field-group">
-                  <label htmlFor="campaign-audience">Target Audience</label>
-                  <input id="campaign-audience" value={campaignDraft.audience} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, audience: e.target.value }))} placeholder="Target audience" />
-                </div>
-                <div className="promotions-field-group">
-                  <label htmlFor="campaign-priority">Priority</label>
-                  <select id="campaign-priority" value={campaignDraft.priority} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, priority: e.target.value }))}>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
+                  <label htmlFor="campaign-eligibility-scope">Eligible contributors</label>
+                  <select id="campaign-eligibility-scope" value={campaignDraft.eligibility_scope} onChange={(e) => {
+                    const eligibilityScope = e.target.value;
+                    setCampaignDraft((prev) => ({
+                      ...prev,
+                      eligibility_scope: eligibilityScope,
+                      ...(eligibilityScope === "all" ? { eligible_contributors: "", eligible_contributor_ids: [] } : {})
+                    }));
+                  }}>
+                    <option value="all">All contributors</option>
+                    <option value="selected">Selected contributors</option>
                   </select>
+                </div>
+                {campaignDraft.eligibility_scope === "selected" && (
+                  <div
+                    className={`promotions-field-group promotions-customer-picker promotions-conditional-field${isContributorPickerOpen ? " is-open" : ""}`}
+                    onBlur={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget)) {
+                        setIsContributorPickerOpen(false);
+                      }
+                    }}
+                  >
+                    <label htmlFor="campaign-contributor-picker-trigger">Choose Active Contributor</label>
+                    <button
+                      id="campaign-contributor-picker-trigger"
+                      type="button"
+                      className="promotions-customer-picker-trigger"
+                      aria-haspopup="listbox"
+                      aria-expanded={isContributorPickerOpen}
+                      aria-required="true"
+                      aria-label="Select active contributors"
+                      onClick={() => setIsContributorPickerOpen((open) => !open)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") setIsContributorPickerOpen(false);
+                      }}
+                    >
+                      <span>
+                        {campaignDraft.eligible_contributor_ids.length
+                          ? `${campaignDraft.eligible_contributor_ids.length} contributor${campaignDraft.eligible_contributor_ids.length === 1 ? "" : "s"} selected`
+                          : "Select contributors"}
+                      </span>
+                      <svg aria-hidden="true" viewBox="0 0 16 16" focusable="false">
+                        <path d="m4 6 4 4 4-4" />
+                      </svg>
+                    </button>
+                    {isContributorPickerOpen && (
+                      <div className="promotions-customer-picker-menu" role="listbox" aria-label="Active contributors" aria-multiselectable="true">
+                        <input
+                          type="search"
+                          aria-label="Search active contributors by username"
+                          placeholder="Search username..."
+                          value={contributorSearch}
+                          onChange={(event) => setContributorSearch(event.target.value)}
+                          autoFocus
+                        />
+                        <div className="promotions-customer-picker-options">
+                          {isLoadingContributors ? (
+                            <span className="promotions-customer-picker-empty">Loading active contributors...</span>
+                          ) : contributorLoadError ? (
+                            <span className="promotions-customer-picker-empty" role="alert">{contributorLoadError}</span>
+                          ) : filteredActiveContributors.length ? filteredActiveContributors.map((contributor) => {
+                            const contributorId = String(contributor.id);
+                            const isSelected = campaignDraft.eligible_contributor_ids.includes(contributorId);
+                            return (
+                              <button
+                                key={contributorId}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                onClick={() => setCampaignDraft((prev) => {
+                                  const nextIds = prev.eligible_contributor_ids.includes(contributorId)
+                                    ? prev.eligible_contributor_ids.filter((id) => id !== contributorId)
+                                    : [...prev.eligible_contributor_ids, contributorId];
+                                  return {
+                                    ...prev,
+                                    eligible_contributor_ids: nextIds,
+                                    eligible_contributors: activeContributors
+                                      .filter((item) => nextIds.includes(String(item.id)))
+                                      .map((item) => item.username)
+                                      .join(", ")
+                                  };
+                                })}
+                              >
+                                {contributor.username} ({Number(contributor.live_asset_count) || 0})
+                              </button>
+                            );
+                          }) : (
+                            <span className="promotions-customer-picker-empty">
+                              {activeContributors.length ? "No active contributors match your search." : "No active contributors found."}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <span className="promotions-field-help">Select one or more active contributor usernames.</span>
+                  </div>
+                )}
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-eligibility-requirements">Eligibility requirements</label>
+                  <select id="campaign-eligibility-requirements" value={campaignDraft.eligibility_requirements} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, eligibility_requirements: e.target.value }))}>
+                    <option value="">Select a requirement</option>
+                    <option value="uploads">Uploads</option>
+                    <option value="downloads">Downloads</option>
+                    <option value="earnings">Earnings</option>
+                  </select>
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="campaign-eligibility-requirement-value">Eligibility requirement value</label>
+                  <input
+                    id="campaign-eligibility-requirement-value"
+                    type="number"
+                    min="0"
+                    step={campaignDraft.eligibility_requirements === "earnings" ? "any" : "1"}
+                    value={campaignDraft.eligibility_requirement_value}
+                    onChange={(e) => setCampaignDraft((prev) => ({ ...prev, eligibility_requirement_value: e.target.value }))}
+                    placeholder={
+                      campaignDraft.eligibility_requirements
+                        ? `Enter ${campaignDraft.eligibility_requirements} required`
+                        : "Select an eligibility requirement first"
+                    }
+                    disabled={!campaignDraft.eligibility_requirements}
+                    required={Boolean(campaignDraft.eligibility_requirements)}
+                  />
                 </div>
                 <div className="promotions-field-group">
                   <label htmlFor="campaign-status">Status</label>
                   <select id="campaign-status" value={campaignDraft.status} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, status: e.target.value }))}>
-                    <option value="planned">Planned</option>
-                    <option value="running">Running</option>
-                    <option value="completed">Completed</option>
+                    <option value="draft">Draft</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="active">Active</option>
+                    <option value="ended">Ended</option>
                   </select>
                 </div>
                 <div className="promotions-field-group promotions-campaign-notes">
-                  <label htmlFor="campaign-notes">Notes</label>
-                  <textarea id="campaign-notes" value={campaignDraft.notes} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Notes" />
+                  <label htmlFor="campaign-notes">Admin notes</label>
+                  <textarea id="campaign-notes" value={campaignDraft.admin_notes} onChange={(e) => setCampaignDraft((prev) => ({ ...prev, admin_notes: e.target.value }))} placeholder="Internal notes" />
                 </div>
-                <button type="submit">{editingCampaignId ? "Update Campaign" : "Create Campaign"}</button>
+                <button type="submit">{editingCampaignId ? "Update Offer" : "Create Offer"}</button>
               </form>
             </div>
             <div className="promotions-card">
               <div className="promotions-card-header">
-                <h3>Campaign Library</h3>
+                <h3>Contributor Offer Library</h3>
+                <div className="promotions-inline-controls">
+                  <label htmlFor="contributor-offer-status-filter">Status</label>
+                  <select
+                    id="contributor-offer-status-filter"
+                    aria-label="Contributor offer status filter"
+                    value={campaignStatusFilter}
+                    onChange={(event) => setCampaignStatusFilter(event.target.value)}
+                  >
+                    <option value="all">All statuses</option>
+                    <option value="active">Active</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="draft">Draft</option>
+                    <option value="ended">Ended</option>
+                  </select>
+                </div>
               </div>
               <div className="promotions-list">
-                {campaigns.length === 0 ? <p>No campaigns yet.</p> : campaigns.map((campaign) => (
-                  <div key={campaign.id} className="promotions-list-item">
+                {campaigns.length === 0 ? <p>No contributor offers yet.</p> : filteredCampaigns.length === 0 ? (
+                  <p>No contributor offers found with this status.</p>
+                ) : filteredCampaigns.map((campaign) => {
+                  const metadata = getCampaignMetadata(campaign);
+                  const benefitLabels = {
+                    bonus_payout: "Bonus payout",
+                    commission_increase: "Commission increase",
+                    fee_waiver: "Fee waiver"
+                  };
+                  const benefitValue = metadata.benefit_value;
+                  const requirement = metadata.eligibility_requirements;
+                  const requirementValue = metadata.eligibility_requirement_value;
+                  const eligibleContributors = Array.isArray(metadata.eligible_contributors)
+                    ? metadata.eligible_contributors.join(", ")
+                    : metadata.eligible_contributors;
+                  return (
+                    <div key={campaign.id} className="promotions-list-item promotions-offer-list-item">
+                      <div>
+                        <strong>{campaign.name}</strong>
+                        {campaign.objective && <p className="promotions-offer-description">{campaign.objective}</p>}
+                        <div className="promotions-offer-details">
+                          <span><b>Benefit:</b> {benefitLabels[metadata.benefit_type] || metadata.benefit_type || "Not set"}{benefitValue !== null && benefitValue !== undefined && benefitValue !== "" ? ` · ${benefitValue}` : ""}</span>
+                          <span><b>Eligible contributors:</b> {metadata.eligibility_scope === "selected"
+                            ? (eligibleContributors || campaign.audience || "Selected contributors")
+                            : "All contributors"}</span>
+                          {requirement && (
+                            <span><b>Requirement:</b> {requirement.charAt(0).toUpperCase() + requirement.slice(1)}
+                              {requirementValue !== null && requirementValue !== undefined && requirementValue !== "" ? ` · ${requirementValue}` : ""}
+                            </span>
+                          )}
+                          <span><b>Dates:</b> {campaign.start_date ? String(campaign.start_date).slice(0, 10) : "Not set"}
+                            {campaign.end_date ? ` – ${String(campaign.end_date).slice(0, 10)}` : " – No end date"}
+                          </span>
+                          <span><b>Status:</b> {getCampaignDisplayStatus(campaign.status)}</span>
+                          {campaign.notes && <span><b>Admin notes:</b> {campaign.notes}</span>}
+                        </div>
+                      </div>
+                      <div className="promotions-inline-actions">
+                        <button type="button" onClick={() => startEditingCampaign(campaign)}>Edit</button>
+                        <button type="button" onClick={() => persistResource("campaign", "delete", { id: campaign.id }, "Contributor offer removed.")}>Delete</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="promotions-card">
+              <div className="promotions-card-header">
+                <h3>Contributor Applications</h3>
+                <div className="promotions-inline-controls">
+                  <label htmlFor="contributor-application-status-filter">Status</label>
+                  <select
+                    id="contributor-application-status-filter"
+                    aria-label="Contributor application status filter"
+                    value={contributorApplicationFilter}
+                    onChange={(event) => setContributorApplicationFilter(event.target.value)}
+                  >
+                    <option value="all">All</option>
+                    <option value="active">Active</option>
+                    <option value="completed">Completed</option>
+                    <option value="ended">Ended</option>
+                    <option value="withdrawn">Withdrawn</option>
+                  </select>
+                </div>
+              </div>
+              <div className="promotions-list">
+                {contributorApplications.length === 0 ? (
+                  <p>No contributor applications yet.</p>
+                ) : filteredContributorApplications.length === 0 ? (
+                  <p>No contributor applications found with this status.</p>
+                ) : filteredContributorApplications.map((application) => (
+                  <div className="promotions-list-item promotions-application-list-item" key={application.id}>
                     <div>
-                      <strong>{campaign.name}</strong>
-                      <div className="promotions-muted">{campaign.objective} • {campaign.status}</div>
+                      <strong>{application.full_name || application.username || `Contributor #${application.contributor_id}`}</strong>
+                      <div className="promotions-application-details">
+                        <span><b>Username:</b> {application.username || "Not available"}</span>
+                        <span><b>Email:</b> {application.email || "Not available"}</span>
+                        <span><b>Offer:</b> {application.offer_name || `Offer #${application.offer_id}`}</span>
+                        <span><b>Submitted:</b> {application.created_at ? String(application.created_at).slice(0, 10) : "Not available"}</span>
+                        <span><b>Status:</b> {getContributorApplicationDisplayStatus(application)}</span>
+                        {application.benefit_approved && (
+                          <span>
+                            <b>Remarks:</b> Paid ₹{Number(application.paid_amount ?? application.benefit_value ?? 0).toFixed(2)}
+                          </span>
+                        )}
+                        {application.eligibility_requirements && (
+                          <span>
+                            <b>{application.eligibility_requirements.charAt(0).toUpperCase() + application.eligibility_requirements.slice(1)} progress:</b>{" "}
+                            {application.eligibility_requirements === "earnings" ? "₹" : ""}
+                            {Number(application.progress_count) || 0}
+                            /
+                            {application.eligibility_requirements === "earnings" ? "₹" : ""}
+                            {Number(application.eligibility_requirement_value) || 0}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="promotions-inline-actions">
-                      <button type="button" onClick={() => startEditingCampaign(campaign)}>Edit</button>
-                      <button type="button" onClick={() => persistResource("campaign", "delete", { id: campaign.id }, "Campaign removed.")}>Delete</button>
-                    </div>
+                    {getContributorApplicationDisplayStatus(application) !== "ended"
+                      && getContributorApplicationDisplayStatus(application) !== "withdrawn" && (
+                        <div className="promotions-inline-actions promotions-application-actions">
+                          {getContributorApplicationDisplayStatus(application) === "completed" && (
+                            <button
+                              type="button"
+                              className="promotions-application-complete"
+                              aria-label={`View completed application for ${application.username || application.full_name || `contributor ${application.contributor_id}`}`}
+                              title="View bonus payout"
+                              disabled={application.benefit_type !== "bonus_payout" || application.benefit_approved}
+                              onClick={() => setSelectedBonusApplication(application)}
+                            >
+                              <svg aria-hidden="true" viewBox="0 0 20 20" focusable="false">
+                                <path d="m4 10.5 4 4 8-9" />
+                              </svg>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="promotions-application-withdraw"
+                            aria-label={`Withdraw application from ${application.username || application.full_name || `contributor ${application.contributor_id}`}`}
+                            title="Withdraw application"
+                            onClick={() => withdrawContributorApplication(application)}
+                          >
+                            <svg aria-hidden="true" viewBox="0 0 20 20" focusable="false">
+                              <path d="M10 2.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15Z" />
+                              <path d="m7 7 6 6m0-6-6 6" />
+                            </svg>
+                          </button>
+                        </div>
+                      )}
                   </div>
                 ))}
               </div>
@@ -1653,6 +2103,54 @@ function AdminPromotionsPanel() {
         {message ? <div className="promotions-message">{message}</div> : null}
         {renderSectionContent()}
       </div>
+      {selectedBonusApplication && (
+        <div
+          className="promotions-modal-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setSelectedBonusApplication(null);
+          }}
+        >
+          <section
+            className="promotions-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="contributor-bonus-title"
+          >
+            <h3 id="contributor-bonus-title">Contributor bonus payout</h3>
+            <p>
+              {selectedBonusApplication.full_name || selectedBonusApplication.username || `Contributor #${selectedBonusApplication.contributor_id}`}
+              {" "}completed the offer {selectedBonusApplication.offer_name || `#${selectedBonusApplication.offer_id}`}.
+            </p>
+            <strong className="promotions-modal-benefit">
+              Benefit to add: ₹{Number(selectedBonusApplication.benefit_value || 0).toFixed(2)}
+            </strong>
+            {selectedBonusApplication.benefit_approved ? (
+              <p className="promotions-modal-note" role="status">
+                Bonus approved and credited to unpaid earnings.
+              </p>
+            ) : (
+              <p className="promotions-modal-note">
+                Approving adds this bonus to the contributor&apos;s unpaid earnings.
+              </p>
+            )}
+            <div className="promotions-inline-actions">
+              {!selectedBonusApplication.benefit_approved && (
+                <button
+                  type="button"
+                  className="promotions-benefit-approve"
+                  disabled={approvingBonusApplicationId !== null}
+                  onClick={() => approveContributorBonus(selectedBonusApplication)}
+                >
+                  {String(approvingBonusApplicationId) === String(selectedBonusApplication.id)
+                    ? "Approving..."
+                    : "Approve"}
+                </button>
+              )}
+              <button type="button" onClick={() => setSelectedBonusApplication(null)}>Close</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
