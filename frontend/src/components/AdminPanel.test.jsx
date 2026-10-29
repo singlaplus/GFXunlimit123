@@ -3170,6 +3170,7 @@ describe("AdminPanel collection controls", () => {
 
   it("renders a dedicated promotions hub tab for marketing management", async () => {
     useLocation.mockReturnValue({ search: "?tab=promotions"     });
+    localStorage.setItem("adminPromotionsActiveSection", "gift-cards");
 
     axios.get.mockImplementation((url) => {
       if (url.endsWith("/admin/promotions/customers")) {
@@ -3211,6 +3212,9 @@ describe("AdminPanel collection controls", () => {
 
     expect(await screen.findByText(/promotions hub/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /coupons/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^gift cards$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^bundle discounts$/i })).toBeInTheDocument();
+    await waitFor(() => expect(localStorage.getItem("adminPromotionsActiveSection")).toBe("dashboard"));
     const contributorOffersTab = screen.getByRole("button", { name: /^contributor offers$/i });
     expect(contributorOffersTab).toBeInTheDocument();
 
@@ -3221,7 +3225,7 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByLabelText("Eligible contributors")).toBeInTheDocument();
     expect(screen.getByLabelText("Eligibility requirements")).toBeInTheDocument();
     expect(screen.getByLabelText("Eligibility requirement value")).toBeDisabled();
-    expect(screen.getByLabelText("Status")).toHaveValue("active");
+    expect(screen.getByLabelText("Status", { selector: "#campaign-status" })).toHaveValue("active");
 
     fireEvent.click(screen.getByRole("button", { name: /^coupons$/i }));
     await waitFor(() => expect(localStorage.getItem("adminPromotionsActiveSection")).toBe("coupons"));
@@ -3373,6 +3377,98 @@ describe("AdminPanel collection controls", () => {
             }),
           }),
         }),
+        expect.anything()
+      );
+    });
+  });
+
+  it("creates bundle discounts with editable asset-count tiers", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/promotions")) return Promise.resolve({ data: { bundles: [] } });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^bundle discounts$/i }));
+    fireEvent.change(screen.getByLabelText("Bundle name"), { target: { value: "Volume deal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start Date" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Start Date calendar" })).getByRole("button", { name: "Today" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add tier" }));
+    fireEvent.change(screen.getByLabelText("Tier 2 minimum assets"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("Tier 2 discount percent"), { target: { value: "15" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Bundle Discount" }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/promotions"),
+        {
+          resource: "bundle",
+          action: "create",
+          data: {
+            name: "Volume deal",
+            status: "active",
+            metadata: {
+              discount_tiers: [
+                { asset_count: 3, discount_percent: 10 },
+                { asset_count: 5, discount_percent: 15 },
+              ],
+              start_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+              end_date: null,
+            },
+          },
+        },
+        expect.anything()
+      );
+    });
+  });
+
+  it("edits a saved bundle discount tier", async () => {
+    useLocation.mockReturnValue({ search: "?tab=promotions" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/promotions")) {
+        return Promise.resolve({
+          data: {
+            bundles: [{
+              id: 33,
+              name: "Existing volume deal",
+              status: "active",
+              metadata: {
+                discount_tiers: [{ asset_count: 3, discount_percent: 10 }],
+                start_date: "2026-10-29",
+                end_date: "2026-11-15"
+              }
+            }]
+          }
+        });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^bundle discounts$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Tier 1 minimum assets"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("Tier 1 discount percent"), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update Bundle Discount" }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/promotions"),
+        {
+          resource: "bundle",
+          action: "update",
+          data: {
+            id: 33,
+            name: "Existing volume deal",
+            status: "active",
+            metadata: {
+              discount_tiers: [{ asset_count: 4, discount_percent: 12 }],
+              start_date: "2026-10-29",
+              end_date: "2026-11-15"
+            }
+          }
+        },
         expect.anything()
       );
     });

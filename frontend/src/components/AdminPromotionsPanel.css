@@ -1697,6 +1697,33 @@
   color: #b4232c;
 }
 
+.promotions-bundle-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.promotions-bundle-form .promotions-campaign-notes,
+.promotions-bundle-form .promotions-bundle-tier-row,
+.promotions-bundle-form .promotions-bundle-actions {
+  grid-column: 1 / -1;
+}
+
+.promotions-bundle-tier-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.promotions-bundle-tier-row button {
+  flex: 0 0 auto;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+.promotions-bundle-actions {
+  flex-wrap: wrap;
+}
+
 .promotions-message {
   padding: 12px 15px;
   border-radius: 11px;
@@ -1824,6 +1851,10 @@
   }
 
   .promotions-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .promotions-bundle-tier-row {
     grid-template-columns: minmax(0, 1fr);
   }
 

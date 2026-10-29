@@ -21,6 +21,12 @@ const { createMessagingRouter, createAssetNotifications, createCouponNotificatio
 const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { registerOrderRoutes } = require("./orders");
 const { registerContributorOfferBenefitRoutes } = require("./routes/contributor-offer-benefit");
+const {
+  calculateBestBundleTierDiscount,
+  isBundleOfferDateActive,
+  validateBundleDiscountSchedule,
+  validateBundleDiscountTiers,
+} = require("./utils/bundleDiscounts");
 const { summarizeContributorDownloadWindowCounts, summarizeContributorUploadWindowCounts } = require("./dashboardStats");
 const { createAssetServingHandler, encodeAssetPath, resolveAssetFile, sendAssetFile } = require("./utils/assetServing");
 const { sanitizePublicAsset, sanitizePublicAssets } = require("./utils/publicAssetSerializer");
@@ -6939,6 +6945,37 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
     if (!resource || !action) {
       return res.status(400).json({ error: "resource and action are required" });
     }
+    if (resource === "bundle" && ["create", "update"].includes(action)) {
+      if (!String(data.name || "").trim()) {
+        return res.status(400).json({ error: "Bundle discount name is required." });
+      }
+      if (!["active", "draft"].includes(String(data.status || "").trim().toLowerCase())) {
+        return res.status(400).json({ error: "Bundle discount status must be active or draft." });
+      }
+      data.name = String(data.name).trim();
+      data.status = String(data.status).trim().toLowerCase();
+      let metadata = data.metadata || {};
+      if (typeof metadata === "string") {
+        try {
+          metadata = JSON.parse(metadata);
+        } catch (error) {
+          return res.status(400).json({ error: "Bundle discount metadata must be valid JSON." });
+        }
+      }
+      if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+        return res.status(400).json({ error: "Bundle discount metadata must be an object." });
+      }
+      const validation = validateBundleDiscountTiers(metadata.discount_tiers);
+      if (validation.error) return res.status(400).json({ error: validation.error });
+      const schedule = validateBundleDiscountSchedule(metadata.start_date, metadata.end_date);
+      if (schedule.error) return res.status(400).json({ error: schedule.error });
+      data.metadata = {
+        ...metadata,
+        discount_tiers: validation.tiers,
+        start_date: schedule.start_date,
+        end_date: schedule.end_date
+      };
+    }
 
     const logActivity = async (actionName, details, metadata = {}) => {
       await pool.query(
@@ -10570,19 +10607,29 @@ app.get("/checkout/available-coupons", authenticateToken, async (req, res) => {
   try {
     const userResult = await pool.query("SELECT email FROM users WHERE id = $1", [req.user.id]);
     const email = String(userResult.rows[0]?.email || "").trim().toLowerCase();
+    const firstOrderCoupon = await getAvailableFirstOrderCoupon(req.user.id);
     const coupons = await pool.query(
-      `SELECT id, name, code, coupon_type, discount_type, discount_value
+      `SELECT id, name, code, coupon_type, discount_type, discount_value, start_at::text AS start_at, end_at::text AS end_at
        FROM coupon_codes
-       WHERE LOWER(BTRIM(COALESCE(coupon_type, ''))) = 'auto'
-         AND LOWER(BTRIM(COALESCE(status, ''))) = 'active'
-         AND (start_at IS NULL OR start_at <= CURRENT_DATE)
-         AND (end_at IS NULL OR end_at > CURRENT_DATE)
+       WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'active'
+         AND (start_at IS NULL OR start_at <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)
+         AND (end_at IS NULL OR end_at > (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)
          AND (
-           COALESCE(metadata->>'restricted_user_id', '') = $1
+           LOWER(BTRIM(COALESCE(coupon_type, ''))) = 'manual'
            OR (
-             COALESCE(metadata->>'restricted_user_id', '') = ''
-             AND $2 <> ''
-             AND LOWER(BTRIM(COALESCE(metadata->>'delivery_email', ''))) = $2
+             LOWER(BTRIM(COALESCE(coupon_type, ''))) = 'auto'
+             AND (
+               COALESCE(metadata->>'restricted_user_id', '') = $1
+               OR (
+                 COALESCE(metadata->>'restricted_user_id', '') = ''
+                 AND $2 <> ''
+                 AND LOWER(BTRIM(COALESCE(metadata->>'delivery_email', ''))) = $2
+               )
+             )
+           )
+           OR (
+             LOWER(BTRIM(COALESCE(coupon_type, ''))) = 'first_order'
+             AND id = $3::integer
            )
          )
          AND (
@@ -10590,7 +10637,7 @@ app.get("/checkout/available-coupons", authenticateToken, async (req, res) => {
            OR (SELECT COUNT(*) FROM coupon_redemptions WHERE coupon_id = coupon_codes.id AND user_id = $1::integer) < usage_limit
          )
        ORDER BY created_at DESC, id DESC`,
-      [String(req.user.id), email]
+      [String(req.user.id), email, firstOrderCoupon?.id || null]
     );
     res.json(coupons.rows);
   } catch (error) {
@@ -10623,6 +10670,37 @@ app.get("/checkout/active-flash-sales", async (req, res) => {
   } catch (error) {
     console.error("Failed to load active Flash Sales", error);
     res.status(500).json({ error: "Failed to load active Flash Sales" });
+  }
+});
+
+app.get("/checkout/active-bundle-discounts", async (req, res) => {
+  try {
+    const offers = await pool.query(
+      `SELECT id, name, status, metadata
+       FROM bundle_offers
+       WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'active'
+       ORDER BY created_at DESC, id DESC`
+    );
+    const activeOffers = offers.rows.flatMap((offer) => {
+      const metadata = typeof offer.metadata === "string" ? JSON.parse(offer.metadata) : offer.metadata || {};
+      const validation = validateBundleDiscountTiers(metadata.discount_tiers);
+      return validation.tiers && isBundleOfferDateActive(offer)
+        ? [{
+          id: offer.id,
+          name: offer.name,
+          status: offer.status,
+          metadata: {
+            discount_tiers: validation.tiers,
+            start_date: metadata.start_date,
+            end_date: metadata.end_date || null
+          }
+        }]
+        : [];
+    });
+    res.json({ offers: activeOffers });
+  } catch (error) {
+    console.error("Failed to load active bundle discounts", error);
+    res.status(500).json({ error: "Failed to load active bundle discounts" });
   }
 });
 
@@ -10942,9 +11020,16 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
       couponCode = '',
       flashSaleId = null,
       flashSaleAssetIds = [],
+      bundleOfferId = null,
       currency = 'USD',
       taxRate = 0.1
     } = req.body || {};
+    const selectedOfferCount = [couponCode, flashSaleId, bundleOfferId]
+      .filter((offerId) => offerId !== null && offerId !== undefined && String(offerId).trim() !== '')
+      .length;
+    if (selectedOfferCount > 1) {
+      return res.status(400).json({ error: "Apply only one offer per order." });
+    }
     const normalizedItems = Array.isArray(items) ? items : [];
     if (!normalizedItems.length) {
       return res.status(400).json({ error: "Cart is empty" });
@@ -11104,7 +11189,7 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
     let selectedCouponCode = String(couponCode || '').trim();
     const distinctAssetCount = countDistinctCouponAssets(normalizedItems);
     const hasOnlyAssetItems = normalizedItems.every((item) => !item.creditPackage && !item.subscription);
-    if (!selectedCouponCode && hasOnlyAssetItems && distinctAssetCount <= 2) {
+    if (!selectedCouponCode && !flashSaleId && !bundleOfferId && hasOnlyAssetItems && distinctAssetCount <= 2) {
       const firstOrderCoupon = await getAvailableFirstOrderCoupon(req.user.id);
       selectedCouponCode = firstOrderCoupon?.code || '';
     }
@@ -11147,6 +11232,38 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
       }
     }
 
+    let bundleDiscount = 0;
+    if (!coupon && !flashSale && !isCreditPurchase && !normalizedItems.some((item) => item.subscription)) {
+      const requestedAssetIds = [...new Set(normalizedItems
+        .filter((item) => !item.creditPackage && item.id != null)
+        .map((item) => Number(item.id))
+        .filter((id) => Number.isInteger(id) && id > 0))];
+      if (requestedAssetIds.length) {
+        const [assetResult, offerResult] = await Promise.all([
+          pool.query("SELECT id FROM images WHERE id = ANY($1::int[])", [requestedAssetIds]),
+          pool.query(
+            `SELECT id, name, status, metadata
+             FROM bundle_offers
+             WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'active'
+             ORDER BY created_at DESC, id DESC`
+          )
+        ]);
+        const availableAssetIds = new Set(assetResult.rows.map((asset) => String(asset.id)));
+        const eligibleBundleItems = normalizedItems.filter((item) => (
+          !item.creditPackage
+          && !item.subscription
+          && item.id != null
+          && availableAssetIds.has(String(Number(item.id)))
+        ));
+        bundleDiscount = calculateBestBundleTierDiscount(
+          eligibleBundleItems,
+          offerResult.rows,
+          flashSaleFreeAssetIds,
+          bundleOfferId
+        ).discount;
+      }
+    }
+
     const paymentSettings = getPaymentSettings();
     const normalizedPaymentMethod = String(paymentMethod || '').trim().toLowerCase();
     const paymentConfig = paymentSettings[normalizedPaymentMethod];
@@ -11170,7 +11287,7 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
     }
 
     const couponDiscount = Math.min(subtotal, Math.max(0, Number(discount || 0)));
-    const normalizedDiscount = Math.min(subtotal, Number((couponDiscount + flashSaleDiscount).toFixed(2)));
+    const normalizedDiscount = Math.min(subtotal, Number((couponDiscount + flashSaleDiscount + bundleDiscount).toFixed(2)));
     const tax = Number(((Math.max(0, subtotal - normalizedDiscount)) * Number(taxRate || 0)).toFixed(2));
     const total = Number(Math.max(0, subtotal - normalizedDiscount + tax).toFixed(2));
     const creditsToDeduct = Math.max(0, Math.ceil(total));

@@ -2,9 +2,10 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { calculateCartTotals, readAppliedCoupon, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
+import { calculateBestBundleTierDiscount, calculateCartTotals, getNextBundleDiscountTier, readAppliedBundleOfferId, readAppliedCoupon, writeAppliedBundleOfferId, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
 import { loadCartItems, saveCartItems, clearCartItems } from '../utils/cartPersistence';
 import FlashSaleOffer from '../components/FlashSaleOffer';
+import CartOffersModal from '../components/CartOffersModal';
 
 const REQUEST_ADMIN_PAYMENT_METHOD = "Request to Admin";
 const GFX_CREDITS_PAYMENT_METHOD = "GFX's Credits";
@@ -28,6 +29,7 @@ function formatCurrency(value, currency = null) {
 
 export default function CheckoutPage({ darkMode = false }) {
   const navigate = useNavigate();
+  const isLoggedInCustomer = Boolean(localStorage.getItem('token'));
   const hasLoadedCart = useRef(false);
   const [items, setItems] = useState([]);
   const [couponCode, setCouponCode] = useState('');
@@ -36,6 +38,16 @@ export default function CheckoutPage({ darkMode = false }) {
   const [appliedFlashSale, setAppliedFlashSale] = useState(null);
   const [availableCoupons, setAvailableCoupons] = useState([]);
   const [availableCouponsError, setAvailableCouponsError] = useState('');
+  const [bundleOffers, setBundleOffers] = useState([]);
+  const [bundleOffersError, setBundleOffersError] = useState('');
+  const [availableFlashSales, setAvailableFlashSales] = useState([]);
+  const [showOffersModal, setShowOffersModal] = useState(false);
+  const [selectedBundleOfferId, setSelectedBundleOfferId] = useState(readAppliedBundleOfferId);
+  const [flashSaleApplyRequest, setFlashSaleApplyRequest] = useState(null);
+  const [flashSaleClearRequest, setFlashSaleClearRequest] = useState(null);
+  const flashSaleApplyRequestId = useRef(0);
+  const flashSaleClearRequestId = useRef(0);
+  const manualOfferSelection = useRef(false);
   const [billing, setBilling] = useState({ fullName: '', email: '', phone: '', address: '', city: '', country: 'India' });
   const [paymentMethod, setPaymentMethod] = useState('');
   const [hasCreditPackage, setHasCreditPackage] = useState(false);
@@ -65,6 +77,28 @@ export default function CheckoutPage({ darkMode = false }) {
   };
 
   const [availablePaymentMethods, setAvailablePaymentMethods] = useState([]);
+  const clearFlashSaleSelection = useCallback(() => {
+    localStorage.removeItem('appliedFlashSale');
+    setAppliedFlashSale(null);
+    flashSaleClearRequestId.current += 1;
+    setFlashSaleClearRequest({ requestId: flashSaleClearRequestId.current });
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    axios.get(`${API_BASE_URL}/checkout/active-bundle-discounts`)
+      .then((response) => {
+        if (!Array.isArray(response.data?.offers)) throw new Error('Active bundle discount response was invalid.');
+        if (active) setBundleOffers(response.data.offers);
+      })
+      .catch((error) => {
+        console.error('Failed to load active bundle discounts:', error);
+        if (active) setBundleOffersError(error.response?.data?.error || 'Unable to load bundle discounts.');
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -158,6 +192,9 @@ export default function CheckoutPage({ darkMode = false }) {
         setCouponCode(savedCoupon.code);
         setCoupon(nextCoupon);
         localStorage.setItem('appliedCoupon', JSON.stringify({ code: savedCoupon.code, coupon: nextCoupon }));
+        setSelectedBundleOfferId('');
+        writeAppliedBundleOfferId('');
+        clearFlashSaleSelection();
       } catch (error) {
         setCouponCode('');
         setCoupon(null);
@@ -199,7 +236,7 @@ export default function CheckoutPage({ darkMode = false }) {
       window.removeEventListener('payment-gateways-updated', syncPaymentMethods);
       window.removeEventListener('focus', syncPaymentMethods);
     };
-  }, [hasCreditPackage]);
+  }, [hasCreditPackage, clearFlashSaleSelection]);
 
   useEffect(() => {
     if (!subscriptionRestricted || !items.length || items.every((item) => item.creditPackage)) return;
@@ -222,8 +259,12 @@ export default function CheckoutPage({ darkMode = false }) {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         const { coupon: firstOrderCoupon, eligible, message } = response.data || {};
+        if (manualOfferSelection.current) return;
         if (!firstOrderCoupon) return;
         if (eligible) {
+          setSelectedBundleOfferId('');
+          writeAppliedBundleOfferId('');
+          clearFlashSaleSelection();
           setCouponCode(firstOrderCoupon.code);
           setCoupon(firstOrderCoupon);
           setCouponMessage(message || 'Your First Order coupon has been applied automatically.');
@@ -240,7 +281,7 @@ export default function CheckoutPage({ darkMode = false }) {
       }
     };
     syncFirstOrderCoupon();
-  }, [items]);
+  }, [items, clearFlashSaleSelection]);
 
   const cartCurrency = useMemo(
     () => items.find((item) => item.currency)?.currency || null,
@@ -250,13 +291,54 @@ export default function CheckoutPage({ darkMode = false }) {
   const handleFlashSaleChange = useCallback((flashSale) => {
     setAppliedFlashSale(flashSale);
   }, []);
-
+  const handleFlashSaleOffersLoaded = useCallback((sales) => {
+    setAvailableFlashSales(sales);
+  }, []);
+  const applyFlashSaleFromOffers = useCallback((sale) => {
+    manualOfferSelection.current = true;
+    setCoupon(null);
+    setCouponCode('');
+    setCouponMessage('');
+    clearAppliedCoupon();
+    setSelectedBundleOfferId('');
+    writeAppliedBundleOfferId('');
+    setAppliedFlashSale(null);
+    flashSaleApplyRequestId.current += 1;
+    setFlashSaleApplyRequest({ saleId: sale.id, requestId: flashSaleApplyRequestId.current });
+  }, []);
+  const applyBundleFromOffers = useCallback((offerId) => {
+    manualOfferSelection.current = true;
+    setCoupon(null);
+    setCouponCode('');
+    setCouponMessage('');
+    clearAppliedCoupon();
+    clearFlashSaleSelection();
+    const nextOfferId = String(offerId);
+    setSelectedBundleOfferId(nextOfferId);
+    writeAppliedBundleOfferId(nextOfferId);
+  }, [clearFlashSaleSelection]);
   const totals = useMemo(() => calculateCartTotals(items, {
     coupon,
     flashSaleDiscount: appliedFlashSale?.discount || 0,
+    bundleDiscount: calculateBestBundleTierDiscount(items, bundleOffers, selectedBundleOfferId).discount,
     taxSettings,
     currency: cartCurrency
-  }), [items, coupon, appliedFlashSale, taxSettings, cartCurrency]);
+  }), [items, coupon, appliedFlashSale, taxSettings, cartCurrency, bundleOffers, selectedBundleOfferId]);
+  const bundleDeal = useMemo(
+    () => calculateBestBundleTierDiscount(items, bundleOffers, selectedBundleOfferId),
+    [items, bundleOffers, selectedBundleOfferId]
+  );
+  const bundleOfferActive = !coupon && !readAppliedCoupon().code && !(appliedFlashSale?.discount > 0);
+  const hasOtherAppliedOffer = Boolean(
+    coupon
+    || (selectedBundleOfferId && bundleDeal.discount > 0)
+    || readAppliedCoupon().code
+  );
+  const nextBundleTier = getNextBundleDiscountTier(
+    bundleOffers,
+    bundleDeal.assetCount,
+    bundleDeal.tier?.discountPercent || 0
+  );
   const creditsRequired = Math.ceil(totals.total);
   const hasEnoughCredits = availableCredits !== null && availableCredits >= creditsRequired;
 
@@ -284,23 +366,31 @@ export default function CheckoutPage({ darkMode = false }) {
 
   const applyCoupon = async (couponCodeToApply = couponCode) => {
     const nextCode = normalizeCouponCode(couponCodeToApply);
-    if (!nextCode) return;
+    if (!nextCode) return false;
     try {
       const token = localStorage.getItem('token');
       const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: nextCode, items }, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const nextCoupon = res.data.coupon || null;
+      manualOfferSelection.current = true;
+      setSelectedBundleOfferId('');
+      writeAppliedBundleOfferId('');
+      clearFlashSaleSelection();
       setCouponCode(nextCode);
       setCoupon(nextCoupon);
       setCouponMessage(res.data.message || 'Coupon applied');
       localStorage.setItem('appliedCoupon', JSON.stringify({ code: nextCode, coupon: nextCoupon }));
+      return true;
     } catch (error) {
       setCoupon(null);
       setCouponMessage(error.response?.data?.error || 'Coupon could not be applied');
       clearAppliedCoupon();
+      return false;
     }
   };
+
+  const applyCouponFromOffers = async (code) => applyCoupon(code);
 
   const removeCoupon = () => {
     setCoupon(null);
@@ -333,9 +423,10 @@ export default function CheckoutPage({ darkMode = false }) {
         items,
         billing,
         paymentMethod: totals.total === 0 ? 'free' : paymentMethod,
-        couponCode: coupon?.code || couponCode.trim(),
-        flashSaleId: appliedFlashSale?.sale?.id || null,
-        flashSaleAssetIds: appliedFlashSale?.selectedAssetIds || [],
+        couponCode: coupon?.code || '',
+        bundleOfferId: bundleOfferActive ? selectedBundleOfferId || null : null,
+        flashSaleId: !coupon ? appliedFlashSale?.sale?.id || null : null,
+        flashSaleAssetIds: !coupon ? appliedFlashSale?.selectedAssetIds || [] : [],
         currency: cartCurrency,
         taxRate: totals.tax > 0
           ? Number((totals.tax / Math.max(1, totals.subtotal - totals.discount)).toFixed(4))
@@ -346,16 +437,19 @@ export default function CheckoutPage({ darkMode = false }) {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (totals.total > 0 && paymentMethod === 'Google Pay') {
+        const orderTotal = Number(res.data?.total ?? totals.total);
         const paymentReference = res.data.orderNumber || `Order ${res.data.orderId}`;
-        const paymentUri = `upi://pay?pa=${encodeURIComponent(googlePayId)}&pn=${encodeURIComponent('GFXunlimit')}&am=${encodeURIComponent(totals.total.toFixed(2))}&cu=INR&tn=${encodeURIComponent(paymentReference)}`;
+        const paymentUri = `upi://pay?pa=${encodeURIComponent(googlePayId)}&pn=${encodeURIComponent('GFXunlimit')}&am=${encodeURIComponent(orderTotal.toFixed(2))}&cu=INR&tn=${encodeURIComponent(paymentReference)}`;
         setGooglePayUtr('');
         setGooglePaySubmitted(false);
-        setGooglePayQr({ paymentUri, amount: totals.total, orderId: res.data.orderId, orderNumber: res.data.orderNumber || '', merchantUpiId: googlePayId });
+        setGooglePayQr({ paymentUri, amount: orderTotal, orderId: res.data.orderId, orderNumber: res.data.orderNumber || '', merchantUpiId: googlePayId });
         setMessage('');
         return;
       }
       await clearCartItems();
       clearAppliedCoupon();
+      writeAppliedBundleOfferId('');
+      localStorage.removeItem('appliedFlashSale');
       window.dispatchEvent(new Event('cartUpdated'));
       navigate('/orders');
       setMessage(res.data.message || 'Order placed successfully');
@@ -387,6 +481,8 @@ export default function CheckoutPage({ darkMode = false }) {
       }, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       await clearCartItems();
       clearAppliedCoupon();
+      writeAppliedBundleOfferId('');
+      localStorage.removeItem('appliedFlashSale');
       window.dispatchEvent(new Event('cartUpdated'));
       setGooglePaySubmitted(true);
       setMessage(response.data?.message || 'Payment details submitted. Your order is complete and downloads are available.');
@@ -399,6 +495,24 @@ export default function CheckoutPage({ darkMode = false }) {
 
   return (
     <div style={{ minHeight: '100vh', padding: '32px 20px 48px', background: darkMode ? '#020617' : '#f8fafc', color: darkMode ? '#f8fafc' : '#0f172a' }}>
+      <CartOffersModal
+        open={showOffersModal}
+        onClose={() => setShowOffersModal(false)}
+        darkMode={darkMode}
+        items={items}
+        coupons={availableCoupons}
+        appliedCoupon={coupon}
+        couponError={availableCouponsError}
+        onApplyCoupon={applyCouponFromOffers}
+        flashSales={availableFlashSales}
+        appliedFlashSale={appliedFlashSale}
+        onApplyFlashSale={applyFlashSaleFromOffers}
+        bundleOffers={bundleOffers}
+        appliedBundleOfferId={bundleOfferActive ? selectedBundleOfferId : ''}
+        bundleApplicationActive={bundleOfferActive}
+        onApplyBundle={applyBundleFromOffers}
+        subscriptionRestricted={subscriptionRestricted}
+      />
       <div style={{ maxWidth: 1320, margin: '0 auto', display: 'grid', gridTemplateColumns: '1.15fr 0.85fr', gap: 24 }}>
         <div style={{ display: 'grid', gap: 16 }}>
           <div style={{ padding: 24, borderRadius: 24, background: darkMode ? 'rgba(255,255,255,0.05)' : '#fff', border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(226,232,240,1)' }}>
@@ -448,7 +562,14 @@ export default function CheckoutPage({ darkMode = false }) {
 
         <div style={{ display: 'grid', gap: 16 }}>
           <div style={{ padding: 24, borderRadius: 24, background: darkMode ? 'rgba(255,255,255,0.05)' : '#fff', border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(226,232,240,1)', position: 'sticky', top: 24 }}>
-            <h2 style={{ marginTop: 0 }}>Order summary</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <h2 style={{ marginTop: 0 }}>Order summary</h2>
+              {isLoggedInCustomer && (
+                <button type="button" onClick={() => setShowOffersModal(true)} style={{ border: '1px solid #d9212b', borderRadius: 10, padding: '9px 12px', background: 'transparent', color: darkMode ? '#ff8b91' : '#c91d28', cursor: 'pointer', fontWeight: 700 }}>
+                  View all offers
+                </button>
+              )}
+            </div>
             {items.map((item) => (
               <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, color: darkMode ? '#cbd5e1' : '#475569' }}>
                 <span>{item.title || 'Asset'} x{item.quantity || 1}</span>
@@ -458,6 +579,18 @@ export default function CheckoutPage({ darkMode = false }) {
             <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Subtotal</span><span>{formatCurrency(totals.subtotal, cartCurrency)}</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Discount</span><span style={{ color: totals.discount > 0 ? '#16a34a' : 'inherit' }}>-{formatCurrency(totals.discount, cartCurrency)}</span></div>
+              {bundleOfferActive && bundleDeal.discount > 0 ? (
+                <div style={{ color: darkMode ? '#6ee7b7' : '#047857', fontSize: '0.9rem' }}>
+                  {bundleDeal.offer.name}: {bundleDeal.assetCount} paid assets qualify for {bundleDeal.tier.discountPercent}% off
+                  {" "}(-{formatCurrency(bundleDeal.discount, cartCurrency)})
+                </div>
+              ) : null}
+              {nextBundleTier && (
+                <div style={{ color: darkMode ? '#cbd5e1' : '#64748b', fontSize: '0.9rem' }}>
+                  Add {Math.max(0, nextBundleTier.assetCount - bundleDeal.assetCount)} more paid asset{nextBundleTier.assetCount - bundleDeal.assetCount === 1 ? '' : 's'} to unlock {nextBundleTier.discountPercent}% off.
+                </div>
+              )}
+              {bundleOffersError && <div role="alert" style={{ color: '#DC2626', fontSize: '0.9rem' }}>{bundleOffersError}</div>}
               <div style={{ display: 'grid', gap: 6 }}>
                 {(totals.taxBreakdown || []).map((tax, idx) => (
                   <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.95rem', color: darkMode ? '#cbd5e1' : '#64748b' }}>
@@ -475,6 +608,10 @@ export default function CheckoutPage({ darkMode = false }) {
               subscriptionRestricted={subscriptionRestricted}
               darkMode={darkMode}
               onChange={handleFlashSaleChange}
+              onOffersLoaded={handleFlashSaleOffersLoaded}
+              applySaleRequest={flashSaleApplyRequest}
+              clearSelectionRequest={flashSaleClearRequest}
+              hasOtherAppliedOffer={hasOtherAppliedOffer}
               variant="checkout"
               currency={cartCurrency}
             />

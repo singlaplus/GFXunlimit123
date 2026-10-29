@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import axios from "axios";
 import CheckoutPage from "./CheckoutPage";
 import { clearCartItems, loadCartItems } from "../utils/cartPersistence";
@@ -22,21 +22,32 @@ jest.mock("../utils/cartCheckout", () => ({
       ? items.reduce((sum, item) => sum + Number(item.unitPrice || item.price || 0), 0) * Number(metadata.discount_value || 0) / 100
       : Number(metadata.discount_value || 0);
   },
+  calculateBestBundleTierDiscount: () => ({ offer: null, assetCount: 1, tier: null, discount: 0 }),
+  getNextBundleDiscountTier: () => null,
   calculateCartTotals: (items) => {
     const subtotal = items.reduce((sum, item) => sum + Number(item.unitPrice || item.price || 0) * Number(item.quantity || 1), 0);
     const tax = subtotal * 0.18;
     return { subtotal, discount: 0, tax, total: subtotal + tax, taxBreakdown: [] };
   },
   readAppliedCoupon: () => ({ code: "" }),
+  readAppliedBundleOfferId: () => "",
+  writeAppliedBundleOfferId: jest.fn(),
   clearAppliedCoupon: jest.fn(),
   normalizeCouponCode: (code) => code,
 }));
 
 describe("CheckoutPage manual Google Pay submission", () => {
   beforeEach(() => {
+    localStorage.removeItem("appliedCoupon");
+    localStorage.removeItem("appliedBundleOfferId");
+    localStorage.removeItem("appliedFlashSale");
+    localStorage.removeItem("token");
     loadCartItems.mockResolvedValue([{ id: 2, title: "Photo", quantity: 1, unitPrice: 100, currency: "INR" }]);
     clearCartItems.mockResolvedValue();
     axios.get.mockImplementation((url) => {
+      if (url.endsWith("/checkout/active-bundle-discounts")) {
+        return Promise.resolve({ data: { offers: [] } });
+      }
       if (url.endsWith("/checkout/active-flash-sales")) {
         return Promise.resolve({ data: { sales: [], categories: [], collections: [] } });
       }
@@ -117,6 +128,9 @@ describe("CheckoutPage manual Google Pay submission", () => {
 
         it("hides coupon controls while a Flash Sale discount is applied", async () => {
           axios.get.mockImplementation((url) => {
+            if (url.endsWith("/checkout/active-bundle-discounts")) {
+              return Promise.resolve({ data: { offers: [] } });
+            }
             if (url.endsWith("/checkout/active-flash-sales")) {
               return Promise.resolve({
                 data: {
@@ -197,6 +211,9 @@ describe("CheckoutPage manual Google Pay submission", () => {
   it("shows and applies an auto-generated coupon assigned to the signed-in user", async () => {
     localStorage.setItem("token", "customer-token");
     axios.get.mockImplementation((url) => {
+      if (url.endsWith("/checkout/active-bundle-discounts")) {
+        return Promise.resolve({ data: { offers: [] } });
+      }
       if (url.endsWith("/checkout/available-coupons")) {
         return Promise.resolve({
           data: [{ id: 21, name: "Personal offer", code: "ABCD1234", couponType: "auto", discount_type: "percentage", discount_value: 15 }],
@@ -223,6 +240,38 @@ describe("CheckoutPage manual Google Pay submission", () => {
         expect.anything()
       );
     });
+    localStorage.removeItem("token");
+  });
+
+  it("opens all active customer offers from checkout", async () => {
+    localStorage.setItem("token", "customer-token");
+    axios.get.mockImplementation((url) => {
+      if (url.endsWith("/checkout/available-coupons")) {
+        return Promise.resolve({
+          data: [{ id: 33, name: "Welcome offer", code: "WELCOME10", coupon_type: "manual", discount_type: "percentage", discount_value: 10 }]
+        });
+      }
+      if (url.endsWith("/checkout/active-bundle-discounts")) return Promise.resolve({ data: { offers: [] } });
+      if (url.endsWith("/checkout/active-flash-sales")) {
+        return Promise.resolve({
+          data: {
+            sales: [{ id: 53, name: "Checkout summer sale", discount_rule: "PERCENTAGE", status: "running", featured_placement: "homepage", metadata: { discount_value: 20 } }],
+            categories: [],
+            collections: []
+          }
+        });
+      }
+      if (url.endsWith("/payment-settings")) return Promise.resolve({ data: { enabledGateways: ["Google Pay"], googlePayId: "merchant@upi" } });
+      if (url.endsWith("/profile")) return Promise.resolve({ data: { credits: 0 } });
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<CheckoutPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View all offers" }));
+    const dialog = await screen.findByRole("dialog", { name: "Available offers" });
+    expect(await within(dialog).findByText(/WELCOME10/)).toBeInTheDocument();
+    expect(within(dialog).getByText("Checkout summer sale")).toBeInTheDocument();
     localStorage.removeItem("token");
   });
 });

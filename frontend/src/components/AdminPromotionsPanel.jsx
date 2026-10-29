@@ -12,7 +12,6 @@ const SECTION_ITEMS = [
   { key: "flash-sales", label: "Flash Sales" },
   { key: "referrals", label: "Referral Program" },
   { key: "loyalty", label: "Loyalty Rewards" },
-  { key: "gift-cards", label: "Gift Cards" },
   { key: "bundles", label: "Bundle Discounts" },
   { key: "newsletters", label: "Newsletter Campaigns" },
   { key: "banners", label: "Promotional Banners" },
@@ -129,19 +128,11 @@ const initialLoyaltyForm = {
   status: "active"
 };
 
-const initialGiftCardForm = {
-  name: "",
-  code: "",
-  value: "",
-  expiry_date: "",
-  status: "active"
-};
-
 const initialBundleForm = {
   name: "",
-  bundle_assets: "",
-  bundle_discount: "",
-  bundle_price: "",
+  tiers: [{ asset_count: "3", discount_percent: "10" }],
+  start_date: "",
+  end_date: "",
   status: "active"
 };
 
@@ -489,7 +480,6 @@ function AdminPromotionsPanel() {
     revenue_generated: 0,
     revenue_discounted: 0,
     average_discount: 0,
-    gift_cards_sold: 0,
     referral_revenue: 0,
     loyalty_members: 0,
     flash_sales: 0,
@@ -512,7 +502,6 @@ function AdminPromotionsPanel() {
   const [contributorApplicationFilter, setContributorApplicationFilter] = useState("active");
   const [referrals, setReferrals] = useState([]);
   const [loyalty, setLoyalty] = useState([]);
-  const [giftCards, setGiftCards] = useState([]);
   const [bundles, setBundles] = useState([]);
   const [newsletters, setNewsletters] = useState([]);
   const [banners, setBanners] = useState([]);
@@ -528,7 +517,6 @@ function AdminPromotionsPanel() {
   const [flashCollections, setFlashCollections] = useState([]);
   const [referralDraft, setReferralDraft] = useState(initialReferralForm);
   const [loyaltyDraft, setLoyaltyDraft] = useState(initialLoyaltyForm);
-  const [giftCardDraft, setGiftCardDraft] = useState(initialGiftCardForm);
   const [bundleDraft, setBundleDraft] = useState(initialBundleForm);
   const [newsletterDraft, setNewsletterDraft] = useState(initialNewsletterForm);
   const [bannerDraft, setBannerDraft] = useState(initialBannerForm);
@@ -553,6 +541,7 @@ function AdminPromotionsPanel() {
   const [editingCouponId, setEditingCouponId] = useState(null);
   const [editingCampaignId, setEditingCampaignId] = useState(null);
   const [editingFlashId, setEditingFlashId] = useState(null);
+  const [editingBundleId, setEditingBundleId] = useState(null);
 
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_SECTION_STORAGE_KEY, activeSection);
@@ -575,7 +564,6 @@ function AdminPromotionsPanel() {
       setFlashSales(Array.isArray(payload.flash_sales) ? payload.flash_sales : []);
       setReferrals(Array.isArray(payload.referrals) ? payload.referrals : []);
       setLoyalty(Array.isArray(payload.loyalty) ? payload.loyalty : []);
-      setGiftCards(Array.isArray(payload.gift_cards) ? payload.gift_cards : []);
       setBundles(Array.isArray(payload.bundles) ? payload.bundles : []);
       setNewsletters(Array.isArray(payload.newsletters) ? payload.newsletters : []);
       setBanners(Array.isArray(payload.banners) ? payload.banners : []);
@@ -974,6 +962,7 @@ function AdminPromotionsPanel() {
           : 0
       }
     };
+
     if (editingFlashId) {
       await persistResource("flash_sale", "update", { ...payload, id: editingFlashId }, "Flash sale updated.");
       setEditingFlashId(null);
@@ -982,6 +971,79 @@ function AdminPromotionsPanel() {
     }
     await persistResource("flash_sale", "create", payload, "Flash sale created.");
     setFlashDraft(initialFlashForm);
+  };
+
+  const handleBundleSubmit = async (event) => {
+    event.preventDefault();
+    if (!bundleDraft.name.trim()) {
+      setMessage("Enter a name for this bundle discount.");
+      return;
+    }
+    if (!bundleDraft.start_date) {
+      setMessage("Bundle discounts require a start date.");
+      return;
+    }
+    if (bundleDraft.end_date && bundleDraft.end_date < bundleDraft.start_date) {
+      setMessage("Bundle discount end date must be on or after the start date.");
+      return;
+    }
+    const thresholds = new Set();
+    const tiers = [];
+    for (const tier of bundleDraft.tiers) {
+      const assetCount = Number(tier.asset_count);
+      const discountPercent = Number(tier.discount_percent);
+      if (!Number.isInteger(assetCount) || assetCount <= 0) {
+        setMessage("Each tier must have a positive whole-number asset count.");
+        return;
+      }
+      if (!Number.isFinite(discountPercent) || discountPercent <= 0 || discountPercent > 100) {
+        setMessage("Each tier discount must be greater than 0% and no more than 100%.");
+        return;
+      }
+      if (thresholds.has(assetCount)) {
+        setMessage("Each asset-count threshold must be unique.");
+        return;
+      }
+      thresholds.add(assetCount);
+      tiers.push({ asset_count: assetCount, discount_percent: discountPercent });
+    }
+
+    tiers.sort((left, right) => left.asset_count - right.asset_count);
+    const payload = {
+      name: bundleDraft.name.trim(),
+      status: bundleDraft.status,
+      metadata: {
+        discount_tiers: tiers,
+        start_date: bundleDraft.start_date,
+        end_date: bundleDraft.end_date || null
+      }
+    };
+    if (editingBundleId) {
+      await persistResource("bundle", "update", { ...payload, id: editingBundleId }, "Bundle discount updated.");
+      setEditingBundleId(null);
+    } else {
+      await persistResource("bundle", "create", payload, "Bundle discount created.");
+    }
+    setBundleDraft(initialBundleForm);
+  };
+
+  const startEditingBundle = (bundle) => {
+    const metadata = getCampaignMetadata(bundle);
+    const tiers = Array.isArray(metadata.discount_tiers) && metadata.discount_tiers.length
+      ? metadata.discount_tiers.map((tier) => ({
+        asset_count: String(tier.asset_count ?? ""),
+        discount_percent: String(tier.discount_percent ?? "")
+      }))
+      : initialBundleForm.tiers;
+    setEditingBundleId(bundle.id);
+    setBundleDraft({
+      name: bundle.name || "",
+      tiers: tiers.map((tier) => ({ ...tier })),
+      start_date: metadata.start_date ? String(metadata.start_date).slice(0, 10) : "",
+      end_date: metadata.end_date ? String(metadata.end_date).slice(0, 10) : "",
+      status: String(bundle.status || "draft").toLowerCase() === "active" ? "active" : "draft"
+    });
+    setActiveSection("bundles");
   };
 
   const startEditingFlash = (sale) => {
@@ -1007,11 +1069,6 @@ function AdminPromotionsPanel() {
     tomorrow.setDate(tomorrow.getDate() + 1);
     return formatLocalDate(tomorrow);
   })();
-
-  const saveSectionItem = async (resource, draft, setter, resetForm, successMessage) => {
-    await persistResource(resource, "create", draft, successMessage);
-    setter(resetForm);
-  };
 
   const flashEventRecords = flashSales.map((sale) => {
     const metadata = typeof sale.metadata === "string" ? JSON.parse(sale.metadata || "{}") : sale.metadata || {};
@@ -1045,7 +1102,6 @@ function AdminPromotionsPanel() {
       { label: "Revenue Generated", value: `₹${Number(dashboard.revenue_generated || 0).toLocaleString()}` },
       { label: "Revenue Discounted", value: `₹${Number(dashboard.revenue_discounted || 0).toLocaleString()}` },
       { label: "Average Discount", value: `${Number(dashboard.average_discount || 0).toFixed(1)}%` },
-      { label: "Gift Cards Sold", value: dashboard.gift_cards_sold || 0 },
       { label: "Referral Revenue", value: `₹${Number(dashboard.referral_revenue || 0).toLocaleString()}` },
       { label: "Loyalty Members", value: dashboard.loyalty_members || 0 },
       { label: "Flash Sales", value: dashboard.flash_sales || 0 },
@@ -1882,22 +1938,176 @@ function AdminPromotionsPanel() {
           { key: "expiry_days", label: "Expiry days", type: "text" },
           { key: "status", label: "Status", type: "select", options: [{ value: "active", label: "Active" }, { value: "paused", label: "Paused" }] }
         ]);
-      case "gift-cards":
-        return renderSimpleSection("Gift Cards", "gift_card", giftCards, giftCardDraft, setGiftCardDraft, initialGiftCardForm, "Gift card saved.", [
-          { key: "name", label: "Gift card name", type: "text" },
-          { key: "code", label: "Code", type: "text" },
-          { key: "value", label: "Value", type: "text" },
-          { key: "expiry_date", label: "Expiry", type: "date" },
-          { key: "status", label: "Status", type: "select", options: [{ value: "active", label: "Active" }, { value: "used", label: "Used" }] }
-        ]);
       case "bundles":
-        return renderSimpleSection("Bundle Discounts", "bundle", bundles, bundleDraft, setBundleDraft, initialBundleForm, "Bundle saved.", [
-          { key: "name", label: "Bundle name", type: "text" },
-          { key: "bundle_assets", label: "Assets", type: "text" },
-          { key: "bundle_discount", label: "Discount", type: "text" },
-          { key: "bundle_price", label: "Price", type: "text" },
-          { key: "status", label: "Status", type: "select", options: [{ value: "active", label: "Active" }, { value: "draft", label: "Draft" }] }
-        ]);
+        return (
+          <div className="promotions-stack">
+            <div className="promotions-card">
+              <div className="promotions-card-header">
+                <h3>Bundle Discounts</h3>
+                <span>Set editable quantity tiers for paid assets in a customer’s cart.</span>
+              </div>
+              <form className="promotions-form-grid promotions-bundle-form" onSubmit={handleBundleSubmit}>
+                <div className="promotions-field-group">
+                  <label htmlFor="bundle-name">Bundle name</label>
+                  <input
+                    id="bundle-name"
+                    value={bundleDraft.name}
+                    onChange={(event) => setBundleDraft((current) => ({ ...current, name: event.target.value }))}
+                    required
+                  />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="bundle-status">Status</label>
+                  <select
+                    id="bundle-status"
+                    value={bundleDraft.status}
+                    onChange={(event) => setBundleDraft((current) => ({ ...current, status: event.target.value }))}
+                  >
+                    <option value="active">Active</option>
+                    <option value="draft">Draft</option>
+                  </select>
+                </div>
+                <CouponDatePicker
+                  id="bundle-start-date"
+                  label="Start Date"
+                  value={bundleDraft.start_date}
+                  onChange={(start_date) => setBundleDraft((current) => ({ ...current, start_date }))}
+                  helpText="Required. The discount becomes available from this date (IST)."
+                  required
+                  className="promotions-date-picker--bundle"
+                />
+                <CouponDatePicker
+                  id="bundle-end-date"
+                  label="End Date (optional)"
+                  value={bundleDraft.end_date}
+                  onChange={(end_date) => setBundleDraft((current) => ({ ...current, end_date }))}
+                  minDate={bundleDraft.start_date}
+                  helpText="Leave blank for no end date."
+                  className="promotions-date-picker--bundle"
+                />
+                <div className="promotions-field-group promotions-campaign-notes">
+                  <strong>Discount tiers</strong>
+                  <span className="promotions-field-help">
+                    Each threshold counts distinct paid assets. The highest qualifying tier applies to all eligible asset value.
+                  </span>
+                </div>
+                {bundleDraft.tiers.map((tier, index) => (
+                  <div className="promotions-inline-controls promotions-bundle-tier-row" key={`bundle-tier-${index}`}>
+                    <div className="promotions-field-group">
+                      <label htmlFor={`bundle-tier-assets-${index}`}>Minimum assets</label>
+                      <input
+                        id={`bundle-tier-assets-${index}`}
+                        aria-label={`Tier ${index + 1} minimum assets`}
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={tier.asset_count}
+                        onChange={(event) => setBundleDraft((current) => ({
+                          ...current,
+                          tiers: current.tiers.map((currentTier, currentIndex) => (
+                            currentIndex === index ? { ...currentTier, asset_count: event.target.value } : currentTier
+                          ))
+                        }))}
+                        required
+                      />
+                    </div>
+                    <div className="promotions-field-group">
+                      <label htmlFor={`bundle-tier-discount-${index}`}>Discount (%)</label>
+                      <input
+                        id={`bundle-tier-discount-${index}`}
+                        aria-label={`Tier ${index + 1} discount percent`}
+                        type="number"
+                        min="0.01"
+                        max="100"
+                        step="0.01"
+                        value={tier.discount_percent}
+                        onChange={(event) => setBundleDraft((current) => ({
+                          ...current,
+                          tiers: current.tiers.map((currentTier, currentIndex) => (
+                            currentIndex === index ? { ...currentTier, discount_percent: event.target.value } : currentTier
+                          ))
+                        }))}
+                        required
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      aria-label={`Remove tier ${index + 1}`}
+                      disabled={bundleDraft.tiers.length === 1}
+                      onClick={() => setBundleDraft((current) => ({
+                        ...current,
+                        tiers: current.tiers.filter((_, currentIndex) => currentIndex !== index)
+                      }))}
+                    >
+                      Remove tier
+                    </button>
+                  </div>
+                ))}
+                <div className="promotions-inline-actions promotions-bundle-actions">
+                  <button
+                    type="button"
+                    onClick={() => setBundleDraft((current) => ({
+                      ...current,
+                      tiers: [...current.tiers, { asset_count: "", discount_percent: "" }]
+                    }))}
+                  >
+                    Add tier
+                  </button>
+                  {editingBundleId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingBundleId(null);
+                        setBundleDraft(initialBundleForm);
+                      }}
+                    >
+                      Cancel edit
+                    </button>
+                  )}
+                  <button type="submit">{editingBundleId ? "Update Bundle Discount" : "Save Bundle Discount"}</button>
+                </div>
+              </form>
+            </div>
+            <div className="promotions-card">
+              <div className="promotions-card-header">
+                <h3>Existing Entries</h3>
+                <span>When multiple active bundles qualify, checkout applies the single bundle with the greatest saving.</span>
+              </div>
+              <div className="promotions-list">
+                {bundles.length === 0 ? <p>No bundle discounts yet.</p> : bundles.map((bundle) => {
+                  const metadata = getCampaignMetadata(bundle);
+                  const tiers = Array.isArray(metadata.discount_tiers) ? metadata.discount_tiers : [];
+                  return (
+                    <div key={bundle.id} className="promotions-list-item">
+                      <div>
+                        <strong>{bundle.name}</strong>
+                        <div className="promotions-muted">
+                          {tiers.length
+                            ? tiers.map((tier) => `${tier.asset_count} assets → ${tier.discount_percent}%`).join(" · ")
+                            : "No discount tiers configured"}
+                          {" · "}{bundle.status || "active"}
+                        </div>
+                        <div className="promotions-muted">
+                          Dates: {metadata.start_date ? String(metadata.start_date).slice(0, 10) : "Start date required"}
+                          {" – "}{metadata.end_date ? String(metadata.end_date).slice(0, 10) : "No end date"}
+                        </div>
+                      </div>
+                      <div className="promotions-inline-actions">
+                        <button type="button" onClick={() => startEditingBundle(bundle)}>Edit</button>
+                        <button
+                          type="button"
+                          onClick={() => persistResource("bundle", "delete", { id: bundle.id }, "Bundle discount removed.")}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
       case "newsletters":
         return renderSimpleSection("Newsletter Campaigns", "newsletter", newsletters, newsletterDraft, setNewsletterDraft, initialNewsletterForm, "Newsletter saved.", [
           { key: "name", label: "Campaign name", type: "text" },
@@ -1949,7 +2159,7 @@ function AdminPromotionsPanel() {
             <div className="promotions-card">
               <div className="promotions-card-header">
                 <h3>Analytics</h3>
-                <span>Interactive charts and performance snapshots for campaigns, referrals, loyalty, and gift cards.</span>
+                <span>Interactive charts and performance snapshots for campaigns, referrals, and loyalty.</span>
               </div>
               <div className="promotions-list">
                 <div className="promotions-list-item">
@@ -1971,10 +2181,10 @@ function AdminPromotionsPanel() {
             <div className="promotions-card">
               <div className="promotions-card-header">
                 <h3>Reports</h3>
-                <span>Consolidated reports for coupons, campaigns, gift cards, loyalty, newsletter, flash sales, and bundles.</span>
+                <span>Consolidated reports for coupons, campaigns, loyalty, newsletter, flash sales, and bundles.</span>
               </div>
               <div className="promotions-list">
-                {['Coupons','Campaigns','Gift Cards','Loyalty','Referral','Newsletter','Flash Sales','Bundles','Promotion Revenue','Promotion ROI'].map((item) => (
+                {['Coupons','Campaigns','Loyalty','Referral','Newsletter','Flash Sales','Bundles','Promotion Revenue','Promotion ROI'].map((item) => (
                   <div className="promotions-list-item" key={item}><div><strong>{item}</strong></div></div>
                 ))}
               </div>

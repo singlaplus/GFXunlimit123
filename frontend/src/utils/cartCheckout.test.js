@@ -1,8 +1,10 @@
 import {
   calculateCartTotals,
+  calculateBestBundleTierDiscount,
   calculateFlashSaleDiscount,
   getFlashSaleEligibleItems,
   getFlashSaleRequiredAssetCount,
+  isBundleDiscountOfferActive,
   normalizeCouponCode
 } from './cartCheckout';
 
@@ -115,14 +117,133 @@ describe('calculateCartTotals', () => {
     expect(result.total).toBe(123);
   });
 
-  it('includes a Flash Sale discount with the coupon discount without exceeding subtotal', () => {
+  it('applies only the coupon when a coupon and Flash Sale are selected', () => {
     const result = calculateCartTotals([{ unitPrice: 100 }], {
       coupon: { discountType: 'flat', discountValue: 80 },
       flashSaleDiscount: 50,
+      bundleDiscount: 45,
     });
 
-    expect(result.discount).toBe(100);
-    expect(result.total).toBe(0);
+    expect(result.discount).toBe(80);
+    expect(result.total).toBe(20);
+  });
+
+  it('applies only the Flash Sale when a Flash Sale and bundle discount are selected', () => {
+    const result = calculateCartTotals([{ unitPrice: 100 }], {
+      flashSaleDiscount: 40,
+      bundleDiscount: 50,
+    });
+
+    expect(result.discount).toBe(40);
+    expect(result.total).toBe(60);
+  });
+
+  it('uses the bundle discount when it is the only selected offer', () => {
+    const result = calculateCartTotals([{ unitPrice: 100 }], {
+      bundleDiscount: 50,
+    });
+
+    expect(result.discount).toBe(50);
+    expect(result.total).toBe(50);
+  });
+});
+
+describe('Bundle discount calculations', () => {
+  const tiers = [
+    { asset_count: 3, discount_percent: 10 },
+    { asset_count: 5, discount_percent: 15 },
+    { asset_count: 10, discount_percent: 25 },
+  ];
+  const offer = {
+    id: 1,
+    name: 'Volume offer',
+    status: 'active',
+    metadata: { discount_tiers: tiers, start_date: '2020-01-01', end_date: null }
+  };
+
+  it('applies the highest qualifying tier to the paid asset subtotal', () => {
+    const items = Array.from({ length: 5 }, (_, index) => ({ id: index + 1, unitPrice: 20 }));
+    expect(calculateBestBundleTierDiscount(items, [offer])).toMatchObject({
+      assetCount: 5,
+      tier: { assetCount: 5, discountPercent: 15 },
+      discount: 15,
+    });
+  });
+
+  it('excludes subscription carts and ignores free and credit items when counting assets', () => {
+    const items = [
+      { id: 1, unitPrice: 10 },
+      { id: 2, unitPrice: 10 },
+      { id: 3, unitPrice: 10, freeAsset: true },
+      { id: 'credits', unitPrice: 10, creditPackage: true },
+      { id: 'subscription', unitPrice: 10, subscription: true },
+    ];
+    expect(calculateBestBundleTierDiscount(items, [offer])).toMatchObject({
+      assetCount: 0,
+      tier: null,
+      discount: 0,
+    });
+  });
+
+  it('uses the single active offer with the highest saving', () => {
+    const threeAssets = Array.from({ length: 3 }, (_, index) => ({ id: index + 1, unitPrice: 100 }));
+    const betterOffer = {
+      id: 2,
+      status: 'active',
+      metadata: {
+        discount_tiers: [{ asset_count: 3, discount_percent: 20 }],
+        start_date: '2020-01-01'
+      },
+    };
+    const inactiveOffer = {
+      id: 3,
+      status: 'draft',
+      metadata: { discount_tiers: [{ asset_count: 3, discount_percent: 90 }] },
+    };
+    expect(calculateBestBundleTierDiscount(threeAssets, [offer, betterOffer, inactiveOffer])).toMatchObject({
+      offer: betterOffer,
+      discount: 60,
+    });
+  });
+
+  it('uses the selected eligible bundle offer instead of the default best-saving offer', () => {
+    const threeAssets = Array.from({ length: 3 }, (_, index) => ({ id: index + 1, unitPrice: 100 }));
+    const lowerOffer = {
+      id: 4,
+      status: 'active',
+      metadata: {
+        start_date: '2020-01-01',
+        discount_tiers: [{ asset_count: 3, discount_percent: 10 }]
+      }
+    };
+    const higherOffer = {
+      id: 5,
+      status: 'active',
+      metadata: {
+        start_date: '2020-01-01',
+        discount_tiers: [{ asset_count: 3, discount_percent: 20 }]
+      }
+    };
+
+    expect(calculateBestBundleTierDiscount(threeAssets, [lowerOffer, higherOffer], lowerOffer.id)).toMatchObject({
+      offer: lowerOffer,
+      discount: 30
+    });
+  });
+
+  it('only considers offers inside their inclusive date range', () => {
+    const datedOffer = {
+      ...offer,
+      metadata: { ...offer.metadata, start_date: '2026-10-29', end_date: '2026-11-02' }
+    };
+    expect(isBundleDiscountOfferActive(datedOffer, '2026-10-28')).toBe(false);
+    expect(isBundleDiscountOfferActive(datedOffer, '2026-10-29')).toBe(true);
+    expect(isBundleDiscountOfferActive(datedOffer, '2026-11-02')).toBe(true);
+    expect(isBundleDiscountOfferActive(datedOffer, '2026-11-03')).toBe(false);
+    expect(isBundleDiscountOfferActive({
+      ...datedOffer,
+      metadata: { ...datedOffer.metadata, start_date: '2026-02-30' }
+    }, '2026-02-15')).toBe(false);
   });
 });
 

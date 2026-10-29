@@ -2,10 +2,11 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { calculateCartTotals, countDistinctAssetItems, getFlashSaleEligibleItems, getFlashSaleRequiredAssetCount, readAppliedCoupon, writeAppliedCoupon, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
+import { calculateBestBundleTierDiscount, calculateCartTotals, countDistinctAssetItems, getFlashSaleEligibleItems, getFlashSaleRequiredAssetCount, getNextBundleDiscountTier, readAppliedBundleOfferId, readAppliedCoupon, writeAppliedBundleOfferId, writeAppliedCoupon, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
 import { loadCartItems, saveCartItems } from '../utils/cartPersistence';
 import { getAssetPreviewUrl } from '../utils/assetPreview';
 import FlashSaleOffer from '../components/FlashSaleOffer';
+import CartOffersModal from '../components/CartOffersModal';
 import './CartPage.css';
 
 
@@ -28,6 +29,7 @@ function formatCurrency(value, currency = null) {
 
 export default function CartPage({ darkMode = false }) {
   const navigate = useNavigate();
+  const isLoggedInCustomer = Boolean(localStorage.getItem('token'));
   const hasLoadedCart = useRef(false);
   const [items, setItems] = useState([]);
   const [couponCode, setCouponCode] = useState('');
@@ -38,9 +40,25 @@ export default function CartPage({ darkMode = false }) {
   const [bogoCheckoutAssetIds, setBogoCheckoutAssetIds] = useState([]);
   const [availableCoupons, setAvailableCoupons] = useState([]);
   const [availableCouponsError, setAvailableCouponsError] = useState('');
+  const [bundleOffers, setBundleOffers] = useState([]);
+  const [bundleOffersError, setBundleOffersError] = useState('');
+  const [availableFlashSales, setAvailableFlashSales] = useState([]);
+  const [showOffersModal, setShowOffersModal] = useState(false);
+  const [selectedBundleOfferId, setSelectedBundleOfferId] = useState(readAppliedBundleOfferId);
+  const [flashSaleApplyRequest, setFlashSaleApplyRequest] = useState(null);
+  const [flashSaleClearRequest, setFlashSaleClearRequest] = useState(null);
+  const flashSaleApplyRequestId = useRef(0);
+  const flashSaleClearRequestId = useRef(0);
+  const manualOfferSelection = useRef(false);
   const [loading, setLoading] = useState(false);
   const [taxSettings, setTaxSettings] = useState([{ enabled: true, rate: 18, label: 'GST', id: 1 }]);
   const [subscriptionRestricted, setSubscriptionRestricted] = useState(false);
+  const clearFlashSaleSelection = useCallback(() => {
+    localStorage.removeItem('appliedFlashSale');
+    setAppliedFlashSale(null);
+    flashSaleClearRequestId.current += 1;
+    setFlashSaleClearRequest({ requestId: flashSaleClearRequestId.current });
+  }, []);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -56,6 +74,22 @@ export default function CartPage({ darkMode = false }) {
         console.error('Failed to load available coupons:', error);
         setAvailableCouponsError(error.response?.data?.error || 'Unable to load your available coupons.');
       });
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    axios.get(`${API_BASE_URL}/checkout/active-bundle-discounts`)
+      .then((response) => {
+        if (!Array.isArray(response.data?.offers)) throw new Error('Active bundle discount response was invalid.');
+        if (active) setBundleOffers(response.data.offers);
+      })
+      .catch((error) => {
+        console.error('Failed to load active bundle discounts:', error);
+        if (active) setBundleOffersError(error.response?.data?.error || 'Unable to load bundle discounts.');
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Load cart on mount
@@ -95,6 +129,9 @@ export default function CartPage({ darkMode = false }) {
         setCouponCode(savedCoupon.code);
         setCoupon(nextCoupon);
         writeAppliedCoupon(savedCoupon.code, nextCoupon);
+        setSelectedBundleOfferId('');
+        writeAppliedBundleOfferId('');
+        clearFlashSaleSelection();
       } catch (error) {
         setCouponCode('');
         setCoupon(null);
@@ -125,7 +162,7 @@ export default function CartPage({ darkMode = false }) {
     return () => {
       hasLoadedCart.current = false;
     };
-  }, []);
+  }, [clearFlashSaleSelection, navigate]);
 
   useEffect(() => {
     if (!subscriptionRestricted || !items.length || items.every((item) => item.creditPackage)) return;
@@ -150,8 +187,12 @@ export default function CartPage({ darkMode = false }) {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         const { coupon: firstOrderCoupon, eligible, message } = response.data || {};
+        if (manualOfferSelection.current) return;
         if (!firstOrderCoupon) return;
         if (eligible) {
+          setSelectedBundleOfferId('');
+          writeAppliedBundleOfferId('');
+          clearFlashSaleSelection();
           setCouponCode(firstOrderCoupon.code);
           setCoupon(firstOrderCoupon);
           setCouponMessage(message || 'Your First Order coupon has been applied automatically.');
@@ -168,7 +209,7 @@ export default function CartPage({ darkMode = false }) {
       }
     };
     syncFirstOrderCoupon();
-  }, [items]);
+  }, [items, clearFlashSaleSelection]);
 
   const cartCurrency = useMemo(
     () => items.find((item) => item.currency)?.currency || null,
@@ -178,31 +219,104 @@ export default function CartPage({ darkMode = false }) {
   const handleFlashSaleChange = useCallback((flashSale) => {
     setAppliedFlashSale(flashSale);
   }, []);
+  const handleFlashSaleOffersLoaded = useCallback((sales) => {
+    setAvailableFlashSales(sales);
+  }, []);
+  const applyFlashSaleFromOffers = useCallback((sale) => {
+    manualOfferSelection.current = true;
+    setCoupon(null);
+    setCouponCode('');
+    setCouponMessage('');
+    clearAppliedCoupon();
+    setSelectedBundleOfferId('');
+    writeAppliedBundleOfferId('');
+    setAppliedFlashSale(null);
+    flashSaleApplyRequestId.current += 1;
+    setFlashSaleApplyRequest({ saleId: sale.id, requestId: flashSaleApplyRequestId.current });
+  }, []);
+  const applyBundleFromOffers = useCallback((offerId) => {
+    manualOfferSelection.current = true;
+    setCoupon(null);
+    setCouponCode('');
+    setCouponMessage('');
+    clearAppliedCoupon();
+    clearFlashSaleSelection();
+    const nextOfferId = String(offerId);
+    setSelectedBundleOfferId(nextOfferId);
+    writeAppliedBundleOfferId(nextOfferId);
+  }, [clearFlashSaleSelection]);
+  const applyCouponFromOffers = useCallback(async (code) => {
+    const nextCode = normalizeCouponCode(code);
+    if (!nextCode) return false;
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: nextCode, items }, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const nextCoupon = response.data?.coupon || null;
+      manualOfferSelection.current = true;
+      setSelectedBundleOfferId('');
+      writeAppliedBundleOfferId('');
+      clearFlashSaleSelection();
+      setCouponCode(nextCode);
+      setCoupon(nextCoupon);
+      setCouponMessage(response.data?.message || 'Coupon applied');
+      writeAppliedCoupon(nextCode, nextCoupon);
+      return true;
+    } catch (error) {
+      setCoupon(null);
+      setCouponMessage(error.response?.data?.error || 'Coupon could not be applied');
+      clearAppliedCoupon();
+      return false;
+    }
+  }, [items, clearFlashSaleSelection]);
 
   const totals = useMemo(() => calculateCartTotals(items, {
     coupon,
     flashSaleDiscount: appliedFlashSale?.discount || 0,
+    bundleDiscount: calculateBestBundleTierDiscount(items, bundleOffers, selectedBundleOfferId).discount,
     taxSettings,
     currency: cartCurrency
-  }), [items, coupon, appliedFlashSale, taxSettings, cartCurrency]);
+  }), [items, coupon, appliedFlashSale, taxSettings, cartCurrency, bundleOffers, selectedBundleOfferId]);
+  const bundleDeal = useMemo(
+    () => calculateBestBundleTierDiscount(items, bundleOffers, selectedBundleOfferId),
+    [items, bundleOffers, selectedBundleOfferId]
+  );
+  const nextBundleTier = getNextBundleDiscountTier(
+    bundleOffers,
+    bundleDeal.assetCount,
+    bundleDeal.tier?.discountPercent || 0
+  );
+  const bundleOfferActive = !coupon && !readAppliedCoupon().code && !(appliedFlashSale?.discount > 0);
+  const hasOtherAppliedOffer = Boolean(
+    coupon
+    || (selectedBundleOfferId && bundleDeal.discount > 0)
+    || readAppliedCoupon().code
+  );
 
   const validateCoupon = async (couponCodeToApply = couponCode) => {
     const nextCode = normalizeCouponCode(couponCodeToApply);
-    if (!nextCode) return;
+    if (!nextCode) return false;
     try {
       const token = localStorage.getItem('token');
       const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: nextCode, items }, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const nextCoupon = res.data.coupon || null;
+      manualOfferSelection.current = true;
+      setSelectedBundleOfferId('');
+      writeAppliedBundleOfferId('');
+      clearFlashSaleSelection();
       setCouponCode(nextCode);
       setCoupon(nextCoupon);
       setCouponMessage(res.data.message || 'Coupon applied');
       writeAppliedCoupon(nextCode, nextCoupon);
+      return true;
     } catch (error) {
       setCoupon(null);
       setCouponMessage(error.response?.data?.error || 'Coupon could not be applied');
       clearAppliedCoupon();
+      return false;
     }
   };
 
@@ -336,6 +450,24 @@ export default function CartPage({ darkMode = false }) {
           </section>
         </div>
       )}
+      <CartOffersModal
+        open={showOffersModal}
+        onClose={() => setShowOffersModal(false)}
+        darkMode={darkMode}
+        items={items}
+        coupons={availableCoupons}
+        appliedCoupon={coupon}
+        couponError={availableCouponsError}
+        onApplyCoupon={applyCouponFromOffers}
+        flashSales={availableFlashSales}
+        appliedFlashSale={appliedFlashSale}
+        onApplyFlashSale={applyFlashSaleFromOffers}
+        bundleOffers={bundleOffers}
+        appliedBundleOfferId={bundleOfferActive ? selectedBundleOfferId : ''}
+        bundleApplicationActive={bundleOfferActive}
+        onApplyBundle={applyBundleFromOffers}
+        subscriptionRestricted={subscriptionRestricted}
+      />
       <div style={{ maxWidth: 1280, margin: '0 auto', display: 'grid', gap: 24 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
           <div>
@@ -379,15 +511,29 @@ export default function CartPage({ darkMode = false }) {
           </div>
 
           <div style={{ padding: 24, borderRadius: 24, background: darkMode ? 'rgba(255,255,255,0.05)' : '#fff', border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(226,232,240,1)', position: 'sticky', top: 24 }}>
-            <h2 style={{ marginTop: 0 }}>Order summary</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <h2 style={{ marginTop: 0 }}>Order summary</h2>
+            </div>
             <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Subtotal</span><span>{formatCurrency(totals.subtotal, cartCurrency)}</span></div>
               {totals.discount > 0 && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', color: appliedFlashSale?.discount > 0 ? (darkMode ? '#6ee7b7' : '#047857') : undefined, fontWeight: appliedFlashSale?.discount > 0 ? 700 : undefined }}>
-                  <span>{appliedFlashSale?.discount > 0 ? (coupon ? 'Coupon + Flash Sale' : 'Flash Sale discount') : 'Coupon discount'}</span>
+                  <span>Discounts</span>
                   <span>-{formatCurrency(totals.discount, cartCurrency)}</span>
                 </div>
               )}
+              {bundleOfferActive && bundleDeal.discount > 0 ? (
+                <div style={{ color: darkMode ? '#6ee7b7' : '#047857', fontSize: '0.9rem' }}>
+                  {bundleDeal.offer.name}: {bundleDeal.assetCount} paid assets qualify for {bundleDeal.tier.discountPercent}% off
+                  {" "}(-{formatCurrency(bundleDeal.discount, cartCurrency)})
+                </div>
+              ) : null}
+              {nextBundleTier && (
+                <div style={{ color: darkMode ? '#cbd5e1' : '#64748b', fontSize: '0.9rem' }}>
+                  Add {Math.max(0, nextBundleTier.assetCount - bundleDeal.assetCount)} more paid asset{nextBundleTier.assetCount - bundleDeal.assetCount === 1 ? '' : 's'} to unlock {nextBundleTier.discountPercent}% off.
+                </div>
+              )}
+              {bundleOffersError && <div role="alert" style={{ color: '#DC2626', fontSize: '0.9rem' }}>{bundleOffersError}</div>}
               <div style={{ display: 'grid', gap: 8 }}>
                 {(totals.taxBreakdown || []).map((tax, idx) => (
                   <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.95rem', color: darkMode ? '#cbd5e1' : '#64748b' }}>
@@ -405,13 +551,25 @@ export default function CartPage({ darkMode = false }) {
                 subscriptionRestricted={subscriptionRestricted}
                 darkMode={darkMode}
                 onChange={handleFlashSaleChange}
+                onOffersLoaded={handleFlashSaleOffersLoaded}
+                applySaleRequest={flashSaleApplyRequest}
+                clearSelectionRequest={flashSaleClearRequest}
+                hasOtherAppliedOffer={hasOtherAppliedOffer}
                 variant="cart"
                 currency={cartCurrency}
             />
 
-            {!(appliedFlashSale?.discount > 0) && (
-              <div style={{ marginTop: 16 }}>
-                <label style={{ display: 'block', fontWeight: 700, marginBottom: 8 }}>Coupon</label>
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                <label style={{ fontWeight: 700 }}>Coupon</label>
+                {isLoggedInCustomer && (
+                  <button type="button" onClick={() => setShowOffersModal(true)} style={{ border: 'none', padding: 0, background: 'transparent', color: darkMode ? '#ff8b91' : '#c91d28', cursor: 'pointer', fontWeight: 700 }}>
+                    View all offers
+                  </button>
+                )}
+              </div>
+              {!(appliedFlashSale?.discount > 0) && (
+                <>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <input value={couponCode} onChange={(e) => setCouponCode(e.target.value)} placeholder="WELCOME10" style={{ flex: 1, borderRadius: 12, border: '1px solid #cbd5e1', padding: '10px 12px' }} />
                   {coupon ? (
@@ -453,8 +611,9 @@ export default function CartPage({ darkMode = false }) {
                     })}
                   </div>
                 ) : null}
-              </div>
-            )}
+                </>
+              )}
+            </div>
 
             {subscriptionRestricted && !items.every((item) => item.creditPackage) && <div style={{ marginTop: 16, color: '#b45309', fontWeight: 700 }}>Your active subscription is currently valid. New purchases are available after the download limit is reached or the plan expires.</div>}
             <button disabled={!items.length || loading || (subscriptionRestricted && !items.every((item) => item.creditPackage))} onClick={proceedToCheckout} style={{ width: '100%', marginTop: 18, border: 'none', borderRadius: 16, padding: '14px 16px', background: '#ED2224', color: '#fff', fontWeight: 800, cursor: 'pointer' }}>

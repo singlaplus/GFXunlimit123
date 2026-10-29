@@ -76,7 +76,18 @@ function getIncompleteBogoOffer(items, candidates) {
       - a.eligibleItems.reduce((sum, item) => sum + Number(item.unitPrice ?? item.price ?? 0), 0))[0] || null;
 }
 
-export default function FlashSaleOffer({ items, subscriptionRestricted, darkMode = false, onChange, variant = "default", currency = null }) {
+export default function FlashSaleOffer({
+  items,
+  subscriptionRestricted,
+  darkMode = false,
+  onChange,
+  onOffersLoaded,
+  applySaleRequest,
+  clearSelectionRequest,
+  hasOtherAppliedOffer = false,
+  variant = "default",
+  currency = null
+}) {
   const [sales, setSales] = useState([]);
   const [categories, setCategories] = useState([]);
   const [collections, setCollections] = useState([]);
@@ -87,6 +98,10 @@ export default function FlashSaleOffer({ items, subscriptionRestricted, darkMode
   const previousCartSignature = useRef(getCartSignature(items));
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onOffersLoadedRef = useRef(onOffersLoaded);
+  onOffersLoadedRef.current = onOffersLoaded;
+  const lastApplyRequestId = useRef(null);
+  const lastClearRequestId = useRef(null);
 
   useEffect(() => {
     let active = true;
@@ -134,6 +149,26 @@ export default function FlashSaleOffer({ items, subscriptionRestricted, darkMode
       featured_collection_name: collections.find((collection) => String(collection.id) === String(metadata.featured_collection_id))?.name || ""
     };
   }), [sales, categories, collections]);
+  useEffect(() => {
+    onOffersLoadedRef.current?.(configuredSales);
+  }, [configuredSales]);
+
+  useEffect(() => {
+    if (!applySaleRequest?.requestId || lastApplyRequestId.current === applySaleRequest.requestId) return;
+    if (hasOtherAppliedOffer) return;
+    const requestedSale = candidates.find((sale) => String(sale.id) === String(applySaleRequest.saleId));
+    if (!requestedSale) return;
+    lastApplyRequestId.current = applySaleRequest.requestId;
+    const selection = getBestFlashSaleOffer(items, [requestedSale], null, []);
+    if (!selection) return;
+    setOffer({
+      saleId: requestedSale.id,
+      selectedAssetIds: selection.selected,
+      manuallySelected: true
+    });
+    setIsChoosingAssets(false);
+    setShowEligibilityDialog(false);
+  }, [applySaleRequest?.requestId, applySaleRequest?.saleId, candidates, items, hasOtherAppliedOffer]);
   const selectedSale = configuredSales.find((sale) => String(sale.id) === String(offer.saleId)) || null;
   const eligibleItems = selectedSale ? getFlashSaleEligibleItems(items, selectedSale) : [];
   const requiredAssetCount = selectedSale ? getFlashSaleRequiredAssetCount(selectedSale.discount_rule) : 0;
@@ -165,6 +200,20 @@ export default function FlashSaleOffer({ items, subscriptionRestricted, darkMode
     : null;
 
   useEffect(() => {
+    if (!clearSelectionRequest?.requestId || lastClearRequestId.current === clearSelectionRequest.requestId) return;
+    lastClearRequestId.current = clearSelectionRequest.requestId;
+    setOffer({ dismissedForCartSignature: cartSignature });
+    setIsChoosingAssets(false);
+    setShowEligibilityDialog(false);
+    onChangeRef.current?.(null);
+  }, [clearSelectionRequest?.requestId, cartSignature]);
+
+  useEffect(() => {
+    if (hasOtherAppliedOffer) {
+      if (offer.saleId) setOffer({ dismissedForCartSignature: cartSignature });
+      onChangeRef.current?.(null);
+      return;
+    }
     if (candidates.length === 0 || subscriptionRestricted) {
       onChangeRef.current?.(null);
       return;
@@ -183,7 +232,7 @@ export default function FlashSaleOffer({ items, subscriptionRestricted, darkMode
     } else {
       onChangeRef.current?.(null);
     }
-  }, [candidates, offer, items, selectedAssetIds, cartSignature, subscriptionRestricted, flashSaleDiscount]);
+  }, [candidates, offer, items, selectedAssetIds, cartSignature, subscriptionRestricted, flashSaleDiscount, hasOtherAppliedOffer]);
 
   useEffect(() => {
     const previousSignature = previousCartSignature.current;
@@ -201,7 +250,13 @@ export default function FlashSaleOffer({ items, subscriptionRestricted, darkMode
   }, [offer]);
 
   useEffect(() => {
+    if (hasOtherAppliedOffer) return;
     if (candidates.length === 0 || offer.dismissedForCartSignature === cartSignature) return;
+
+    const requestedSale = applySaleRequest?.requestId
+      ? candidates.find((sale) => String(sale.id) === String(applySaleRequest.saleId))
+      : null;
+    if (requestedSale && getBestFlashSaleOffer(items, [requestedSale], null, [])) return;
 
     const bestOffer = getBestFlashSaleOffer(items, candidates, selectedSale, selectedAssetIds);
 
@@ -212,12 +267,12 @@ export default function FlashSaleOffer({ items, subscriptionRestricted, darkMode
       && selectedAssetIds.some((id) => !items.some((item) => String(item.id) === id));
     if (removedSelectedAsset) return;
 
-    if (String(bestOffer.sale.id) !== String(selectedSale?.id)) {
+    if (!offer.manuallySelected && String(bestOffer.sale.id) !== String(selectedSale?.id)) {
       setOffer({ saleId: bestOffer.sale.id, selectedAssetIds: bestOffer.selected });
-    } else if (selectedAssetIds.length === 0 && bestOffer.selected.length > 0) {
+    } else if (!offer.manuallySelected && selectedAssetIds.length === 0 && bestOffer.selected.length > 0) {
       setOffer((current) => ({ ...current, selectedAssetIds: bestOffer.selected }));
     }
-  }, [candidates, selectedSale, selectedAssetIds, items, offer.dismissedForCartSignature, cartSignature]);
+  }, [candidates, selectedSale, selectedAssetIds, items, offer.dismissedForCartSignature, offer.manuallySelected, applySaleRequest, cartSignature, hasOtherAppliedOffer]);
 
   const updateSelection = (nextIds) => {
     setOffer((current) => ({ ...current, selectedAssetIds: nextIds.map(String) }));

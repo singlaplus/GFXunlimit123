@@ -99,6 +99,26 @@ describe("FlashSaleOffer", () => {
     expect(screen.getByLabelText("Flash Sale")).toHaveClass("flash-sale-cart-card");
   });
 
+  it("does not automatically apply a Flash Sale when another offer is selected", async () => {
+    const onChange = jest.fn();
+    render(
+      <FlashSaleOffer
+        items={[
+          { id: 1, title: "Asset One", unitPrice: 100 }
+        ]}
+        subscriptionRestricted={false}
+        onChange={onChange}
+        hasOtherAppliedOffer
+        variant="cart"
+      />
+    );
+
+    expect(await screen.findByText(/Flash Sale BOG2 available/)).toBeInTheDocument();
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(null));
+    expect(screen.queryByText("Flash Sale BOGO applied")).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("appliedFlashSale"))).not.toHaveProperty("saleId");
+  });
+
   it("uses premium styling when the selected BOGO assets no longer match the cart", async () => {
     const items = [
       { id: 1, title: "Asset One", unitPrice: 100 },

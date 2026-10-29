@@ -43,6 +43,18 @@ export function clearAppliedCoupon() {
   localStorage.removeItem('appliedCoupon');
 }
 
+export function readAppliedBundleOfferId() {
+  return localStorage.getItem('appliedBundleOfferId') || '';
+}
+
+export function writeAppliedBundleOfferId(offerId = '') {
+  if (!offerId) {
+    localStorage.removeItem('appliedBundleOfferId');
+    return;
+  }
+  localStorage.setItem('appliedBundleOfferId', String(offerId));
+}
+
 export function normalizeCartItem(item) {
   const unitPrice = Number(item?.unitPrice ?? item?.price ?? 0);
   const quantity = Math.max(1, Number(item?.quantity ?? 1) || 1);
@@ -92,6 +104,118 @@ export function getFlashSaleRequiredAssetCount(discountRule = '') {
   if (rule === 'BOG3') return 4;
   if (rule === 'BOG5') return 6;
   return 0;
+}
+
+function getBundleDiscountTiers(offer) {
+  let metadata = offer?.metadata;
+  if (typeof metadata === 'string') {
+    try {
+      metadata = JSON.parse(metadata);
+    } catch (error) {
+      console.error('Invalid bundle discount metadata', error);
+      return [];
+    }
+  }
+  const tiers = Array.isArray(metadata?.discount_tiers) ? metadata.discount_tiers : [];
+  return tiers
+    .map((tier) => ({
+      assetCount: Number(tier?.asset_count),
+      discountPercent: Number(tier?.discount_percent),
+    }))
+    .filter((tier) => Number.isInteger(tier.assetCount) && tier.assetCount > 0
+      && Number.isFinite(tier.discountPercent) && tier.discountPercent > 0 && tier.discountPercent <= 100)
+    .sort((left, right) => left.assetCount - right.assetCount);
+}
+
+function getBundleDiscountMetadata(offer) {
+  if (typeof offer?.metadata === 'string') {
+    try {
+      return JSON.parse(offer.metadata);
+    } catch (error) {
+      console.error('Invalid bundle discount metadata', error);
+      return {};
+    }
+  }
+  return offer?.metadata && typeof offer.metadata === 'object' ? offer.metadata : {};
+}
+
+function getISTDateString(date = new Date()) {
+  const dateParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const partValues = Object.fromEntries(dateParts.map(({ type, value }) => [type, value]));
+  return `${partValues.year}-${partValues.month}-${partValues.day}`;
+}
+
+function isValidISODate(value) {
+  return typeof value === 'string'
+    && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    && !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`))
+    && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
+}
+
+export function isBundleDiscountOfferActive(offer, today = getISTDateString()) {
+  if (String(offer?.status || '').trim().toLowerCase() !== 'active') return false;
+  const { start_date: startDate, end_date: endDate } = getBundleDiscountMetadata(offer);
+  return isValidISODate(startDate)
+    && (!endDate || (isValidISODate(endDate) && endDate >= startDate))
+    && startDate <= today
+    && (!endDate || endDate >= today);
+}
+
+export function getNextBundleDiscountTier(offers = [], assetCount = 0, currentDiscountPercent = 0) {
+  return (Array.isArray(offers) ? offers : [])
+    .filter((offer) => isBundleDiscountOfferActive(offer))
+    .flatMap((offer) => getBundleDiscountTiers(offer)
+      .filter((tier) => tier.assetCount > assetCount && tier.discountPercent > currentDiscountPercent)
+      .map((tier) => ({ ...tier, offer })))
+    .sort((left, right) => left.assetCount - right.assetCount
+      || right.discountPercent - left.discountPercent)[0] || null;
+}
+
+export function calculateBestBundleTierDiscount(items = [], offers = [], selectedOfferId = '') {
+  const cartItems = Array.isArray(items) ? items : [];
+  if (cartItems.some((item) => item?.subscription)) {
+    return { offer: null, assetCount: 0, tier: null, discount: 0 };
+  }
+  const eligibleItems = cartItems.filter((item) => (
+    item
+    && !item.creditPackage
+    && !item.subscription
+    && !item.freeAsset
+    && !item.isFree
+    && item.id != null
+    && Number(item.unitPrice ?? item.price ?? 0) > 0
+  ));
+  const assetCount = new Set(eligibleItems.map((item) => String(item.id))).size;
+  const eligibleSubtotal = eligibleItems.reduce(
+    (sum, item) => sum + Number(item.unitPrice ?? item.price ?? 0) * Math.max(1, Number(item.quantity || 1)),
+    0
+  );
+  const candidates = (Array.isArray(offers) ? offers : [])
+    .filter((offer) => isBundleDiscountOfferActive(offer))
+    .map((offer) => {
+      const qualifyingTiers = getBundleDiscountTiers(offer)
+        .filter((candidate) => candidate.assetCount <= assetCount);
+      const tier = qualifyingTiers[qualifyingTiers.length - 1];
+      if (!tier || eligibleSubtotal <= 0) return null;
+      return {
+        offer,
+        assetCount,
+        tier,
+        discount: Number((eligibleSubtotal * tier.discountPercent / 100).toFixed(2)),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.discount - left.discount);
+
+  const selectedCandidate = selectedOfferId
+    ? candidates.find((candidate) => String(candidate.offer.id) === String(selectedOfferId))
+    : null;
+  return selectedCandidate || candidates[0] || { offer: null, assetCount, tier: null, discount: 0 };
 }
 
 export function getFlashSaleEligibleItems(items = [], flashSale = {}) {
@@ -171,20 +295,27 @@ export function calculateCartTotals(items = [], options = {}) {
   const subtotal = normalizedItems.reduce((sum, item) => sum + item.lineTotal, 0);
   const coupon = options.coupon || null;
   const flashSaleDiscount = Math.max(0, Number(options.flashSaleDiscount || 0));
+  const bundleDiscount = Math.max(0, Number(options.bundleDiscount || 0));
   const taxSettings = Array.isArray(options.taxSettings) ? options.taxSettings.map(normalizeTaxSetting) : [];
   const currency = options.currency || 'USD';
 
-  let discount = 0;
+  let couponDiscount = 0;
   if (coupon) {
     const discountType = normalizeCouponDiscountType(coupon.discountType ?? coupon.discount_type);
     if (discountType === 'percentage') {
-      discount = subtotal * (Number(coupon.discountValue || 0) / 100);
+      couponDiscount = subtotal * (Number(coupon.discountValue || 0) / 100);
     } else if (discountType === 'flat') {
-      discount = Math.min(subtotal, Number(coupon.discountValue || 0));
+      couponDiscount = Math.min(subtotal, Number(coupon.discountValue || 0));
     }
   }
 
-  discount = Math.min(subtotal, Number((discount + flashSaleDiscount).toFixed(2)));
+  const discount = Math.min(subtotal, Number((
+    coupon
+      ? couponDiscount
+      : flashSaleDiscount > 0
+        ? flashSaleDiscount
+        : bundleDiscount
+  ).toFixed(2)));
   const taxableSubtotal = Math.max(0, subtotal - discount);
   const shouldZeroTaxes = taxableSubtotal <= 0;
 
