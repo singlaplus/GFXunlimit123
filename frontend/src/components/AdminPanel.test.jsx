@@ -935,7 +935,7 @@ describe("AdminPanel collection controls", () => {
     useLocation.mockReturnValue({ search: "?tab=controls_database" });
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/database/location")) {
-        return Promise.resolve({ data: { connected: true, databaseName: "stocksite", host: "localhost", port: 5432, databasePath: "F:\\GFXunlimitDatabase", dataDirectory: "F:\\GFXunlimitDatabase", dataDirectorySizeBytes: 1024 * 1024 * 1024, dataDirectoryFreeBytes: 20 * 1024 * 1024 * 1024, databaseBackupFolder: "/Users/gfxunlimit/Documents/stocksite/Database", databaseBackupFolderSizeBytes: 5 * 1024 * 1024, databaseBackupFolderFreeBytes: 20 * 1024 * 1024 * 1024 } });
+        return Promise.resolve({ data: { connected: true, databaseName: "stocksite", host: "localhost", port: 5432, databasePath: "F:\\GFXunlimitDatabase", dataDirectory: "F:\\GFXunlimitDatabase", dataDirectoryExists: true, databaseBackupFolderExists: true, dataDirectorySizeBytes: 1024 * 1024 * 1024, dataDirectoryFreeBytes: 20 * 1024 * 1024 * 1024, databaseBackupFolder: "/Users/gfxunlimit/Documents/stocksite/Database", databaseBackupFolderSizeBytes: 5 * 1024 * 1024, databaseBackupFolderFreeBytes: 20 * 1024 * 1024 * 1024 } });
       }
       return Promise.resolve({ data: [] });
     });
@@ -964,11 +964,16 @@ describe("AdminPanel collection controls", () => {
           databaseName: "stocksite",
           host: "db.example.com",
           port: 5432,
-          databasePath: "",
-          dataDirectory: "",
+          databasePath: "D:\\GFXunlimitDatabase",
+          dataDirectory: "D:\\GFXunlimitDatabase",
+          databasePathSource: "configured",
+          dataDirectoryExists: false,
+          dataDirectorySizeBytes: 0,
+          dataDirectoryFreeBytes: 4096,
           databasePathError: "Database server does not expose its data directory to this application.",
+          databaseBackupFolderExists: false,
           databaseBackupFolder: "/app/Database",
-          databaseBackupFolderSizeBytes: 1024,
+          databaseBackupFolderSizeBytes: 0,
           databaseBackupFolderFreeBytes: 2048
         } });
       }
@@ -985,10 +990,14 @@ describe("AdminPanel collection controls", () => {
 
     expect(await screen.findByText("Connected")).toBeInTheDocument();
     expect(screen.getByText("Database: stocksite")).toBeInTheDocument();
-    expect(screen.getByText("Database server does not expose its data directory to this application.")).toBeInTheDocument();
+    expect(screen.getByText("D:\\GFXunlimitDatabase")).toBeInTheDocument();
+    expect(screen.getByText("Database data directory (configured fallback)")).toBeInTheDocument();
     expect(screen.getByText("/app/Database")).toBeInTheDocument();
-    expect(screen.getByText(/Folder size:/)).toHaveTextContent("1 KB");
-    expect(screen.getByText(/Folder size:/)).toHaveTextContent("2 KB");
+    const folderMetrics = screen.getAllByText(/Folder size:/);
+    expect(folderMetrics[0]).toHaveTextContent("0 KB (directory not found)");
+    expect(folderMetrics[0]).toHaveTextContent("4 KB");
+    expect(folderMetrics[1]).toHaveTextContent("0 KB (folder not created)");
+    expect(folderMetrics[1]).toHaveTextContent("2 KB");
   });
 
   it("opens the controls tax forms tab with the controls_taxforms route", async () => {

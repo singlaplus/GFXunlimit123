@@ -482,7 +482,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [databaseHost, setDatabaseHost] = useState("");
   const [databasePort, setDatabasePort] = useState(null);
   const [databaseDataDirectory, setDatabaseDataDirectory] = useState("");
+  const [databaseDataDirectoryExists, setDatabaseDataDirectoryExists] = useState(false);
+  const [databaseDataDirectorySource, setDatabaseDataDirectorySource] = useState("postgres");
   const [databaseBackupFolder, setDatabaseBackupFolder] = useState("");
+  const [databaseBackupFolderExists, setDatabaseBackupFolderExists] = useState(false);
   const [databaseDataDirectorySizeBytes, setDatabaseDataDirectorySizeBytes] = useState(null);
   const [databaseDataDirectoryFreeBytes, setDatabaseDataDirectoryFreeBytes] = useState(null);
   const [databaseBackupFolderSizeBytes, setDatabaseBackupFolderSizeBytes] = useState(null);
@@ -1312,7 +1315,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       setDatabaseHost(resolvedHost);
       setDatabasePort(resolvedPort);
       setDatabaseDataDirectory(resolvedDatabasePath);
+      setDatabaseDataDirectoryExists(response.data?.dataDirectoryExists === true);
+      setDatabaseDataDirectorySource(response.data?.databasePathSource || "postgres");
       setDatabaseBackupFolder(String(response.data?.databaseBackupFolder || ""));
+      setDatabaseBackupFolderExists(response.data?.databaseBackupFolderExists === true);
       setDatabaseDataDirectorySizeBytes(typeof response.data?.dataDirectorySizeBytes === "number" ? response.data.dataDirectorySizeBytes : null);
       setDatabaseDataDirectoryFreeBytes(typeof response.data?.dataDirectoryFreeBytes === "number" ? response.data.dataDirectoryFreeBytes : null);
       setDatabaseBackupFolderSizeBytes(typeof response.data?.databaseBackupFolderSizeBytes === "number" ? response.data.databaseBackupFolderSizeBytes : null);
@@ -1335,7 +1341,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       setDatabaseHost("");
       setDatabasePort(null);
       setDatabaseDataDirectory("");
+      setDatabaseDataDirectoryExists(false);
+      setDatabaseDataDirectorySource("unavailable");
       setDatabaseBackupFolder("");
+      setDatabaseBackupFolderExists(false);
       setDatabaseDataDirectorySizeBytes(null);
       setDatabaseDataDirectoryFreeBytes(null);
       setDatabaseBackupFolderSizeBytes(null);
@@ -6892,13 +6901,13 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         <span style={{ display: "block", marginBottom: "4px" }}>Database: {databaseName || "Unknown"}</span>
                         {databaseHost ? <span style={{ display: "block", marginBottom: "4px" }}>Host: {databaseHost}</span> : null}
                         {typeof databasePort === "number" ? <span style={{ display: "block", marginBottom: "4px" }}>Port: {databasePort}</span> : null}
-                        <strong style={{ display: "block", margin: "10px 0 4px" }}>Database data directory</strong>
+                        <strong style={{ display: "block", margin: "10px 0 4px" }}>Database data directory{databaseDataDirectorySource === "configured" ? " (configured fallback)" : ""}</strong>
                         {databaseDataDirectory
-                          ? <><span style={{ display: "block", marginBottom: "4px" }}>{databaseDataDirectory}</span><span style={{ display: "block", marginBottom: "12px" }}>Folder size: {typeof databaseDataDirectorySizeBytes === "number" ? formatFileSize(databaseDataDirectorySizeBytes) : "Unavailable"} · Drive free space: {typeof databaseDataDirectoryFreeBytes === "number" ? formatFileSize(databaseDataDirectoryFreeBytes) : "Unavailable"}</span></>
+                          ? <><span style={{ display: "block", marginBottom: "4px" }}>{databaseDataDirectory}</span><span style={{ display: "block", marginBottom: "12px" }}>Folder size: {databaseDataDirectoryExists ? (typeof databaseDataDirectorySizeBytes === "number" ? formatFileSize(databaseDataDirectorySizeBytes) : "Unavailable") : "0 KB (directory not found)"} · Drive free space: {typeof databaseDataDirectoryFreeBytes === "number" ? formatFileSize(databaseDataDirectoryFreeBytes) : "Unavailable"}</span></>
                           : <span style={{ display: "block", marginBottom: "12px" }} role="status">{databaseDataDirectoryError || "Database server does not expose its data directory to this application."}</span>}
                         <strong style={{ display: "block", marginBottom: "4px" }}>Database backup folder</strong>
                         <span style={{ display: "block", marginBottom: "4px" }}>{databaseBackupFolder || "Unavailable"}</span>
-                        <span style={{ display: "block" }}>Folder size: {typeof databaseBackupFolderSizeBytes === "number" ? formatFileSize(databaseBackupFolderSizeBytes) : "Unavailable"} · Drive free space: {typeof databaseBackupFolderFreeBytes === "number" ? formatFileSize(databaseBackupFolderFreeBytes) : "Unavailable"}</span>
+                        <span style={{ display: "block" }}>Folder size: {databaseBackupFolderExists ? (typeof databaseBackupFolderSizeBytes === "number" ? formatFileSize(databaseBackupFolderSizeBytes) : "Unavailable") : "0 KB (folder not created)"} · Drive free space: {typeof databaseBackupFolderFreeBytes === "number" ? formatFileSize(databaseBackupFolderFreeBytes) : "Unavailable"}</span>
                       </>
                     )}
                 </div>

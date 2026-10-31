@@ -89,6 +89,7 @@ const adminThumbnailRoutes = require("./routes/admin-thumbnail-routes");
 const restoreRoutes = require("./routes/restore-routes");
 const { createBackupRouter } = require("./routes/backup-routes");
 const { createAdminVerifier } = require("./middleware/createAdminVerifier");
+const { getDirectoryStorageStats } = require("./services/directoryStorageStats");
 const {
   getAssetServerHttpOrigin,
   getCorsAllowedOrigins,
@@ -3277,46 +3278,6 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
   const databasePort = Number(process.env.DB_PORT || 5432);
   const databaseBackupFolder = path.resolve(__dirname, "..", "Database");
 
-  const getStorageStats = (directoryPath) => {
-    let folderSizeBytes = null;
-    try {
-      if (fs.existsSync(directoryPath) && fs.statSync(directoryPath).isDirectory()) {
-        folderSizeBytes = 0;
-        const pendingDirectories = [directoryPath];
-        while (pendingDirectories.length > 0) {
-          const currentDirectory = pendingDirectories.pop();
-          let entries = [];
-          try {
-            entries = fs.readdirSync(currentDirectory, { withFileTypes: true });
-          } catch (error) {
-            folderSizeBytes = null;
-            continue;
-          }
-          for (const entry of entries) {
-            try {
-              const entryPath = path.join(currentDirectory, entry.name);
-              if (entry.isDirectory()) pendingDirectories.push(entryPath);
-              else if (entry.isFile()) folderSizeBytes += fs.statSync(entryPath).size;
-            } catch (error) {
-              folderSizeBytes = null;
-            }
-          }
-        }
-      }
-    } catch (error) {
-      folderSizeBytes = null;
-    }
-    let driveFreeBytes = null;
-    try {
-      const driveStats = fs.statfsSync(directoryPath);
-      const blockSize = Number(driveStats.bsize || 0);
-      driveFreeBytes = blockSize * Number(driveStats.bavail || 0);
-    } catch (error) {
-      driveFreeBytes = null;
-    }
-    return { folderSizeBytes, driveFreeBytes };
-  };
-
   try {
     const result = await pool.query(`
       SELECT
@@ -3328,6 +3289,7 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
     const configuredPort = Number(result.rows[0]?.port || databasePort || 5432);
     let resolvedDatabasePath = "";
     let databasePathError = "";
+    let databasePathSource = "postgres";
     try {
       const pathResult = await pool.query(
         "SELECT current_setting('data_directory', true) AS data_directory"
@@ -3337,14 +3299,26 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
         databasePathError = "Database server did not provide its data directory.";
       }
     } catch (error) {
-      databasePathError = "Database server does not expose its data directory to this application.";
+      databasePathError = "PostgreSQL did not expose its data directory; showing the configured path when available.";
       console.warn("Database is connected, but its server data directory is unavailable:", error.message || error);
     }
 
-    const dataDirectoryStats = resolvedDatabasePath
-      ? getStorageStats(resolvedDatabasePath)
-      : { folderSizeBytes: null, driveFreeBytes: null };
-    const databaseBackupFolderStats = getStorageStats(databaseBackupFolder);
+    if (!resolvedDatabasePath) {
+      resolvedDatabasePath = String(
+        process.env.POSTGRES_DATA_DIRECTORY ||
+        process.env.PGDATA ||
+        (process.platform === "win32" ? "D:\\GFXunlimitDatabase" : "")
+      ).trim();
+      if (resolvedDatabasePath) databasePathSource = "configured";
+    }
+
+    const [dataDirectoryStats, databaseBackupFolderStats] = await Promise.all([
+      getDirectoryStorageStats(resolvedDatabasePath),
+      getDirectoryStorageStats(databaseBackupFolder)
+    ]);
+    if (!resolvedDatabasePath && !databasePathError) {
+      databasePathError = "Database server did not provide its data directory, and no configured path is available.";
+    }
 
     return res.json({
       connected: true,
@@ -3354,10 +3328,12 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
       databasePath: resolvedDatabasePath,
       dataDirectory: resolvedDatabasePath,
       databasePathError,
+      databasePathSource,
+      dataDirectoryExists: dataDirectoryStats.directoryExists,
       dataDirectorySizeBytes: dataDirectoryStats.folderSizeBytes,
       dataDirectoryFreeBytes: dataDirectoryStats.driveFreeBytes,
       databaseBackupFolder,
-      databaseBackupFolderExists: fs.existsSync(databaseBackupFolder),
+      databaseBackupFolderExists: databaseBackupFolderStats.directoryExists,
       databaseBackupFolderSizeBytes: databaseBackupFolderStats.folderSizeBytes,
       databaseBackupFolderFreeBytes: databaseBackupFolderStats.driveFreeBytes,
     });
@@ -3371,6 +3347,8 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
       databasePath: "",
       dataDirectory: "",
       databasePathError: "Unable to connect to the database.",
+      databasePathSource: "unavailable",
+      dataDirectoryExists: false,
       databaseBackupFolder,
       databaseBackupFolderExists: fs.existsSync(databaseBackupFolder),
       databaseBackupFolderSizeBytes: null,
