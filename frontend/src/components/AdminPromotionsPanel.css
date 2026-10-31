@@ -583,6 +583,652 @@
   justify-self: start;
 }
 
+.promotions-newsletter-form .promotions-newsletter-email-field,
+.promotions-newsletter-form .promotions-newsletter-body-field,
+.promotions-newsletter-form .promotions-newsletter-actions {
+  grid-column: 1 / -1;
+}
+
+.promotions-newsletter-form .promotions-newsletter-recipients,
+.promotions-newsletter-form .promotions-newsletter-body {
+  grid-column: auto;
+  min-height: 120px;
+}
+
+.promotions-newsletter-body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 12px 0;
+}
+
+.promotions-newsletter-form .promotions-newsletter-body {
+  min-height: 200px;
+}
+
+.promotions-newsletter-filter {
+  position: relative;
+  display: inline-flex;
+  min-width: 154px;
+  align-items: center;
+  border: 1px solid #dfe4ed;
+  border-radius: 11px;
+  background:
+    radial-gradient(ellipse at 0 0, rgba(217, 33, 43, 0.06), transparent 70%),
+    linear-gradient(145deg, #fff, #f8f9fc);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.055), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.promotions-newsletter-filter:hover,
+.promotions-newsletter-filter:focus-within {
+  transform: translateY(-1px);
+  border-color: rgba(217, 33, 43, 0.38);
+  box-shadow: 0 7px 17px rgba(15, 23, 42, 0.09), 0 0 0 3px rgba(217, 33, 43, 0.07);
+}
+
+.promotions-newsletter-filter select {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 36px 0 13px;
+  appearance: none;
+  border: 0;
+  border-radius: inherit;
+  outline: 0;
+  background: transparent;
+  color: var(--promotions-ink);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.promotions-newsletter-filter-chevron {
+  position: absolute;
+  right: 12px;
+  color: var(--promotions-accent);
+  font-size: 1rem;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+.promotions-newsletter-form .promotions-newsletter-cancel-edit {
+  border-color: var(--promotions-line);
+  background: var(--promotions-soft);
+  box-shadow: none;
+  color: var(--promotions-ink);
+}
+
+.promotions-newsletter-form .promotions-newsletter-cancel-edit:hover {
+  border-color: rgba(217, 33, 43, 0.3);
+  background: rgba(217, 33, 43, 0.07);
+  box-shadow: none;
+  color: var(--promotions-accent);
+}
+
+.promotions-newsletter-edit-button {
+  color: var(--promotions-accent) !important;
+}
+
+.promotions-inline-actions .promotions-newsletter-delete-button {
+  color: #b4232c;
+}
+
+.dark-mode .promotions-newsletter-filter {
+  border-color: var(--promotions-line);
+  background:
+    radial-gradient(ellipse at 0 0, rgba(217, 33, 43, 0.13), transparent 70%),
+    linear-gradient(145deg, #1a2433, #121b29);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.dark-mode .promotions-newsletter-filter select {
+  color: var(--promotions-ink);
+}
+
+.dark-mode .promotions-newsletter-form .promotions-newsletter-cancel-edit {
+  border-color: var(--promotions-line);
+  background: #1a2433;
+  color: #dbe3ef;
+}
+
+#newsletter-body-label {
+  color: var(--promotions-ink);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.promotions-newsletter-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid #e1e6ef;
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: #f9fafc;
+}
+
+.promotions-newsletter-toolbar button,
+.promotions-newsletter-toolbar-select select {
+  width: auto;
+  min-width: 38px;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid #e1e6ef;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--promotions-ink);
+  font-size: 0.75rem;
+}
+
+.promotions-newsletter-toolbar-select select {
+  min-width: 98px;
+}
+
+.promotions-newsletter-toolbar button {
+  cursor: pointer;
+}
+
+.promotions-newsletter-toolbar button svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.promotions-newsletter-toolbar button:hover,
+.promotions-newsletter-toolbar-select select:focus {
+  border-color: var(--promotions-accent);
+}
+
+.promotions-newsletter-link-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e1e6ef;
+  border-radius: 0 0 10px 10px;
+  background: #fff;
+}
+
+.promotions-newsletter-link-editor label {
+  color: var(--promotions-ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.promotions-newsletter-link-editor input {
+  flex: 1 1 220px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #e1e6ef;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--promotions-ink);
+  font-size: 0.75rem;
+}
+
+.promotions-newsletter-link-editor button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--promotions-accent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.promotions-newsletter-link-editor .promotions-newsletter-link-cancel {
+  border: 1px solid #e1e6ef;
+  background: #fff;
+  color: var(--promotions-ink);
+}
+
+.promotions-newsletter-underline {
+  text-decoration: underline;
+}
+
+.promotions-newsletter-color {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--promotions-muted);
+  font-size: 0.72rem;
+}
+
+.promotions-newsletter-toolbar .promotions-newsletter-color input[type="color"] {
+  width: 34px;
+  min-width: 34px;
+  height: 32px;
+  min-height: 32px;
+  padding: 3px;
+  cursor: pointer;
+}
+
+.promotions-newsletter-form .promotions-newsletter-body {
+  width: 100%;
+  min-height: 200px;
+  padding: 12px 13px;
+  border: 1px solid #e1e6ef;
+  border-radius: 0 0 10px 10px;
+  background: #fff;
+  color: var(--promotions-ink);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.promotions-newsletter-body:empty::before {
+  color: #929bac;
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.promotions-newsletter-body:focus {
+  border-color: var(--promotions-accent);
+  outline: 2px solid rgba(217, 33, 43, 0.12);
+}
+
+.promotions-newsletter-body a {
+  color: #0563c1 !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.promotions-newsletter-attachment-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.promotions-newsletter-upload-card {
+  position: relative;
+  display: flex;
+  min-height: 84px;
+  align-items: center;
+  gap: 13px;
+  padding: 14px 16px;
+  overflow: hidden;
+  border: 1px dashed #cbd2df;
+  border-radius: 12px;
+  background:
+    radial-gradient(ellipse at 0 0, rgba(217, 33, 43, 0.045), transparent 55%),
+    linear-gradient(135deg, #fff, #fafbfe);
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+}
+
+.promotions-newsletter-upload-card:hover,
+.promotions-newsletter-upload-card:focus-within {
+  border-color: var(--promotions-accent);
+  background:
+    radial-gradient(ellipse at 0 0, rgba(217, 33, 43, 0.075), transparent 58%),
+    #fff;
+  box-shadow: 0 0 0 3px rgba(217, 33, 43, 0.07);
+}
+
+.promotions-newsletter-upload-icon {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(217, 33, 43, 0.13);
+  border-radius: 12px;
+  background: linear-gradient(145deg, #fff5f4, #ffe9e7);
+  color: var(--promotions-accent);
+}
+
+.promotions-newsletter-upload-icon svg {
+  width: 21px;
+  height: 21px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.promotions-newsletter-upload-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  color: var(--promotions-muted);
+  font-size: 0.75rem;
+}
+
+.promotions-newsletter-upload-copy strong {
+  color: var(--promotions-ink);
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.promotions-newsletter-browse {
+  color: var(--promotions-accent);
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.promotions-newsletter-upload-limit {
+  margin-left: auto;
+  color: #788296;
+  font-size: 0.68rem;
+}
+
+.promotions-newsletter-upload-card input[type="file"] {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.promotions-newsletter-upload-card input[type="file"]:disabled {
+  cursor: not-allowed;
+}
+
+.promotions-newsletter-upload-help {
+  color: var(--promotions-muted);
+  font-size: 0.68rem;
+}
+
+.promotions-newsletter-attachment-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.promotions-newsletter-attachment-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #e1e6ef;
+  border-radius: 8px;
+  color: var(--promotions-ink);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+.promotions-newsletter-attachment-list button {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--promotions-accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+@media (max-width: 540px) {
+  .promotions-newsletter-upload-card {
+    align-items: flex-start;
+    padding: 12px;
+  }
+
+  .promotions-newsletter-upload-limit {
+    display: none;
+  }
+}
+
+.promotions-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.promotions-newsletter-picker {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #e1e6ef;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.promotions-newsletter-audience-dialog {
+  display: grid;
+  width: min(460px, 100%);
+  gap: 22px;
+  padding: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 22px;
+  background:
+    radial-gradient(ellipse at 100% 0, rgba(217, 33, 43, 0.08), transparent 42%),
+    var(--promotions-panel);
+  box-shadow: 0 32px 90px rgba(11, 18, 32, 0.3), 0 4px 14px rgba(11, 18, 32, 0.08);
+  animation: newsletter-dialog-enter 180ms ease-out both;
+}
+
+.promotions-newsletter-dialog-heading {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.promotions-newsletter-dialog-mark {
+  display: grid;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border: 1px solid rgba(217, 33, 43, 0.15);
+  border-radius: 15px;
+  background: linear-gradient(145deg, #fff4f3, #ffe5e2);
+  color: var(--promotions-accent);
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.promotions-newsletter-dialog-eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--promotions-accent);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.promotions-newsletter-dialog-heading h3 {
+  margin: 0 0 4px;
+  color: var(--promotions-ink);
+  font-size: 1.15rem;
+  letter-spacing: -0.035em;
+}
+
+.promotions-newsletter-dialog-heading p {
+  margin: 0;
+  color: var(--promotions-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.promotions-newsletter-audience-dialog .promotions-field-group {
+  gap: 8px;
+}
+
+.promotions-newsletter-audience-dialog select {
+  width: 100%;
+  min-height: 50px;
+  padding: 0 15px;
+  border: 1px solid #dfe4ed;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--promotions-ink);
+  font-size: 0.84rem;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.035);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.promotions-newsletter-audience-dialog select:focus {
+  border-color: var(--promotions-accent);
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(217, 33, 43, 0.1);
+}
+
+.promotions-newsletter-audience-submit {
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 17px;
+  border: 0;
+  border-radius: 12px;
+  background: linear-gradient(110deg, #d9212b, #b91827);
+  box-shadow: 0 8px 18px rgba(217, 33, 43, 0.2);
+  color: #fff;
+  font-size: 0.84rem;
+  font-weight: 750;
+  transition: transform 150ms ease, box-shadow 150ms ease, filter 150ms ease;
+}
+
+.promotions-newsletter-audience-submit:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 11px 22px rgba(217, 33, 43, 0.27);
+  filter: saturate(1.08);
+}
+
+.promotions-newsletter-audience-submit span:last-child {
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+@keyframes newsletter-dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 480px) {
+  .promotions-newsletter-audience-dialog {
+    padding: 22px;
+    border-radius: 18px;
+  }
+}
+
+.promotions-newsletter-search {
+  display: flex;
+  gap: 8px;
+}
+
+.promotions-newsletter-search input {
+  flex: 1;
+  min-width: 0;
+}
+
+.promotions-newsletter-search-progress {
+  display: grid;
+  gap: 7px;
+  color: var(--promotions-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.promotions-newsletter-search-progress progress {
+  display: block;
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: #e9edf3;
+  color: var(--promotions-accent);
+}
+
+.promotions-newsletter-search-progress progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: #e9edf3;
+}
+
+.promotions-newsletter-search-progress progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f0797e, var(--promotions-accent));
+}
+
+.promotions-newsletter-search-progress progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f0797e, var(--promotions-accent));
+}
+
+.promotions-newsletter-results {
+  display: grid;
+  max-height: 240px;
+  overflow: auto;
+  gap: 4px;
+}
+
+.promotions-newsletter-recipient {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.promotions-newsletter-recipient:hover {
+  background: var(--promotions-soft);
+}
+
+.promotions-form-grid .promotions-newsletter-recipient input {
+  width: auto;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  margin-top: 3px;
+}
+
+.promotions-newsletter-recipient > span {
+  display: grid;
+  gap: 3px;
+}
+
+.promotions-newsletter-recipient > span > span,
+.promotions-newsletter-error {
+  color: #647084;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.promotions-newsletter-error {
+  color: #b42318;
+}
+
+.promotions-newsletter-form .promotions-newsletter-actions {
+  justify-self: start;
+}
+
 .promotions-form-grid input,
 .promotions-form-grid select,
 .promotions-form-grid textarea {

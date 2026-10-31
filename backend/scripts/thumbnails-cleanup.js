@@ -12,12 +12,14 @@ const {
   planOrphanThumbnailFiles,
   pool,
 } = require('./thumbnail-cli-utils');
+const { NEWSLETTER_ATTACHMENT_FOLDER } = require('../services/promotionNewsletters');
 
 async function listStorageEntries(directory, prefix = '') {
   const entries = await fs.readdir(directory, { withFileTypes: true });
   const files = [];
   const unexpected = [];
   for (const entry of entries) {
+    if (prefix === '' && entry.isDirectory() && entry.name === NEWSLETTER_ATTACHMENT_FOLDER) continue;
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory() && !entry.isSymbolicLink()) {
       const depth = prefix ? prefix.split('/').length : 0;

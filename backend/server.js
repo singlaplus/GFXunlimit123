@@ -22,6 +22,16 @@ const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { registerOrderRoutes } = require("./orders");
 const { registerContributorOfferBenefitRoutes } = require("./routes/contributor-offer-benefit");
 const {
+  NEWSLETTER_AUDIENCES,
+  NEWSLETTER_ATTACHMENT_FOLDER,
+  getNewsletterAttachmentContentType,
+  findNewsletterRecipients,
+  isNewsletterAttachmentFilename,
+  normalizeRecipientEmails,
+  processDuePromotionNewsletters,
+  queueNewsletterCampaign,
+} = require("./services/promotionNewsletters");
+const {
   calculateBestBundleTierDiscount,
   isBundleOfferDateActive,
   validateBundleDiscountSchedule,
@@ -125,8 +135,23 @@ const BLOG_HTML_OPTIONS = {
   disallowedTagsMode: "discard"
 };
 
+const NEWSLETTER_HTML_OPTIONS = {
+  ...BLOG_HTML_OPTIONS,
+  allowedSchemesByTag: {
+    img: [...BLOG_HTML_OPTIONS.allowedSchemes, "cid"]
+  },
+  allowedTags: [...BLOG_HTML_OPTIONS.allowedTags, "font"],
+  allowedAttributes: {
+    ...BLOG_HTML_OPTIONS.allowedAttributes,
+    font: ["face", "size", "color"]
+  }
+};
 const sanitizeBlogContent = (content) => sanitizeHtml(String(content || ""), BLOG_HTML_OPTIONS);
 const sanitizeBlogRow = (row) => row ? { ...row, content: sanitizeBlogContent(row.content) } : row;
+const getNewsletterAttachmentDirectory = () => path.join(
+  assetThumbnails.getThumbnailStorageRoot(),
+  NEWSLETTER_ATTACHMENT_FOLDER
+);
 
 async function ensureAuthSessionsTable() {
   await pool.query(`
@@ -227,6 +252,39 @@ const upload = multer({
   }
 
 });
+
+const newsletterAttachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+    files: 5
+  },
+  fileFilter: (req, file, cb) => {
+    const extension = path.extname(file.originalname || "").toLowerCase();
+    const blockedExtensions = new Set([
+      ".apk", ".app", ".bat", ".cmd", ".com", ".cpl", ".dll", ".dmg", ".exe",
+      ".hta", ".jar", ".js", ".jse", ".msi", ".mjs", ".php", ".ps1", ".reg",
+      ".scr", ".sh", ".svg", ".vbe", ".vbs"
+    ]);
+    if (blockedExtensions.has(extension)) {
+      cb(new Error("This file type cannot be attached to a newsletter."));
+      return;
+    }
+    cb(null, true);
+  }
+});
+
+const handleNewsletterAttachmentUpload = (req, res, next) => {
+  newsletterAttachmentUpload.array("attachments", 5)(req, res, (error) => {
+    if (error) {
+      const status = ["LIMIT_FILE_SIZE", "LIMIT_FILE_COUNT", "LIMIT_UNEXPECTED_FILE"].includes(error.code)
+        ? 413
+        : 400;
+      return res.status(status).json({ error: error.message || "Newsletter attachment upload failed." });
+    }
+    next();
+  });
+};
 
 const payoutUpload = multer({
   storage: multer.diskStorage({
@@ -1531,6 +1589,7 @@ app.get("/uploads/processed", async (req, res) => {
 });
 
 // Scheduled emails runner (checks DB every minute)
+let promotionNewsletterSchemaReady = false;
 try {
   const cron = require('node-cron');
   const { processDueScheduledBlogs, processDueScheduledEmails, processDueDailyReportSchedules } = require('./email/scheduler');
@@ -1539,6 +1598,13 @@ try {
     try {
       await processDueScheduledBlogs({ poolRef: pool, now: new Date() });
       await processDueScheduledEmails({ poolRef: pool, now: new Date() });
+      if (promotionNewsletterSchemaReady) {
+        await processDuePromotionNewsletters({
+          poolRef: pool,
+          now: new Date(),
+          attachmentStorageDirectory: getNewsletterAttachmentDirectory
+        });
+      }
       await processDueDailyReportSchedules({ poolRef: pool, now: new Date() });
       await sendDailyWebsiteSummary({ poolRef: pool, now: new Date() });
     } catch (err) {
@@ -1559,6 +1625,13 @@ try {
         lastRunAt = now;
         await processDueScheduledBlogs({ poolRef: pool, now });
         await processDueScheduledEmails({ poolRef: pool, now });
+        if (promotionNewsletterSchemaReady) {
+          await processDuePromotionNewsletters({
+            poolRef: pool,
+            now,
+            attachmentStorageDirectory: getNewsletterAttachmentDirectory
+          });
+        }
         await processDueDailyReportSchedules({ poolRef: pool, now });
         await sendDailyWebsiteSummary({ poolRef: pool, now });
       } catch (err) {
@@ -5226,6 +5299,20 @@ if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
     `);
 
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS promotion_newsletter_smtp_settings (
+        id SMALLINT PRIMARY KEY CHECK (id = 1),
+        sender_name TEXT NOT NULL,
+        sender_email TEXT NOT NULL,
+        smtp_host TEXT NOT NULL,
+        smtp_port INTEGER NOT NULL,
+        smtp_user TEXT NOT NULL,
+        smtp_pass TEXT NOT NULL,
+        smtp_secure BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+
+    await pool.query(`
       ALTER TABLE email_settings ADD COLUMN IF NOT EXISTS imap_host TEXT;
     `);
     await pool.query(`
@@ -5637,10 +5724,23 @@ if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
         schedule TEXT,
         audience TEXT,
         status TEXT DEFAULT 'draft',
+        body TEXT,
+        recipients JSONB DEFAULT '[]'::jsonb,
+        attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+        scheduled_at TIMESTAMPTZ,
+        sent_at TIMESTAMPTZ,
         metadata JSONB DEFAULT '{}'::jsonb,
         created_at TIMESTAMPTZ DEFAULT now(),
         updated_at TIMESTAMPTZ DEFAULT now()
       );
+    `);
+    await pool.query(`
+      ALTER TABLE promotion_email_campaigns
+      ADD COLUMN IF NOT EXISTS body TEXT,
+      ADD COLUMN IF NOT EXISTS recipients JSONB DEFAULT '[]'::jsonb,
+      ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+      ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
     `);
 
     await pool.query(`
@@ -5718,7 +5818,8 @@ if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
       ADD COLUMN IF NOT EXISTS otp_code_expires_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS contributor_cooling_until TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS deletion_requested_at TIMESTAMPTZ,
-      ADD COLUMN IF NOT EXISTS deletion_backup_status TEXT;
+      ADD COLUMN IF NOT EXISTS deletion_backup_status TEXT,
+      ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
     `);
 
     await pool.query(`
@@ -5981,6 +6082,7 @@ if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
       CREATE INDEX IF NOT EXISTS idx_favorites_user_id ON favorites(user_id);
       CREATE INDEX IF NOT EXISTS idx_favorites_image_id ON favorites(image_id);
     `);
+    promotionNewsletterSchemaReady = true;
   } catch (err) {
     console.error('Failed to ensure database schema exists:', err.message || err);
   }
@@ -6419,6 +6521,7 @@ app.post("/login", async (req, res) => {
        ON CONFLICT (session_id) DO UPDATE SET last_activity_at = NOW()`,
       [sessionId, userRow.id]
     );
+    await pool.query("UPDATE users SET last_login_at = NOW() WHERE id = $1", [userRow.id]);
 
     const token = signJwtToken(
       {
@@ -6798,6 +6901,117 @@ app.get("/admin/promotions/contributors", verifyAdmin, async (req, res) => {
   }
 });
 
+app.get("/admin/promotions/newsletter-recipients", verifyAdmin, async (req, res) => {
+  try {
+    const audience = String(req.query.audience || "all").trim().toLowerCase();
+    if (!NEWSLETTER_AUDIENCES.has(audience)) {
+      return res.status(400).json({ error: "Choose a valid newsletter audience." });
+    }
+    const recipients = await findNewsletterRecipients(pool, audience, { search: req.query.search || "" });
+    return res.json(recipients);
+  } catch (error) {
+    console.error("Failed to search newsletter recipients", error);
+    return res.status(500).json({ error: "Failed to search newsletter recipients." });
+  }
+});
+
+app.post(
+  "/admin/promotions/newsletter-attachments",
+  verifyAdmin,
+  handleNewsletterAttachmentUpload,
+  async (req, res) => {
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (files.length === 0) {
+      return res.status(400).json({ error: "Choose at least one newsletter attachment." });
+    }
+    if (files.reduce((total, file) => total + file.size, 0) > 20 * 1024 * 1024) {
+      return res.status(413).json({ error: "Newsletter attachments must total 20 MB or less." });
+    }
+
+    let directory;
+    const savedPaths = [];
+    try {
+      directory = getNewsletterAttachmentDirectory();
+      await fs.promises.mkdir(directory, { recursive: true });
+      const attachments = [];
+      for (const file of files) {
+        const suppliedName = String(file.originalname || "attachment").split(/[\\/]/).pop();
+        const name = suppliedName
+          .replace(/[\u0000-\u001f\u007f<>:"|?*]/g, "_")
+          .trim()
+          .slice(0, 180) || "attachment";
+        const extension = path.extname(name).toLowerCase();
+        const filename = `${crypto.randomUUID()}${extension}`;
+        const filePath = path.resolve(directory, filename);
+        if (path.dirname(filePath) !== path.resolve(directory)) {
+          return res.status(400).json({ error: "Invalid newsletter attachment filename." });
+        }
+        await fs.promises.writeFile(filePath, file.buffer, { flag: "wx" });
+        savedPaths.push(filePath);
+        const contentType = getNewsletterAttachmentContentType(filename);
+        attachments.push({
+          filename,
+          name,
+          size: file.size,
+          contentType,
+          inline: contentType.startsWith("image/"),
+          ...(contentType.startsWith("image/")
+            ? { cid: `newsletter-${path.basename(filename, extension)}@newsletter.gfxunlimit` }
+            : {})
+        });
+      }
+      return res.json({ attachments });
+    } catch (error) {
+      await Promise.all(savedPaths.map((filePath) => fs.promises.unlink(filePath).catch((cleanupError) => {
+        if (cleanupError.code !== "ENOENT") {
+          console.error("Failed to remove a partial newsletter attachment upload", cleanupError);
+        }
+      })));
+      console.error("Failed to save newsletter attachments", error);
+      const storageUnavailable = error.code === "THUMBNAIL_STORAGE_DISCONNECTED"
+        || /THUMBNAIL_STORAGE_PATH|thumbnail volume is not mounted/i.test(error.message || "");
+      return res.status(storageUnavailable ? 503 : 500).json({
+        error: storageUnavailable
+          ? "Newsletter attachment storage is unavailable. Check the configured thumbnail storage."
+          : "Failed to save newsletter attachments."
+      });
+    }
+  }
+);
+
+app.get("/admin/promotions/newsletter-attachments/:filename", verifyAdmin, async (req, res) => {
+  const filename = String(req.params.filename || "");
+  if (!isNewsletterAttachmentFilename(filename)) {
+    return res.status(400).json({ error: "Invalid newsletter attachment filename." });
+  }
+  const contentType = getNewsletterAttachmentContentType(filename);
+  if (!contentType.startsWith("image/")) {
+    return res.status(400).json({ error: "Only newsletter images can be previewed." });
+  }
+  try {
+    const directory = path.resolve(getNewsletterAttachmentDirectory());
+    const filePath = path.resolve(directory, filename);
+    if (path.dirname(filePath) !== directory) {
+      return res.status(400).json({ error: "Invalid newsletter attachment filename." });
+    }
+    const stats = await fs.promises.lstat(filePath);
+    if (!stats.isFile()) {
+      return res.status(404).json({ error: "Newsletter image not found." });
+    }
+    res.set("Content-Type", contentType);
+    res.set("Content-Disposition", "inline");
+    res.set("Cache-Control", "private, no-store");
+    res.set("X-Content-Type-Options", "nosniff");
+    return res.sendFile(filePath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return res.status(404).json({ error: "Newsletter image not found." });
+    }
+    console.error("Failed to load newsletter image preview", error);
+    return res.status(500).json({ error: "Failed to load newsletter image preview." });
+  }
+});
+
 app.post("/admin/promotions/applications/:applicationId/withdraw", verifyAdmin, async (req, res) => {
   try {
     const applicationId = Number(req.params.applicationId);
@@ -7008,6 +7222,281 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
       const result = await pool.query(`UPDATE ${table} SET ${setClause}, updated_at = now() WHERE id = $${entries.length + 1} RETURNING *`, [...values, id]);
       return result.rows[0];
     };
+
+    if (resource === "newsletter") {
+      if (action === "delete") {
+        await pool.query("DELETE FROM promotion_email_campaigns WHERE id = $1", [data.id]);
+        await logActivity("newsletter_deleted", `Deleted newsletter campaign ${data.id}`, { campaignId: data.id });
+        return res.json({ ok: true });
+      }
+
+      if (!["draft", "schedule", "send", "update"].includes(action)) {
+        return res.status(400).json({ error: "Choose Draft, Scheduled, or Send." });
+      }
+
+      let existingCampaign = null;
+      const isEditingCampaign = data.id !== undefined && data.id !== null;
+      if (action === "update" || isEditingCampaign) {
+        const campaignId = Number(data.id);
+        if (!Number.isInteger(campaignId) || campaignId <= 0) {
+          return res.status(400).json({ error: "Invalid newsletter campaign." });
+        }
+        const existingResult = await pool.query(
+          "SELECT id, status FROM promotion_email_campaigns WHERE id = $1",
+          [campaignId]
+        );
+        existingCampaign = existingResult.rows[0];
+        if (!existingCampaign) {
+          return res.status(404).json({ error: "Newsletter campaign not found." });
+        }
+        if (existingCampaign.status === "sending") {
+          return res.status(409).json({ error: "A newsletter campaign cannot be edited while it is being sent." });
+        }
+      }
+
+      const name = String(data.name || "").trim();
+      const subject = String(data.subject || "").trim();
+      const audience = String(data.audience || "").trim().toLowerCase();
+      const body = sanitizeHtml(String(data.body || ""), NEWSLETTER_HTML_OPTIONS).trim();
+      const recipients = normalizeRecipientEmails(data.recipients);
+      if (data.attachments !== undefined && !Array.isArray(data.attachments)) {
+        return res.status(400).json({ error: "Newsletter attachments must be a list of uploaded files." });
+      }
+      const attachmentInputs = Array.isArray(data.attachments) ? data.attachments : [];
+      if (attachmentInputs.length > 5) {
+        return res.status(400).json({ error: "You can attach up to 5 files." });
+      }
+      const attachments = [];
+      if (attachmentInputs.length > 0) {
+        const attachmentDirectory = getNewsletterAttachmentDirectory();
+        const resolvedDirectory = path.resolve(attachmentDirectory);
+        for (const attachment of attachmentInputs) {
+          const filename = String(attachment?.filename || "");
+          if (!isNewsletterAttachmentFilename(filename)) {
+            return res.status(400).json({ error: "An uploaded newsletter attachment is invalid." });
+          }
+          const filePath = path.resolve(resolvedDirectory, filename);
+          if (path.dirname(filePath) !== resolvedDirectory) {
+            return res.status(400).json({ error: "An uploaded newsletter attachment is invalid." });
+          }
+          let stats;
+          try {
+            stats = await fs.promises.lstat(filePath);
+          } catch (error) {
+            if (error.code === "ENOENT") {
+              return res.status(400).json({ error: "An uploaded newsletter attachment is unavailable." });
+            }
+            throw error;
+          }
+          if (!stats.isFile()) {
+            return res.status(400).json({ error: "An uploaded newsletter attachment is unavailable." });
+          }
+          const suppliedName = String(attachment?.name || "attachment").split(/[\\/]/).pop();
+          const safeName = suppliedName
+            .replace(/[\u0000-\u001f\u007f<>:"|?*]/g, "_")
+            .trim()
+            .slice(0, 180) || "attachment";
+          const contentType = getNewsletterAttachmentContentType(filename);
+          const isInlineImage = contentType.startsWith("image/");
+          const cid = String(attachment?.cid || "");
+          const validNewsletterImageCid = /^newsletter-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@newsletter\.gfxunlimit$/.test(cid);
+          if (isInlineImage && !validNewsletterImageCid) {
+            return res.status(400).json({ error: "An uploaded newsletter image is invalid." });
+          }
+          attachments.push({
+            filename,
+            name: safeName,
+            size: stats.size,
+            ...(isInlineImage ? { cid } : {})
+          });
+        }
+        if (attachments.reduce((total, attachment) => total + attachment.size, 0) > 20 * 1024 * 1024) {
+          return res.status(400).json({ error: "Newsletter attachments must total 20 MB or less." });
+        }
+      }
+      const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (action !== "draft" && (!name || !subject || !body)) {
+        return res.status(400).json({ error: "Campaign name, subject, and email body are required." });
+      }
+      if (!NEWSLETTER_AUDIENCES.has(audience)) {
+        return res.status(400).json({ error: "Choose a valid newsletter audience." });
+      }
+      if (recipients.some((email) => !emailPattern.test(email))) {
+        return res.status(400).json({ error: "Remove invalid email addresses from the recipient list." });
+      }
+      if (action !== "draft" && recipients.length === 0) {
+        return res.status(400).json({ error: "Select at least one recipient email." });
+      }
+
+      let scheduledAt = null;
+      const shouldRemainScheduled = action === "schedule"
+        || (action === "update" && existingCampaign.status === "scheduled");
+      if (shouldRemainScheduled) {
+        const scheduleValue = String(data.schedule || "").trim();
+        scheduledAt = new Date(scheduleValue);
+        if (!scheduleValue || Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= Date.now()) {
+          return res.status(400).json({ error: "Choose a future schedule date and time in IST." });
+        }
+      }
+
+      if (action === "update") {
+        const updated = await pool.query(
+          `UPDATE promotion_email_campaigns
+           SET name = $1,
+               subject = $2,
+               schedule = $3,
+               audience = $4,
+               body = $5,
+               recipients = $6::jsonb,
+               attachments = $7::jsonb,
+               scheduled_at = $8,
+               updated_at = NOW()
+           WHERE id = $9 AND status = $10 AND status <> 'sending'
+           RETURNING *`,
+          [
+            name,
+            subject,
+            scheduledAt ? scheduledAt.toISOString() : null,
+            audience,
+            body,
+            JSON.stringify(recipients),
+            JSON.stringify(attachments),
+            scheduledAt,
+            existingCampaign.id,
+            existingCampaign.status
+          ]
+        );
+        if (!updated.rows[0]) {
+          return res.status(409).json({ error: "The newsletter campaign changed before it could be updated. Refresh and try again." });
+        }
+        await logActivity("newsletter_updated", `Updated newsletter campaign ${existingCampaign.id}`, {
+          campaignId: existingCampaign.id
+        });
+        return res.json({ campaign: updated.rows[0] });
+      }
+
+      const status = action === "send" ? "sending" : action === "schedule" ? "scheduled" : "draft";
+      if (existingCampaign) {
+        const updated = await pool.query(
+          `UPDATE promotion_email_campaigns
+           SET name = $1,
+               subject = $2,
+               schedule = $3,
+               audience = $4,
+               status = $5,
+               body = $6,
+               recipients = $7::jsonb,
+               attachments = $8::jsonb,
+               scheduled_at = $9,
+               updated_at = NOW()
+           WHERE id = $10 AND status = $11 AND status <> 'sending'
+           RETURNING *`,
+          [
+            name,
+            subject,
+            scheduledAt ? scheduledAt.toISOString() : null,
+            audience,
+            status,
+            body,
+            JSON.stringify(recipients),
+            JSON.stringify(attachments),
+            scheduledAt,
+            existingCampaign.id,
+            existingCampaign.status
+          ]
+        );
+        if (!updated.rows[0]) {
+          return res.status(409).json({ error: "The newsletter campaign changed before it could be updated. Refresh and try again." });
+        }
+        existingCampaign = updated.rows[0];
+      }
+      if (existingCampaign) {
+        let campaign = existingCampaign;
+        if (action === "send") {
+          try {
+            const delivery = await queueNewsletterCampaign({
+              poolRef: pool,
+              campaign,
+              attachmentStorageDirectory: getNewsletterAttachmentDirectory
+            });
+            campaign = delivery.campaign;
+            await logActivity("newsletter_sent", `Queued newsletter campaign ${campaign.id}`, {
+              campaignId: campaign.id,
+              recipients: delivery.queued,
+            });
+            return res.json({ campaign, queued: delivery.queued });
+          } catch (error) {
+            await pool.query(
+              `UPDATE promotion_email_campaigns
+               SET status = 'draft',
+                   metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+                   updated_at = NOW()
+               WHERE id = $1`,
+              [campaign.id, JSON.stringify({ delivery_error: error.message || String(error) })]
+            );
+            throw error;
+          }
+        }
+        await logActivity(
+          action === "schedule" ? "newsletter_scheduled" : "newsletter_drafted",
+          `${action === "schedule" ? "Scheduled" : "Saved draft"} newsletter campaign ${campaign.id}`,
+          { campaignId: campaign.id }
+        );
+        return res.json({ campaign });
+      }
+
+      const inserted = await pool.query(
+        `INSERT INTO promotion_email_campaigns
+           (name, subject, schedule, audience, status, body, recipients, attachments, scheduled_at, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, '{}'::jsonb)
+         RETURNING *`,
+        [
+          name || "Untitled newsletter",
+          subject,
+          scheduledAt ? scheduledAt.toISOString() : null,
+          audience,
+          status,
+          body,
+          JSON.stringify(recipients),
+          JSON.stringify(attachments),
+          scheduledAt,
+        ]
+      );
+      let campaign = inserted.rows[0];
+
+      if (action === "send") {
+        try {
+          const delivery = await queueNewsletterCampaign({
+            poolRef: pool,
+            campaign,
+            attachmentStorageDirectory: getNewsletterAttachmentDirectory
+          });
+          campaign = delivery.campaign;
+          await logActivity("newsletter_sent", `Queued newsletter campaign ${campaign.id}`, {
+            campaignId: campaign.id,
+            recipients: delivery.queued,
+          });
+          return res.json({ campaign, queued: delivery.queued });
+        } catch (error) {
+          await pool.query(
+            `UPDATE promotion_email_campaigns
+             SET status = 'draft',
+                 metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [campaign.id, JSON.stringify({ delivery_error: error.message || String(error) })]
+          );
+          throw error;
+        }
+      }
+
+      await logActivity(
+        action === "schedule" ? "newsletter_scheduled" : "newsletter_drafted",
+        `${action === "schedule" ? "Scheduled" : "Saved draft"} newsletter campaign ${campaign.id}`,
+        { campaignId: campaign.id }
+      );
+      return res.json({ campaign });
+    }
 
     if (resource === "coupon") {
       if (action === "create") {

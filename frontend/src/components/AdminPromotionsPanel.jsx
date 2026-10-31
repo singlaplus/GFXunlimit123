@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
 import { formatIndiaDate } from "../utils/indiaTime";
+import NewsletterSMTPSettings from "./NewsletterSMTPSettings";
 import "./AdminPromotionsPanel.css";
 
 const SECTION_ITEMS = [
@@ -25,6 +26,13 @@ const SECTION_ITEMS = [
   { key: "activity", label: "Activity Log" }
 ];
 const ACTIVE_SECTION_STORAGE_KEY = "adminPromotionsActiveSection";
+const NEWSLETTER_AUDIENCES = [
+  { value: "all", label: "All customers and contributors" },
+  { value: "customer_active", label: "Customer active" },
+  { value: "customer_inactive", label: "Customer inactive" },
+  { value: "contributor_active", label: "Contributor active" },
+  { value: "contributor_inactive", label: "Contributor inactive" }
+];
 
 function getCouponMetadata(coupon) {
   return typeof coupon?.metadata === "string"
@@ -58,6 +66,50 @@ function getContributorApplicationDisplayStatus(application) {
 
 function getCouponDeliveryEmail(coupon) {
   return String(getCouponMetadata(coupon)?.delivery_email || "").trim();
+}
+
+function getISTDateTimeLocal(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
+}
+
+function getISTScheduleISO(value) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(value || ""))) return "";
+  const date = new Date(`${value}:00+05:30`);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function parseNewsletterRecipientEmails(value) {
+  const tokens = String(value || "")
+    .split(/[,\s;]+/)
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+  const uniqueTokens = [...new Set(tokens)];
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return {
+    emails: uniqueTokens.filter((email) => emailPattern.test(email)),
+    invalid: uniqueTokens.filter((email) => !emailPattern.test(email))
+  };
+}
+
+function formatNewsletterSchedule(value) {
+  if (!value) return "Not scheduled";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(date);
 }
 
 const initialCouponForm = {
@@ -141,7 +193,8 @@ const initialNewsletterForm = {
   subject: "",
   schedule: "",
   audience: "all",
-  status: "draft"
+  status: "draft",
+  body: ""
 };
 
 const initialBannerForm = {
@@ -519,6 +572,27 @@ function AdminPromotionsPanel() {
   const [loyaltyDraft, setLoyaltyDraft] = useState(initialLoyaltyForm);
   const [bundleDraft, setBundleDraft] = useState(initialBundleForm);
   const [newsletterDraft, setNewsletterDraft] = useState(initialNewsletterForm);
+  const [newsletterRecipientsText, setNewsletterRecipientsText] = useState("");
+  const [newsletterRecipientSearch, setNewsletterRecipientSearch] = useState("");
+  const [newsletterRecipientResults, setNewsletterRecipientResults] = useState([]);
+  const [newsletterSelectedRecipients, setNewsletterSelectedRecipients] = useState([]);
+  const [newsletterRecipientSearchError, setNewsletterRecipientSearchError] = useState("");
+  const [newsletterRecipientInputError, setNewsletterRecipientInputError] = useState("");
+  const [newsletterRecipientSearchComplete, setNewsletterRecipientSearchComplete] = useState(false);
+  const [newsletterStatusFilter, setNewsletterStatusFilter] = useState("all");
+  const [newsletterAttachments, setNewsletterAttachments] = useState([]);
+  const [editingNewsletterId, setEditingNewsletterId] = useState(null);
+  const [newsletterAttachmentError, setNewsletterAttachmentError] = useState("");
+  const [newsletterLinkUrl, setNewsletterLinkUrl] = useState("");
+  const [isNewsletterLinkEditorOpen, setIsNewsletterLinkEditorOpen] = useState(false);
+  const [isNewsletterRecipientPickerOpen, setIsNewsletterRecipientPickerOpen] = useState(false);
+  const [isNewsletterAudienceDialogOpen, setIsNewsletterAudienceDialogOpen] = useState(false);
+  const [isSearchingNewsletterRecipients, setIsSearchingNewsletterRecipients] = useState(false);
+  const [isUploadingNewsletterAttachments, setIsUploadingNewsletterAttachments] = useState(false);
+  const [isSavingNewsletter, setIsSavingNewsletter] = useState(false);
+  const newsletterBodyEditorRef = useRef(null);
+  const savedNewsletterBodySelectionRef = useRef(null);
+  const newsletterLinkPointerRef = useRef(null);
   const [bannerDraft, setBannerDraft] = useState(initialBannerForm);
   const [popupDraft, setPopupDraft] = useState(initialPopupForm);
   const [announcementDraft, setAnnouncementDraft] = useState(initialAnnouncementForm);
@@ -706,6 +780,11 @@ function AdminPromotionsPanel() {
     campaignStatusFilter === "all" || getCampaignDisplayStatus(campaign.status) === campaignStatusFilter
   )), [campaigns, campaignStatusFilter]);
 
+  const filteredNewsletters = useMemo(() => newsletters.filter((campaign) => (
+    newsletterStatusFilter === "all"
+    || String(campaign.status || "draft").trim().toLowerCase() === newsletterStatusFilter
+  )), [newsletters, newsletterStatusFilter]);
+
   const filteredContributorApplications = useMemo(() => contributorApplications.filter((application) => (
     contributorApplicationFilter === "all"
     || getContributorApplicationDisplayStatus(application) === contributorApplicationFilter
@@ -745,6 +824,458 @@ function AdminPromotionsPanel() {
       console.error(err);
       setMessage(err.response?.data?.error || "Request failed.");
       throw err;
+    }
+  };
+
+  const searchNewsletterRecipients = async () => {
+    setIsSearchingNewsletterRecipients(true);
+    setNewsletterRecipientSearchComplete(false);
+    setNewsletterRecipientSearchError("");
+    setNewsletterRecipientResults([]);
+    try {
+      const params = new URLSearchParams({
+        audience: newsletterDraft.audience,
+        search: newsletterRecipientSearch.trim()
+      });
+      const response = await axios.get(
+        `${API_BASE_URL}/admin/promotions/newsletter-recipients?${params.toString()}`,
+        { headers: buildAuthHeaders() }
+      );
+      if (!Array.isArray(response.data)) {
+        throw new Error("Newsletter recipient search returned an invalid response.");
+      }
+      setNewsletterRecipientResults(response.data);
+      setNewsletterRecipientSearchComplete(true);
+      const currentEmails = new Set(
+        newsletterRecipientsText.split(/[,\s;]+/).map((email) => email.trim().toLowerCase()).filter(Boolean)
+      );
+      setNewsletterSelectedRecipients(
+        response.data.filter((recipient) => currentEmails.has(String(recipient.email || "").trim().toLowerCase()))
+      );
+    } catch (error) {
+      console.error("Unable to search newsletter recipients", error);
+      setNewsletterRecipientSearchComplete(false);
+      setNewsletterRecipientSearchError(
+        error.response?.data?.error || error.message || "Unable to search newsletter recipients."
+      );
+    } finally {
+      setIsSearchingNewsletterRecipients(false);
+    }
+  };
+
+  const saveNewsletterBodySelection = () => {
+    const editor = newsletterBodyEditorRef.current;
+    const selection = window.getSelection();
+    if (
+      editor &&
+      selection?.rangeCount &&
+      editor.contains(selection.anchorNode) &&
+      editor.contains(selection.focusNode)
+    ) {
+      savedNewsletterBodySelectionRef.current = selection.getRangeAt(0).cloneRange();
+    }
+  };
+
+  const handleNewsletterBodyInput = (event) => {
+    const body = event.currentTarget.innerHTML;
+    setNewsletterDraft((current) => ({ ...current, body }));
+  };
+
+  const preventNewsletterLinkNavigation = (event) => {
+    const link = event.target instanceof Element ? event.target.closest("a") : null;
+    if (!link) return;
+
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    const pointerDown = newsletterLinkPointerRef.current;
+    newsletterLinkPointerRef.current = null;
+    if (pointerDown?.dragged) {
+      event.preventDefault();
+      return;
+    }
+
+    event.preventDefault();
+    window.open(link.href, "_blank", "noopener,noreferrer");
+  };
+
+  const trackNewsletterLinkPointerDown = (event) => {
+    const link = event.target instanceof Element ? event.target.closest("a") : null;
+    newsletterLinkPointerRef.current = link
+      ? { x: event.clientX, y: event.clientY, dragged: false }
+      : null;
+  };
+
+  const trackNewsletterLinkPointerMove = (event) => {
+    const pointerDown = newsletterLinkPointerRef.current;
+    if (!pointerDown) return;
+    if (Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 5) {
+      pointerDown.dragged = true;
+    }
+  };
+
+  const applyNewsletterFormatting = (command, value = "") => {
+    const editor = newsletterBodyEditorRef.current;
+    if (!editor) return false;
+
+    const selection = window.getSelection();
+    if (
+      selection?.rangeCount &&
+      editor.contains(selection.anchorNode) &&
+      editor.contains(selection.focusNode)
+    ) {
+      savedNewsletterBodySelectionRef.current = selection.getRangeAt(0).cloneRange();
+    }
+
+    const savedRange = savedNewsletterBodySelectionRef.current;
+    if (savedRange && editor.contains(savedRange.commonAncestorContainer)) {
+      editor.focus();
+      const restoredSelection = window.getSelection();
+      restoredSelection.removeAllRanges();
+      restoredSelection.addRange(savedRange);
+    } else {
+      editor.focus();
+    }
+    if (typeof document.execCommand !== "function") {
+      setMessage("Text formatting is not supported in this browser.");
+      return false;
+    }
+
+    if (!document.execCommand(command, false, value)) {
+      setMessage("Unable to apply the selected text formatting.");
+      return false;
+    }
+    setNewsletterDraft((current) => ({ ...current, body: editor.innerHTML }));
+    saveNewsletterBodySelection();
+    return true;
+  };
+
+  const applyNewsletterLink = () => {
+    const rawUrl = newsletterLinkUrl.trim();
+    const normalizedUrl = /^www\./i.test(rawUrl) ? `https://${rawUrl}` : rawUrl;
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(normalizedUrl);
+    } catch {
+      setMessage("Enter a valid link, such as https://example.com.");
+      return;
+    }
+    if (!["http:", "https:", "mailto:", "tel:"].includes(parsedUrl.protocol)) {
+      setMessage("Use a link starting with https://, http://, mailto:, or tel:.");
+      return;
+    }
+
+    const editor = newsletterBodyEditorRef.current;
+    const savedRange = savedNewsletterBodySelectionRef.current;
+    if (!editor || !savedRange || !editor.contains(savedRange.commonAncestorContainer) || savedRange.collapsed) {
+      setMessage("Select the text you want to turn into a link.");
+      return;
+    }
+
+    try {
+      const getContainingLink = (node) => {
+        const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+        return element?.closest("a") || null;
+      };
+      const startLink = getContainingLink(savedRange.startContainer);
+      const endLink = getContainingLink(savedRange.endContainer);
+      if (startLink && startLink === endLink) {
+        let link = startLink;
+        while (link.parentElement && link.parentElement !== editor) {
+          if (link.parentElement.matches("a")) link = link.parentElement;
+          else break;
+        }
+        link.href = normalizedUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.querySelectorAll("a").forEach((nestedLink) => {
+          nestedLink.replaceWith(...nestedLink.childNodes);
+        });
+        const linkRange = document.createRange();
+        linkRange.selectNodeContents(link);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(linkRange);
+        savedNewsletterBodySelectionRef.current = linkRange.cloneRange();
+        setNewsletterDraft((current) => ({ ...current, body: editor.innerHTML }));
+        setNewsletterLinkUrl("");
+        setIsNewsletterLinkEditorOpen(false);
+        return;
+      }
+
+      const link = document.createElement("a");
+      link.href = normalizedUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.appendChild(savedRange.extractContents());
+      savedRange.insertNode(link);
+      const linkedTextRange = document.createRange();
+      linkedTextRange.selectNodeContents(link);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(linkedTextRange);
+      savedNewsletterBodySelectionRef.current = linkedTextRange.cloneRange();
+      setNewsletterDraft((current) => ({ ...current, body: editor.innerHTML }));
+    } catch (error) {
+      console.error("Unable to convert selected newsletter text to a link", error);
+      setMessage("Unable to convert the selected text to a link.");
+      return;
+    }
+    setNewsletterLinkUrl("");
+    setIsNewsletterLinkEditorOpen(false);
+  };
+
+  const uploadNewsletterAttachments = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (files.length === 0) return;
+
+    const maxAttachments = 5;
+    const maxFileSize = 10 * 1024 * 1024;
+    const maxTotalSize = 20 * 1024 * 1024;
+    const currentSize = newsletterAttachments.reduce((total, attachment) => total + Number(attachment.size || 0), 0);
+    if (newsletterAttachments.length + files.length > maxAttachments) {
+      setNewsletterAttachmentError(`You can attach up to ${maxAttachments} files.`);
+      return;
+    }
+    if (files.some((file) => file.size > maxFileSize)) {
+      setNewsletterAttachmentError("Each newsletter attachment must be 10 MB or less.");
+      return;
+    }
+    if (currentSize + files.reduce((total, file) => total + file.size, 0) > maxTotalSize) {
+      setNewsletterAttachmentError("Newsletter attachments must total 20 MB or less.");
+      return;
+    }
+
+    setIsUploadingNewsletterAttachments(true);
+    setNewsletterAttachmentError("");
+    const formData = new FormData();
+    files.forEach((file) => formData.append("attachments", file));
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/admin/promotions/newsletter-attachments`,
+        formData,
+        { headers: buildAuthHeaders() }
+      );
+      if (!Array.isArray(response.data?.attachments)) {
+        throw new Error("Attachment upload returned an invalid response.");
+      }
+      const uploadedAttachments = response.data.attachments.map((attachment, index) => {
+        const previewUrl = attachment.inline ? URL.createObjectURL(files[index]) : undefined;
+        return { ...attachment, previewUrl };
+      });
+      setNewsletterAttachments((current) => [...current, ...uploadedAttachments]);
+      const editor = newsletterBodyEditorRef.current;
+      if (editor) {
+        uploadedAttachments.filter((attachment) => attachment.inline).forEach((attachment) => {
+          const image = document.createElement("img");
+          image.src = attachment.previewUrl;
+          image.alt = attachment.name;
+          image.dataset.newsletterCid = attachment.cid;
+          editor.appendChild(image);
+        });
+        setNewsletterDraft((current) => ({ ...current, body: editor.innerHTML }));
+      }
+    } catch (error) {
+      console.error("Unable to upload newsletter attachments", error);
+      setNewsletterAttachmentError(
+        error.response?.data?.error || error.message || "Unable to upload newsletter attachments."
+      );
+    } finally {
+      setIsUploadingNewsletterAttachments(false);
+    }
+  };
+
+  const removeNewsletterAttachment = (attachment) => {
+    if (attachment.inline && newsletterBodyEditorRef.current) {
+      newsletterBodyEditorRef.current.querySelectorAll("img").forEach((image) => {
+        if (
+          (attachment.cid && image.dataset.newsletterCid === attachment.cid)
+          || (attachment.previewUrl && image.src === attachment.previewUrl)
+        ) {
+          image.remove();
+        }
+      });
+      setNewsletterDraft((current) => ({
+        ...current,
+        body: newsletterBodyEditorRef.current.innerHTML
+      }));
+    }
+    if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    setNewsletterAttachments((current) => (
+      current.filter((item) => item.filename !== attachment.filename)
+    ));
+  };
+
+  const editNewsletterCampaign = async (campaign) => {
+    const status = String(campaign.status || "draft").trim().toLowerCase();
+    const bodyContainer = document.createElement("div");
+    bodyContainer.innerHTML = String(campaign.body || "");
+    const attachments = (Array.isArray(campaign.attachments) ? campaign.attachments : []).map((attachment) => ({
+      ...attachment,
+      inline: /\.(?:jpe?g|png)$/i.test(String(attachment.filename || "")),
+      previewUrl: undefined
+    }));
+    const previewUrls = [];
+    try {
+      for (const image of bodyContainer.querySelectorAll('img[src^="cid:"]')) {
+        const cid = image.getAttribute("src").slice(4);
+        const attachment = attachments.find((item) => item.inline && item.cid === cid);
+        if (!attachment) {
+          throw new Error(`The inline image "${image.alt || cid}" is missing from this campaign's attachments.`);
+        }
+        const response = await axios.get(
+          `${API_BASE_URL}/admin/promotions/newsletter-attachments/${encodeURIComponent(attachment.filename)}`,
+          { headers: buildAuthHeaders(), responseType: "blob" }
+        );
+        const previewUrl = URL.createObjectURL(response.data);
+        previewUrls.push(previewUrl);
+        attachment.previewUrl = previewUrl;
+        image.src = previewUrl;
+        image.dataset.newsletterCid = cid;
+      }
+    } catch (error) {
+      previewUrls.forEach((url) => URL.revokeObjectURL(url));
+      console.error("Unable to load newsletter image previews for editing", error);
+      setMessage(error.response?.data?.error || error.message || "Unable to load newsletter image previews.");
+      return;
+    }
+
+    const body = bodyContainer.innerHTML;
+    newsletterAttachments.forEach((attachment) => {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    });
+    setEditingNewsletterId(campaign.id);
+    setNewsletterDraft({
+      name: campaign.name || "",
+      subject: campaign.subject || "",
+      schedule: campaign.scheduled_at ? getISTDateTimeLocal(new Date(campaign.scheduled_at)) : "",
+      audience: campaign.audience || "all",
+      status,
+      body
+    });
+    setNewsletterRecipientsText(Array.isArray(campaign.recipients) ? campaign.recipients.join(", ") : "");
+    setNewsletterAttachments(attachments);
+    if (newsletterBodyEditorRef.current) newsletterBodyEditorRef.current.innerHTML = body;
+    document.getElementById("newsletter-campaign-form")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  };
+
+  const cancelNewsletterEdit = () => {
+    newsletterAttachments.forEach((attachment) => {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    });
+    setEditingNewsletterId(null);
+    setNewsletterDraft(initialNewsletterForm);
+    setNewsletterRecipientsText("");
+    setNewsletterAttachments([]);
+    if (newsletterBodyEditorRef.current) newsletterBodyEditorRef.current.innerHTML = "";
+  };
+
+  const handleNewsletterSubmit = async (event) => {
+    event.preventDefault();
+    const bodyForSubmission = document.createElement("div");
+    bodyForSubmission.innerHTML = newsletterBodyEditorRef.current?.innerHTML || newsletterDraft.body;
+    newsletterAttachments.filter((attachment) => attachment.inline && attachment.cid).forEach((attachment) => {
+      bodyForSubmission.querySelectorAll("img").forEach((image) => {
+        if (
+          image.dataset.newsletterCid === attachment.cid
+          || (attachment.previewUrl && image.src === attachment.previewUrl)
+        ) {
+          image.src = `cid:${attachment.cid}`;
+          delete image.dataset.newsletterCid;
+        }
+      });
+    });
+    const action = newsletterDraft.status === "scheduled"
+      ? "schedule"
+      : newsletterDraft.status === "send"
+        ? "send"
+        : ["sent", "sending"].includes(newsletterDraft.status)
+          ? "update"
+          : "draft";
+    const parsedRecipients = parseNewsletterRecipientEmails(newsletterRecipientsText);
+    if (parsedRecipients.invalid.length > 0) {
+      setNewsletterRecipientInputError(
+        `Please correct these email address(es) before continuing: ${parsedRecipients.invalid.join(", ")}`
+      );
+      return;
+    }
+    const recipients = parsedRecipients.emails;
+    setNewsletterRecipientInputError("");
+    const schedule = action === "schedule" ? getISTScheduleISO(newsletterDraft.schedule) : "";
+
+    if (action !== "draft" && (!newsletterDraft.name.trim() || !newsletterDraft.subject.trim() || !bodyForSubmission.innerHTML.trim())) {
+      setMessage("Campaign name, subject, and email body are required to send or schedule a newsletter.");
+      return;
+    }
+    if (action !== "draft" && recipients.length === 0) {
+      setMessage("Select at least one recipient email before sending or scheduling.");
+      return;
+    }
+    if (action === "schedule" && (!schedule || new Date(schedule).getTime() <= Date.now())) {
+      setMessage("Choose a future schedule date and time in IST.");
+      return;
+    }
+
+    setIsSavingNewsletter(true);
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/admin/promotions`,
+        {
+          resource: "newsletter",
+          action,
+          data: {
+            ...(editingNewsletterId !== null ? { id: editingNewsletterId } : {}),
+            name: newsletterDraft.name.trim(),
+            subject: newsletterDraft.subject.trim(),
+            body: bodyForSubmission.innerHTML,
+            recipients,
+            audience: newsletterDraft.audience,
+            schedule,
+            attachments: newsletterAttachments.map(({ filename, name, size, cid }) => ({
+              filename,
+              name,
+              size,
+              ...(cid ? { cid } : {})
+            }))
+          }
+        },
+        { headers: buildAuthHeaders() }
+      );
+      if (response.data?.campaign) {
+        setNewsletters((current) => [
+          response.data.campaign,
+          ...current.filter((campaign) => String(campaign.id) !== String(response.data.campaign.id))
+        ]);
+        if (editingNewsletterId === null) {
+          setDashboard((current) => ({
+            ...current,
+            newsletter_campaigns: Number(current.newsletter_campaigns || 0) + 1
+          }));
+        }
+      }
+      setMessage(action === "update" || (editingNewsletterId !== null && action === "draft")
+        ? "Newsletter campaign updated."
+        : action === "send"
+          ? `Newsletter queued for ${response.data?.queued || 0} recipient(s).`
+          : action === "schedule"
+            ? "Newsletter campaign scheduled."
+            : "Newsletter draft saved.");
+      setNewsletterDraft(initialNewsletterForm);
+      if (newsletterBodyEditorRef.current) newsletterBodyEditorRef.current.innerHTML = "";
+      setNewsletterRecipientsText("");
+      setNewsletterRecipientInputError("");
+      setNewsletterRecipientResults([]);
+      setNewsletterSelectedRecipients([]);
+      newsletterAttachments.forEach((attachment) => {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      });
+      setNewsletterAttachments([]);
+      setEditingNewsletterId(null);
+    } catch (error) {
+      console.error("Unable to save newsletter campaign", error);
+      setMessage(error.response?.data?.error || "Unable to save newsletter campaign.");
+    } finally {
+      setIsSavingNewsletter(false);
     }
   };
 
@@ -2109,13 +2640,549 @@ function AdminPromotionsPanel() {
           </div>
         );
       case "newsletters":
-        return renderSimpleSection("Newsletter Campaigns", "newsletter", newsletters, newsletterDraft, setNewsletterDraft, initialNewsletterForm, "Newsletter saved.", [
-          { key: "name", label: "Campaign name", type: "text" },
-          { key: "subject", label: "Subject", type: "text" },
-          { key: "schedule", label: "Schedule", type: "text" },
-          { key: "audience", label: "Audience", type: "text" },
-          { key: "status", label: "Status", type: "select", options: [{ value: "draft", label: "Draft" }, { value: "scheduled", label: "Scheduled" }, { value: "sent", label: "Sent" }] }
-        ]);
+        return (
+          <div className="promotions-stack">
+            <div className="promotions-card">
+              <div className="promotions-card-header">
+                <h3>{editingNewsletterId === null ? "Newsletter Campaign" : "Edit Newsletter Campaign"}</h3>
+                <span>Send now, save as a draft, or schedule delivery. Scheduled times use IST.</span>
+              </div>
+              <form
+                id="newsletter-campaign-form"
+                className="promotions-form-grid promotions-newsletter-form"
+                onSubmit={handleNewsletterSubmit}
+              >
+                <div className="promotions-field-group">
+                  <label htmlFor="newsletter-campaign-name">Campaign name</label>
+                  <input
+                    id="newsletter-campaign-name"
+                    value={newsletterDraft.name}
+                    onChange={(event) => setNewsletterDraft((current) => ({ ...current, name: event.target.value }))}
+                  />
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="newsletter-subject">Subject</label>
+                  <input
+                    id="newsletter-subject"
+                    value={newsletterDraft.subject}
+                    onChange={(event) => setNewsletterDraft((current) => ({ ...current, subject: event.target.value }))}
+                  />
+                </div>
+                <div className="promotions-field-group promotions-newsletter-email-field">
+                  <label htmlFor="newsletter-recipients">Emails</label>
+                  <textarea
+                    id="newsletter-recipients"
+                    className="promotions-newsletter-recipients"
+                    value={newsletterRecipientsText}
+                    onChange={(event) => {
+                      setNewsletterRecipientsText(event.target.value);
+                      setNewsletterRecipientInputError("");
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Tab" || !newsletterRecipientsText.trim()) return;
+                      const parsedRecipients = parseNewsletterRecipientEmails(newsletterRecipientsText);
+                      if (parsedRecipients.invalid.length > 0) {
+                        event.preventDefault();
+                        setNewsletterRecipientInputError(
+                          `Please correct these email address(es) before continuing: ${parsedRecipients.invalid.join(", ")}`
+                        );
+                        return;
+                      }
+                      setNewsletterRecipientsText(parsedRecipients.emails.join(", "));
+                      setNewsletterRecipientInputError("");
+                    }}
+                    placeholder="Select recipients or enter email addresses separated by commas"
+                    aria-describedby="newsletter-recipient-help"
+                  />
+                  <span id="newsletter-recipient-help" className="promotions-muted">
+                    Separate addresses with commas, spaces, or new lines. Press Tab to validate and organize the full list.
+                  </span>
+                  {newsletterRecipientInputError && (
+                    <p className="promotions-newsletter-error" role="alert">{newsletterRecipientInputError}</p>
+                  )}
+                  <div className="promotions-inline-actions">
+                    <button
+                      type="button"
+                      onClick={() => setIsNewsletterAudienceDialogOpen(true)}
+                      aria-haspopup="dialog"
+                    >
+                      Search emails
+                    </button>
+                  </div>
+                  {isNewsletterRecipientPickerOpen && (
+                    <div className="promotions-newsletter-picker">
+                      <div className="promotions-newsletter-search">
+                        <input
+                          aria-label="Search newsletter recipients"
+                          value={newsletterRecipientSearch}
+                          onChange={(event) => setNewsletterRecipientSearch(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              searchNewsletterRecipients();
+                            }
+                          }}
+                          placeholder="Search by name or email"
+                        />
+                        <button
+                          type="button"
+                          onClick={searchNewsletterRecipients}
+                          disabled={isSearchingNewsletterRecipients}
+                        >
+                          {isSearchingNewsletterRecipients ? "Searching..." : "Search"}
+                        </button>
+                      </div>
+                      {(isSearchingNewsletterRecipients || newsletterRecipientSearchComplete) && (
+                        <div className="promotions-newsletter-search-progress" role="status">
+                          <span>
+                            {isSearchingNewsletterRecipients
+                              ? "Searching eligible recipients…"
+                              : `Search complete — ${newsletterRecipientResults.length} recipient${newsletterRecipientResults.length === 1 ? "" : "s"} loaded.`}
+                          </span>
+                          <progress
+                            aria-label={isSearchingNewsletterRecipients
+                              ? "Searching newsletter recipients"
+                              : "Newsletter recipient search complete"}
+                            max="100"
+                            {...(!isSearchingNewsletterRecipients ? { value: 100 } : {})}
+                          />
+                        </div>
+                      )}
+                      {newsletterRecipientSearchError && (
+                        <p className="promotions-newsletter-error" role="alert">{newsletterRecipientSearchError}</p>
+                      )}
+                      <div className="promotions-newsletter-results">
+                        {newsletterRecipientResults.length === 0
+                          ? <p className="promotions-muted">
+                            {newsletterRecipientSearchComplete
+                              ? newsletterDraft.audience === "customer_active"
+                                ? "No customers with a recorded login in the past 30 days matched this search."
+                                : newsletterDraft.audience === "contributor_active"
+                                  ? "No contributors with a recorded login in the past 30 days matched this search."
+                                  : "No recipients matched this search."
+                              : "Search to find eligible customers and contributors."}
+                          </p>
+                          : newsletterRecipientResults.map((recipient) => {
+                            const isSelected = newsletterSelectedRecipients.some(
+                              (selected) => String(selected.id) === String(recipient.id)
+                            );
+                            return (
+                              <label className="promotions-newsletter-recipient" key={recipient.id}>
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={(event) => setNewsletterSelectedRecipients((selected) => (
+                                    event.target.checked
+                                      ? [...selected, recipient]
+                                      : selected.filter((item) => String(item.id) !== String(recipient.id))
+                                  ))}
+                                />
+                                <span>
+                                  <strong>{recipient.full_name || recipient.username || recipient.email}</strong>
+                                  <span>{recipient.email} · {recipient.role}</span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                      </div>
+                      <div className="promotions-inline-actions">
+                        <button
+                          type="button"
+                          onClick={() => setNewsletterSelectedRecipients((selected) => {
+                            const selectedIds = new Set(selected.map((recipient) => String(recipient.id)));
+                            return [
+                              ...selected,
+                              ...newsletterRecipientResults.filter((recipient) => !selectedIds.has(String(recipient.id)))
+                            ];
+                          })}
+                          disabled={newsletterRecipientResults.length === 0}
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewsletterSelectedRecipients([])}
+                          disabled={newsletterSelectedRecipients.length === 0}
+                        >
+                          Clear selected
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const selectedEmails = newsletterSelectedRecipients.map((recipient) => recipient.email);
+                            const currentEmails = newsletterRecipientsText.split(/[,\s;]+/).map((email) => email.trim()).filter(Boolean);
+                            const mergedEmails = [...new Set([...currentEmails, ...selectedEmails])];
+                            setNewsletterRecipientsText(mergedEmails.join(", "));
+                            setIsNewsletterRecipientPickerOpen(false);
+                          }}
+                        >
+                          Add selected emails ({newsletterSelectedRecipients.length})
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="promotions-field-group promotions-newsletter-body-field">
+                  <span id="newsletter-body-label">Message body</span>
+                  <div className="promotions-newsletter-toolbar" role="toolbar" aria-label="Message formatting">
+                    <label className="promotions-newsletter-toolbar-select">
+                      <span className="promotions-visually-hidden">Font family</span>
+                      <select
+                        aria-label="Font family"
+                        defaultValue="Arial"
+                        onMouseDown={saveNewsletterBodySelection}
+                        onChange={(event) => applyNewsletterFormatting("fontName", event.target.value)}
+                      >
+                        <option value="Arial">Arial</option>
+                        <option value="Georgia">Georgia</option>
+                        <option value="Times New Roman">Times New Roman</option>
+                        <option value="Verdana">Verdana</option>
+                        <option value="Trebuchet MS">Trebuchet MS</option>
+                      </select>
+                    </label>
+                    <label className="promotions-newsletter-toolbar-select">
+                      <span className="promotions-visually-hidden">Font size</span>
+                      <select
+                        aria-label="Font size"
+                        defaultValue="3"
+                        onMouseDown={saveNewsletterBodySelection}
+                        onChange={(event) => applyNewsletterFormatting("fontSize", event.target.value)}
+                      >
+                        <option value="2">Small</option>
+                        <option value="3">Normal</option>
+                        <option value="4">Large</option>
+                        <option value="5">X-Large</option>
+                        <option value="6">XX-Large</option>
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      aria-label="Bold"
+                      title="Bold"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyNewsletterFormatting("bold")}
+                    ><strong>B</strong></button>
+                    <button
+                      type="button"
+                      aria-label="Italic"
+                      title="Italic"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyNewsletterFormatting("italic")}
+                    ><em>I</em></button>
+                    <button
+                      type="button"
+                      aria-label="Underline"
+                      title="Underline"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyNewsletterFormatting("underline")}
+                    ><span className="promotions-newsletter-underline">U</span></button>
+                    <button
+                      type="button"
+                      aria-label="Insert link"
+                      title="Convert selected text to a link"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        saveNewsletterBodySelection();
+                        setIsNewsletterLinkEditorOpen((isOpen) => !isOpen);
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M10 13.5a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.7 1.7M14 10.5a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 19.2l1.7-1.7" />
+                      </svg>
+                    </button>
+                    <label className="promotions-newsletter-color">
+                      <span>Text color</span>
+                      <input
+                        type="color"
+                        aria-label="Text color"
+                        defaultValue="#202124"
+                        onMouseDown={saveNewsletterBodySelection}
+                        onChange={(event) => applyNewsletterFormatting("foreColor", event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  {isNewsletterLinkEditorOpen && (
+                    <div className="promotions-newsletter-link-editor">
+                      <label htmlFor="newsletter-link-url">Link URL</label>
+                      <input
+                        id="newsletter-link-url"
+                        type="text"
+                        inputMode="url"
+                        autoComplete="url"
+                        placeholder="https://example.com"
+                        value={newsletterLinkUrl}
+                        onChange={(event) => setNewsletterLinkUrl(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            applyNewsletterLink();
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={applyNewsletterLink}
+                      >
+                        Apply link
+                      </button>
+                      <button
+                        type="button"
+                        className="promotions-newsletter-link-cancel"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          setNewsletterLinkUrl("");
+                          setIsNewsletterLinkEditorOpen(false);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                  <div
+                    id="newsletter-body"
+                    ref={newsletterBodyEditorRef}
+                    className="promotions-newsletter-body"
+                    role="textbox"
+                    aria-label="Message body"
+                    aria-labelledby="newsletter-body-label"
+                    aria-multiline="true"
+                    contentEditable="true"
+                    suppressContentEditableWarning
+                    data-placeholder="Write the newsletter message"
+                    onInput={handleNewsletterBodyInput}
+                    onKeyUp={saveNewsletterBodySelection}
+                    onMouseUp={saveNewsletterBodySelection}
+                    onPointerUp={saveNewsletterBodySelection}
+                    onBlur={saveNewsletterBodySelection}
+                    onPointerDown={trackNewsletterLinkPointerDown}
+                    onPointerMove={trackNewsletterLinkPointerMove}
+                    onMouseDown={trackNewsletterLinkPointerDown}
+                    onMouseMove={trackNewsletterLinkPointerMove}
+                    onClick={preventNewsletterLinkNavigation}
+                  />
+                  <div className="promotions-newsletter-attachment-controls">
+                    <div className="promotions-newsletter-upload-card">
+                      <span className="promotions-newsletter-upload-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none">
+                          <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14.5v3A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5v-3" />
+                        </svg>
+                      </span>
+                      <span className="promotions-newsletter-upload-copy">
+                        <strong>Attach files</strong>
+                        <span>Drop files here or <span className="promotions-newsletter-browse">browse files</span></span>
+                      </span>
+                      <span className="promotions-newsletter-upload-limit">PDF, images, documents</span>
+                      <label className="promotions-visually-hidden" htmlFor="newsletter-attachments">
+                        Attach files
+                      </label>
+                      <input
+                        id="newsletter-attachments"
+                        type="file"
+                        multiple
+                        disabled={isUploadingNewsletterAttachments || newsletterAttachments.length >= 5}
+                        onChange={uploadNewsletterAttachments}
+                      />
+                    </div>
+                    <span className="promotions-newsletter-upload-help">
+                      Up to 5 files · 10 MB each · 20 MB total
+                    </span>
+                  </div>
+                  {isUploadingNewsletterAttachments && (
+                    <p className="promotions-muted" role="status">Uploading newsletter attachments…</p>
+                  )}
+                  {newsletterAttachmentError && (
+                    <p className="promotions-newsletter-error" role="alert">{newsletterAttachmentError}</p>
+                  )}
+                  {newsletterAttachments.length > 0 && (
+                    <ul className="promotions-newsletter-attachment-list" aria-label="Newsletter attachments">
+                      {newsletterAttachments.map((attachment) => (
+                        <li key={attachment.filename}>
+                          <span>{attachment.name}</span>
+                          <button
+                            type="button"
+                            aria-label={`Remove ${attachment.name}`}
+                            onClick={() => removeNewsletterAttachment(attachment)}
+                          >
+                            Remove
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="promotions-field-group">
+                  <label htmlFor="newsletter-status">Status</label>
+                  <select
+                    id="newsletter-status"
+                    value={newsletterDraft.status}
+                    onChange={(event) => setNewsletterDraft((current) => ({ ...current, status: event.target.value }))}
+                  >
+                    <option value="send">Send</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="draft">Draft</option>
+                    {["sent", "sending"].includes(newsletterDraft.status) && (
+                      <option value={newsletterDraft.status}>
+                        {newsletterDraft.status === "sent" ? "Sent" : "Sending"}
+                      </option>
+                    )}
+                  </select>
+                </div>
+                {newsletterDraft.status === "scheduled" && (
+                  <div className="promotions-field-group">
+                    <label htmlFor="newsletter-schedule">Schedule (IST)</label>
+                    <input
+                      id="newsletter-schedule"
+                      type="datetime-local"
+                      min={getISTDateTimeLocal()}
+                      value={newsletterDraft.schedule}
+                      onChange={(event) => setNewsletterDraft((current) => ({ ...current, schedule: event.target.value }))}
+                      required
+                    />
+                  </div>
+                )}
+                <div className="promotions-inline-actions promotions-newsletter-actions">
+                  <button type="submit" disabled={isSavingNewsletter || isUploadingNewsletterAttachments}>
+                    {isSavingNewsletter
+                      ? "Saving..."
+                      : editingNewsletterId !== null
+                        ? newsletterDraft.status === "send"
+                          ? "Send Newsletter Changes"
+                          : newsletterDraft.status === "scheduled"
+                            ? "Schedule Newsletter Changes"
+                            : "Save Newsletter Changes"
+                        : newsletterDraft.status === "send"
+                        ? "Send Newsletter Campaigns"
+                        : newsletterDraft.status === "scheduled"
+                          ? "Schedule Newsletter Campaigns"
+                          : "Draft Newsletter Campaigns"}
+                  </button>
+                  {editingNewsletterId !== null && (
+                    <button
+                      type="button"
+                      className="promotions-newsletter-cancel-edit"
+                      onClick={cancelNewsletterEdit}
+                      disabled={isSavingNewsletter}
+                    >
+                      Cancel edit
+                    </button>
+                  )}
+                </div>
+              </form>
+            </div>
+            {isNewsletterAudienceDialogOpen && (
+              <div
+                className="promotions-modal-backdrop"
+                onClick={(event) => {
+                  if (event.target === event.currentTarget) setIsNewsletterAudienceDialogOpen(false);
+                }}
+              >
+                <section
+                  className="promotions-modal promotions-newsletter-audience-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="newsletter-audience-dialog-title"
+                >
+                  <div className="promotions-newsletter-dialog-heading">
+                    <span className="promotions-newsletter-dialog-mark" aria-hidden="true">@</span>
+                    <div>
+                      <span className="promotions-newsletter-dialog-eyebrow">NEWSLETTER RECIPIENTS</span>
+                      <h3 id="newsletter-audience-dialog-title">Choose your audience</h3>
+                      <p>Select who should appear in the recipient search.</p>
+                    </div>
+                  </div>
+                  <div className="promotions-field-group">
+                    <label htmlFor="newsletter-audience">Audience</label>
+                    <select
+                      id="newsletter-audience"
+                      value={newsletterDraft.audience}
+                      onChange={(event) => {
+                        setNewsletterDraft((current) => ({ ...current, audience: event.target.value }));
+                        setNewsletterRecipientResults([]);
+                        setNewsletterSelectedRecipients([]);
+                        setNewsletterRecipientSearchError("");
+                        setNewsletterRecipientSearchComplete(false);
+                      }}
+                    >
+                      {NEWSLETTER_AUDIENCES.map((audience) => (
+                        <option key={audience.value} value={audience.value}>{audience.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    className="promotions-newsletter-audience-submit"
+                    onClick={() => {
+                      setNewsletterRecipientResults([]);
+                      setNewsletterSelectedRecipients([]);
+                      setNewsletterRecipientSearchError("");
+                      setNewsletterRecipientSearchComplete(false);
+                      setIsNewsletterAudienceDialogOpen(false);
+                      setIsNewsletterRecipientPickerOpen(true);
+                    }}
+                  >
+                    <span>Search recipients</span>
+                    <span aria-hidden="true">→</span>
+                  </button>
+                </section>
+              </div>
+            )}
+            <div className="promotions-card">
+              <div className="promotions-card-header">
+                <h3>Existing Entries</h3>
+                <label className="promotions-newsletter-filter">
+                  <span className="promotions-visually-hidden">Filter newsletter campaigns</span>
+                  <select
+                    aria-label="Filter newsletter campaigns"
+                    value={newsletterStatusFilter}
+                    onChange={(event) => setNewsletterStatusFilter(event.target.value)}
+                  >
+                    <option value="all">All campaigns</option>
+                    <option value="sent">Sent</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="draft">Draft</option>
+                  </select>
+                  <span className="promotions-newsletter-filter-chevron" aria-hidden="true">⌄</span>
+                </label>
+              </div>
+              <div className="promotions-list">
+                {filteredNewsletters.length === 0
+                  ? <p>No newsletter campaigns for this status.</p>
+                  : filteredNewsletters.map((campaign) => (
+                    <div key={campaign.id} className="promotions-list-item">
+                      <div>
+                        <strong>{campaign.name || "Untitled newsletter"}</strong>
+                        <div className="promotions-muted">
+                          {campaign.subject || "No subject"} · {campaign.status || "draft"}
+                        </div>
+                        <div className="promotions-muted">
+                          {campaign.status === "scheduled"
+                            ? `Scheduled: ${formatNewsletterSchedule(campaign.scheduled_at || campaign.schedule)}`
+                            : `${Array.isArray(campaign.recipients) ? campaign.recipients.length : 0} recipient(s)`}
+                        </div>
+                      </div>
+                      <div className="promotions-inline-actions">
+                        <button
+                          type="button"
+                          className="promotions-newsletter-edit-button"
+                          onClick={() => editNewsletterCampaign(campaign)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="promotions-newsletter-delete-button"
+                          onClick={() => persistResource("newsletter", "delete", { id: campaign.id }, "Newsletter campaign removed.")}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        );
       case "banners":
         return renderSimpleSection("Promotional Banners", "banner", banners, bannerDraft, setBannerDraft, initialBannerForm, "Banner saved.", [
           { key: "name", label: "Banner name", type: "text" },
@@ -2194,17 +3261,7 @@ function AdminPromotionsPanel() {
       case "settings":
         return (
           <div className="promotions-stack">
-            <div className="promotions-card">
-              <div className="promotions-card-header">
-                <h3>Settings</h3>
-                <span>Manage defaults for expiry, stacking rules, eligibility, and automated promotion policy.</span>
-              </div>
-              <div className="promotions-list">
-                <div className="promotions-list-item"><div><strong>Role-based permissions</strong><div className="promotions-muted">Super admin and authorized admins can manage the hub.</div></div></div>
-                <div className="promotions-list-item"><div><strong>Duplicate coupon prevention</strong><div className="promotions-muted">Enabled by default.</div></div></div>
-                <div className="promotions-list-item"><div><strong>Automatic expiry</strong><div className="promotions-muted">Policies are applied automatically when promotions end.</div></div></div>
-              </div>
-            </div>
+            <NewsletterSMTPSettings />
           </div>
         );
       case "activity":

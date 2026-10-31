@@ -1194,6 +1194,26 @@ function normalizeSmtpUser(settings) {
   return settings;
 }
 
+function validateNewsletterSmtpSettings(settings) {
+  const requiredFields = [
+    ['sender_name', 'Sender name'],
+    ['sender_email', 'Sender email'],
+    ['smtp_host', 'SMTP host'],
+    ['smtp_user', 'SMTP username'],
+    ['smtp_pass', 'SMTP password']
+  ];
+  const missing = requiredFields.find(([key]) => !String(settings[key] || '').trim());
+  if (missing) return `${missing[1]} is required`;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(settings.sender_email).trim())) {
+    return 'Enter a valid sender email address';
+  }
+  const port = Number(settings.smtp_port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return 'SMTP port must be between 1 and 65535';
+  }
+  return null;
+}
+
 async function upsertNewsletterTracking(campaignId, recipient, status = 'delivered') {
   try {
     await pool.query(
@@ -1223,6 +1243,132 @@ async function backfillDeliveredTrackingFromLogs() {
     console.error('Failed to backfill newsletter tracking from email logs', err);
   }
 }
+
+router.get('/newsletter-smtp-settings', verifyAdminLocal, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT sender_name, sender_email, smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure, updated_at FROM promotion_newsletter_smtp_settings WHERE id = 1'
+    );
+    const settings = result.rows[0] || {};
+    if (settings.smtp_pass) settings.smtp_pass = '*****';
+    res.json(settings);
+  } catch (err) {
+    console.error('Failed to load newsletter SMTP settings', err);
+    res.status(500).json({ error: 'Failed to load newsletter SMTP settings' });
+  }
+});
+
+router.put('/newsletter-smtp-settings', verifyAdminLocal, async (req, res) => {
+  try {
+    const currentResult = await pool.query(
+      'SELECT * FROM promotion_newsletter_smtp_settings WHERE id = 1'
+    );
+    const current = currentResult.rows[0] || {};
+    const body = req.body || {};
+    const password = preserveStoredPassword(body, current);
+    const settings = normalizeSmtpUser({
+      ...body,
+      smtp_pass: password,
+      smtp_port: Number(body.smtp_port),
+      smtp_secure: typeof body.smtp_secure === 'boolean' ? body.smtp_secure : Number(body.smtp_port) === 465
+    });
+    const validationError = validateNewsletterSmtpSettings(settings);
+    if (validationError) return res.status(400).json({ error: validationError });
+
+    const encryptedPassword = password === current.smtp_pass ? password : encrypt(password);
+    const result = await pool.query(
+      `INSERT INTO promotion_newsletter_smtp_settings
+         (id, sender_name, sender_email, smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure, updated_at)
+       VALUES (1, $1, $2, $3, $4, $5, $6, $7, now())
+       ON CONFLICT (id) DO UPDATE SET
+         sender_name = EXCLUDED.sender_name,
+         sender_email = EXCLUDED.sender_email,
+         smtp_host = EXCLUDED.smtp_host,
+         smtp_port = EXCLUDED.smtp_port,
+         smtp_user = EXCLUDED.smtp_user,
+         smtp_pass = EXCLUDED.smtp_pass,
+         smtp_secure = EXCLUDED.smtp_secure,
+         updated_at = now()
+       RETURNING sender_name, sender_email, smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure, updated_at`,
+      [
+        String(settings.sender_name).trim(),
+        String(settings.sender_email).trim(),
+        String(settings.smtp_host).trim(),
+        settings.smtp_port,
+        String(settings.smtp_user).trim(),
+        encryptedPassword,
+        settings.smtp_secure
+      ]
+    );
+    const saved = result.rows[0];
+    if (saved.smtp_pass) saved.smtp_pass = '*****';
+    res.json(saved);
+  } catch (err) {
+    console.error('Failed to save newsletter SMTP settings', err);
+    res.status(500).json({ error: 'Failed to save newsletter SMTP settings' });
+  }
+});
+
+router.post('/newsletter-smtp-settings/verify', verifyAdminLocal, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const currentResult = await pool.query(
+      'SELECT * FROM promotion_newsletter_smtp_settings WHERE id = 1'
+    );
+    const current = currentResult.rows[0] || {};
+    const settings = normalizeSmtpUser({
+      ...body,
+      smtp_pass: preserveStoredPassword(body, current),
+      smtp_port: Number(body.smtp_port),
+      smtp_secure: typeof body.smtp_secure === 'boolean' ? body.smtp_secure : Number(body.smtp_port) === 465
+    });
+    const validationError = validateNewsletterSmtpSettings(settings);
+    if (validationError) return res.status(400).json({ error: validationError });
+    try {
+      const transport = await createTransportFromSettings(settings);
+      await transport.verify();
+    } catch (err) {
+      return res.status(400).json({ status: 'failed', error: err.message || 'SMTP verification failed' });
+    }
+    res.json({ status: 'connected' });
+  } catch (err) {
+    console.error('Failed to verify newsletter SMTP settings', err);
+    res.status(500).json({ error: 'Failed to verify newsletter SMTP settings' });
+  }
+});
+
+router.post('/newsletter-smtp-settings/test', verifyAdminLocal, async (req, res) => {
+  try {
+    const { to, settings: bodySettings = {} } = req.body || {};
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(to || '').trim())) {
+      return res.status(400).json({ error: 'Enter a valid test recipient email address' });
+    }
+    const currentResult = await pool.query(
+      'SELECT * FROM promotion_newsletter_smtp_settings WHERE id = 1'
+    );
+    const current = currentResult.rows[0] || {};
+    const settings = normalizeSmtpUser({
+      ...bodySettings,
+      smtp_pass: preserveStoredPassword(bodySettings, current),
+      smtp_port: Number(bodySettings.smtp_port),
+      smtp_secure: typeof bodySettings.smtp_secure === 'boolean'
+        ? bodySettings.smtp_secure
+        : Number(bodySettings.smtp_port) === 465
+    });
+    const validationError = validateNewsletterSmtpSettings(settings);
+    if (validationError) return res.status(400).json({ error: validationError });
+    await sendMail(settings, {
+      to: String(to).trim(),
+      subject: 'Newsletter SMTP test email',
+      text: 'Your newsletter SMTP settings are working.',
+      html: '<p>Your newsletter SMTP settings are working.</p>'
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Failed to send newsletter SMTP test email', err);
+    res.status(500).json({ error: err.message || 'Failed to send newsletter SMTP test email' });
+  }
+});
 
 // Get or create settings (single row)
 router.get('/settings', verifyAdminLocal, async (req, res) => {

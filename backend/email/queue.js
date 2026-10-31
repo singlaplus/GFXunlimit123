@@ -28,9 +28,17 @@ async function processDatabaseEmailQueue() {
       await client.query("UPDATE email_queue SET status='processing', attempts=attempts + 1 WHERE id = $1", [row.id]);
       try {
         const payload = row.payload || {};
-        const settings = (await client.query('SELECT * FROM email_settings ORDER BY id DESC LIMIT 1')).rows[0] || {};
+        const settings = payload.settings
+          || (await client.query('SELECT * FROM email_settings ORDER BY id DESC LIMIT 1')).rows[0]
+          || {};
         const html = payload.templateBody ? renderTemplate(payload.templateBody, payload.templateData || {}) : (payload.templateData?.html || '');
-        await sendMail(settings, { to: payload.to || row.recipient, subject: payload.subject || row.subject || '', html, text: payload.templateData?.text || '' });
+        await sendMail(settings, {
+          to: payload.to || row.recipient,
+          subject: payload.subject || row.subject || '',
+          html,
+          text: payload.templateData?.text || '',
+          attachments: payload.attachments || []
+        });
         await client.query("UPDATE email_queue SET status='sent', sent_at=now(), error_message=NULL WHERE id = $1", [row.id]);
         await client.query(
           `INSERT INTO email_logs(email_id, recipient, event, template_id, subject, body, status, queued_at, sent_at, delivered_at, retry_count, created_at)

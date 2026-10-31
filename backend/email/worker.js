@@ -14,12 +14,18 @@ const connection = new IORedis(connectionString);
 const emailQueue = new Queue('emails', { connection });
 
 const worker = new Worker('emails', async job => {
-  const { to, subject, templateBody, templateData, settings, campaignId, recipient, source } = job.data;
+  const { to, subject, templateBody, templateData, settings, campaignId, recipient, source, attachments } = job.data;
   await pool.query("UPDATE email_queue SET status='processing', attempts=attempts + 1 WHERE job_id = $1", [job.id]);
   try {
     const html = templateBody ? renderTemplate(templateBody, templateData) : (templateData && templateData.html) || '';
     const trackedHtml = injectTrackingIntoHtml(html, campaignId || 0, recipient || to, process.env.APP_URL || 'http://localhost:5000');
-    await sendMail(settings, { to, subject, html: trackedHtml, text: templateData && templateData.text });
+    await sendMail(settings, {
+      to,
+      subject,
+      html: trackedHtml,
+      text: templateData && templateData.text,
+      attachments: attachments || []
+    });
     await pool.query(
       `INSERT INTO email_logs(email_id, recipient, event, template_id, subject, body, status, queued_at, sent_at, delivered_at, retry_count, created_at)
        VALUES($1,$2,$3,$4,$5,$6,'sent',now(),now(),now(),$7,now())`,
