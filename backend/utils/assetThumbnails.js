@@ -12,6 +12,7 @@ const pool = require('../db');
 const { getAssetServerOrigin } = require('../config');
 const assetStorageConnections = require('../services/assetStorageConnections');
 const assetStorageCardConnections = require('../services/assetStorageCardConnections');
+const { findWindowsToolExecutable } = require('../services/windowsToolPaths');
 const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
 const { getAssetSourceDimensions } = require('./assetDimensions');
@@ -23,6 +24,15 @@ const THUMBNAIL_INITIAL_QUALITY = 37;
 const THUMBNAIL_MIN_QUALITY = 1;
 const MIN_THUMBNAIL_DIMENSION = 16;
 const MIN_THUMBNAIL_SHORT_DIMENSION = 8;
+
+function getWindowsToolExecutable(toolName, fallback) {
+  if (process.platform !== 'win32') return fallback;
+  const configuredPath = toolName === 'ghostscript'
+    ? process.env.GHOSTSCRIPT_PATH
+    : process.env.IMAGEMAGICK_PATH;
+  if (configuredPath) return configuredPath;
+  return findWindowsToolExecutable(toolName) || fallback;
+}
 
 function hasMeaningfulThumbnailDimensions(width, height) {
   return Number.isFinite(Number(width)) &&
@@ -707,14 +717,20 @@ async function extractPreview(sourcePath, extension) {
   }
 
   if (ext === '.pdf') {
-    const gs = process.env.GHOSTSCRIPT_PATH || (process.platform === 'win32' ? 'gswin64c' : 'gs');
+    const gs = getWindowsToolExecutable(
+      'ghostscript',
+      process.env.GHOSTSCRIPT_PATH || (process.platform === 'win32' ? 'gswin64c' : 'gs')
+    );
     try {
       return await runCommand(gs, [
         '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dFirstPage=1', '-dLastPage=1',
         '-sDEVICE=pngalpha', '-r120', '-sOutputFile=-', sourcePath,
       ]);
     } catch (ghostscriptError) {
-      const imageMagick = process.env.IMAGEMAGICK_PATH || (process.platform === 'win32' ? 'magick' : 'convert');
+      const imageMagick = getWindowsToolExecutable(
+        'imagemagick',
+        process.env.IMAGEMAGICK_PATH || (process.platform === 'win32' ? 'magick' : 'convert')
+      );
       try {
         const input = process.platform === 'win32' ? `${sourcePath}[0]` : `${sourcePath}[0]`;
         return await runCommand(imageMagick, [input, '-thumbnail', '640x360', 'png:-']);

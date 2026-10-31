@@ -8,22 +8,10 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync, execSync, spawn } = require('child_process');
 const pool = require('../db');
+const { getWindowsToolPaths } = require('../services/windowsToolPaths');
 
 // Windows-specific paths for common tool installations
 const WINDOWS_TOOL_PATHS = {
-  ghostscript: [
-    'C:\\Program Files\\gs\\gs10.08.0\\bin\\gswin64c.exe',
-    'C:\\Program Files\\gs\\gs10.01.2\\bin\\gswin64c.exe',
-    'C:\\Program Files\\gs\\gs10.00.0\\bin\\gswin64c.exe',
-    'C:\\Program Files (x86)\\gs\\gs10.01.2\\bin\\gswin64c.exe',
-    'C:\\Program Files (x86)\\gs\\gs10.00.0\\bin\\gswin64c.exe',
-  ],
-  imagemagick: [
-    'C:\\Program Files\\ImageMagick-7.1.1-Q16-HDRI\\magick.exe',
-    'C:\\Program Files\\ImageMagick-7.1.0-Q16-HDRI\\magick.exe',
-    'C:\\Program Files (x86)\\ImageMagick-7.1.1-Q16-HDRI\\magick.exe',
-    'C:\\Program Files (x86)\\ImageMagick-7.1.0-Q16-HDRI\\magick.exe',
-  ],
   illustrator: [
     'C:\\Program Files\\Adobe\\Adobe Illustrator 2024\\Support Files\\Contents\\Windows\\Illustrator.exe',
     'C:\\Program Files\\Adobe\\Adobe Illustrator 2023\\Support Files\\Contents\\Windows\\Illustrator.exe',
@@ -106,10 +94,10 @@ class ProcessorDetector {
       }
 
       // Try common installation paths
-      for (const pathCandidate of WINDOWS_TOOL_PATHS.ghostscript) {
+      for (const pathCandidate of getWindowsToolPaths('ghostscript')) {
         if (fs.existsSync(pathCandidate)) {
           try {
-            const version = execSync(`"${pathCandidate}" -version`, { encoding: 'utf8', windowsHide: true });
+            const version = execFileSync(pathCandidate, ['-version'], { encoding: 'utf8', windowsHide: true });
             return {
               status: 'READY',
               executablePath: pathCandidate,
@@ -196,10 +184,10 @@ class ProcessorDetector {
       }
 
       // Try common installation paths
-      for (const pathCandidate of WINDOWS_TOOL_PATHS.imagemagick) {
+      for (const pathCandidate of getWindowsToolPaths('imagemagick')) {
         if (fs.existsSync(pathCandidate)) {
           try {
-            const version = execSync(`"${pathCandidate}" -version`, { encoding: 'utf8', windowsHide: true });
+            const version = execFileSync(pathCandidate, ['-version'], { encoding: 'utf8', windowsHide: true });
             return {
               status: 'READY',
               executablePath: pathCandidate,

@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const readline = require('readline');
+const { getWindowsToolPaths } = require('../services/windowsToolPaths');
 
 const BACKEND_DIR = path.resolve(__dirname, '..');
 const STARTUP_LOG_DIR = path.join(BACKEND_DIR, 'startup');
@@ -20,21 +21,6 @@ function colorize(text, color) {
   return `${color}${text}${COLORS.reset}`;
 }
 
-const WINDOWS_TOOL_PATHS = {
-  ghostscript: [
-    'C:\\Program Files\\gs\\gs10.01.2\\bin\\gswin64c.exe',
-    'C:\\Program Files\\gs\\gs10.00.0\\bin\\gswin64c.exe',
-    'C:\\Program Files (x86)\\gs\\gs10.01.2\\bin\\gswin64c.exe',
-    'C:\\Program Files (x86)\\gs\\gs10.00.0\\bin\\gswin64c.exe',
-  ],
-  imagemagick: [
-    'C:\\Program Files\\ImageMagick-7.1.1-Q16-HDRI\\magick.exe',
-    'C:\\Program Files\\ImageMagick-7.1.0-Q16-HDRI\\magick.exe',
-    'C:\\Program Files (x86)\\ImageMagick-7.1.1-Q16-HDRI\\magick.exe',
-    'C:\\Program Files (x86)\\ImageMagick-7.1.0-Q16-HDRI\\magick.exe',
-  ],
-};
-
 const PLATFORM_INSTALL_COMMANDS = {
   darwin: {
     ghostscript: 'brew install ghostscript',
@@ -51,8 +37,6 @@ const PLATFORM_INSTALL_COMMANDS = {
   win32: {
     ghostscript: 'winget install --id ArtifexSoftware.GhostScript -e',
     imagemagick: 'winget install --id ImageMagick.ImageMagick -e',
-    postgresql: 'winget install --id PostgreSQL.PostgreSQL -e',
-    redis: 'winget install --id Microsoft.OpenJDK.17 -e && winget install --id tporadowski.redis -e',
   },
 };
 
@@ -89,7 +73,7 @@ function runCommand(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd || BACKEND_DIR,
     encoding: 'utf8',
-    shell: process.platform === 'win32' && !options.directShell,
+    shell: options.shell === true,
     windowsHide: true,
     stdio: options.stdio || 'pipe',
     env: { ...process.env, ...(options.env || {}) },
@@ -125,21 +109,30 @@ function detectCommand(command, args = []) {
 }
 
 function detectPathTool(toolName, args = [], candidates = []) {
-  const whereCommand = process.platform === 'win32' ? 'where.exe' : 'which';
-  const whereResult = runCommand(whereCommand, [toolName], { directShell: true });
-  if (whereResult.ok && whereResult.stdout) {
-    const executablePath = whereResult.stdout.split(/\r?\n/).find(Boolean);
-    if (executablePath) {
-      const versionResult = runCommand(executablePath, args);
-      if (versionResult.ok) {
-        return { detected: true, executable: executablePath, version: versionResult.stdout || 'unknown' };
+  const isExplicitPath = path.isAbsolute(toolName) || path.win32.isAbsolute(toolName)
+    || toolName.includes('/') || toolName.includes('\\');
+  if (isExplicitPath) {
+    const versionResult = runCommand(toolName, args);
+    if (versionResult.ok) {
+      return { detected: true, executable: toolName, version: versionResult.stdout || 'unknown' };
+    }
+  } else {
+    const whereCommand = process.platform === 'win32' ? 'where.exe' : 'which';
+    const whereResult = runCommand(whereCommand, [toolName]);
+    if (whereResult.ok && whereResult.stdout) {
+      const executablePath = whereResult.stdout.split(/\r?\n/).find(Boolean);
+      if (executablePath) {
+        const versionResult = runCommand(executablePath, args);
+        if (versionResult.ok) {
+          return { detected: true, executable: executablePath, version: versionResult.stdout || 'unknown' };
+        }
       }
     }
   }
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
-      const versionResult = runCommand('"' + candidate + '"', args);
+      const versionResult = runCommand(candidate, args);
       if (versionResult.ok) {
         return { detected: true, executable: candidate, version: versionResult.stdout || 'unknown' };
       }
@@ -156,53 +149,67 @@ function detectTool(toolName, versionArgs = []) {
   if (result.ok && result.stdout) {
     const executable = result.stdout.trim().split('\n')[0];
     const version = runCommand(executable, versionArgs);
-    return { 
-      detected: true, 
-      executable, 
-      version: (version.stdout || version.stderr || 'unknown').split('\n')[0].trim() 
-    };
+    if (version.ok) {
+      return {
+        detected: true,
+        executable,
+        version: (version.stdout || version.stderr || 'unknown').split('\n')[0].trim(),
+      };
+    }
   }
   return { detected: false, executable: null, version: null };
 }
 
 function detectGhostscript() {
   if (process.platform === 'win32') {
-    return detectPathTool('gswin64c', ['-version'], WINDOWS_TOOL_PATHS.ghostscript);
+    const configuredPath = process.env.GHOSTSCRIPT_PATH;
+    const configuredResult = configuredPath
+      ? detectPathTool(configuredPath, ['-version'])
+      : { detected: false };
+    if (configuredResult.detected) return configuredResult;
+    const candidates = getWindowsToolPaths('ghostscript');
+    candidates.push(...candidates.map((file) => file.replace(/gswin64c\.exe$/i, 'gswin32c.exe')));
+    return detectPathTool('gswin64c', ['-version'], candidates);
   }
   
   const gs = detectTool('gs', ['--version']);
   if (gs.detected) return gs;
   
-  // Try gswin64c on Windows-like systems
   return { detected: false, executable: null, version: null };
 }
 
 function detectImageMagick() {
+  if (process.platform === 'win32') {
+    const configuredPath = process.env.IMAGEMAGICK_PATH;
+    const configuredResult = configuredPath
+      ? detectPathTool(configuredPath, ['-version'])
+      : { detected: false };
+    if (configuredResult.detected) return configuredResult;
+    return detectPathTool('magick', ['-version'], getWindowsToolPaths('imagemagick'));
+  }
+
   const magick = detectTool('magick', ['-version']);
   if (magick.detected) return magick;
-  
-  // Try convert as fallback
+
+  // ImageMagick 6 provides `convert` instead of `magick`.
   const convert = detectTool('convert', ['-version']);
   if (convert.detected) return convert;
-  
-  if (process.platform === 'win32') {
-    return detectPathTool('magick', ['-version'], WINDOWS_TOOL_PATHS.imagemagick);
-  }
   
   return { detected: false, executable: null, version: null };
 }
 
 function detectPostgreSQL() {
-  if (process.platform === 'win32') {
-    const result = detectTool('psql', ['--version']);
-    if (result.detected) return result;
-  }
-  
-  return detectTool('psql', ['--version']);
+  const candidates = process.platform === 'win32'
+    ? getWindowsToolPaths('postgresql')
+    : [];
+  return detectPathTool('psql', ['--version'], candidates);
 }
 
 function detectRedis() {
-  return detectTool('redis-cli', ['--version']);
+  const candidates = process.platform === 'win32'
+    ? getWindowsToolPaths('redis')
+    : [];
+  return detectPathTool('redis-cli', ['--version'], candidates);
 }
 
 function detectNodeDependency(moduleName) {
@@ -244,46 +251,54 @@ function validateWindowsTool(toolKey, label) {
   return detected;
 }
 
-function installWindowsTool(toolKey, action) {
+function installWindowsTool(toolName) {
   const packageMap = {
-    'install-ghostscript': { id: 'ArtifexSoftware.GhostScript', label: 'Ghostscript', binary: 'gswin64c' },
-    'install-imagemagick': { id: 'ImageMagick.ImageMagick', label: 'ImageMagick', binary: 'magick' },
+    ghostscript: {
+      id: 'ArtifexSoftware.GhostScript',
+      label: 'Ghostscript',
+      chocolateyPackage: 'ghostscript',
+    },
+    imagemagick: {
+      id: 'ImageMagick.ImageMagick',
+      label: 'ImageMagick',
+      chocolateyPackage: 'imagemagick',
+    },
   };
-
-  const config = packageMap[action.type];
-  if (!config) {
-    return false;
-  }
+  const config = packageMap[toolName];
+  if (!config) return false;
 
   const candidates = [
-    { command: 'winget', args: ['install', '--id', config.id, '--exact', '--accept-source-agreements', '--accept-package-agreements', '--silent'], label: `winget install ${config.label}` },
-    { command: 'choco', args: ['install', config.label.toLowerCase() === 'ghostscript' ? 'ghostscript' : 'imagemagick', '-y', '--no-progress'], label: `choco install ${config.label}` },
+    {
+      command: 'winget',
+      args: [
+        'install', '--id', config.id, '--exact',
+        '--accept-source-agreements', '--accept-package-agreements', '--silent',
+      ],
+    },
+    {
+      command: 'choco',
+      args: ['install', config.chocolateyPackage, '-y', '--no-progress'],
+    },
   ];
 
   for (const candidate of candidates) {
-    const hasTool = runCommand('where.exe', [candidate.command], { directShell: true });
-    if (!hasTool.ok && candidate.command === 'winget') {
-      continue;
-    }
-
-    if (!hasTool.ok && candidate.command === 'choco') {
-      continue;
-    }
+    if (!runCommand('where.exe', [candidate.command]).ok) continue;
 
     console.log(`[bootstrap] Installing ${config.label} using ${candidate.command}...`);
-    const result = runCommand(candidate.command, candidate.args, { stdio: 'pipe' });
+    const result = runCommand(candidate.command, candidate.args, { stdio: 'inherit' });
     if (result.ok) {
-      const validated = validateWindowsTool(toolKey, config.label);
-      if (validated.detected) {
+      try {
+        const validated = validateWindowsTool(toolName, config.label);
         appendLog(`${config.label} validated successfully at ${validated.executable}`);
         return true;
+      } catch (error) {
+        appendLog(`${config.label} installation via ${candidate.command} completed but validation failed: ${error.message}`);
       }
     }
-
-    appendLog(`${config.label} installation via ${candidate.command} did not validate successfully.`);
+    appendLog(`${config.label} installation via ${candidate.command} failed; trying the next available installer.`);
   }
 
-  throw new Error(`Failed to install or validate ${config.label} on Windows.`);
+  throw new Error(`Could not install ${config.label}. Install it manually or configure its executable path.`);
 }
 
 function buildStartupPlan({
@@ -322,17 +337,11 @@ function buildStartupPlan({
     });
   }
 
-  if (!ghostscriptDetected && platform !== 'win32') {
+  if (!ghostscriptDetected) {
     actions.push({
       type: 'install-ghostscript',
       command: PLATFORM_INSTALL_COMMANDS[platform]?.ghostscript,
       reason: 'Ghostscript is required for EPS/AI file processing.',
-    });
-  } else if (!ghostscriptDetected && platform === 'win32') {
-    actions.push({
-      type: 'install-ghostscript',
-      command: 'winget install --id ArtifexSoftware.GhostScript -e',
-      reason: 'Ghostscript is required for EPS/AI processing on Windows.',
     });
   }
 
@@ -344,21 +353,26 @@ function buildStartupPlan({
     });
   }
 
-  if (!postgresqlDetected && process.env.SKIP_DB_CHECK !== 'true') {
+  if (!postgresqlDetected && platform !== 'win32' && process.env.SKIP_DB_CHECK !== 'true') {
     actions.push({
       type: 'install-postgresql',
       command: PLATFORM_INSTALL_COMMANDS[platform]?.postgresql,
-      reason: 'PostgreSQL is required for the database.',
+      reason: 'PostgreSQL command-line tools are required for database backup and restore.',
     });
   }
 
-  if (!redisDetected && process.env.SKIP_REDIS_CHECK !== 'true') {
+  if (!redisDetected && platform !== 'win32' && process.env.SKIP_REDIS_CHECK !== 'true') {
     actions.push({
       type: 'install-redis',
       command: PLATFORM_INSTALL_COMMANDS[platform]?.redis,
       reason: 'Redis is required for job queuing and caching.',
     });
   }
+
+  const missingSystemTools = [
+    !ghostscriptDetected && 'Ghostscript',
+    !imagemagickDetected && 'ImageMagick',
+  ].filter(Boolean);
 
   actions.push({
     type: 'start-server',
@@ -377,12 +391,19 @@ function buildStartupPlan({
     redisDetected,
     sharpDetected,
     psdLibraryDetected,
+    missingSystemTools,
     actions,
     ready,
   };
 }
 
 function ensureToolInstall(action, platform) {
+  if (platform === 'win32') {
+    if (action.type === 'install-ghostscript') return installWindowsTool('ghostscript');
+    if (action.type === 'install-imagemagick') return installWindowsTool('imagemagick');
+    return false;
+  }
+
   const toolType = action.type;
   
   if (toolType === 'install-ghostscript') {
@@ -432,7 +453,10 @@ function installSystemTool(toolName, platform) {
 function ensureNodeDependencies(action) {
   if (action.type === 'npm-install') {
     console.log(colorize('[bootstrap] Installing backend node modules...', COLORS.blue));
-    const result = runCommand('npm', ['install'], { stdio: 'inherit' });
+    const result = runCommand('npm', ['install'], {
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    });
     if (!result.ok) {
       console.error(colorize('[bootstrap] npm install failed', COLORS.red));
       return false;
@@ -443,7 +467,10 @@ function ensureNodeDependencies(action) {
 
   if (action.type === 'npm-install-sharp') {
     console.log(colorize('[bootstrap] Installing Sharp...', COLORS.blue));
-    const result = runCommand('npm', ['install', 'sharp'], { stdio: 'inherit' });
+    const result = runCommand('npm', ['install', 'sharp'], {
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    });
     if (!result.ok) {
       console.error(colorize('[bootstrap] Sharp installation failed', COLORS.red));
       return false;
@@ -454,7 +481,10 @@ function ensureNodeDependencies(action) {
 
   if (action.type === 'npm-install-psd') {
     console.log(colorize('[bootstrap] Installing PSD processor dependency...', COLORS.blue));
-    const result = runCommand('npm', ['install', 'psd.js'], { stdio: 'inherit' });
+    const result = runCommand('npm', ['install', 'psd.js'], {
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    });
     if (!result.ok) {
       console.error(colorize('[bootstrap] PSD library installation failed', COLORS.red));
       return false;
@@ -499,11 +529,19 @@ async function runStartupChecks() {
   console.log(`  ${plan.psdLibraryDetected ? '✓' : '✗'} PSD Library: ${plan.psdLibraryDetected ? 'installed' : 'not installed'}`);
   console.log(`  ${plan.ghostscriptDetected ? '✓' : '✗'} Ghostscript: ${plan.ghostscriptDetected ? 'installed' : 'not installed'}`);
   console.log(`  ${plan.imagemagickDetected ? '✓' : '✗'} ImageMagick: ${plan.imagemagickDetected ? 'installed' : 'not installed'}`);
-  console.log(`  ${plan.postgresqlDetected ? '✓' : '✗'} PostgreSQL: ${plan.postgresqlDetected ? 'installed' : 'not installed'}`);
-  console.log(`  ${plan.redisDetected ? '✓' : '✗'} Redis: ${plan.redisDetected ? 'installed' : 'not installed'}`);
+  console.log(`  ${plan.postgresqlDetected ? '✓' : '✗'} PostgreSQL CLI: ${plan.postgresqlDetected ? 'installed' : 'not installed'}`);
+  console.log(`  ${plan.redisDetected ? '✓' : '✗'} Redis CLI: ${plan.redisDetected ? 'installed' : 'not installed'}`);
+
+  if (plan.platform === 'win32' && (!plan.postgresqlDetected || !plan.redisDetected)) {
+    console.warn(colorize(
+      '[bootstrap] PostgreSQL/Redis command-line clients are not detected. These checks do not determine whether the configured database/cache services are reachable; the app uses Node.js drivers and will not install another database/cache service based only on missing CLI tools.',
+      COLORS.yellow
+    ));
+    appendLog('PostgreSQL/Redis CLI missing; not installing database/cache services based on a missing command-line client.');
+  }
 
   if (plan.actions.length === 1 && plan.actions[0].type === 'start-server') {
-    console.log(colorize('\n✓ All dependencies are installed!', COLORS.green));
+    console.log(colorize('\n✓ Backend Node dependencies are installed.', COLORS.green));
     console.log(colorize('Starting server...\n', COLORS.blue));
     appendLog('All dependencies verified. Starting server.');
     startBackendServer();
@@ -560,6 +598,7 @@ if (require.main === module) {
 module.exports = {
   BACKEND_DIR,
   STARTUP_LOG_FILE,
+  getWindowsToolPaths,
   buildStartupPlan,
   runStartupChecks,
   detectGhostscript,

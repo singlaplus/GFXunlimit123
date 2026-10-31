@@ -11,7 +11,8 @@ This guide explains how to set up the backend server with automatic dependency c
 Simply run the bootstrap script, which automatically:
 - ✓ Detects installed dependencies
 - ✓ Installs missing npm packages
-- ✓ Installs missing system tools (Ghostscript, ImageMagick, etc.)
+- ✓ Checks system tools and installs missing image-processing tools
+- ✓ Checks Windows install folders to avoid reinstalling tools just because they are not in `PATH`
 - ✓ Starts the backend server
 
 ```bash
@@ -56,15 +57,15 @@ node image-generator-cli.js status
 | **Node.js** | JavaScript runtime | Install from nodejs.org |
 | **npm** | Package manager | Included with Node.js |
 | **PostgreSQL** | Database | Configure a reachable PostgreSQL server; the backend uses its `pg` driver |
-| **Redis** | Job queue | Installed automatically (see below) |
+| **Redis** | Job queue | Configure a reachable Redis service when required; the `redis-cli` utility is optional |
 | **Sharp** | Image processing | Installed via `npm install` |
 
 ### Optional but Recommended
 
 | Tool | Purpose | Installation |
 |------|---------|--------------|
-| **Ghostscript** | EPS/AI file processing | Installed automatically (see below) |
-| **ImageMagick** | Image conversion fallback | Installed automatically (see below) |
+| **Ghostscript** | EPS/AI file processing | Install separately on Windows; may be installed by bootstrap on macOS/Linux |
+| **ImageMagick** | Image conversion fallback | Install separately on Windows; may be installed by bootstrap on macOS/Linux |
 
 ## Automatic Installation by Platform
 
@@ -97,24 +98,19 @@ sudo apt-get install -y redis-server
 
 ### Windows
 
-```bash
-# The bootstrap will attempt to run these if needed (requires admin)
-winget install --id ArtifexSoftware.GhostScript -e
-winget install --id ImageMagick.ImageMagick -e
-winget install --id tporadowski.redis -e
-```
+On Windows, bootstrap checks `PATH` and versioned install folders before acting. If Ghostscript or ImageMagick is genuinely missing, it tries `winget` and then Chocolatey; tools already found are not reinstalled. PostgreSQL and Redis command-line clients are checked separately and do not trigger installation of another database/cache service: the app connects to configured services with its Node.js drivers. Configure `GHOSTSCRIPT_PATH` or `IMAGEMAGICK_PATH` if a tool is installed in a custom location.
 
-**Prerequisites:** Windows Package Manager (winget) or Chocolatey
+Redis and PostgreSQL are services: point the backend at existing reachable services instead of installing another copy just because a command-line utility is missing. For image tools, make sure Windows Package Manager (`winget`) or Chocolatey is available so bootstrap can install a genuinely missing tool.
 
 ## Environment Variables
 
 You can control startup behavior with environment variables:
 
 ```bash
-# Skip PostgreSQL installation check
+# Skip PostgreSQL command-line client check
 SKIP_DB_CHECK=true npm start
 
-# Skip Redis installation check
+# Skip Redis command-line client check
 SKIP_REDIS_CHECK=true npm start
 
 # Set custom port
@@ -139,7 +135,7 @@ When you run `npm start`:
 1. **Bootstrap loads** - Checks system setup
 2. **Dependencies detected** - Scans for installed tools
 3. **Missing items identified** - Lists what needs to be installed
-4. **Installation runs** - Installs missing packages
+4. **Installation runs** - Installs missing npm packages; system-tool installation depends on platform
 5. **Server starts** - Express server launches on port 5000 (default)
 
 ### Example Startup Output
@@ -157,8 +153,8 @@ Dependency Status:
   ✓ PSD Library: installed
   ✓ Ghostscript: installed
   ✓ ImageMagick: installed
-  ✓ PostgreSQL client: available
-  ✓ Redis: installed
+  ✓ PostgreSQL CLI: installed
+  ✓ Redis CLI: installed
 
 ✓ All dependencies are installed!
 Starting server...
