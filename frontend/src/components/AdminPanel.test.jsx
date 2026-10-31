@@ -948,10 +948,10 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByText("Port: 5432")).toBeInTheDocument();
     expect(screen.getByText("/Users/gfxunlimit/Documents/stocksite/Database")).toBeInTheDocument();
     expect(screen.getByText("Folder size: 5.00 MB · Drive free space: 20.00 GB")).toBeInTheDocument();
-    expect(screen.queryByText("Folder size: 1.00 GB · Drive free space: 20.00 GB")).not.toBeInTheDocument();
+    expect(screen.getByText("Folder size: 1.00 GB · Drive free space: 20.00 GB")).toBeInTheDocument();
   });
 
-  it("refetches the database location after the admin token becomes available", async () => {
+  it("shows a connected database when its server data directory is private", async () => {
     useLocation.mockReturnValue({ search: "?tab=controls_database" });
     localStorage.removeItem("token");
     axios.get.mockImplementation((url) => {
@@ -959,21 +959,36 @@ describe("AdminPanel collection controls", () => {
         if (!localStorage.getItem("token")) {
           return Promise.reject({ response: { status: 401, data: "Access denied" } });
         }
-        return Promise.resolve({ data: { connected: true, databaseName: "stocksite", host: "localhost", port: 5432, databasePath: "F:\\GFXunlimitDatabase", dataDirectory: "F:\\GFXunlimitDatabase" } });
+        return Promise.resolve({ data: {
+          connected: true,
+          databaseName: "stocksite",
+          host: "db.example.com",
+          port: 5432,
+          databasePath: "",
+          dataDirectory: "",
+          databasePathError: "Database server does not expose its data directory to this application.",
+          databaseBackupFolder: "/app/Database",
+          databaseBackupFolderSizeBytes: 1024,
+          databaseBackupFolderFreeBytes: 2048
+        } });
       }
       return Promise.resolve({ data: [] });
     });
 
     const { rerender } = render(<AdminPanel />);
 
-    expect(await screen.findByText("Unable to determine database path")).toBeInTheDocument();
+    expect(await screen.findByText("Unable to load database connection details. Check your admin session and try again.")).toBeInTheDocument();
 
     localStorage.setItem("token", "admin-token");
     window.dispatchEvent(new Event("auth-changed"));
     rerender(<AdminPanel />);
 
-    expect(await screen.findByText("F:\\GFXunlimitDatabase")).toBeInTheDocument();
+    expect(await screen.findByText("Connected")).toBeInTheDocument();
     expect(screen.getByText("Database: stocksite")).toBeInTheDocument();
+    expect(screen.getByText("Database server does not expose its data directory to this application.")).toBeInTheDocument();
+    expect(screen.getByText("/app/Database")).toBeInTheDocument();
+    expect(screen.getByText(/Folder size:/)).toHaveTextContent("1 KB");
+    expect(screen.getByText(/Folder size:/)).toHaveTextContent("2 KB");
   });
 
   it("opens the controls tax forms tab with the controls_taxforms route", async () => {

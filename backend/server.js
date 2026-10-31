@@ -3280,8 +3280,8 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
   const getStorageStats = (directoryPath) => {
     let folderSizeBytes = null;
     try {
-      folderSizeBytes = 0;
       if (fs.existsSync(directoryPath) && fs.statSync(directoryPath).isDirectory()) {
+        folderSizeBytes = 0;
         const pendingDirectories = [directoryPath];
         while (pendingDirectories.length > 0) {
           const currentDirectory = pendingDirectories.pop();
@@ -3321,15 +3321,29 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
     const result = await pool.query(`
       SELECT
         current_database() AS database_name,
-        current_setting('data_directory', true) AS data_directory,
         current_setting('port', true) AS port
     `);
 
     const databaseName = String(result.rows[0]?.database_name || process.env.DB_NAME || "stocksite");
-    const dataDirectory = String(result.rows[0]?.data_directory || "").trim();
     const configuredPort = Number(result.rows[0]?.port || databasePort || 5432);
-    const resolvedDatabasePath = dataDirectory || "";
-    const dataDirectoryStats = getStorageStats(resolvedDatabasePath);
+    let resolvedDatabasePath = "";
+    let databasePathError = "";
+    try {
+      const pathResult = await pool.query(
+        "SELECT current_setting('data_directory', true) AS data_directory"
+      );
+      resolvedDatabasePath = String(pathResult.rows[0]?.data_directory || "").trim();
+      if (!resolvedDatabasePath) {
+        databasePathError = "Database server did not provide its data directory.";
+      }
+    } catch (error) {
+      databasePathError = "Database server does not expose its data directory to this application.";
+      console.warn("Database is connected, but its server data directory is unavailable:", error.message || error);
+    }
+
+    const dataDirectoryStats = resolvedDatabasePath
+      ? getStorageStats(resolvedDatabasePath)
+      : { folderSizeBytes: null, driveFreeBytes: null };
     const databaseBackupFolderStats = getStorageStats(databaseBackupFolder);
 
     return res.json({
@@ -3339,6 +3353,7 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
       port: configuredPort,
       databasePath: resolvedDatabasePath,
       dataDirectory: resolvedDatabasePath,
+      databasePathError,
       dataDirectorySizeBytes: dataDirectoryStats.folderSizeBytes,
       dataDirectoryFreeBytes: dataDirectoryStats.driveFreeBytes,
       databaseBackupFolder,
@@ -3347,7 +3362,7 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
       databaseBackupFolderFreeBytes: databaseBackupFolderStats.driveFreeBytes,
     });
   } catch (error) {
-    console.error("Failed to resolve database data directory", error);
+    console.error("Failed to check database connection", error);
     return res.status(200).json({
       connected: false,
       databaseName: process.env.DB_NAME || "stocksite",
@@ -3355,11 +3370,12 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
       port: databasePort,
       databasePath: "",
       dataDirectory: "",
+      databasePathError: "Unable to connect to the database.",
       databaseBackupFolder,
       databaseBackupFolderExists: fs.existsSync(databaseBackupFolder),
       databaseBackupFolderSizeBytes: null,
       databaseBackupFolderFreeBytes: null,
-      error: "Unable to determine database path"
+      error: "Unable to connect to the database."
     });
   }
 });

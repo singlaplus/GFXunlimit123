@@ -1321,9 +1321,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       if (connected && resolvedDatabasePath) {
         setDatabaseDataDirectoryError("");
       } else if (connected) {
-        setDatabaseDataDirectoryError("Unable to determine database path");
+        setDatabaseDataDirectoryError(
+          response.data?.databasePathError
+          || "Database server does not expose its data directory to this application."
+        );
       } else {
-        setDatabaseDataDirectoryError("Unable to determine database path");
+        setDatabaseDataDirectoryError(response.data?.databasePathError || "Unable to connect to the database.");
       }
     }).catch(() => {
       if (!active) return;
@@ -1337,7 +1340,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       setDatabaseDataDirectoryFreeBytes(null);
       setDatabaseBackupFolderSizeBytes(null);
       setDatabaseBackupFolderFreeBytes(null);
-      setDatabaseDataDirectoryError("Unable to determine database path");
+      setDatabaseDataDirectoryError("Unable to load database connection details. Check your admin session and try again.");
     });
 
     return () => {
@@ -6879,10 +6882,25 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Connection status</span>
                   <span style={{ padding: "4px 8px", borderRadius: "999px", background: databaseConnectionStatus === "Connected" ? "#dcfce7" : "#fee2e2", color: databaseConnectionStatus === "Connected" ? "#166534" : "#991b1b", fontSize: "0.72rem", fontWeight: 800 }}>{databaseConnectionStatus}</span>
                 </div>
-                <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.92rem" }}>The primary database is online and ready for application requests.</p>
+                <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.92rem" }}>{databaseConnectionStatus === "Connected" ? "The primary database is online and ready for application requests." : "The primary database connection could not be confirmed."}</p>
                 <div style={{ padding: "12px 14px", borderRadius: "8px", background: isDarkMode ? "#0f172a" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", color: isDarkMode ? "#e2e8f0" : "#0f172a", overflowWrap: "anywhere" }}>
                   <strong style={{ display: "block", marginBottom: "6px" }}>Database stored at</strong>
-                  {databaseDataDirectoryError ? <span role="alert">{databaseDataDirectoryError}</span> : databaseDataDirectory ? <><span style={{ display: "block", marginBottom: "4px" }}>Database: {databaseName || "Unknown"}</span>{databaseHost ? <span style={{ display: "block", marginBottom: "4px" }}>Host: {databaseHost}</span> : null}{typeof databasePort === "number" ? <span style={{ display: "block", marginBottom: "4px" }}>Port: {databasePort}</span> : null}<span style={{ display: "block", marginBottom: "12px" }}>{databaseDataDirectory}</span><strong style={{ display: "block", marginBottom: "4px" }}>Database backup folder</strong><span style={{ display: "block", marginBottom: "4px" }}>{databaseBackupFolder || "Unavailable"}</span><span style={{ display: "block" }}>Folder size: {typeof databaseBackupFolderSizeBytes === "number" ? formatFileSize(databaseBackupFolderSizeBytes) : "Unavailable"} · Drive free space: {typeof databaseBackupFolderFreeBytes === "number" ? formatFileSize(databaseBackupFolderFreeBytes) : "Unavailable"}</span></> : "Loading..."}
+                  {databaseConnectionStatus !== "Connected"
+                    ? <span role="alert">{databaseDataDirectoryError || "Database connection is unavailable."}</span>
+                    : (
+                      <>
+                        <span style={{ display: "block", marginBottom: "4px" }}>Database: {databaseName || "Unknown"}</span>
+                        {databaseHost ? <span style={{ display: "block", marginBottom: "4px" }}>Host: {databaseHost}</span> : null}
+                        {typeof databasePort === "number" ? <span style={{ display: "block", marginBottom: "4px" }}>Port: {databasePort}</span> : null}
+                        <strong style={{ display: "block", margin: "10px 0 4px" }}>Database data directory</strong>
+                        {databaseDataDirectory
+                          ? <><span style={{ display: "block", marginBottom: "4px" }}>{databaseDataDirectory}</span><span style={{ display: "block", marginBottom: "12px" }}>Folder size: {typeof databaseDataDirectorySizeBytes === "number" ? formatFileSize(databaseDataDirectorySizeBytes) : "Unavailable"} · Drive free space: {typeof databaseDataDirectoryFreeBytes === "number" ? formatFileSize(databaseDataDirectoryFreeBytes) : "Unavailable"}</span></>
+                          : <span style={{ display: "block", marginBottom: "12px" }} role="status">{databaseDataDirectoryError || "Database server does not expose its data directory to this application."}</span>}
+                        <strong style={{ display: "block", marginBottom: "4px" }}>Database backup folder</strong>
+                        <span style={{ display: "block", marginBottom: "4px" }}>{databaseBackupFolder || "Unavailable"}</span>
+                        <span style={{ display: "block" }}>Folder size: {typeof databaseBackupFolderSizeBytes === "number" ? formatFileSize(databaseBackupFolderSizeBytes) : "Unavailable"} · Drive free space: {typeof databaseBackupFolderFreeBytes === "number" ? formatFileSize(databaseBackupFolderFreeBytes) : "Unavailable"}</span>
+                      </>
+                    )}
                 </div>
               </div>
             </CardWrapper>
