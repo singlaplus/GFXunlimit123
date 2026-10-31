@@ -488,6 +488,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [databaseBackupFolderExists, setDatabaseBackupFolderExists] = useState(false);
   const [databaseDataDirectorySizeBytes, setDatabaseDataDirectorySizeBytes] = useState(null);
   const [databaseDataDirectoryFreeBytes, setDatabaseDataDirectoryFreeBytes] = useState(null);
+  const [databaseSizeBytes, setDatabaseSizeBytes] = useState(null);
   const [databaseBackupFolderSizeBytes, setDatabaseBackupFolderSizeBytes] = useState(null);
   const [databaseBackupFolderFreeBytes, setDatabaseBackupFolderFreeBytes] = useState(null);
   const [databaseDataDirectoryError, setDatabaseDataDirectoryError] = useState("");
@@ -1321,15 +1322,25 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       setDatabaseBackupFolderExists(response.data?.databaseBackupFolderExists === true);
       setDatabaseDataDirectorySizeBytes(typeof response.data?.dataDirectorySizeBytes === "number" ? response.data.dataDirectorySizeBytes : null);
       setDatabaseDataDirectoryFreeBytes(typeof response.data?.dataDirectoryFreeBytes === "number" ? response.data.dataDirectoryFreeBytes : null);
+      setDatabaseSizeBytes(typeof response.data?.databaseSizeBytes === "number" ? response.data.databaseSizeBytes : null);
       setDatabaseBackupFolderSizeBytes(typeof response.data?.databaseBackupFolderSizeBytes === "number" ? response.data.databaseBackupFolderSizeBytes : null);
       setDatabaseBackupFolderFreeBytes(typeof response.data?.databaseBackupFolderFreeBytes === "number" ? response.data.databaseBackupFolderFreeBytes : null);
 
-      if (connected && resolvedDatabasePath) {
+      if (
+        connected
+        && resolvedDatabasePath
+        && response.data?.databasePathSource === "postgres"
+        && response.data?.dataDirectoryExists === true
+        && typeof response.data?.dataDirectorySizeBytes === "number"
+        && typeof response.data?.dataDirectoryFreeBytes === "number"
+      ) {
         setDatabaseDataDirectoryError("");
       } else if (connected) {
         setDatabaseDataDirectoryError(
           response.data?.databasePathError
-          || "Database server does not expose its data directory to this application."
+          || (resolvedDatabasePath
+            ? "The data directory was identified, but its filesystem metrics are unavailable from this backend."
+            : "Database server does not expose its data directory to this application.")
         );
       } else {
         setDatabaseDataDirectoryError(response.data?.databasePathError || "Unable to connect to the database.");
@@ -1347,6 +1358,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       setDatabaseBackupFolderExists(false);
       setDatabaseDataDirectorySizeBytes(null);
       setDatabaseDataDirectoryFreeBytes(null);
+      setDatabaseSizeBytes(null);
       setDatabaseBackupFolderSizeBytes(null);
       setDatabaseBackupFolderFreeBytes(null);
       setDatabaseDataDirectoryError("Unable to load database connection details. Check your admin session and try again.");
@@ -6899,11 +6911,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     : (
                       <>
                         <span style={{ display: "block", marginBottom: "4px" }}>Database: {databaseName || "Unknown"}</span>
+                        <span style={{ display: "block", marginBottom: "4px" }}>Database size: {typeof databaseSizeBytes === "number" ? formatFileSize(databaseSizeBytes) : "Unavailable"}</span>
                         {databaseHost ? <span style={{ display: "block", marginBottom: "4px" }}>Host: {databaseHost}</span> : null}
                         {typeof databasePort === "number" ? <span style={{ display: "block", marginBottom: "4px" }}>Port: {databasePort}</span> : null}
                         <strong style={{ display: "block", margin: "10px 0 4px" }}>Database data directory{databaseDataDirectorySource === "configured" ? " (configured fallback)" : ""}</strong>
                         {databaseDataDirectory
-                          ? <><span style={{ display: "block", marginBottom: "4px" }}>{databaseDataDirectory}</span><span style={{ display: "block", marginBottom: "12px" }}>Folder size: {databaseDataDirectoryExists ? (typeof databaseDataDirectorySizeBytes === "number" ? formatFileSize(databaseDataDirectorySizeBytes) : "Unavailable") : "0 KB (directory not found)"} · Drive free space: {typeof databaseDataDirectoryFreeBytes === "number" ? formatFileSize(databaseDataDirectoryFreeBytes) : "Unavailable"}</span></>
+                          ? <><span style={{ display: "block", marginBottom: "4px" }}>{databaseDataDirectory}</span><span style={{ display: "block", marginBottom: "4px" }}>Folder size: {databaseDataDirectoryExists && typeof databaseDataDirectorySizeBytes === "number" ? formatFileSize(databaseDataDirectorySizeBytes) : "Unavailable"} · Drive free space: {databaseDataDirectoryExists && typeof databaseDataDirectoryFreeBytes === "number" ? formatFileSize(databaseDataDirectoryFreeBytes) : "Unavailable"}</span>{databaseDataDirectoryError ? <span style={{ display: "block", marginBottom: "12px" }} role="status">{databaseDataDirectoryError}</span> : <span style={{ display: "block", marginBottom: "12px" }} />}</>
                           : <span style={{ display: "block", marginBottom: "12px" }} role="status">{databaseDataDirectoryError || "Database server does not expose its data directory to this application."}</span>}
                         <strong style={{ display: "block", marginBottom: "4px" }}>Database backup folder</strong>
                         <span style={{ display: "block", marginBottom: "4px" }}>{databaseBackupFolder || "Unavailable"}</span>

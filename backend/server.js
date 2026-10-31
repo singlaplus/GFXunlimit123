@@ -90,6 +90,7 @@ const restoreRoutes = require("./routes/restore-routes");
 const { createBackupRouter } = require("./routes/backup-routes");
 const { createAdminVerifier } = require("./middleware/createAdminVerifier");
 const { getDirectoryStorageStats } = require("./services/directoryStorageStats");
+const { resolvePostgresDataDirectory } = require("./services/postgresDataDirectory");
 const {
   getAssetServerHttpOrigin,
   getCorsAllowedOrigins,
@@ -3274,7 +3275,7 @@ app.put("/admin/assets/locations", verifyAdmin, async (req, res) => {
 });
 
 app.get("/admin/database/location", verifyAdmin, async (req, res) => {
-  const databaseHost = process.env.DB_HOST || "localhost";
+  const databaseHost = process.env.DB_HOST || process.env.PGHOST || "localhost";
   const databasePort = Number(process.env.DB_PORT || 5432);
   const databaseBackupFolder = path.resolve(__dirname, "..", "Database");
 
@@ -3282,42 +3283,34 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
     const result = await pool.query(`
       SELECT
         current_database() AS database_name,
-        current_setting('port', true) AS port
+        current_setting('port', true) AS port,
+        pg_database_size(current_database())::text AS database_size_bytes
     `);
 
     const databaseName = String(result.rows[0]?.database_name || process.env.DB_NAME || "stocksite");
     const configuredPort = Number(result.rows[0]?.port || databasePort || 5432);
-    let resolvedDatabasePath = "";
-    let databasePathError = "";
-    let databasePathSource = "postgres";
-    try {
-      const pathResult = await pool.query(
-        "SELECT current_setting('data_directory', true) AS data_directory"
-      );
-      resolvedDatabasePath = String(pathResult.rows[0]?.data_directory || "").trim();
-      if (!resolvedDatabasePath) {
-        databasePathError = "Database server did not provide its data directory.";
-      }
-    } catch (error) {
-      databasePathError = "PostgreSQL did not expose its data directory; showing the configured path when available.";
-      console.warn("Database is connected, but its server data directory is unavailable:", error.message || error);
-    }
-
-    if (!resolvedDatabasePath) {
-      resolvedDatabasePath = String(
-        process.env.POSTGRES_DATA_DIRECTORY ||
-        process.env.PGDATA ||
-        (process.platform === "win32" ? "D:\\GFXunlimitDatabase" : "")
-      ).trim();
-      if (resolvedDatabasePath) databasePathSource = "configured";
-    }
-
+    const directoryInfo = await resolvePostgresDataDirectory(pool, {
+      host: databaseHost,
+      environment: process.env
+    });
+    const databasePathIsLocal = directoryInfo.localDatabase;
     const [dataDirectoryStats, databaseBackupFolderStats] = await Promise.all([
-      getDirectoryStorageStats(resolvedDatabasePath),
+      directoryInfo.dataDirectory && databasePathIsLocal
+        ? getDirectoryStorageStats(directoryInfo.dataDirectory)
+        : Promise.resolve({ directoryExists: false, folderSizeBytes: null, driveFreeBytes: null }),
       getDirectoryStorageStats(databaseBackupFolder)
     ]);
-    if (!resolvedDatabasePath && !databasePathError) {
-      databasePathError = "Database server did not provide its data directory, and no configured path is available.";
+    const rawDatabaseSizeBytes = result.rows[0]?.database_size_bytes;
+    const databaseSizeBytes = rawDatabaseSizeBytes == null ? null : Number(rawDatabaseSizeBytes);
+    let databasePathError = directoryInfo.error;
+    if (directoryInfo.dataDirectory && databasePathIsLocal && directoryInfo.source === "postgres") {
+      if (!dataDirectoryStats.directoryExists) {
+        databasePathError = "PostgreSQL reported this path, but the application backend cannot access it. Verify the backend runs on the database host and has filesystem read access.";
+      } else if (dataDirectoryStats.folderSizeBytes === null) {
+        databasePathError = "The application backend can locate the data directory but cannot read all its contents to calculate the folder size.";
+      } else if (dataDirectoryStats.driveFreeBytes === null) {
+        databasePathError = "The application backend can read the data directory, but filesystem free space is unavailable.";
+      }
     }
 
     return res.json({
@@ -3325,13 +3318,15 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
       databaseName,
       host: databaseHost,
       port: configuredPort,
-      databasePath: resolvedDatabasePath,
-      dataDirectory: resolvedDatabasePath,
+      databasePath: directoryInfo.dataDirectory,
+      dataDirectory: directoryInfo.dataDirectory,
       databasePathError,
-      databasePathSource,
+      databasePathSource: directoryInfo.source,
+      databasePathIsLocal,
+      databaseSizeBytes: Number.isSafeInteger(databaseSizeBytes) ? databaseSizeBytes : null,
       dataDirectoryExists: dataDirectoryStats.directoryExists,
-      dataDirectorySizeBytes: dataDirectoryStats.folderSizeBytes,
-      dataDirectoryFreeBytes: dataDirectoryStats.driveFreeBytes,
+      dataDirectorySizeBytes: dataDirectoryStats.directoryExists ? dataDirectoryStats.folderSizeBytes : null,
+      dataDirectoryFreeBytes: dataDirectoryStats.directoryExists ? dataDirectoryStats.driveFreeBytes : null,
       databaseBackupFolder,
       databaseBackupFolderExists: databaseBackupFolderStats.directoryExists,
       databaseBackupFolderSizeBytes: databaseBackupFolderStats.folderSizeBytes,
@@ -3348,6 +3343,8 @@ app.get("/admin/database/location", verifyAdmin, async (req, res) => {
       dataDirectory: "",
       databasePathError: "Unable to connect to the database.",
       databasePathSource: "unavailable",
+      databasePathIsLocal: false,
+      databaseSizeBytes: null,
       dataDirectoryExists: false,
       databaseBackupFolder,
       databaseBackupFolderExists: fs.existsSync(databaseBackupFolder),
