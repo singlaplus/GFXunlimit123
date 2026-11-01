@@ -1,8 +1,9 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import Pagination from "../components/Pagination";
 import { formatIndiaDate, formatIndiaDateTime, formatIndiaTime } from "../utils/indiaTime";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 function formatCurrency(value, currency = "USD") {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
@@ -29,6 +30,8 @@ function formatDetailedTime(dateString) {
 }
 
 export default function OrderHistoryPage({ darkMode = false }) {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
+  const lastReadinessAttempt = useRef({ routeId: "", retryKey: -1 });
   const isDarkMode = Boolean(darkMode);
   const [orders, setOrders] = useState([]);
   const [isContributor, setIsContributor] = useState(false);
@@ -55,10 +58,19 @@ export default function OrderHistoryPage({ darkMode = false }) {
   const apiBaseUrl = API_BASE_URL;
 
   useEffect(() => {
+    let active = true;
+    const attempt = lastReadinessAttempt.current.routeId !== routeId ||
+      lastReadinessAttempt.current.retryKey !== retryKey;
+    if (attempt) {
+      lastReadinessAttempt.current = { routeId, retryKey };
+      reportResource("orders", "loading", "", routeId);
+    }
+
     if (!token) {
       setError("You must be logged in to view your orders.");
       setLoading(false);
-      return;
+      if (attempt) reportResource("orders", "error", "You must be logged in to view your orders.", routeId);
+      return () => { active = false; };
     }
 
     if (selectedOrderId) {
@@ -68,15 +80,23 @@ export default function OrderHistoryPage({ darkMode = false }) {
           headers: { Authorization: `Bearer ${token}` },
         })
         .then((res) => {
-          setOrderDetail(res.data || null);
+          if (!res.data?.order || typeof res.data.order !== "object" ||
+              !Array.isArray(res.data.items)) {
+            throw new Error("Order details response was invalid.");
+          }
+          if (!active) return;
+          setOrderDetail(res.data);
           setError(null);
+          if (attempt) reportResource("orders", "ready", "", routeId);
         })
         .catch((err) => {
+          if (!active) return;
           console.error("Failed to load order detail", err);
           setError(err.response?.data?.error || "Failed to load order details.");
           setOrderDetail(null);
+          if (attempt) reportResource("orders", "error", "Unable to load order details. Please retry.", routeId);
         })
-        .finally(() => setDetailLoading(false));
+        .finally(() => { if (active) setDetailLoading(false); });
     } else {
       setLoading(true);
       axios
@@ -84,21 +104,30 @@ export default function OrderHistoryPage({ darkMode = false }) {
           headers: { Authorization: `Bearer ${token}` },
         })
         .then((res) => {
-          setOrders(res.data?.orders || []);
-          setTotal(res.data?.total || 0);
+          if (!Array.isArray(res.data?.orders) ||
+              !Number.isFinite(Number(res.data.total))) {
+            throw new Error("Orders response was invalid.");
+          }
+          if (!active) return;
+          setOrders(res.data.orders);
+          setTotal(Number(res.data.total));
           setIsContributor(Boolean(res.data?.is_contributor));
           setError(null);
+          if (attempt) reportResource("orders", "ready", "", routeId);
         })
         .catch((err) => {
+          if (!active) return;
           console.error("Failed to load orders", err);
           setError(err.response?.data?.error || "Failed to load orders.");
           setOrders([]);
           setTotal(0);
           setIsContributor(false);
+          if (attempt) reportResource("orders", "error", "Unable to load orders. Please retry.", routeId);
         })
-        .finally(() => setLoading(false));
+        .finally(() => { if (active) setLoading(false); });
     }
-  }, [selectedOrderId, page, limit, token, apiBaseUrl]);
+    return () => { active = false; };
+  }, [selectedOrderId, page, limit, token, apiBaseUrl, reportResource, retryKey, routeId]);
 
   const goToOrder = (id) => {
     window.location.href = `/orders/${id}`;

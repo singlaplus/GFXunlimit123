@@ -524,6 +524,7 @@ function AdminPromotionsPanel() {
   });
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [dashboard, setDashboard] = useState({
     active_campaigns: 0,
     scheduled_campaigns: 0,
@@ -629,8 +630,17 @@ function AdminPromotionsPanel() {
   const loadPromotions = async () => {
     try {
       setLoading(true);
+      setLoadError("");
       const res = await axios.get(`${API_BASE_URL}/admin/promotions`, { headers: buildAuthHeaders() });
-      const payload = res.data || {};
+      const payload = res.data;
+      const hasExpectedData = payload && typeof payload === "object" && !Array.isArray(payload) && (
+        (payload.dashboard && typeof payload.dashboard === "object" && !Array.isArray(payload.dashboard)) ||
+        ["coupons", "campaigns", "contributor_applications", "flash_sales", "referrals", "loyalty", "bundles", "newsletters", "banners", "popups", "announcements", "push_notifications", "automation_rules", "activity_logs"]
+          .some((key) => Array.isArray(payload[key]))
+      );
+      if (!hasExpectedData) {
+        throw new Error("Promotions response was invalid.");
+      }
       setDashboard(payload.dashboard || dashboard);
       setCoupons(Array.isArray(payload.coupons) ? payload.coupons : []);
       setCampaigns(Array.isArray(payload.campaigns) ? payload.campaigns : []);
@@ -649,7 +659,7 @@ function AdminPromotionsPanel() {
       setMessage(payload.message || "");
     } catch (err) {
       console.error(err);
-      setMessage(err.response?.data?.error || "Unable to load promotions data.");
+      setLoadError(err.response?.data?.error || "Unable to load promotions data.");
     } finally {
       setLoading(false);
     }
@@ -3368,7 +3378,14 @@ function AdminPromotionsPanel() {
           <div className="promotions-chip">{loading ? "Loading" : "Live"}</div>
         </div>
         {message ? <div className="promotions-message">{message}</div> : null}
-        {renderSectionContent()}
+        {loading ? (
+          <p role="status">Loading promotions data…</p>
+        ) : loadError ? (
+          <div role="alert" className="promotions-message">
+            <p>{loadError}</p>
+            <button type="button" onClick={loadPromotions} disabled={loading}>Retry</button>
+          </div>
+        ) : renderSectionContent()}
       </div>
       {selectedBonusApplication && (
         <div

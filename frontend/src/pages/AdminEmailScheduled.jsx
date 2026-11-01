@@ -8,6 +8,8 @@ const getIsDarkMode = () => typeof document !== 'undefined' && document.body.cla
 
 export default function AdminEmailScheduled() {
   const [scheduled, setScheduled] = useState([]);
+  const [scheduledLoading, setScheduledLoading] = useState(true);
+  const [scheduledLoadError, setScheduledLoadError] = useState("");
   const [name, setName] = useState('');
   const [recipient, setRecipient] = useState('');
   const [subject, setSubject] = useState('');
@@ -37,11 +39,19 @@ export default function AdminEmailScheduled() {
 
   const load = async () => {
     try {
+      setScheduledLoading(true);
+      setScheduledLoadError("");
       const token = typeof window !== 'undefined' ? getEffectiveAuthToken() : null;
       const res = await axios.get(`${API_BASE_URL}/admin/email/scheduled`, { headers: { Authorization: `Bearer ${token}` } });
-      setScheduled(res.data || []);
+      if (!Array.isArray(res.data)) {
+        throw new Error("Scheduled emails response was invalid.");
+      }
+      setScheduled(res.data);
     } catch (err) {
       console.error(err);
+      setScheduledLoadError(err.response?.data?.error || err.message || "Unable to load scheduled emails.");
+    } finally {
+      setScheduledLoading(false);
     }
   };
 
@@ -266,7 +276,14 @@ export default function AdminEmailScheduled() {
 
       <div style={{ display: 'grid', gap: 10, padding: 18, borderRadius: 18, background: theme.surface, border: `1px solid ${theme.border}`, boxShadow: theme.shadow }}>
         <h4 style={{ margin: 0 }}>Existing schedules</h4>
-        {scheduled.length === 0 ? (
+        {scheduledLoading ? (
+          <div role="status" style={{ color: theme.muted }}>Loading scheduled emails...</div>
+        ) : scheduledLoadError ? (
+          <div role="alert" style={{ color: isDark ? '#fecaca' : '#991b1b' }}>
+            <p>{scheduledLoadError}</p>
+            <button type="button" onClick={load} disabled={scheduledLoading}>Retry</button>
+          </div>
+        ) : scheduled.length === 0 ? (
           <div style={{ padding: 12, borderRadius: 12, background: isDark ? 'rgba(148, 163, 184, 0.12)' : '#f8fafc', color: theme.muted }}>No scheduled emails yet.</div>
         ) : (
           <div style={{ display: 'grid', gap: 10 }}>

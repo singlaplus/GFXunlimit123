@@ -1,14 +1,16 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import AssetThumbnail from "./AssetThumbnail";
 import Upload from "../Upload";
 import { buildAuthHeaders } from "../utils/authSession";
 import { formatIndiaDate } from "../utils/indiaTime";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 function MyUploads({ darkMode = false }) {
   const isDarkMode = Boolean(darkMode);
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [images, setImages] = useState([]);
   const [editingImage, setEditingImage] = useState(null);
   const [editingDraftAsset, setEditingDraftAsset] = useState(null);
@@ -18,16 +20,21 @@ function MyUploads({ darkMode = false }) {
   const [thumbnailFile, setThumbnailFile] = useState(null);
   const [selectedView, setSelectedView] = useState("pending");
   const [deletingImageIds, setDeletingImageIds] = useState(() => new Set());
+  const [loadStatus, setLoadStatus] = useState("loading");
+  const [loadError, setLoadError] = useState("");
+  const [localRetry, setLocalRetry] = useState(0);
   const activeRequestIdRef = useRef(0);
+  const readinessAttemptRef = useRef({ routeId, retryKey, localRetry });
+  readinessAttemptRef.current = { routeId, retryKey, localRetry };
 
-
-  useEffect(() => {
-    fetchMyUploads(selectedView);
-  }, [selectedView]);
-
-  const fetchMyUploads = async (view = selectedView) => {
-    const requestId = Date.now();
+  const fetchMyUploads = useCallback(async (view = selectedView, clearCurrent = false) => {
+    const requestId = activeRequestIdRef.current + 1;
+    const requestAttempt = { routeId, retryKey, localRetry };
     activeRequestIdRef.current = requestId;
+    setLoadStatus("loading");
+    setLoadError("");
+    if (clearCurrent) setImages([]);
+    reportResource("myUploads", "loading", "", routeId);
 
     try {
       const token = localStorage.getItem("token");
@@ -40,11 +47,20 @@ function MyUploads({ darkMode = false }) {
         }
       );
 
-      if (requestId !== activeRequestIdRef.current) {
+      if (requestId !== activeRequestIdRef.current ||
+          requestAttempt.routeId !== readinessAttemptRef.current.routeId ||
+          requestAttempt.retryKey !== readinessAttemptRef.current.retryKey ||
+          requestAttempt.localRetry !== readinessAttemptRef.current.localRetry) {
         return;
       }
 
-      const nextImages = (res.data || []).filter((image) => {
+      if (!Array.isArray(res.data) || res.data.some((image) =>
+        !image || typeof image !== "object" || Array.isArray(image) || image.id == null
+      )) {
+        throw new Error("Uploads response was invalid.");
+      }
+
+      const nextImages = res.data.filter((image) => {
         const status = String(image.status || "").toLowerCase();
 
         if (view === "pending") {
@@ -70,10 +86,27 @@ function MyUploads({ darkMode = false }) {
       });
 
       setImages(nextImages);
+      setLoadStatus("ready");
+      reportResource("myUploads", "ready", "", routeId);
     } catch (err) {
+      if (requestId !== activeRequestIdRef.current ||
+          requestAttempt.routeId !== readinessAttemptRef.current.routeId ||
+          requestAttempt.retryKey !== readinessAttemptRef.current.retryKey ||
+          requestAttempt.localRetry !== readinessAttemptRef.current.localRetry) return;
       console.error(err);
+      const message = err?.response
+        ? `Unable to load uploads (HTTP ${err.response.status}).`
+        : err?.message || "Unable to load uploads.";
+      setLoadError(message);
+      setLoadStatus("error");
+      reportResource("myUploads", "error", message, routeId);
     }
-  };
+  }, [localRetry, reportResource, retryKey, routeId, selectedView]);
+
+  useEffect(() => {
+    fetchMyUploads(selectedView, true);
+    return () => { activeRequestIdRef.current += 1; };
+  }, [fetchMyUploads, localRetry, retryKey, routeId, selectedView]);
 
   const deleteImage = async (id) => {
     const image = images.find((item) => Number(item.id) === Number(id));
@@ -252,7 +285,16 @@ function MyUploads({ darkMode = false }) {
           id="my-uploads-view"
           aria-label="View"
           value={selectedView}
-          onChange={(e) => setSelectedView(e.target.value)}
+          onChange={(e) => {
+            const view = e.target.value;
+            if (view === selectedView) return;
+            activeRequestIdRef.current += 1;
+            setSelectedView(view);
+            setImages([]);
+            setLoadStatus("loading");
+            setLoadError("");
+            reportResource("myUploads", "loading", "", routeId);
+          }}
           style={{
             padding: "8px 10px",
             borderRadius: "6px",
@@ -271,7 +313,22 @@ function MyUploads({ darkMode = false }) {
         <span style={{ color: isDarkMode ? "#cbd5e1" : "#64748b", fontSize: "0.95rem" }}>{getViewHint()}</span>
       </div>
 
-      <p>Total Uploads: {images.length}</p>
+      {loadStatus === "loading" ? (
+        <p role="status">Loading uploads...</p>
+      ) : loadError ? (
+        <div role="alert">
+          <p>{loadError}</p>
+          <button type="button" onClick={() => {
+            activeRequestIdRef.current += 1;
+            setLoadStatus("loading");
+            setLoadError("");
+            reportResource("myUploads", "loading", "", routeId);
+            setLocalRetry((attempt) => attempt + 1);
+          }}>Retry</button>
+        </div>
+      ) : (
+        <>
+          <p>Total Uploads: {images.length}</p>
 
       {images.length === 0 ? (
         <p style={{ color: isDarkMode ? "#cbd5e1" : "#64748b" }}>No uploads match this view yet.</p>
@@ -390,6 +447,8 @@ function MyUploads({ darkMode = false }) {
             </div>
           ))}
         </div>
+      )}
+        </>
       )}
 
       {editingImage && (

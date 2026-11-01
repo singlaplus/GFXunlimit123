@@ -1,15 +1,23 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 function MyFavorites({ darkMode = false }) {
   const navigate = useNavigate();
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
 
   const [favorites, setFavorites] = useState([]);
   const [cartItems, setCartItems] = useState([]);
   const [hoveredFavoriteId, setHoveredFavoriteId] = useState(null);
+  const [loadStatus, setLoadStatus] = useState("loading");
+  const [loadError, setLoadError] = useState("");
+  const [localRetry, setLocalRetry] = useState(0);
+  const favoritesRequestIdRef = useRef(0);
+  const readinessAttemptRef = useRef({ routeId, retryKey, localRetry });
+  readinessAttemptRef.current = { routeId, retryKey, localRetry };
 
   const slugify = (text) =>
     String(text || "")
@@ -31,10 +39,11 @@ function MyFavorites({ darkMode = false }) {
     window.addEventListener("favoritesUpdated", onFavoritesUpdate);
     window.addEventListener("cartUpdated", onCartUpdate);
     return () => {
+      favoritesRequestIdRef.current += 1;
       window.removeEventListener("favoritesUpdated", onFavoritesUpdate);
       window.removeEventListener("cartUpdated", onCartUpdate);
     };
-  }, []);
+  }, [retryKey, routeId, localRetry]);
 
   const loadCart = () => {
     try {
@@ -89,9 +98,13 @@ function MyFavorites({ darkMode = false }) {
   };
 
   const fetchFavorites = async () => {
-
+    const requestId = favoritesRequestIdRef.current + 1;
+    const requestAttempt = { routeId, retryKey, localRetry };
+    favoritesRequestIdRef.current = requestId;
+    setLoadStatus("loading");
+    setLoadError("");
+    reportResource("favorites", "loading", "", routeId);
     try {
-
       const token =
         localStorage.getItem("token");
 
@@ -106,14 +119,31 @@ function MyFavorites({ darkMode = false }) {
           }
         );
 
+      if (!Array.isArray(res.data) || res.data.some((image) =>
+        !image || typeof image !== "object" || Array.isArray(image) || image.id == null
+      )) {
+        throw new Error("Favorites response was invalid.");
+      }
+      if (requestId !== favoritesRequestIdRef.current ||
+          requestAttempt.routeId !== readinessAttemptRef.current.routeId ||
+          requestAttempt.retryKey !== readinessAttemptRef.current.retryKey ||
+          requestAttempt.localRetry !== readinessAttemptRef.current.localRetry) return;
       setFavorites(res.data);
-
+      setLoadStatus("ready");
+      reportResource("favorites", "ready", "", routeId);
     } catch (err) {
-
+      if (requestId !== favoritesRequestIdRef.current ||
+          requestAttempt.routeId !== readinessAttemptRef.current.routeId ||
+          requestAttempt.retryKey !== readinessAttemptRef.current.retryKey ||
+          requestAttempt.localRetry !== readinessAttemptRef.current.localRetry) return;
       console.error(err);
-
+      const message = err?.response
+        ? `Unable to load favorites (HTTP ${err.response.status}).`
+        : err?.message || "Unable to load favorites.";
+      setLoadError(message);
+      setLoadStatus("error");
+      reportResource("favorites", "error", message, routeId);
     }
-
   };
   const removeFavorite = async (imageId) => {
 
@@ -152,6 +182,17 @@ function MyFavorites({ darkMode = false }) {
 
       <h2>⭐ My Favorites</h2>
 
+      {loadStatus === "loading" ? (
+        <p role="status">Loading favorites...</p>
+      ) : loadError ? (
+        <div role="alert">
+          <p>{loadError}</p>
+          <button type="button" onClick={() => {
+            favoritesRequestIdRef.current += 1;
+            setLocalRetry((attempt) => attempt + 1);
+          }}>Retry</button>
+        </div>
+      ) : (
       <div
         style={{
           display: "grid",
@@ -279,6 +320,7 @@ function MyFavorites({ darkMode = false }) {
         )}
 
       </div>
+      )}
 
     </div>
 

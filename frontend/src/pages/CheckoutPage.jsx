@@ -6,6 +6,7 @@ import { calculateBestBundleTierDiscount, calculateCartTotals, getNextBundleDisc
 import { loadCartItems, saveCartItems, clearCartItems } from '../utils/cartPersistence';
 import FlashSaleOffer from '../components/FlashSaleOffer';
 import CartOffersModal from '../components/CartOffersModal';
+import { useStartupReadiness } from '../startup/StartupReadinessProvider';
 
 const REQUEST_ADMIN_PAYMENT_METHOD = "Request to Admin";
 const GFX_CREDITS_PAYMENT_METHOD = "GFX's Credits";
@@ -29,8 +30,13 @@ function formatCurrency(value, currency = null) {
 
 export default function CheckoutPage({ darkMode = false }) {
   const navigate = useNavigate();
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const isLoggedInCustomer = Boolean(localStorage.getItem('token'));
   const hasLoadedCart = useRef(false);
+  const cartLoadPromiseRef = useRef(Promise.resolve([]));
+  const previousCartRetryKey = useRef(retryKey);
+  const skipCartMutationEffectsRef = useRef(false);
+  const hydratedItemsRef = useRef(null);
   const [items, setItems] = useState([]);
   const [couponCode, setCouponCode] = useState('');
   const [coupon, setCoupon] = useState(null);
@@ -51,6 +57,9 @@ export default function CheckoutPage({ darkMode = false }) {
   const [billing, setBilling] = useState({ fullName: '', email: '', phone: '', address: '', city: '', country: 'India' });
   const [paymentMethod, setPaymentMethod] = useState('');
   const [hasCreditPackage, setHasCreditPackage] = useState(false);
+  const hasCreditPackageRef = useRef(hasCreditPackage);
+  const syncPaymentMethodsRef = useRef(null);
+  hasCreditPackageRef.current = hasCreditPackage;
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
   const [googlePayId, setGooglePayId] = useState('');
@@ -83,6 +92,32 @@ export default function CheckoutPage({ darkMode = false }) {
     flashSaleClearRequestId.current += 1;
     setFlashSaleClearRequest({ requestId: flashSaleClearRequestId.current });
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const isRetry = previousCartRetryKey.current !== retryKey;
+    previousCartRetryKey.current = retryKey;
+    hasLoadedCart.current = false;
+    reportResource('cartCheckout', 'loading', '', routeId);
+    cartLoadPromiseRef.current = loadCartItems({ strict: true });
+    cartLoadPromiseRef.current.then((loadedItems) => {
+      if (!active) return;
+      skipCartMutationEffectsRef.current = isRetry;
+      hydratedItemsRef.current = isRetry ? loadedItems : null;
+      setItems(loadedItems);
+      setHasCreditPackage(loadedItems.some((item) => item.creditPackage));
+      hasLoadedCart.current = true;
+      reportResource('cartCheckout', 'ready', '', routeId);
+    }).catch((error) => {
+      if (!active) return;
+      console.error('Failed to load cart:', error);
+      reportResource('cartCheckout', 'error', 'Unable to load your cart. Please retry.', routeId);
+    });
+    return () => {
+      active = false;
+      hasLoadedCart.current = false;
+    };
+  }, [reportResource, retryKey, routeId]);
 
   useEffect(() => {
     let active = true;
@@ -137,11 +172,11 @@ export default function CheckoutPage({ darkMode = false }) {
         if (settingsResult.status === 'fulfilled') {
           setGooglePayId(settingsResult.value.data?.googlePayId || '');
           nextMethods = [
-            ...(hasCreditPackage ? [REQUEST_ADMIN_PAYMENT_METHOD] : []),
-            ...(!hasCreditPackage ? [GFX_CREDITS_PAYMENT_METHOD] : []),
+            ...(hasCreditPackageRef.current ? [REQUEST_ADMIN_PAYMENT_METHOD] : []),
+            ...(!hasCreditPackageRef.current ? [GFX_CREDITS_PAYMENT_METHOD] : []),
             ...resolveEnabledPaymentMethods(settingsResult.value.data || {}),
           ];
-        } else if (!hasCreditPackage) {
+        } else if (!hasCreditPackageRef.current) {
           nextMethods = [GFX_CREDITS_PAYMENT_METHOD];
         }
         if (profileResult.status === 'fulfilled') {
@@ -158,33 +193,26 @@ export default function CheckoutPage({ darkMode = false }) {
       setPaymentMethod((currentMethod) => nextMethods.includes(currentMethod) ? currentMethod : '');
     };
 
+    syncPaymentMethodsRef.current = syncPaymentMethods;
     syncPaymentMethods();
     const refreshInterval = setInterval(syncPaymentMethods, 5000);
     window.addEventListener('storage', syncPaymentMethods);
     window.addEventListener('payment-gateways-updated', syncPaymentMethods);
     window.addEventListener('focus', syncPaymentMethods);
 
-    (async () => {
-      try {
-        const items = await loadCartItems();
-        const loadedItems = Array.isArray(items) ? items : [];
-        setItems(loadedItems);
-        setHasCreditPackage(loadedItems.some((item) => item.creditPackage));
-      } catch (error) {
-        console.error('Failed to load cart:', error);
-        setItems([]);
-      } finally {
-        hasLoadedCart.current = true;
-      }
-    })();
-
     const syncSavedCoupon = async () => {
       const savedCoupon = readAppliedCoupon();
       if (!savedCoupon.code) return;
 
+      let savedItems;
+      try {
+        savedItems = await cartLoadPromiseRef.current;
+      } catch (error) {
+        return;
+      }
+
       try {
         const token = localStorage.getItem('token');
-        const savedItems = await loadCartItems();
         const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: savedCoupon.code, items: savedItems }, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
@@ -236,7 +264,11 @@ export default function CheckoutPage({ darkMode = false }) {
       window.removeEventListener('payment-gateways-updated', syncPaymentMethods);
       window.removeEventListener('focus', syncPaymentMethods);
     };
-  }, [hasCreditPackage, clearFlashSaleSelection]);
+  }, [clearFlashSaleSelection]);
+
+  useEffect(() => {
+    syncPaymentMethodsRef.current?.();
+  }, [hasCreditPackage]);
 
   useEffect(() => {
     if (!subscriptionRestricted || !items.length || items.every((item) => item.creditPackage)) return;
@@ -246,12 +278,15 @@ export default function CheckoutPage({ darkMode = false }) {
   // Persist cart to server/localStorage whenever items change after the initial cart load.
   useEffect(() => {
     if (!hasLoadedCart.current) return;
+    if (skipCartMutationEffectsRef.current) return;
+    if (items === hydratedItemsRef.current) return;
     saveCartItems(items);
     window.dispatchEvent(new Event('cartUpdated'));
   }, [items]);
 
   useEffect(() => {
     if (!hasLoadedCart.current || !items.length || items.some((item) => item.creditPackage || item.subscription)) return;
+    if (skipCartMutationEffectsRef.current) return;
     const syncFirstOrderCoupon = async () => {
       try {
         const token = localStorage.getItem('token');
@@ -282,6 +317,13 @@ export default function CheckoutPage({ darkMode = false }) {
     };
     syncFirstOrderCoupon();
   }, [items, clearFlashSaleSelection]);
+
+  useEffect(() => {
+    if (skipCartMutationEffectsRef.current && items === hydratedItemsRef.current) {
+      skipCartMutationEffectsRef.current = false;
+      hydratedItemsRef.current = null;
+    }
+  }, [items]);
 
   const cartCurrency = useMemo(
     () => items.find((item) => item.currency)?.currency || null,

@@ -9729,13 +9729,7 @@ app.get("/images", async (req, res) => {
 
     console.error(err.message);
 
-    res.json({
-      images: [],
-      totalImages: 0,
-      totalLikes: 0,
-      totalDownloads: 0,
-      totalViews: 0,
-    });
+    res.status(500).json({ error: "Failed to load images" });
 
   }
 

@@ -13,6 +13,8 @@ import { readLastActivityAt } from "./utils/inactivitySession";
 import { API_BASE_URL } from "./utils/apiBaseUrl";
 import { trackBackendFetchRequests, trackBackendRequests } from "./utils/backendRequestLoading";
 import reportWebVitals from "./reportWebVitals";
+import { StartupReadinessProvider } from "./startup/StartupReadinessProvider";
+import "./startup/StartupReadiness.css";
 
 axios.defaults.withCredentials = true;
 trackBackendRequests(axios);
@@ -85,12 +87,6 @@ axios.interceptors.response.use(
 
     if (isNetworkError) {
       console.warn("Request failed due to network error", error.message);
-      return Promise.resolve({
-        data: null,
-        status: 0,
-        statusText: "Network Error",
-        config: error.config,
-      });
     }
 
     const originalRequest = error?.config;
@@ -118,7 +114,9 @@ root.render(
   <BrowserRouter>
     <MarketProvider>
       <InactivitySessionProvider>
-        <App />
+        <StartupReadinessProvider>
+          <App />
+        </StartupReadinessProvider>
       </InactivitySessionProvider>
     </MarketProvider>
   </BrowserRouter>

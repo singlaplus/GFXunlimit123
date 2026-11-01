@@ -2,11 +2,12 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { calculateBestBundleTierDiscount, calculateCartTotals, countDistinctAssetItems, getFlashSaleEligibleItems, getFlashSaleRequiredAssetCount, getNextBundleDiscountTier, readAppliedBundleOfferId, readAppliedCoupon, writeAppliedBundleOfferId, writeAppliedCoupon, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
+import { calculateBestBundleTierDiscount, calculateCartTotals, getFlashSaleEligibleItems, getFlashSaleRequiredAssetCount, getNextBundleDiscountTier, readAppliedBundleOfferId, readAppliedCoupon, writeAppliedBundleOfferId, writeAppliedCoupon, clearAppliedCoupon, normalizeCouponCode } from '../utils/cartCheckout';
 import { loadCartItems, saveCartItems } from '../utils/cartPersistence';
 import { getAssetPreviewUrl } from '../utils/assetPreview';
 import FlashSaleOffer from '../components/FlashSaleOffer';
 import CartOffersModal from '../components/CartOffersModal';
+import { useStartupReadiness } from '../startup/StartupReadinessProvider';
 import './CartPage.css';
 
 
@@ -29,8 +30,13 @@ function formatCurrency(value, currency = null) {
 
 export default function CartPage({ darkMode = false }) {
   const navigate = useNavigate();
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const isLoggedInCustomer = Boolean(localStorage.getItem('token'));
   const hasLoadedCart = useRef(false);
+  const cartLoadPromiseRef = useRef(Promise.resolve([]));
+  const previousCartRetryKey = useRef(retryKey);
+  const skipCartMutationEffectsRef = useRef(false);
+  const hydratedItemsRef = useRef(null);
   const [items, setItems] = useState([]);
   const [couponCode, setCouponCode] = useState('');
   const [coupon, setCoupon] = useState(null);
@@ -50,9 +56,33 @@ export default function CartPage({ darkMode = false }) {
   const flashSaleApplyRequestId = useRef(0);
   const flashSaleClearRequestId = useRef(0);
   const manualOfferSelection = useRef(false);
-  const [loading, setLoading] = useState(false);
+  const loading = false;
   const [taxSettings, setTaxSettings] = useState([{ enabled: true, rate: 18, label: 'GST', id: 1 }]);
   const [subscriptionRestricted, setSubscriptionRestricted] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const isRetry = previousCartRetryKey.current !== retryKey;
+    previousCartRetryKey.current = retryKey;
+    hasLoadedCart.current = false;
+    reportResource('cartCheckout', 'loading', '', routeId);
+    cartLoadPromiseRef.current = loadCartItems({ strict: true });
+    cartLoadPromiseRef.current.then((loadedItems) => {
+      if (!active) return;
+      skipCartMutationEffectsRef.current = isRetry;
+      hydratedItemsRef.current = isRetry ? loadedItems : null;
+      setItems(loadedItems);
+      hasLoadedCart.current = true;
+      reportResource('cartCheckout', 'ready', '', routeId);
+    }).catch((error) => {
+      if (!active) return;
+      console.error('Failed to load cart:', error);
+      reportResource('cartCheckout', 'error', 'Unable to load your cart. Please retry.', routeId);
+    });
+    return () => {
+      active = false;
+      hasLoadedCart.current = false;
+    };
+  }, [reportResource, retryKey, routeId]);
   const clearFlashSaleSelection = useCallback(() => {
     localStorage.removeItem('appliedFlashSale');
     setAppliedFlashSale(null);
@@ -103,25 +133,19 @@ export default function CartPage({ darkMode = false }) {
         })
         .catch(() => setSubscriptionRestricted(false));
     }
-    (async () => {
-      try {
-        const items = await loadCartItems();
-        setItems(Array.isArray(items) ? items : []);
-      } catch (error) {
-        console.error('Failed to load cart:', error);
-        setItems([]);
-      } finally {
-        hasLoadedCart.current = true;
-      }
-    })();
-
     const syncSavedCoupon = async () => {
       const savedCoupon = readAppliedCoupon();
       if (!savedCoupon.code) return;
 
+      let savedItems;
+      try {
+        savedItems = await cartLoadPromiseRef.current;
+      } catch (error) {
+        return;
+      }
+
       try {
         const token = localStorage.getItem('token');
-        const savedItems = await loadCartItems();
         const res = await axios.post(`${API_BASE_URL}/checkout/validate-coupon`, { code: savedCoupon.code, items: savedItems }, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
@@ -166,20 +190,27 @@ export default function CartPage({ darkMode = false }) {
 
   useEffect(() => {
     if (!subscriptionRestricted || !items.length || items.every((item) => item.creditPackage)) return;
+    if (skipCartMutationEffectsRef.current) {
+      hydratedItemsRef.current = [];
+    } else {
+      saveCartItems([]);
+    }
     setItems([]);
-    saveCartItems([]);
     navigate('/pricing', { replace: true });
   }, [items, navigate, subscriptionRestricted]);
 
   // Persist cart to server/localStorage whenever items change after the initial cart load.
   useEffect(() => {
     if (!hasLoadedCart.current) return;
+    if (skipCartMutationEffectsRef.current) return;
+    if (items === hydratedItemsRef.current) return;
     saveCartItems(items);
     window.dispatchEvent(new Event('cartUpdated'));
   }, [items]);
 
   useEffect(() => {
     if (!hasLoadedCart.current || !items.length || items.some((item) => item.creditPackage || item.subscription)) return;
+    if (skipCartMutationEffectsRef.current) return;
     const syncFirstOrderCoupon = async () => {
       try {
         const token = localStorage.getItem('token');
@@ -210,6 +241,13 @@ export default function CartPage({ darkMode = false }) {
     };
     syncFirstOrderCoupon();
   }, [items, clearFlashSaleSelection]);
+
+  useEffect(() => {
+    if (skipCartMutationEffectsRef.current && items === hydratedItemsRef.current) {
+      skipCartMutationEffectsRef.current = false;
+      hydratedItemsRef.current = null;
+    }
+  }, [items]);
 
   const cartCurrency = useMemo(
     () => items.find((item) => item.currency)?.currency || null,

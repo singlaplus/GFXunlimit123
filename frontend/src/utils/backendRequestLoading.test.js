@@ -74,6 +74,15 @@ describe("backend request loading tracker", () => {
     ["/api/messages/summary"],
     ["/trending-keywords"],
     ["/admin/payment-settings"],
+    ["/track-visitor"],
+    ["/analytics/events"],
+    ["/images"],
+    ["/images/trending"],
+    ["/leaderboard"],
+    ["/hero-stats"],
+    ["/dashboard-stats"],
+    ["/earnings-dashboard"],
+    ["/profile"],
   ])("does not include routine background read %s in the global loader", (url) => {
     const client = createAxiosClient();
     const events = [];

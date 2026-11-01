@@ -70,7 +70,7 @@ describe('AppHeader customer navigation', () => {
     const option = screen.getByRole('button', { name: /\+100 Credits/i });
     userEvent.click(option);
 
-    await screen.findByText(/100 credits added successfully/i);
+    await screen.findByText(/100 credits added to your cart/i);
     expect(global.fetch).toHaveBeenCalled();
     // menu should be closed after selection
     expect(screen.queryByRole('button', { name: /\+100 Credits/i })).toBeNull();
@@ -359,7 +359,7 @@ describe('AppHeader customer navigation', () => {
       />
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /analytics/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^analytics$/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/analytics');
 
     await userEvent.click(screen.getByRole('button', { name: /orders/i }));
@@ -620,8 +620,8 @@ describe('AppHeader customer navigation', () => {
         ] } })
         : url.endsWith('/checkout/active-flash-sales')
           ? Promise.resolve({ data: { sales: [
-            { id: 9, name: 'Current Sale', discount_rule: 'PERCENTAGE', metadata: { discount_value: 15 }, end_date: '2026-10-30' },
-            { id: 10, name: 'Fixed Sale', discount_rule: 'FIXED_AMOUNT', metadata: { discount_value: 25 }, end_date: '2026-10-30' },
+            { id: 9, name: 'Current Sale', discount_rule: 'PERCENTAGE', metadata: { discount_value: 15 }, end_date: '2026-11-03' },
+            { id: 10, name: 'Fixed Sale', discount_rule: 'FIXED_AMOUNT', metadata: { discount_value: 25 }, end_date: '2026-11-03' },
           ] } })
         : Promise.resolve({ data: {} })
     ));

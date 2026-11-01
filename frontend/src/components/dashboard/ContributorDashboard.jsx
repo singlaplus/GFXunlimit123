@@ -16,6 +16,7 @@ import "./TaxCenter.css";
 import TaxW8BenForm from "./TaxW8BenForm";
 import { getContributorReputationTier } from "../../utils/statsUtils";
 import { formatIndiaDate } from "../../utils/indiaTime";
+import { useStartupReadiness } from "../../startup/StartupReadinessProvider";
 
 const navGroups = [
   { label: "", items: [["overview", "Home"]] },
@@ -79,6 +80,8 @@ const taxFormExpiresIn = (submittedAt) => {
 };
 const PORTFOLIO_PAGE_SIZE = 6;
 const SOLD_ASSETS_PAGE_SIZE = 6;
+const EMPTY_DASHBOARD_STATS = {};
+const EMPTY_EARNINGS_STATS = {};
 const PLACEHOLDER_SECTIONS = new Set(["trending-content"]);
 const LATEST_BLOG_POSTS = [
   { title: "How to Build a Stronger Visual Portfolio", date: "Sep 18, 2026" },
@@ -93,10 +96,13 @@ export default function ContributorDashboard({
   username,
   reputationScore,
   reputationTier,
+  dashboardStats = EMPTY_DASHBOARD_STATS,
+  earningsStats = EMPTY_EARNINGS_STATS,
   branding = {},
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const taxWizardRequestedRef = useRef(false);
 
   const [section, setSection] = useState(() => {
@@ -118,6 +124,7 @@ export default function ContributorDashboard({
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [readinessStatus, setReadinessStatus] = useState("loading");
   const [earningsOpen, setEarningsOpen] = useState(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
     return (
@@ -155,6 +162,23 @@ export default function ContributorDashboard({
   });
   const [taxFormEditing, setTaxFormEditing] = useState(false);
   const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+
+  useEffect(() => {
+    setStats((current) => ({ ...current, ...dashboardStats }));
+  }, [dashboardStats]);
+
+  useEffect(() => {
+    setEarnings(earningsStats);
+  }, [earningsStats]);
+
+  useEffect(() => {
+    reportResource(
+      "contributorDashboard",
+      readinessStatus,
+      readinessStatus === "error" ? "Unable to load your contributor workspace. Please retry." : "",
+      routeId
+    );
+  }, [readinessStatus, reportResource, routeId]);
 
   const submitTaxForm = async (form) => {
     await axios.post(
@@ -266,74 +290,88 @@ export default function ContributorDashboard({
 
   useEffect(() => {
     let mounted = true;
+    let requestSequence = 0;
+    setLoading(true);
+    setError("");
+    setReadinessStatus("loading");
     if (!token) {
       setLoading(false);
+      setError("We could not load your contributor workspace.");
+      setReadinessStatus("error");
       return undefined;
     }
     const headers = buildAuthHeaders(token);
-    const loadDashboardData = () => {
+    const loadDashboardData = (initialLoad = false) => {
+      const currentRequestSequence = ++requestSequence;
       const requestConfig = { headers, params: { _ts: Date.now() } };
       return Promise.allSettled([
         axios.get(`${API_BASE_URL}/profile`, requestConfig),
         axios.get(`${API_BASE_URL}/profile/stats`, requestConfig),
-        axios.get(`${API_BASE_URL}/dashboard-stats`, requestConfig),
-        axios.get(`${API_BASE_URL}/earnings-dashboard`, requestConfig),
         axios.get(`${API_BASE_URL}/my-uploads?view=all`, requestConfig),
         axios.get(
           `${API_BASE_URL}/notifications/${encodeURIComponent(username || "")}`,
           requestConfig,
         ),
       ]).then((results) => {
-        if (!mounted) return;
+        if (!mounted || currentRequestSequence !== requestSequence) return;
         const [
           profileResult,
           statsResult,
-          dashboardStatsResult,
-          earningsResult,
           assetsResult,
           notificationsResult,
         ] = results;
-        if (profileResult.status === "fulfilled")
-          setProfile(
-            profileResult.value.data?.user || profileResult.value.data,
-          );
-        if (statsResult.status === "fulfilled")
-          setStats((current) => ({
-            ...current,
-            ...(statsResult.value.data || {}),
-          }));
-        if (dashboardStatsResult.status === "fulfilled")
-          setStats((current) => ({
-            ...current,
-            ...(dashboardStatsResult.value.data || {}),
-          }));
-        if (earningsResult.status === "fulfilled")
-          setEarnings(earningsResult.value.data || {});
-        if (assetsResult.status === "fulfilled")
-          setAssets(
-            Array.isArray(assetsResult.value.data)
-              ? assetsResult.value.data
-              : [],
-          );
+        const profileData = profileResult.status === "fulfilled"
+          ? profileResult.value.data?.user || profileResult.value.data
+          : null;
+        const statsData = statsResult.status === "fulfilled" ? statsResult.value.data : null;
+        const assetsData = assetsResult.status === "fulfilled" ? assetsResult.value.data : null;
+        const requiredStats = [
+          "total_uploads",
+          "approved_images",
+          "pending_images",
+          "rejected_images",
+          "total_likes",
+          "total_views",
+          "total_downloads",
+          "total_earnings",
+        ];
+        const invalidStats = !statsData || typeof statsData !== "object" ||
+          Array.isArray(statsData) || requiredStats.some((key) => (
+            statsData[key] == null || !Number.isFinite(Number(statsData[key]))
+          ));
+        const invalidProfile = !profileData || typeof profileData !== "object" ||
+          Array.isArray(profileData) || profileData.id == null;
+        const failedRequiredRequest = [profileResult, statsResult, assetsResult]
+          .some((result) => result.status !== "fulfilled");
+        if (failedRequiredRequest || invalidProfile || invalidStats || !Array.isArray(assetsData)) {
+          if (initialLoad) {
+            setError("We could not load your contributor workspace.");
+            setLoading(false);
+            setReadinessStatus("error");
+          }
+          return;
+        }
+
+        setProfile(profileData);
+        setStats((current) => ({ ...current, ...statsData }));
+        setAssets(assetsData);
         if (notificationsResult.status === "fulfilled")
-          setNotifications(
-            Array.isArray(notificationsResult.value.data)
-              ? notificationsResult.value.data
-              : [],
-          );
-        if (results.every((result) => result.status === "rejected"))
-          setError("We could not load your contributor workspace.");
-        setLoading(false);
+          setNotifications(Array.isArray(notificationsResult.value.data) ? notificationsResult.value.data : []);
+        if (initialLoad) {
+          setError("");
+          setLoading(false);
+          setReadinessStatus("ready");
+        }
       });
     };
 
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") loadDashboardData();
     };
-    const refreshInterval = window.setInterval(loadDashboardData, 5000);
+    const refreshInterval = window.setInterval(() => loadDashboardData(), 5000);
     window.addEventListener("focus", refreshWhenVisible);
     document.addEventListener("visibilitychange", refreshWhenVisible);
-    loadDashboardData();
+    loadDashboardData(true);
 
     return () => {
       mounted = false;
@@ -341,7 +379,7 @@ export default function ContributorDashboard({
       window.removeEventListener("focus", refreshWhenVisible);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [token, username]);
+  }, [token, username, retryKey]);
 
   const displayName =
     profile?.full_name || profile?.username || username || "Contributor";

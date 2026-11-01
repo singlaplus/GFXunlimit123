@@ -1,7 +1,8 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import { formatIndiaTime } from "../utils/indiaTime";
 import BlogAnalyticsPanel from "./BlogAnalyticsPanel";
 import "./AdminAnalyticsPage.css";
@@ -164,6 +165,7 @@ const buildFallbackAnalytics = () => ({
 });
 
 export default function AdminAnalyticsPage() {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [activeSection, setActiveSection] = useState("executive");
   const [analytics, setAnalytics] = useState(buildFallbackAnalytics);
   const [loading, setLoading] = useState(false);
@@ -173,6 +175,7 @@ export default function AdminAnalyticsPage() {
   const [exportStatus, setExportStatus] = useState("");
   const [hoveredPoint, setHoveredPoint] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(new Date());
+  const readinessAttemptRef = useRef({ routeId: "", retryKey: -1 });
 
   const getExportStatusColor = () => {
     if (!exportStatus) return theme.muted;
@@ -262,6 +265,11 @@ export default function AdminAnalyticsPage() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    const readinessAttempt = readinessAttemptRef.current.routeId !== routeId ||
+      readinessAttemptRef.current.retryKey !== retryKey;
+    readinessAttemptRef.current = { routeId, retryKey };
+    if (readinessAttempt) reportResource("adminAnalytics", "loading", "", routeId);
     const loadAnalytics = async () => {
       try {
         setLoading(true);
@@ -280,19 +288,41 @@ export default function AdminAnalyticsPage() {
         const response = await axios.get(`${API_BASE_URL}/admin/analytics/dashboard?${params.toString()}`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {}
         });
-        setAnalytics(response?.data || buildFallbackAnalytics());
+        if (!active) return;
+        const data = response?.data;
+        const fallback = buildFallbackAnalytics();
+        const summaryData = data?.summary;
+        const validSummary = summaryData && typeof summaryData === "object" &&
+          !Array.isArray(summaryData) &&
+          Object.keys(fallback.summary).every((key) => (
+            Object.prototype.hasOwnProperty.call(summaryData, key) &&
+            summaryData[key] !== undefined &&
+            Number.isFinite(Number(summaryData[key]))
+          ));
+        const validSeries = Object.keys(fallback)
+          .filter((key) => key !== "summary")
+          .every((key) => Array.isArray(data?.[key]));
+        if (!validSummary || !validSeries) {
+          throw new Error("Administrator analytics response was invalid.");
+        }
+        setAnalytics(data);
         setLastUpdated(new Date());
+        if (readinessAttempt) reportResource("adminAnalytics", "ready", "", routeId);
       } catch (err) {
+        if (!active) return;
         console.error("Failed to load admin analytics dashboard", err);
         setError("Unable to load analytics data right now.");
-        setAnalytics(buildFallbackAnalytics());
+        if (readinessAttempt) {
+          reportResource("adminAnalytics", "error", "Unable to load analytics data right now. Please retry.", routeId);
+        }
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     loadAnalytics();
-  }, [filters]);
+    return () => { active = false; };
+  }, [filters, reportResource, retryKey, routeId]);
 
   const summary = analytics.summary || {};
   const theme = isDarkMode ? DARK_THEME : LIGHT_THEME;

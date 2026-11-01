@@ -50,6 +50,21 @@ test("shows newsletter fields, action choices, and filters existing entries by s
   expect(screen.queryByText("Sent campaign")).not.toBeInTheDocument();
 });
 
+test("keeps failed promotions loads visible and retries with a GET", async () => {
+  axios.get.mockRejectedValueOnce(new Error("Unavailable"));
+  render(<AdminPromotionsPanel />);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load promotions data.");
+  expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+
+  axios.get.mockResolvedValueOnce({ data: promotionData });
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByText("Sent campaign")).toBeInTheDocument();
+  expect(axios.get).toHaveBeenCalledTimes(2);
+  expect(axios.post).not.toHaveBeenCalled();
+});
+
 test("shows newsletter SMTP settings in Promotions Settings", async () => {
   window.localStorage.setItem("adminPromotionsActiveSection", "settings");
   render(<AdminPromotionsPanel />);
@@ -246,7 +261,7 @@ test("sends a newsletter using the selected recipients and message", async () =>
     },
     expect.any(Object)
   ));
-  expect(screen.getByText("Newsletter queued for 1 recipient(s).")).toBeInTheDocument();
+  expect(await screen.findByText("Newsletter queued for 1 recipient(s).")).toBeInTheDocument();
 });
 
 test("validates and keeps every manually entered email when Tab is pressed", async () => {

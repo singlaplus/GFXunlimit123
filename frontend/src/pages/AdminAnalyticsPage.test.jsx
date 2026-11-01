@@ -1,11 +1,22 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import axios from "axios";
 import AdminAnalyticsPage from "./AdminAnalyticsPage";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
+const mockReportResource = jest.fn();
 jest.mock("axios");
+jest.mock("../startup/StartupReadinessProvider", () => ({
+  useStartupReadiness: jest.fn(),
+}));
 
 describe("AdminAnalyticsPage", () => {
   beforeEach(() => {
+    jest.clearAllMocks();
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 0,
+      routeId: "admin-analytics-test",
+    });
     localStorage.setItem("token", "demo-admin-token");
     global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ overview: {}, timeline: [], topBlogs: [] }) });
     axios.get.mockResolvedValue({
@@ -56,6 +67,36 @@ describe("AdminAnalyticsPage", () => {
     expect(await screen.findByText("Total Revenue")).toBeInTheDocument();
     expect(await screen.findByText("Active Customers")).toBeInTheDocument();
     expect(screen.getAllByText("Executive Dashboard").length).toBeGreaterThan(0);
+  });
+
+  it("reports malformed analytics data and retries the existing GET", async () => {
+    axios.get.mockResolvedValueOnce({ data: { summary: {} } });
+    const view = render(<AdminAnalyticsPage />);
+
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith(
+        "adminAnalytics",
+        "error",
+        "Unable to load analytics data right now. Please retry.",
+        "admin-analytics-test"
+      );
+    });
+
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 1,
+      routeId: "admin-analytics-test",
+    });
+    view.rerender(<AdminAnalyticsPage />);
+
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith("adminAnalytics", "ready", "", "admin-analytics-test");
+    });
+    expect(axios.get).toHaveBeenCalledTimes(2);
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.patch).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
   });
 
   it("opens the integrated Blog Analytics section", async () => {

@@ -3,11 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
 import Pagination from "../components/Pagination";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import "./PublicContributorPage.css";
 
 const PAGE_SIZE = 12;
 
 export default function PublicContributorPage({ darkMode, username }) {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [data, setData] = useState(null);
   const [activeTab, setActiveTab] = useState("images");
   const [search, setSearch] = useState("");
@@ -17,11 +19,38 @@ export default function PublicContributorPage({ darkMode, username }) {
 
   useEffect(() => {
     let mounted = true;
+    setData(null);
+    setError("");
+    reportResource("publicContributor", "loading", "", routeId);
     axios.get(`${API_BASE_URL}/public-contributors/${encodeURIComponent(username || "")}`)
-      .then((response) => { if (mounted) setData(response.data); })
-      .catch(() => { if (mounted) setError("Contributor profile not found."); });
+      .then((response) => {
+        const nextData = response.data;
+        if (!nextData || typeof nextData !== "object" || Array.isArray(nextData) ||
+            !nextData.contributor || !Array.isArray(nextData.assets)) {
+          throw new Error("Contributor profile response was invalid.");
+        }
+        if (!mounted) return;
+        setData(nextData);
+        reportResource("publicContributor", "ready", "", routeId);
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        if (error?.response?.status === 404) {
+          setError("Contributor profile not found.");
+          reportResource("publicContributor", "ready", "", routeId);
+          return;
+        }
+        console.error("Failed to load public contributor profile", error);
+        setError("Unable to load contributor profile.");
+        reportResource(
+          "publicContributor",
+          "error",
+          "Unable to load this contributor profile. Please retry.",
+          routeId
+        );
+      });
     return () => { mounted = false; };
-  }, [username]);
+  }, [username, reportResource, retryKey, routeId]);
 
   const assets = useMemo(() => {
     const allAssets = Array.isArray(data?.assets) ? data.assets : [];

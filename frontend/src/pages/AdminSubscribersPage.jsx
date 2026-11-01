@@ -12,6 +12,8 @@ export default function AdminSubscribersPage({
   const isCustomRequestsPage = pageMode === "custom-requests";
   const [subscribers, setSubscribers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [error, setError] = useState("");
   const [selectedSubscriber, setSelectedSubscriber] = useState(null);
   const [details, setDetails] = useState(null);
@@ -46,17 +48,22 @@ export default function AdminSubscribersPage({
           `${API_BASE_URL}/admin/custom-subscriptions`,
           { headers: token ? { Authorization: `Bearer ${token}` } : {} },
         );
-        setSubscribers(Array.isArray(response.data) ? response.data : []);
+        if (!Array.isArray(response.data)) {
+          throw new Error("Subscribers response was invalid.");
+        }
+        setSubscribers(response.data);
       } catch (err) {
         console.error(err);
-        setError(err.response?.data?.error || "Unable to load subscribers.");
+        setLoadError(err.response?.data?.error || err.message || "Unable to load subscribers.");
       } finally {
         setLoading(false);
       }
     };
 
+    setLoading(true);
+    setLoadError("");
     fetchSubscribers();
-  }, []);
+  }, [loadAttempt]);
 
   useEffect(() => {
     const loadAssignmentOptions = async () => {
@@ -559,10 +566,16 @@ export default function AdminSubscribersPage({
         }
       </div>
       {loading && <p style={{ color: mutedColor }}>Loading subscribers...</p>}
-      {!loading && !error && visibleSubscribers.length === 0 && (
+      {!loading && loadError && (
+        <div role="alert" style={{ color: mutedColor }}>
+          <p>{loadError}</p>
+          <button type="button" onClick={() => setLoadAttempt((attempt) => attempt + 1)} disabled={loading}>Retry</button>
+        </div>
+      )}
+      {!loading && !loadError && !error && visibleSubscribers.length === 0 && (
         <p style={{ color: mutedColor }}>{isCustomRequestsPage ? "No custom subscription requests found." : "No subscribed customers found."}</p>
       )}
-      {!loading && !error && visibleSubscribers.length > 0 && (
+      {!loading && !loadError && !error && visibleSubscribers.length > 0 && (
         <>
           <div
             style={{

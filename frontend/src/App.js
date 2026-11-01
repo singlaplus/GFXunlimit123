@@ -37,12 +37,22 @@ import {
 } from "./utils/backendRequestLoading";
 import { getEffectiveAuthToken } from "./utils/authSession";
 import { API_BASE_URL } from "./utils/apiBaseUrl";
+import { useStartupReadiness } from "./startup/StartupReadinessProvider";
 
 const BACKEND_LOADING_OVERLAY_DELAY_MS = 800;
 
 function App() {
   const loc = useLocation();
   const location = loc || (typeof window !== 'undefined' ? window.location : { search: '', pathname: '/' });
+  const { auth, branding, reportResource, retryKey, routeId } = useStartupReadiness();
+  const isCatalogRoute =
+    location.pathname === "/" ||
+    location.pathname === "/home" ||
+    location.pathname === "/search" ||
+    ["/photos", "/vectors", "/psd", "/psds", "/videos", "/templates"].includes(location.pathname) ||
+    /^\/explore(?:\/\d+)?$/.test(location.pathname);
+  const isDashboardRoute = ["/dashboard", "/customer", "/contributor"].includes(location.pathname);
+  const dashboardReadinessRouteId = isDashboardRoute ? routeId : "";
   const isStartTaxFormPage = location.pathname === "/dashboard" && new URLSearchParams(location.search).get("tab") === "starttaxform";
   const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
   const isBlankSeoPage = [
@@ -63,33 +73,6 @@ function App() {
 
     window.addEventListener("auth-changed", handleAuthChanged);
     return () => window.removeEventListener("auth-changed", handleAuthChanged);
-  }, []);
-
-  // Restore session from httpOnly cookie on app initialization
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const restoreSession = async () => {
-      try {
-        const response = await axios.get(`${API_BASE_URL}/me`, { withCredentials: true });
-        
-        if (response.data && response.data.id) {
-          // Session is still valid, restore user data to localStorage so the UI can render immediately.
-          localStorage.setItem("username", response.data.username || "");
-          localStorage.setItem("email", response.data.email || "");
-          localStorage.setItem("userRole", response.data.role || "");
-          if (response.data.customPermissions) {
-            localStorage.setItem("userPermissions", JSON.stringify(response.data.customPermissions));
-          }
-          window.dispatchEvent(new Event("auth-changed"));
-        }
-      } catch (err) {
-        // Not authenticated - this is fine, user is logged out
-        console.debug("No active session found");
-      }
-    };
-
-    restoreSession();
   }, []);
 
   const [userRole, setUserRole] = useState(() => {
@@ -114,40 +97,16 @@ function App() {
       setUserRole(nextUserRole);
     }
   }, [authVersion]);
-  const [branding, setBranding] = useState({});
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [authBusyType, setAuthBusyType] = useState("");
   const [isBackendBusy, setIsBackendBusy] = useState(false);
 
   const apiBaseUrl = API_BASE_URL;
 
-  useProfile(setUserRole, setUserPermissions);
-
-  useEffect(() => {
-    const apiBaseUrl = API_BASE_URL;
-
-    const loadBranding = async () => {
-      try {
-        const res = await axios.get(`${apiBaseUrl}/branding`);
-        setBranding(res.data || {});
-      } catch (err) {
-        console.error("Failed to load branding", err);
-      }
-    };
-
-    loadBranding();
-    const handleBrandingUpdated = (event) => {
-      const payload = event?.detail || null;
-      if (payload && typeof payload === "object") {
-        setBranding(payload);
-        return;
-      }
-      loadBranding();
-    };
-    window.addEventListener("branding-updated", handleBrandingUpdated);
-
-    return () => window.removeEventListener("branding-updated", handleBrandingUpdated);
-  }, []);
+  useProfile(setUserRole, setUserPermissions, {
+    sessionResolved: auth.status === "authenticated" || auth.status === "anonymous",
+    authStatus: auth.status,
+  });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -227,14 +186,19 @@ function App() {
   
   const [leaderboard, setLeaderboard] =
   useState([]);
-  const heroStats =
-useHeroStats();
+  const heroStats = useHeroStats({
+    reportResource,
+    retryKey,
+    routeId: location.pathname === "/" || location.pathname === "/home" ? routeId : "",
+  });
 useEffect(() => {
   if (process.env.NODE_ENV === "test") return;
 
   axios.post(
     `${API_BASE_URL}/track-visitor`
-  );
+  ).catch((error) => {
+    console.warn("Unable to record visitor analytics", error?.message || error);
+  });
 
 }, []);
 /* =========================================
@@ -383,13 +347,22 @@ const {
   search,
   sortType,
   isExplorePage,
+  reportResource,
+  readinessRouteId: isCatalogRoute ? routeId : "",
+  readinessEnabled: isCatalogRoute,
+  retryKey,
 });
   /* =========================================
    DASHBOARD
 ========================================= */
   const {
   dashboardStats,
-} = useDashboard();
+} = useDashboard({
+  reportResource,
+  readinessRouteId: dashboardReadinessRouteId,
+  readinessEnabled: isDashboardRoute,
+  retryKey,
+});
   const [earningsStats, setEarningsStats] =
   useState({
     total_earnings: 0,
@@ -452,7 +425,11 @@ const {
   useEarnings({
   token,
   setEarningsStats,
-});
+    reportResource,
+    readinessRouteId: dashboardReadinessRouteId,
+    readinessEnabled: isDashboardRoute,
+    retryKey,
+  });
 
   
 
@@ -782,6 +759,9 @@ const popupProps = {
   darkMode={darkMode}
   userRole={userRole}
   userPermissions={userPermissions}
+  reportResource={reportResource}
+  readinessRouteId={location.pathname.startsWith("/asset/") ? routeId : ""}
+  retryKey={retryKey}
   fetchImages={fetchImages}
   homeSectionProps={{
     homePageProps,

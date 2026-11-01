@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { buildAuthHeaders } from "../utils/authSession";
 import Pagination from "../components/Pagination";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import "./AdminContributorsPage.css";
 
 const PAGE_SIZE = 10;
@@ -91,6 +92,7 @@ const sortContributors = (contributors, key, direction) => [...contributors].sor
 });
 
 export default function AdminContributorsPage({ darkMode = false }) {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [contributors, setContributors] = useState([]);
   const [state, setState] = useState("loading");
   const [sortConfig, setSortConfig] = useState({ key: null, direction: "asc" });
@@ -98,18 +100,33 @@ export default function AdminContributorsPage({ darkMode = false }) {
 
   useEffect(() => {
     let mounted = true;
+    setState("loading");
     axios.get(`${API_BASE_URL}/admin/users`, { headers: buildAuthHeaders() })
       .then((response) => {
         if (!mounted) return;
-        const users = Array.isArray(response.data) ? response.data : [];
+        if (!Array.isArray(response.data) ||
+            response.data.some((user) => !user || typeof user !== "object" || typeof user.role !== "string")) {
+          throw new Error("Administrator user response was invalid.");
+        }
+        const users = response.data;
         setContributors(users.filter((user) => String(user.role || "").toLowerCase() === "contributor"));
         setState("ready");
       })
-      .catch(() => {
+      .catch((error) => {
+        console.error("Unable to load administrator contributors", error);
         if (mounted) setState("error");
       });
     return () => { mounted = false; };
-  }, []);
+  }, [retryKey]);
+
+  useEffect(() => {
+    reportResource(
+      "adminContributors",
+      state,
+      state === "error" ? "Unable to load contributors. Please retry." : "",
+      routeId
+    );
+  }, [reportResource, routeId, state]);
 
   const sortedContributors = sortConfig.key
     ? sortContributors(contributors, sortConfig.key, sortConfig.direction)

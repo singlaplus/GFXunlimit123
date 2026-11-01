@@ -7,7 +7,15 @@ jest.mock("../services/imageService", () => ({
   getImages: jest.fn(),
 }));
 
-function ExploreImagesHarness({ pageSize, initialPage = 1, initialExplorePage = true }) {
+const noop = () => {};
+
+function ExploreImagesHarness({
+  pageSize,
+  initialPage = 1,
+  initialExplorePage = true,
+  reportResource = noop,
+  readinessEnabled = false,
+}) {
   const [selectedPageSize, setSelectedPageSize] = useState(pageSize);
   const [currentPage, setCurrentPage] = useState(initialPage);
   const [isExplorePage, setIsExplorePage] = useState(initialExplorePage);
@@ -44,6 +52,9 @@ function ExploreImagesHarness({ pageSize, initialPage = 1, initialExplorePage = 
     search,
     sortType,
     isExplorePage,
+    reportResource,
+    readinessRouteId: "test-route",
+    readinessEnabled,
   });
 
   return (
@@ -79,6 +90,9 @@ describe("useImages Explore pagination", () => {
       data: {
         images: catalog,
         totalImages: catalog.length,
+        totalLikes: 0,
+        totalDownloads: 0,
+        totalViews: 0,
       },
     });
 
@@ -127,6 +141,9 @@ describe("useImages Explore pagination", () => {
           },
         ],
         totalImages: 2,
+        totalLikes: 0,
+        totalDownloads: 0,
+        totalViews: 0,
       },
     });
 
@@ -148,7 +165,7 @@ describe("useImages Explore pagination", () => {
         });
       }
       return Promise.resolve({
-        data: { images: [{ id: "new-result" }], totalImages: 1 },
+        data: { images: [{ id: "new-result" }], totalImages: 1, totalLikes: 0, totalDownloads: 0, totalViews: 0 },
       });
     });
 
@@ -161,7 +178,7 @@ describe("useImages Explore pagination", () => {
     expect(oldSearchSignal.aborted).toBe(true);
 
     await act(async () => {
-      resolveOldSearch({ data: { images: [{ id: "stale-result" }], totalImages: 1 } });
+      resolveOldSearch({ data: { images: [{ id: "stale-result" }], totalImages: 1, totalLikes: 0, totalDownloads: 0, totalViews: 0 } });
     });
 
     expect(screen.getByTestId("asset-ids")).toHaveTextContent("new-result");
@@ -180,7 +197,7 @@ describe("useImages Explore pagination", () => {
 
   it("starts at page one with the selected category, asset type, and sort", async () => {
     getImages.mockResolvedValue({
-      data: { images: [{ id: 1 }], totalImages: 1 },
+      data: { images: [{ id: 1 }], totalImages: 1, totalLikes: 0, totalDownloads: 0, totalViews: 0 },
     });
 
     render(<ExploreImagesHarness pageSize={50} />);
@@ -216,7 +233,7 @@ describe("useImages Explore pagination", () => {
 
   it("resets the shared page state to page one when entering Explore", async () => {
     getImages.mockResolvedValue({
-      data: { images: [{ id: 4 }], totalImages: 1 },
+      data: { images: [{ id: 4 }], totalImages: 1, totalLikes: 0, totalDownloads: 0, totalViews: 0 },
     });
 
     render(
@@ -263,6 +280,9 @@ describe("useImages Explore pagination", () => {
           created_at: new Date(Date.UTC(2026, 0, 150 - index)).toISOString(),
         })),
         totalImages: 150,
+        totalLikes: 0,
+        totalDownloads: 0,
+        totalViews: 0,
       },
     });
 
@@ -282,5 +302,44 @@ describe("useImages Explore pagination", () => {
       expect.any(AbortSignal)
     );
 
+  });
+
+  it("accepts a valid empty result as success", async () => {
+    const reportResource = jest.fn();
+    getImages.mockResolvedValue({
+      data: {
+        images: [],
+        totalImages: 0,
+        totalLikes: 0,
+        totalDownloads: 0,
+        totalViews: 0,
+      },
+    });
+
+    render(<ExploreImagesHarness pageSize={50} reportResource={reportResource} readinessEnabled />);
+
+    await waitFor(() => {
+      expect(reportResource).toHaveBeenCalledWith("catalog", "ready", "", "test-route");
+    });
+    expect(screen.getByTestId("asset-ids")).toBeEmptyDOMElement();
+  });
+
+  it("does not report malformed catalogue data as a successful empty result", async () => {
+    const reportResource = jest.fn();
+    getImages.mockResolvedValue({ data: { images: [] } });
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    render(<ExploreImagesHarness pageSize={50} reportResource={reportResource} readinessEnabled />);
+
+    await waitFor(() => {
+      expect(reportResource).toHaveBeenCalledWith(
+        "catalog",
+        "error",
+        "Unable to load the images for this page.",
+        "test-route"
+      );
+    });
+    expect(screen.getByTestId("asset-ids")).toBeEmptyDOMElement();
+    errorSpy.mockRestore();
   });
 });

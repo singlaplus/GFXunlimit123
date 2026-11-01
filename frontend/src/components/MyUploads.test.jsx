@@ -80,7 +80,7 @@ describe('MyUploads', () => {
   });
 
   it('requests the approved view without the old stats fields', async () => {
-    axios.get.mockResolvedValueOnce({ data: [] });
+    axios.get.mockResolvedValue({ data: [] });
 
     render(<MyUploads />);
 
@@ -213,7 +213,7 @@ describe('MyUploads', () => {
 
 
   it('shows edit controls for portfolio assets and hides the days-left label', async () => {
-    axios.get.mockResolvedValueOnce({
+    axios.get.mockResolvedValue({
       data: [
         {
           id: 4,
@@ -266,6 +266,23 @@ describe('MyUploads', () => {
       target: { value: 'approved' },
     });
 
+    resolveApproved({
+      data: [
+        {
+          id: 2,
+          title: 'Approved asset',
+          category: 'Nature',
+          keywords: 'forest',
+          likes: 0,
+          views: 0,
+          downloads: 0,
+          status: 'approved',
+          created_at: '2026-07-24T00:00:00.000Z',
+        },
+      ],
+    });
+    expect(await screen.findByText('Approved asset')).toBeInTheDocument();
+
     resolvePending({
       data: [
         {
@@ -282,25 +299,52 @@ describe('MyUploads', () => {
       ],
     });
 
-    resolveApproved({
-      data: [
-        {
-          id: 2,
-          title: 'Approved asset',
-          category: 'Nature',
-          keywords: 'forest',
-          likes: 0,
-          views: 0,
-          downloads: 0,
-          status: 'approved',
-          created_at: '2026-07-24T00:00:00.000Z',
-        },
-      ],
-    });
-
     await waitFor(() => {
       expect(screen.getByText('Approved asset')).toBeInTheDocument();
     });
+    expect(screen.queryByText('Pending asset')).not.toBeInTheDocument();
+  });
+
+  it('does not show an empty view until a valid response succeeds', async () => {
+    let resolveUploads;
+    axios.get.mockImplementation(() => new Promise((resolve) => { resolveUploads = resolve; }));
+
+    render(<MyUploads />);
+    expect(screen.getByRole('status')).toHaveTextContent('Loading uploads');
+    expect(screen.queryByText('No uploads match this view yet.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Total Uploads: 0')).not.toBeInTheDocument();
+
+    resolveUploads({ data: [] });
+    expect(await screen.findByText('No uploads match this view yet.')).toBeInTheDocument();
+    expect(screen.getByText('Total Uploads: 0')).toBeInTheDocument();
+    expect(axios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows failures, keeps repeated retry failures visible, and recovers on retry', async () => {
+    axios.get
+      .mockRejectedValueOnce(new Error('Network Error'))
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockResolvedValueOnce({ data: [] });
+
+    render(<MyUploads />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Network Error');
+    expect(screen.queryByText('No uploads match this view yet.')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 503');
+    expect(screen.queryByText('Total Uploads: 0')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('No uploads match this view yet.')).toBeInTheDocument();
+    expect(axios.get).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects malformed upload responses instead of treating them as empty', async () => {
+    axios.get.mockResolvedValueOnce({ data: { uploads: [] } });
+
+    render(<MyUploads />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Uploads response was invalid');
+    expect(screen.queryByText('No uploads match this view yet.')).not.toBeInTheDocument();
   });
 
   it('loads private thumbnails with authorization when legacy metadata is absent', async () => {
@@ -389,7 +433,7 @@ describe('MyUploads', () => {
         'blob:original-image'
       );
       expect(axios.get).toHaveBeenLastCalledWith(
-        'http://localhost:5000/api/files/contributor/2026/10/Pending/source.jpg',
+        'http://localhost:5000/api/images/11?original=true',
         expect.objectContaining({
           responseType: 'blob',
           headers: { Authorization: 'Bearer test-token' },

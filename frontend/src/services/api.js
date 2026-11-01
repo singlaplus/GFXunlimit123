@@ -1,5 +1,5 @@
 import axios from "axios";
-import { buildAuthHeaders, hasActiveSession, shouldTriggerAuthSessionExpired } from "../utils/authSession";
+import { buildAuthHeaders, shouldTriggerAuthSessionExpired } from "../utils/authSession";
 import { readLastActivityAt } from "../utils/inactivitySession";
 import { API_BASE_URL } from "../utils/apiBaseUrl";
 import { trackBackendRequests } from "../utils/backendRequestLoading";
@@ -23,12 +23,6 @@ if (api && api.interceptors && api.interceptors.response && typeof api.intercept
     (error) => {
       if (error?.message === "Network Error" || error?.code === "ERR_NETWORK") {
         console.warn("Network request failed", error.message);
-        return Promise.resolve({
-          data: null,
-          status: 0,
-          statusText: "Network Error",
-          config: error.config,
-        });
       }
 
       if (shouldTriggerAuthSessionExpired(error)) {

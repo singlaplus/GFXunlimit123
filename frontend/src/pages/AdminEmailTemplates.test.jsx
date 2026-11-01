@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import axios from 'axios';
 import AdminEmailTemplates from './AdminEmailTemplates';
 
@@ -63,5 +63,41 @@ describe('AdminEmailTemplates', () => {
     expect(screen.getByLabelText(/enabled/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /preview/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /restore default template/i })).toBeInTheDocument();
+  });
+
+  it('shows template load failures and retries with a GET', async () => {
+    axios.get.mockRejectedValueOnce(new Error('Unavailable'));
+    render(<AdminEmailTemplates />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load email templates.');
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+
+    axios.get.mockResolvedValueOnce({ data: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(screen.getByText('No saved templates yet.')).toBeInTheDocument();
+    });
+    expect(axios.get).toHaveBeenCalledTimes(2);
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
+  });
+
+  it('does not show an empty template state before the initial GET succeeds', async () => {
+    let resolveTemplates;
+    axios.get.mockReturnValueOnce(new Promise((resolve) => {
+      resolveTemplates = resolve;
+    }));
+    render(<AdminEmailTemplates />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading email templates...');
+    expect(screen.queryByText('No saved templates yet.')).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveTemplates({ data: [] });
+    });
+    expect(screen.getByText('No saved templates yet.')).toBeInTheDocument();
   });
 });

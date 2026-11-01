@@ -24,9 +24,20 @@ function isBackgroundRead(config) {
   if (config.skipGlobalLoading) return true;
 
   const method = String(config.method || "get").toLowerCase();
+  const url = String(config.url || "").split("?")[0].replace(/\/+$/, "");
+  if ([
+    "/track-visitor",
+    "/analytics/events",
+    "/images",
+    "/images/trending",
+    "/leaderboard",
+    "/hero-stats",
+    "/dashboard-stats",
+    "/earnings-dashboard",
+    "/profile",
+  ].some((path) => url.endsWith(path))) return true;
   if (method !== "get") return false;
 
-  const url = String(config.url || "").split("?")[0].replace(/\/+$/, "");
   return (
     url.includes("/notifications/") ||
     url.endsWith("/api/messages/summary") ||
@@ -85,13 +96,21 @@ export function trackBackendFetchRequests(targetWindow, apiBaseUrl) {
 
   const trackedFetch = function trackedFetch(input, ...args) {
     let requestOrigin;
+    let requestPath;
     try {
       const requestUrl = typeof input === "string" ? input : input.url;
-      requestOrigin = new URL(requestUrl, targetWindow.location.href).origin;
+      const parsedUrl = new URL(requestUrl, targetWindow.location.href);
+      requestOrigin = parsedUrl.origin;
+      requestPath = parsedUrl.pathname.replace(/\/+$/, "");
     } catch {
       return originalFetch.call(this, input, ...args);
     }
-    if (requestOrigin !== apiOrigin) {
+    if (
+      requestOrigin !== apiOrigin ||
+      requestPath.endsWith("/track-visitor") ||
+      requestPath.endsWith("/analytics/events") ||
+      requestPath.endsWith("/images/trending")
+    ) {
       return originalFetch.call(this, input, ...args);
     }
 

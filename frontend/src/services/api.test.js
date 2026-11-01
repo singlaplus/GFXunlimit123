@@ -1,5 +1,6 @@
 jest.mock("axios", () => {
   const get = jest.fn();
+  const responseHandlers = [];
   return {
     __esModule: true,
     default: {
@@ -9,16 +10,18 @@ jest.mock("axios", () => {
         put: jest.fn(),
         interceptors: {
           request: { use: jest.fn() },
-          response: { use: jest.fn() },
+          response: { use: (onSuccess, onError) => responseHandlers.push({ onSuccess, onError }) },
         },
       })),
     },
     mockGet: get,
+    mockResponseHandlers: responseHandlers,
   };
 });
 
 import { getSingleImage } from "./api";
 const mockGet = jest.requireMock("axios").mockGet;
+const mockResponseHandlers = jest.requireMock("axios").mockResponseHandlers;
 
 describe("getSingleImage", () => {
   beforeEach(() => {
@@ -40,5 +43,14 @@ describe("getSingleImage", () => {
     getSingleImage(196);
 
     expect(mockGet).toHaveBeenCalledWith("/images/196", { headers: {} });
+  });
+
+  it("keeps network errors rejected instead of converting them to empty responses", async () => {
+    const networkError = Object.assign(new Error("Network Error"), { code: "ERR_NETWORK" });
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(mockResponseHandlers[0].onError(networkError)).rejects.toBe(networkError);
+
+    warn.mockRestore();
   });
 });

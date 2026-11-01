@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { getImages } from "../services/imageService";
 
+const noop = () => {};
+
 const mergeImagesById = (currentImages, nextImages) => {
   const knownIds = new Set(currentImages.map((image) => String(image.id)));
   return [
@@ -47,6 +49,10 @@ export default function useImages({
   search = "",
   sortType = "newest",
   isExplorePage = false,
+  reportResource = noop,
+  readinessRouteId = "",
+  readinessEnabled = false,
+  retryKey = 0,
 }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
@@ -111,12 +117,17 @@ export default function useImages({
         return false;
       }
 
-      const data = response?.data || {};
-      totalImagesResult = Number(data.totalImages) || 0;
-      totalLikesResult = Number(data.totalLikes) || 0;
-      totalDownloadsResult = Number(data.totalDownloads) || 0;
-      totalViewsResult = Number(data.totalViews) || 0;
-      imagesResult = Array.isArray(data.images) ? [...data.images] : [];
+      const data = response?.data;
+      const countFields = ["totalImages", "totalLikes", "totalDownloads", "totalViews"];
+      if (!data || typeof data !== "object" || !Array.isArray(data.images) ||
+          countFields.some((field) => data[field] == null || !Number.isFinite(Number(data[field])))) {
+        throw new Error("Image catalogue response was invalid.");
+      }
+      totalImagesResult = Number(data.totalImages);
+      totalLikesResult = Number(data.totalLikes);
+      totalDownloadsResult = Number(data.totalDownloads);
+      totalViewsResult = Number(data.totalViews);
+      imagesResult = [...data.images];
 
       if (shouldSortExploreCatalog) {
         let catalogPage = 2;
@@ -140,9 +151,11 @@ export default function useImages({
             return false;
           }
 
-          const nextPageImages = Array.isArray(nextResponse?.data?.images)
-            ? nextResponse.data.images
-            : [];
+          const nextData = nextResponse?.data;
+          if (!nextData || typeof nextData !== "object" || !Array.isArray(nextData.images)) {
+            throw new Error("Explore catalogue response was invalid.");
+          }
+          const nextPageImages = nextData.images;
           if (nextPageImages.length === 0) {
             throw new Error(
               `Failed to load the complete Explore catalog: received ${imagesResult.length} of ${totalImagesResult} assets`
@@ -184,6 +197,7 @@ export default function useImages({
     setLoadedPage(page);
     loadedPageQueryKeyRef.current = isExplorePage ? requestedQueryKey : null;
     setLoadMoreError(false);
+    if (readinessEnabled) reportResource("catalog", "ready", "", readinessRouteId);
 
     if (append) {
       skipPageFetchRef.current = { page, queryKey: requestedQueryKey };
@@ -205,6 +219,9 @@ export default function useImages({
     setTotalPages,
     setCurrentPage,
     isExplorePage,
+    readinessEnabled,
+    readinessRouteId,
+    reportResource,
   ]);
 
   const fetchImages = useCallback(async () => {
@@ -217,6 +234,7 @@ export default function useImages({
     requestControllerRef.current = controller;
     const requestId = ++requestSequenceRef.current;
     setLoading(true);
+    if (readinessEnabled) reportResource("catalog", "loading", "", readinessRouteId);
     setLoadingMore(false);
     loadingMoreRef.current = false;
 
@@ -225,13 +243,16 @@ export default function useImages({
     } catch (error) {
       if (!controller.signal.aborted) {
         console.error("Failed to load images", error);
+        if (readinessEnabled) {
+          reportResource("catalog", "error", "Unable to load the images for this page.", readinessRouteId);
+        }
       }
     } finally {
       if (!controller.signal.aborted && requestId === requestSequenceRef.current) {
         setLoading(false);
       }
     }
-  }, [currentPage, isExplorePage, queryKey, requestPage, setLoading]);
+  }, [currentPage, isExplorePage, queryKey, requestPage, setLoading, readinessEnabled, readinessRouteId, reportResource]);
 
   useEffect(() => {
     const enteredExplorePage = isExplorePage && !previousExplorePageRef.current;
@@ -298,6 +319,7 @@ export default function useImages({
       setLoadMoreError(false);
     }
     setLoading(true);
+    if (readinessEnabled) reportResource("catalog", "loading", "", readinessRouteId);
 
     const debounceDelay = search.trim() ? 250 : 0;
     const fetchTimeout = window.setTimeout(async () => {
@@ -306,6 +328,9 @@ export default function useImages({
       } catch (error) {
         if (!controller.signal.aborted) {
           console.error("Failed to load images", error);
+          if (readinessEnabled) {
+            reportResource("catalog", "error", "Unable to load the images for this page.", readinessRouteId);
+          }
         }
       } finally {
         if (!controller.signal.aborted && requestId === requestSequenceRef.current) {
@@ -353,6 +378,10 @@ export default function useImages({
     setTotalImages,
     setTotalPages,
     setCurrentPage,
+    readinessEnabled,
+    readinessRouteId,
+    reportResource,
+    retryKey,
   ]);
 
   const loadMoreImages = useCallback(async () => {

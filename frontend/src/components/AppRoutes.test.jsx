@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import AppRoutes from "./AppRoutes";
 import axios from "axios";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 const mockLocation = {
   pathname: "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/analytics",
@@ -22,6 +23,9 @@ jest.mock("../pages/OrderHistoryPage", () => () => <div>Order History</div>);
 jest.mock("./CompanyPage", () => ({ slug }) => (
   <main><a href="http://localhost:3000/privacy">Privacy Policy</a><a href="http://localhost:3000/terms">Terms</a>{slug}</main>
 ));
+jest.mock("../startup/StartupReadinessProvider", () => ({
+  useStartupReadiness: jest.fn(),
+}));
 jest.mock("axios");
 
 describe("AppRoutes", () => {
@@ -30,6 +34,12 @@ describe("AppRoutes", () => {
     mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/analytics";
     mockLocation.search = "";
     mockLocation.state = null;
+    useStartupReadiness.mockReturnValue({
+      routeId: "route-test",
+      reportResource: jest.fn(),
+      reportAvailability: jest.fn(),
+      availabilityRetryKey: 0,
+    });
     axios.get.mockResolvedValue({
       data: {
         available: true,
@@ -632,6 +642,70 @@ describe("AppRoutes", () => {
 
     resolveAvailability({ data: { available: true, path: "/pricing", disabledLinks: [] } });
     await waitFor(() => expect(container.querySelector("main")).not.toHaveAttribute("aria-busy", "true"));
+  });
+
+  it("reports repeated availability failures and retries only the availability request", async () => {
+    mockLocation.pathname = "/blog";
+    mockLocation.search = "";
+    const reportAvailability = jest.fn();
+    useStartupReadiness.mockReturnValue({
+      routeId: "blog-route",
+      reportResource: jest.fn(),
+      reportAvailability,
+      availabilityRetryKey: 0,
+    });
+    let availabilityAttempts = 0;
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/pages/availability")) {
+        availabilityAttempts += 1;
+        if (availabilityAttempts < 3) {
+          return Promise.reject(new Error("Availability unavailable"));
+        }
+        return Promise.resolve({
+          data: { available: true, path: "/blog", disabledLinks: [] },
+        });
+      }
+      if (url.endsWith("/blog/posts")) return Promise.resolve({ data: { posts: [] } });
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    const view = render(<AppRoutes userRole="customer" activePage="home" />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to verify this page's availability. Please try again."
+    );
+    expect(reportAvailability).toHaveBeenLastCalledWith(
+      "error",
+      "Unable to verify this page's availability. Please try again.",
+      "blog-route"
+    );
+    expect(axios.get.mock.calls.filter(([url]) => url.endsWith("/blog/posts"))).toHaveLength(0);
+
+    useStartupReadiness.mockReturnValue({
+      routeId: "blog-route",
+      reportResource: jest.fn(),
+      reportAvailability,
+      availabilityRetryKey: 1,
+    });
+    view.rerender(<AppRoutes userRole="customer" activePage="home" />);
+    await waitFor(() => expect(availabilityAttempts).toBe(2));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to verify this page's availability. Please try again."
+    );
+    expect(axios.get.mock.calls.filter(([url]) => url.endsWith("/blog/posts"))).toHaveLength(0);
+
+    useStartupReadiness.mockReturnValue({
+      routeId: "blog-route",
+      reportResource: jest.fn(),
+      reportAvailability,
+      availabilityRetryKey: 2,
+    });
+    view.rerender(<AppRoutes userRole="customer" activePage="home" />);
+    expect(await screen.findByRole("heading", { name: "Latest from the blog" })).toBeInTheDocument();
+    await waitFor(() => expect(availabilityAttempts).toBe(3));
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/pages/availability"))).toHaveLength(3);
+    expect(axios.get.mock.calls.filter(([url]) => url.endsWith("/blog/posts"))).toHaveLength(1);
+    expect(reportAvailability).toHaveBeenLastCalledWith("ready", "", "blog-route");
+    expect(axios.post).not.toHaveBeenCalled();
   });
 
   it("disables only the selected link on its source page", async () => {

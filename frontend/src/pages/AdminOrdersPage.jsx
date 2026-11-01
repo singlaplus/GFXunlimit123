@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import Pagination from "../components/Pagination";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import { formatIndiaDate, formatIndiaDateTime } from "../utils/indiaTime";
 import "./AdminOrdersPage.css";
 import {
@@ -178,6 +179,7 @@ const exportModuleCsv = (rows, headers, filename) => {
 };
 
 export default function AdminOrdersPage() {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [orders, setOrders] = useState([]);
   const [summary, setSummary] = useState({});
   const [analytics, setAnalytics] = useState({});
@@ -193,6 +195,7 @@ export default function AdminOrdersPage() {
   const [resetCountdown, setResetCountdown] = useState(0);
   const resetTimeoutRef = useRef(null);
   const resetIntervalRef = useRef(null);
+  const readinessAttemptRef = useRef({ routeId: "", retryKey: -1 });
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(20);
   const [total, setTotal] = useState(0);
@@ -233,6 +236,11 @@ export default function AdminOrdersPage() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    const readinessAttempt = readinessAttemptRef.current.routeId !== routeId ||
+      readinessAttemptRef.current.retryKey !== retryKey;
+    readinessAttemptRef.current = { routeId, retryKey };
+    if (readinessAttempt) reportResource("adminOrders", "loading", "", routeId);
     const loadData = async () => {
       try {
         setLoading(true);
@@ -252,22 +260,36 @@ export default function AdminOrdersPage() {
             params
           })
         ]);
+        if (!active) return;
+        if (!summaryRes.data || typeof summaryRes.data !== "object" || Array.isArray(summaryRes.data) ||
+            ["total_revenue", "pending_orders", "completed_orders", "refunded_orders", "returning_customers"].some((key) => (
+              summaryRes.data[key] == null || !Number.isFinite(Number(summaryRes.data[key]))
+            )) ||
+            !ordersRes.data || typeof ordersRes.data !== "object" || Array.isArray(ordersRes.data) ||
+            !Array.isArray(ordersRes.data.orders) || !Number.isFinite(Number(ordersRes.data.total))) {
+          throw new Error("Administrator orders response was invalid.");
+        }
 
         setSummary(summaryRes.data || {});
         setAnalytics(ordersRes.data?.analytics || {});
-        setOrders(Array.isArray(ordersRes.data?.orders) ? ordersRes.data.orders : []);
+        setOrders(ordersRes.data.orders);
         setTotal(Number(ordersRes.data?.total || 0));
+        if (readinessAttempt) reportResource("adminOrders", "ready", "", routeId);
       } catch (err) {
+        if (!active) return;
         console.error("Failed to load admin orders", err);
         setError("Unable to load orders right now.");
-        setOrders([]);
+        if (readinessAttempt) {
+          reportResource("adminOrders", "error", "Unable to load orders right now. Please retry.", routeId);
+        }
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     loadData();
-  }, [page, limit, filters]);
+    return () => { active = false; };
+  }, [page, limit, filters, reportResource, retryKey, routeId]);
 
   const theme = isDarkMode ? DARK_THEME : LIGHT_THEME;
   const selectedPayment = details?.payments?.find((payment) => String(payment.gateway || "").trim().toLowerCase() === "google pay")

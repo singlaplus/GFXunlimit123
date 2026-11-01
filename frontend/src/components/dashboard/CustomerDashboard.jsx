@@ -6,6 +6,7 @@ import { getAssetPreviewUrl } from "../../utils/assetPreview";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../../utils/authSession";
 import { loadCartItems } from "../../utils/cartPersistence";
 import { formatIndiaDate } from "../../utils/indiaTime";
+import { useStartupReadiness } from "../../startup/StartupReadinessProvider";
 import "./CustomerDashboard.css";
 
 const sections = [
@@ -81,6 +82,7 @@ function EmptyState({ title, copy, action, onAction }) {
 
 export default function CustomerDashboard({ darkMode, username }) {
   const navigate = useNavigate();
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [activeSection, setActiveSection] = useState("overview");
   const [profile, setProfile] = useState(null);
   const [downloads, setDownloads] = useState([]);
@@ -97,10 +99,7 @@ export default function CustomerDashboard({ darkMode, username }) {
 
   useEffect(() => {
     let mounted = true;
-    if (!token) {
-      setLoading(false);
-      return undefined;
-    }
+    reportResource("customerDashboard", "loading", "", routeId);
     const headers = buildAuthHeaders(token);
     Promise.allSettled([
       axios.get(`${API_BASE_URL}/profile`, { headers }),
@@ -111,7 +110,7 @@ export default function CustomerDashboard({ darkMode, username }) {
         `${API_BASE_URL}/notifications/${encodeURIComponent(username || "")}`,
         { headers },
       ),
-      loadCartItems(),
+      loadCartItems({ strict: true }),
     ]).then(
       ([
         profileResult,
@@ -122,10 +121,29 @@ export default function CustomerDashboard({ darkMode, username }) {
         cartResult,
       ]) => {
         if (!mounted) return;
-        if (profileResult.status === "fulfilled")
-          setProfile(
-            profileResult.value.data?.user || profileResult.value.data,
+        const requiredResults = [profileResult, downloadsResult, favoritesResult, ordersResult, cartResult];
+        const failedRequiredResult = requiredResults.find((result) => result.status !== "fulfilled");
+        const profileData = profileResult.status === "fulfilled"
+          ? profileResult.value.data?.user || profileResult.value.data
+          : null;
+        const downloadsData = downloadsResult.status === "fulfilled" ? downloadsResult.value.data : null;
+        const favoritesData = favoritesResult.status === "fulfilled" ? favoritesResult.value.data : null;
+        const ordersResponse = ordersResult.status === "fulfilled" ? ordersResult.value.data : null;
+        const ordersData = Array.isArray(ordersResponse) ? ordersResponse : ordersResponse?.orders;
+        if (failedRequiredResult ||
+            !profileData || typeof profileData !== "object" || Array.isArray(profileData) ||
+            !Array.isArray(downloadsData) || !Array.isArray(favoritesData) || !Array.isArray(ordersData)) {
+          console.error("Unable to load complete customer dashboard data", failedRequiredResult?.reason);
+          setLoading(false);
+          reportResource(
+            "customerDashboard",
+            "error",
+            "Unable to load your dashboard information. Please retry.",
+            routeId
           );
+          return;
+        }
+        setProfile(profileData);
         axios
           .get(`${API_BASE_URL}/subscription-status`, { headers })
           .then((response) => {
@@ -145,22 +163,20 @@ export default function CustomerDashboard({ darkMode, username }) {
             }
           })
           .catch(() => {});
-        if (downloadsResult.status === "fulfilled")
-          setDownloads(downloadsResult.value.data || []);
-        if (favoritesResult.status === "fulfilled")
-          setFavorites(favoritesResult.value.data || []);
-        if (ordersResult.status === "fulfilled")
-          setOrders(ordersResult.value.data?.orders || []);
+        setDownloads(downloadsData);
+        setFavorites(favoritesData);
+        setOrders(ordersData);
         if (notificationsResult.status === "fulfilled")
           setNotifications(notificationsResult.value.data || []);
         if (cartResult.status === "fulfilled") setCart(cartResult.value || []);
         setLoading(false);
+        reportResource("customerDashboard", "ready", "", routeId);
       },
     );
     return () => {
       mounted = false;
     };
-  }, [token, username]);
+  }, [token, username, reportResource, retryKey, routeId]);
 
   useEffect(() => {
     let mounted = true;

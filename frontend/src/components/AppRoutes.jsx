@@ -44,6 +44,7 @@ import TaxW8BenForm from "./dashboard/TaxW8BenForm";
 import TaxW9Form from "./dashboard/TaxW9Form";
 import { getEffectiveAuthToken } from "../utils/authSession";
 import { GOOGLE_FONT_FAMILIES } from "../data/googleFonts";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 const BLOG_DRAFTS_STORAGE_KEY = "gfx-blog-drafts";
 const blogDraftHeaders = () => ({ Authorization: `Bearer ${getEffectiveAuthToken()}` });
@@ -1026,11 +1027,16 @@ const trackBlogAnalyticsEvent = (eventType, post, metadata = {}) => {
 };
 
 function PublicBlogDetailPage({ pathname }) {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [post, setPost] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    reportResource("publicBlogDetail", "loading", "", routeId);
     const normalized = (pathname || "").replace(/^\/+|\/+$/g, "");
     const segments = normalized.split("/").filter(Boolean);
     const slugWithId = segments.length > 2 ? segments[segments.length - 1] : "";
@@ -1040,18 +1046,37 @@ function PublicBlogDetailPage({ pathname }) {
     if (!postId || !Number.isFinite(postId)) {
       setError("Blog post not found.");
       setLoading(false);
-      return;
+      reportResource("publicBlogDetail", "ready", "", routeId);
+      return () => { active = false; };
     }
 
     axios.get(`${API_BASE_URL}/blog/posts/${postId}`)
       .then((response) => {
+        if (!active) return;
         const nextPost = response.data?.post || null;
+        if (!nextPost || typeof nextPost !== "object" || Array.isArray(nextPost)) {
+          throw new Error("Blog post response was invalid.");
+        }
         setPost(nextPost);
-        setError(nextPost ? "" : "Blog post not found.");
+        setError("");
+        reportResource("publicBlogDetail", "ready", "", routeId);
       })
-      .catch(() => setError("Blog post not found."))
-      .finally(() => setLoading(false));
-  }, [pathname]);
+      .catch((error) => {
+        if (!active) return;
+        if (error?.response?.status === 404) {
+          setError("Blog post not found.");
+          reportResource("publicBlogDetail", "ready", "", routeId);
+        } else {
+          console.error("Failed to load public blog post", error);
+          setError("Unable to load blog post.");
+          reportResource("publicBlogDetail", "error", "Unable to load this blog post. Please retry.", routeId);
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [pathname, reportResource, retryKey, routeId]);
 
   useEffect(() => {
     if (!post) return undefined;
@@ -1132,19 +1157,40 @@ function PublicBlogDetailPage({ pathname }) {
 }
 
 function PublicBlogPage() {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState("");
   const coverColors = ["#6d19c8", "#168be0", "#d81825", "#5213b5", "#13a8d8", "#d40fc8"];
   const pageSize = 10;
 
   useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setLoadError("");
+    reportResource("publicBlog", "loading", "", routeId);
     axios.get(`${API_BASE_URL}/blog/posts`)
-      .then((response) => setPosts(Array.isArray(response.data?.posts) ? response.data.posts : []))
-      .catch(() => setPosts([]))
-      .finally(() => setLoading(false));
-  }, []);
+      .then((response) => {
+        if (!Array.isArray(response.data?.posts)) {
+          throw new Error("Blog list response was invalid.");
+        }
+        if (!active) return;
+        setPosts(response.data.posts);
+        reportResource("publicBlog", "ready", "", routeId);
+      })
+      .catch((error) => {
+        if (!active) return;
+        console.error("Failed to load public blog posts", error);
+        setLoadError("Unable to load blog posts.");
+        reportResource("publicBlog", "error", "Unable to load blog posts. Please retry.", routeId);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [reportResource, retryKey, routeId]);
 
   const filteredPosts = posts.filter((post) => {
     const query = searchTerm.trim().toLowerCase();
@@ -1174,7 +1220,7 @@ function PublicBlogPage() {
           <span style={{ padding: "8px 12px", border: "1px solid #bbf7d0", borderRadius: "999px", background: "#f0fdf4", color: "#166534", fontSize: "0.8rem", fontWeight: 800 }}>{filteredPosts.length} {filteredPosts.length === 1 ? "post" : "posts"}</span>
           </div>
         </div>
-        {loading ? <p style={{ color: "#64748b" }}>Loading latest posts...</p> : posts.length === 0 ? <p style={{ color: "#64748b" }}>No published blog posts yet.</p> : filteredPosts.length === 0 ? <p style={{ color: "#64748b" }}>No blog posts match your search.</p> : <><div style={{ width: "100%", display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "18px" }}>{pagePosts.map((post, index) => (
+        {loading ? <p style={{ color: "#64748b" }}>Loading latest posts...</p> : loadError ? <p role="alert" style={{ color: "#991b1b" }}>{loadError}</p> : posts.length === 0 ? <p style={{ color: "#64748b" }}>No published blog posts yet.</p> : filteredPosts.length === 0 ? <p style={{ color: "#64748b" }}>No blog posts match your search.</p> : <><div style={{ width: "100%", display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "18px" }}>{pagePosts.map((post, index) => (
           <a key={post.id} href={buildBlogPostUrl(post)} style={{ display: "block", minWidth: 0, border: "1px solid #e2e8f0", borderRadius: "3px", background: "#fff", boxShadow: "0 8px 20px rgba(15, 23, 42, 0.1)", textDecoration: "none", color: "inherit" }}>
             <article style={{ overflow: "hidden" }}>
               <div style={{ position: "relative", aspectRatio: "16 / 9", display: "grid", placeItems: "center", overflow: "hidden", background: post.coverImage || post.cover_image ? "#e2e8f0" : coverColors[index % coverColors.length] }}>
@@ -1393,6 +1439,11 @@ function TaxFormReviewPage() {
 export default function AppRoutes(props) {
   const loc = useLocation();
   const navigate = useNavigate();
+  const {
+    routeId,
+    reportAvailability,
+    availabilityRetryKey,
+  } = useStartupReadiness();
   const pathname = (loc && loc.pathname) || (typeof window !== 'undefined' ? window.location.pathname : '/');
   const search = (loc && loc.search) ?? (typeof window !== 'undefined' ? window.location.search : '');
   const normalizedUserRole = (props.userRole || "").toString();
@@ -1406,6 +1457,7 @@ export default function AppRoutes(props) {
   useEffect(() => {
     let active = true;
     setPageAvailability(null);
+    reportAvailability("loading", "", routeId);
     axios.get(`${API_BASE_URL}/pages/availability`, { params: { path: `${pathname}${search}` } })
       .then(({ data }) => {
         if (typeof data?.available !== "boolean") {
@@ -1421,18 +1473,20 @@ export default function AppRoutes(props) {
             sourcePath: data.path,
             disabledLinks: data.disabledLinks,
           });
+          reportAvailability("ready", "", routeId);
         }
       })
       .catch((error) => {
         console.error("Unable to verify app page availability", error);
-        if (active) setPageAvailability({
-          pathname,
-          error: "Unable to verify this page's availability. Please try again.",
-        });
+        if (active) {
+          const message = "Unable to verify this page's availability. Please try again.";
+          setPageAvailability({ pathname, error: message });
+          reportAvailability("error", message, routeId);
+        }
       });
 
     return () => { active = false; };
-  }, [isAdmin, pathname, search]);
+  }, [availabilityRetryKey, isAdmin, pathname, reportAvailability, routeId, search]);
 
   useEffect(() => {
     if (pageAvailability?.pathname !== pathname || !pageAvailability.sourcePath) return undefined;

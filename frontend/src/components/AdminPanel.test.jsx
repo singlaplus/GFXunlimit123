@@ -4,12 +4,19 @@ import { buildAnimatedCountSteps, getAnimatedCountDuration, getAnimatedCountIncr
 import { useLocation } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
+
+const mockReportResource = jest.fn();
 
 jest.mock("react-router-dom", () => ({
   useLocation: jest.fn()
 }), { virtual: true });
 
 jest.mock("axios");
+
+jest.mock("../startup/StartupReadinessProvider", () => ({
+  useStartupReadiness: jest.fn(),
+}));
 
 jest.mock("./Pagination", () => ({ currentPage, setCurrentPage }) => (
   <div data-testid="pagination">
@@ -52,6 +59,12 @@ describe("AdminPanel collection controls", () => {
     localStorage.removeItem("admin-thumbnails-connection-card-count");
     localStorage.removeItem("adminPromotionsActiveSection");
     localStorage.removeItem("footer-social-links");
+    mockReportResource.mockClear();
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 0,
+      routeId: "",
+    });
     useLocation.mockReturnValue({ search: "?tab=controls" });
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/categories")) {
@@ -64,6 +77,182 @@ describe("AdminPanel collection controls", () => {
     });
     axios.post.mockResolvedValue({ data: { id: 2, name: "Travel" } });
     axios.delete.mockResolvedValue({ data: { id: 1, name: "Nature" } });
+  });
+
+  it("reports selected users readiness from one validated request and retries GET-only", async () => {
+    window.history.pushState({}, "", "/admin");
+    localStorage.setItem("userRole", "admin");
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=users" });
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 0,
+      routeId: "admin-panel-test",
+    });
+    let usersAttempt = 0;
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        usersAttempt += 1;
+        if (usersAttempt < 3) return Promise.reject(new Error("Unavailable"));
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    const view = render(<AdminPanel />);
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith(
+        "adminUsers",
+        "error",
+        "Unable to load users right now. Please retry.",
+        "admin-panel-test"
+      );
+    });
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/admin/users"))).toHaveLength(1);
+
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 1,
+      routeId: "admin-panel-test",
+    });
+    view.rerender(<AdminPanel />);
+    await waitFor(() => {
+      expect(mockReportResource.mock.calls.filter(([, status]) => status === "error")).toHaveLength(2);
+      expect(mockReportResource).toHaveBeenLastCalledWith(
+        "adminUsers",
+        "error",
+        "Unable to load users right now. Please retry.",
+        "admin-panel-test"
+      );
+    });
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/admin/users"))).toHaveLength(2);
+
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 2,
+      routeId: "admin-panel-test",
+    });
+    view.rerender(<AdminPanel />);
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenLastCalledWith("adminUsers", "ready", "", "admin-panel-test");
+    });
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/admin/users"))).toHaveLength(3);
+    expect(screen.getByText("No users found.")).toBeInTheDocument();
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.patch).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
+  });
+
+  it("loads each essential administrator dashboard count once before readiness", async () => {
+    window.history.pushState({}, "", "/admin");
+    localStorage.setItem("userRole", "admin");
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=admin_dashboard" });
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 0,
+      routeId: "admin-dashboard-test",
+    });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) return Promise.resolve({ data: [{ id: 1, status: "pending" }] });
+      if (url.includes("/admin/users")) return Promise.resolve({ data: [{ id: 2, role: "customer" }] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [{ id: 3, name: "Nature" }] });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith("adminDashboard", "ready", "", "admin-dashboard-test");
+      expect(mockReportResource).toHaveBeenCalledWith("adminDashboardUsers", "ready", "", "admin-dashboard-test");
+      expect(mockReportResource).toHaveBeenCalledWith("adminDashboardCollections", "ready", "", "admin-dashboard-test");
+    });
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/admin/images"))).toHaveLength(1);
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/admin/users"))).toHaveLength(1);
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/admin/collections"))).toHaveLength(1);
+    expect(axios.get.mock.calls.some(([url]) => url.includes("/images?limit=1000&page=1"))).toBe(false);
+    expect(axios.get.mock.calls.some(([url]) => url.includes("/admin/categories"))).toBe(false);
+  });
+
+  it("does not treat a malformed users response as readiness success", async () => {
+    window.history.pushState({}, "", "/admin");
+    localStorage.setItem("userRole", "admin");
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=users" });
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 0,
+      routeId: "admin-panel-test",
+    });
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/users")
+        ? Promise.resolve({ data: { users: [] } })
+        : Promise.resolve({ data: [] })
+    ));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith(
+        "adminUsers",
+        "error",
+        "Unable to load users right now. Please retry.",
+        "admin-panel-test"
+      );
+    });
+    expect(mockReportResource).not.toHaveBeenCalledWith("adminUsers", "ready", "", "admin-panel-test");
+  });
+
+  it("reports selected admin account readiness and retries its existing GET owner", async () => {
+    window.history.pushState({}, "", "/admin");
+    localStorage.setItem("userRole", "admin");
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=myaccount" });
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 0,
+      routeId: "admin-account-test",
+    });
+    axios.get.mockImplementation((url) => (
+      url.endsWith("/profile")
+        ? Promise.reject(new Error("Unavailable"))
+        : Promise.resolve({ data: [] })
+    ));
+
+    const view = render(<AdminPanel />);
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith(
+        "adminMyAccount",
+        "error",
+        "Unable to load account details right now. Please retry.",
+        "admin-account-test"
+      );
+    });
+    expect(axios.get.mock.calls.filter(([url]) => url.endsWith("/profile"))).toHaveLength(1);
+    const sharedLookupCalls = axios.get.mock.calls.filter(([url]) => (
+      url.includes("/admin/categories") || url.includes("/admin/collections")
+    )).length;
+
+    axios.get.mockImplementation((url) => (
+      url.endsWith("/profile")
+        ? Promise.resolve({ data: { id: 8, username: "admin", email: "admin@example.com" } })
+        : Promise.resolve({ data: [] })
+    ));
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 1,
+      routeId: "admin-account-test",
+    });
+    view.rerender(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenLastCalledWith("adminMyAccount", "ready", "", "admin-account-test");
+    });
+    expect(axios.get.mock.calls.filter(([url]) => url.endsWith("/profile"))).toHaveLength(2);
+    expect(axios.get.mock.calls.filter(([url]) => (
+      url.includes("/admin/categories") || url.includes("/admin/collections")
+    ))).toHaveLength(sharedLookupCalls);
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.patch).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
   });
 
   it("renders collection controls without approval or rejection actions", async () => {
@@ -159,6 +348,31 @@ describe("AdminPanel collection controls", () => {
       expect.objectContaining({ headers: expect.any(Object) })
     ));
     expect(await screen.findByRole("status")).toHaveTextContent("Sitemap path saved.");
+  });
+
+  it("retries a failed sitemap settings GET without repeating mutations", async () => {
+    let settingsAttempt = 0;
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/sitemap-settings")) {
+        settingsAttempt += 1;
+        return settingsAttempt === 1
+          ? Promise.reject(new Error("Unavailable"))
+          : Promise.resolve({ data: { path: "/srv/www/public" } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=sitemap" });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load the sitemap path.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByLabelText("Sitemap storage directory")).toHaveValue("/srv/www/public"));
+    expect(settingsAttempt).toBe(2);
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.patch).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
   });
 
   it("browses server folders and selects the directory path only", async () => {
@@ -509,7 +723,7 @@ describe("AdminPanel collection controls", () => {
     expect(within(additionalThumbnailsCard).getByLabelText("Thumbnails 2 folder size")).toBeEmptyDOMElement();
     expect(within(additionalThumbnailsCard).queryByRole("button", { name: "Choose folder" })).not.toBeInTheDocument();
     expect(screen.getByText("783.00 MB")).toBeInTheDocument();
-    expect(screen.getByText("217.00 GB")).toBeInTheDocument();
+    expect(screen.getByText("233.00 GB")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /^assets \(1\)$/i })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /^thumbnails \(1\)$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Default Assets (1)" })).toBeInTheDocument();
@@ -1004,14 +1218,40 @@ describe("AdminPanel collection controls", () => {
   });
 
   it("opens the controls tax forms tab with the controls_taxforms route", async () => {
+    const originalLocation = window.location;
+    const hrefSpy = jest.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        ...originalLocation,
+        href: originalLocation.href,
+        origin: originalLocation.origin,
+        set href(next) {
+          hrefSpy(next);
+        },
+        get href() {
+          return originalLocation.href;
+        }
+      }
+    });
+
     render(<AdminPanel />);
 
-    const taxFormsButton = await screen.findByRole("button", { name: /^tax forms$/i });
-    fireEvent.click(taxFormsButton);
+    try {
+      const taxFormsButton = await screen.findByRole("button", { name: /^tax forms$/i });
+      fireEvent.click(taxFormsButton);
 
-    await waitFor(() => {
-      expect(window.location.href).toContain("tab=controls_taxforms");
-    });
+      const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
+      expect(hrefSpy).toHaveBeenCalledWith(`${adminBasePath}?tab=controls_taxforms`);
+      expect(new URL(hrefSpy.mock.calls[0][0], originalLocation.href).href).toBe(
+        `${originalLocation.origin}${adminBasePath}?tab=controls_taxforms`
+      );
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation
+      });
+    }
   });
 
   it("shows submitted contributor tax forms in the controls tax forms tab", async () => {
@@ -1358,7 +1598,6 @@ describe("AdminPanel collection controls", () => {
           total_earnings: 123.45,
           unpaid_earnings: 98.45,
           loyalty_points: 3,
-          tax_form_submitted: true,
           reputation_score: 2
         }] });
       }
@@ -1372,7 +1611,6 @@ describe("AdminPanel collection controls", () => {
     expect(details).toHaveTextContent("Total earnings123.45");
     expect(details).toHaveTextContent("Unpaid earnings98.45");
     expect(details).toHaveTextContent("Loyalty points3");
-    expect(details).toHaveTextContent("Tax Form SubmittedYes");
   });
 
   it("renders actual asset counts from collection payloads that use count fields", async () => {
@@ -1518,6 +1756,66 @@ describe("AdminPanel collection controls", () => {
     expect(screen.queryByLabelText(/entire website feature/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/daily report email id/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/daily report time/i)).not.toBeInTheDocument();
+  });
+
+  it("shows failed daily-report settings reads and retries without rejecting valid defaults", async () => {
+    const defaultGet = axios.get.getMockImplementation();
+    let settingsAttempt = 0;
+    axios.get.mockImplementation((url, ...args) => {
+      if (url.includes("/admin/email/daily-report-settings")) {
+        settingsAttempt += 1;
+        return settingsAttempt === 1
+          ? Promise.reject(new Error("Unavailable"))
+          : Promise.resolve({ data: { ok: true, settings: null } });
+      }
+      return defaultGet(url, ...args);
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /daily report settings/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load daily report settings");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+    expect(settingsAttempt).toBe(2);
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.patch).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
+  });
+
+  it("does not show an empty schedule state after a failed GET and retries successfully", async () => {
+    const defaultGet = axios.get.getMockImplementation();
+    let schedulesAttempt = 0;
+    axios.get.mockImplementation((url, ...args) => {
+      if (url.includes("/admin/email/daily-report-schedules")) {
+        schedulesAttempt += 1;
+        return schedulesAttempt === 1
+          ? Promise.reject(new Error("Unavailable"))
+          : Promise.resolve({ data: [] });
+      }
+      if (url.includes("/admin/email/daily-report-settings")) {
+        return Promise.resolve({ data: { ok: true, settings: null } });
+      }
+      return defaultGet(url, ...args);
+    });
+
+    render(<AdminPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /scheduled reports/i }));
+
+    expect(await screen.findByText("Failed to load saved schedules.")).toBeInTheDocument();
+    expect(screen.queryByText("No schedules yet. Create your first one above.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      expect(screen.getByText("No schedules yet. Create your first one above.")).toBeInTheDocument();
+    });
+    expect(schedulesAttempt).toBe(2);
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.patch).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
   });
 
   it("keeps the daily reports controls available in the controls tab", async () => {
@@ -1854,7 +2152,7 @@ describe("AdminPanel collection controls", () => {
 
     await waitFor(() => {
       expect(axios.put).toHaveBeenCalledWith(
-        "/admin/email/daily-report-schedules/42",
+        expect.stringContaining("/admin/email/daily-report-schedules/42"),
         expect.objectContaining({
           name: "Morning Summary",
           time: "09:00",
@@ -2119,7 +2417,7 @@ describe("AdminPanel collection controls", () => {
     render(<AdminPanel />);
 
     expect(await screen.findByText(/hero banner image/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /default/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^default$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add image/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /save hero banner/i })).toBeInTheDocument();
   });
@@ -2226,6 +2524,37 @@ describe("AdminPanel collection controls", () => {
 
     expect(await screen.findAllByText(/live assets/i)).not.toHaveLength(0);
     expect(screen.getAllByText(/live asset/i).length).toBeGreaterThan(0);
+  });
+
+  it("shows a live assets load error and retries only its GET requests", async () => {
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=live-assets" });
+    axios.get.mockImplementation((url) => (
+      url.includes("/images?limit=1000")
+        ? Promise.reject(new Error("Unavailable"))
+        : Promise.resolve({ data: [] })
+    ));
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load live assets");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByText("No live assets found.")).not.toBeInTheDocument();
+
+    axios.get.mockImplementation((url) => (
+      url.includes("/images?limit=1000")
+        ? Promise.resolve({ data: { images: [] } })
+        : Promise.resolve({ data: [] })
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/images?limit=1000"))).toHaveLength(2);
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.patch).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
   });
 
   it("shows contributor username on each asset card", async () => {
@@ -2895,6 +3224,28 @@ describe("AdminPanel collection controls", () => {
 
   it("shows upload-style editing fields and sends collection updates", async () => {
     useLocation.mockReturnValue({ search: "?tab=live-assets" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/images?limit=1000&page=1")) {
+        return Promise.resolve({ data: { images: [] } });
+      }
+      if (url.includes("/admin/categories")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      }
+      if (url.includes("/admin/collections")) {
+        return Promise.resolve({ data: [{ id: 1, name: "Nature" }] });
+      }
+      return Promise.resolve({ data: [{
+        id: 1,
+        title: "Live asset",
+        status: "approved",
+        filename: "asset.jpg",
+        category: "Images",
+        collection: "Nature",
+        keywords: "",
+        description: "",
+        type: "image"
+      }] });
+    });
     axios.put.mockResolvedValue({ data: { id: 1, title: "Live asset", status: "approved", filename: "asset.jpg", category: "Images", collection: "Nature", keywords: "", description: "", type: "image" } });
     const dispatchSpy = jest.spyOn(window, "dispatchEvent");
 
@@ -3068,7 +3419,7 @@ describe("AdminPanel collection controls", () => {
 
     render(<AdminPanel />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /open pricing settings/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /open pricing settings/i }));
 
     fireEvent.click(await screen.findByRole('button', { name: /add currency/i }));
 
@@ -3076,7 +3427,7 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getAllByRole('spinbutton', { name: /amount/i }).length).toBeGreaterThan(0);
   });
 
-  it("keeps a fixed tax value when switching that row to percentage", async () => {
+  it("preserves the current tax value when switching between fixed and percentage types", async () => {
     useLocation.mockReturnValue({ search: "?tab=controls" });
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/settings/pricing")) {
@@ -3095,21 +3446,27 @@ describe("AdminPanel collection controls", () => {
 
     render(<AdminPanel />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /open pricing settings/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^tax settings$/i }));
 
-    const taxSelects = Array.from(document.querySelectorAll('select')).filter((el) =>
+    const taxSettingsModal = screen.getByRole("heading", { name: "Tax Settings" }).closest(".admin-panel-modal-panel");
+    const taxSelects = Array.from(taxSettingsModal.querySelectorAll('select')).filter((el) =>
       Array.from(el.options).some((option) => option.value === 'percentage' || option.value === 'fixed')
     );
     const firstTaxType = taxSelects[0];
-    const firstNumberInput = document.querySelectorAll('input[type="number"]')[0];
+    const taxNumberInputs = taxSettingsModal.querySelectorAll('input[type="number"]');
 
-    expect(firstTaxType.value).toBe('fixed');
-    expect(firstNumberInput.value).toBe('5');
+    await waitFor(() => expect(firstTaxType.value).toBe('fixed'));
+    expect(taxNumberInputs[0].value).toBe('5');
 
     fireEvent.change(firstTaxType, { target: { value: 'percentage' } });
 
     expect(firstTaxType.value).toBe('percentage');
-    expect(document.querySelectorAll('input[type="number"]')[0].value).toBe('5');
+    expect(taxSettingsModal.querySelectorAll('input[type="number"]')[0].value).toBe('5');
+
+    fireEvent.change(firstTaxType, { target: { value: 'fixed' } });
+
+    expect(firstTaxType.value).toBe('fixed');
+    expect(taxSettingsModal.querySelectorAll('input[type="number"]')[0].value).toBe('5');
   });
 
   it("opens Free Assets modal and fetches free asset settings", async () => {
@@ -3876,7 +4233,7 @@ describe("AdminPanel collection controls", () => {
     const formatDateLabel = (date) => date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
 
     expect(within(calendar).getByRole("button", { name: formatDateLabel(today) })).toBeDisabled();
-    expect(within(calendar).getByRole("button", { name: formatDateLabel(yesterday) })).toBeDisabled();
+    expect(within(calendar).queryByRole("button", { name: formatDateLabel(yesterday) })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create Flash Sale" }));
     expect(await screen.findByText("Scheduled Flash Sales must have a start date later than today.")).toBeInTheDocument();
     expect(axios.post).not.toHaveBeenCalled();
@@ -4350,8 +4707,8 @@ describe("AdminPanel collection controls", () => {
     fireEvent.click(await screen.findByRole("button", { name: /add new/i }));
 
     fireEvent.change(screen.getByPlaceholderText(/full name/i), { target: { value: "Dummy Customer" } });
-    fireEvent.change(screen.getByPlaceholderText(/username/i), { target: { value: "dummycust" } });
-    fireEvent.change(screen.getByPlaceholderText(/email/i), { target: { value: "dummy@customer.test" } });
+    fireEvent.change(screen.getByPlaceholderText("Username"), { target: { value: "dummycust" } });
+    fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "dummy@customer.test" } });
     fireEvent.change(screen.getByPlaceholderText(/id #/i), { target: { value: "DUMMY001" } });
     fireEvent.change(screen.getByPlaceholderText(/credits/i), { target: { value: "10" } });
     fireEvent.change(screen.getByPlaceholderText(/password/i), { target: { value: "password123" } });

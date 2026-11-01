@@ -1,10 +1,25 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import axios from "axios";
 import AdminCommercePage from "./AdminCommercePage";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
+
+const mockDefaultReportResource = jest.fn();
 
 jest.mock("axios");
+jest.mock("../startup/StartupReadinessProvider", () => ({
+  useStartupReadiness: jest.fn(),
+}));
 
 describe("AdminCommercePage", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockDefaultReportResource,
+      retryKey: 0,
+      routeId: "admin-commerce-test",
+    });
+  });
+
   it("counts commerce KPI values up to their formatted totals", async () => {
     axios.get.mockImplementation((url) => {
       if (url.endsWith("/admin/orders/summary")) {
@@ -53,5 +68,56 @@ describe("AdminCommercePage", () => {
 
     requestFrameSpy.mockRestore();
     cancelFrameSpy.mockRestore();
+  });
+
+  it("reports malformed commerce responses and supports GET-only retry", async () => {
+    const reportResource = jest.fn();
+    let retryKey = 0;
+    useStartupReadiness.mockImplementation(() => ({
+      reportResource,
+      retryKey,
+      routeId: "admin-commerce-test",
+    }));
+    axios.get.mockResolvedValueOnce({ data: {} })
+      .mockResolvedValueOnce({ data: {} })
+      .mockResolvedValueOnce({ data: {} })
+      .mockResolvedValueOnce({ data: {} });
+    const view = render(<AdminCommercePage />);
+
+    await waitFor(() => {
+      expect(reportResource).toHaveBeenCalledWith(
+        "adminCommerce",
+        "error",
+        "Unable to load commerce analytics. Please retry.",
+        "admin-commerce-test"
+      );
+    });
+
+    axios.get.mockResolvedValueOnce({
+      data: {
+        total_orders: 0,
+        today_orders: 0,
+        monthly_orders: 0,
+        total_revenue: 0,
+        pending_orders: 0,
+        completed_orders: 0,
+        refunded_orders: 0,
+        returning_customers: 0,
+      },
+    })
+      .mockResolvedValueOnce({ data: {} })
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({ data: [] });
+    retryKey = 1;
+    view.rerender(<AdminCommercePage />);
+
+    await waitFor(() => {
+      expect(reportResource).toHaveBeenCalledWith("adminCommerce", "ready", "", "admin-commerce-test");
+    });
+    expect(axios.get).toHaveBeenCalledTimes(8);
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.patch).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
   });
 });

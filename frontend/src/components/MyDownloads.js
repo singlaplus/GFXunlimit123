@@ -1,52 +1,66 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../utils/authSession";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
 import { formatIndiaDateTime } from "../utils/indiaTime";
 import Pagination from "./Pagination";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 function MyDownloads({ darkMode = false }) {
 
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [downloads, setDownloads] =
     useState([]);
   const [page, setPage] = useState(1);
   const [limit] = useState(20);
+  const [loadStatus, setLoadStatus] = useState("loading");
+  const [loadError, setLoadError] = useState("");
+  const [localRetry, setLocalRetry] = useState(0);
+  const requestIdRef = useRef(0);
+  const legacyHistoryRequestedRef = useRef(false);
+  const readinessAttemptRef = useRef({ routeId, retryKey, localRetry });
+  readinessAttemptRef.current = { routeId, retryKey, localRetry };
   const token = getEffectiveAuthToken();
 
   useEffect(() => {
-
     fetchDownloads();
-
-  }, []);
+    return () => { requestIdRef.current += 1; };
+  }, [retryKey, routeId, localRetry]);
 
   const fetchDownloads = async () => {
-
+    const requestId = requestIdRef.current + 1;
+    const requestAttempt = { routeId, retryKey, localRetry };
+    requestIdRef.current = requestId;
+    setLoadStatus("loading");
+    setLoadError("");
+    reportResource("downloads", "loading", "", routeId);
     try {
-
       const authHeaders = buildAuthHeaders();
       if (!authHeaders.Authorization) {
+        if (requestId !== requestIdRef.current) return;
         setDownloads([]);
+        setLoadStatus("ready");
+        reportResource("downloads", "ready", "", routeId);
         return;
       }
 
       const apiBaseUrl = API_BASE_URL;
-      // customer_downloads with tokens and expiry
-      const res1 = await axios.get(`${apiBaseUrl}/my-customer-downloads`, {
+      const response = await axios.get(`${apiBaseUrl}/my-customer-downloads`, {
         headers: authHeaders,
       });
-
-      // older downloads history (optional)
-      let res2 = { data: [] };
-      try {
-        res2 = await axios.get(`${apiBaseUrl}/downloads`, {
-          headers: authHeaders,
-        });
-      } catch (e) {
-        // ignore if not present
+      if (!Array.isArray(response.data) || response.data.some((download) =>
+        !download || typeof download !== "object" || Array.isArray(download) ||
+        download.id == null || (download.image_id == null && download.imageId == null)
+      )) {
+        throw new Error("Downloads response was invalid.");
       }
+      if (requestId !== requestIdRef.current ||
+          requestAttempt.routeId !== readinessAttemptRef.current.routeId ||
+          requestAttempt.retryKey !== readinessAttemptRef.current.retryKey ||
+          requestAttempt.localRetry !== readinessAttemptRef.current.localRetry) return;
 
-      const customerDownloads = (res1.data || []).map((d) => {
+      const customerDownloads = response.data.map((d) => {
         const imgId = d.image_id || d.imageId;
         return {
           id: d.id,
@@ -63,31 +77,59 @@ function MyDownloads({ darkMode = false }) {
           source: 'customer_downloads'
         };
       });
-
-      const customerImageIds = new Set(customerDownloads.map((d) => String(d.image_id)));
-      const historyDownloads = [];
-      (res2.data || []).forEach((d) => {
-        const imgId = d.image_id || d.id || d.imageId;
-        if (!customerImageIds.has(String(imgId))) historyDownloads.push({
-          id: d.id,
-          image_id: imgId,
-          title: d.title || d.name || '',
-          downloaded_at: d.downloaded_at || d.created_at || null,
-          expires_at: null,
-          is_active: false,
-          thumbnail_url: d.thumbnail_url || null,
-          thumbnail_status: d.thumbnail_status || null,
-          source: 'downloads'
-        });
-      });
-
-      setDownloads([...customerDownloads, ...historyDownloads]);
+      setDownloads(customerDownloads);
       setPage(1);
+      setLoadStatus("ready");
+      reportResource("downloads", "ready", "", routeId);
 
+      if (legacyHistoryRequestedRef.current) return;
+      legacyHistoryRequestedRef.current = true;
+      try {
+        const legacyResponse = await axios.get(`${apiBaseUrl}/downloads`, {
+          headers: authHeaders,
+        });
+        if (requestId !== requestIdRef.current ||
+            requestAttempt.routeId !== readinessAttemptRef.current.routeId ||
+            requestAttempt.retryKey !== readinessAttemptRef.current.retryKey ||
+            requestAttempt.localRetry !== readinessAttemptRef.current.localRetry ||
+            !Array.isArray(legacyResponse.data)) return;
+        const customerImageIds = new Set(customerDownloads.map((d) => String(d.image_id)));
+        const historyDownloads = legacyResponse.data
+          .filter((download) => download && typeof download === "object" && !Array.isArray(download))
+          .map((d) => {
+            const imgId = d.image_id || d.id || d.imageId;
+            return {
+              id: d.id,
+              image_id: imgId,
+              title: d.title || d.name || '',
+              downloaded_at: d.downloaded_at || d.created_at || null,
+              expires_at: null,
+              is_active: false,
+              thumbnail_url: d.thumbnail_url || null,
+              thumbnail_status: d.thumbnail_status || null,
+              source: 'downloads'
+            };
+          })
+          .filter((download) => download.image_id != null && !customerImageIds.has(String(download.image_id)));
+        if (historyDownloads.length) {
+          setDownloads((current) => [...current, ...historyDownloads]);
+        }
+      } catch (e) {
+        console.error("Unable to load optional legacy download history", e);
+      }
     } catch (err) {
+      if (requestId !== requestIdRef.current ||
+          requestAttempt.routeId !== readinessAttemptRef.current.routeId ||
+          requestAttempt.retryKey !== readinessAttemptRef.current.retryKey ||
+          requestAttempt.localRetry !== readinessAttemptRef.current.localRetry) return;
       console.error(err);
+      const message = err?.response
+        ? `Unable to load downloads (HTTP ${err.response.status}).`
+        : err?.message || "Unable to load downloads.";
+      setLoadError(message);
+      setLoadStatus("error");
+      reportResource("downloads", "error", message, routeId);
     }
-
   };
 
   const totalPages = Math.max(1, Math.ceil(downloads.length / limit));
@@ -186,7 +228,17 @@ function MyDownloads({ darkMode = false }) {
         ⬇ My Downloads
       </h2>
 
-      {downloads.length === 0 ? (
+      {loadStatus === "loading" ? (
+        <p role="status">Loading downloads...</p>
+      ) : loadError ? (
+        <div role="alert">
+          <p>{loadError}</p>
+          <button type="button" onClick={() => {
+            requestIdRef.current += 1;
+            setLocalRetry((attempt) => attempt + 1);
+          }}>Retry</button>
+        </div>
+      ) : downloads.length === 0 ? (
 
         <p>
           No downloads yet.
@@ -290,7 +342,6 @@ function MyDownloads({ darkMode = false }) {
       )}
 
     </div>
-
   );
 
 }

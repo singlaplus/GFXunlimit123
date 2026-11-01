@@ -2,6 +2,7 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 import Pagination from './components/Pagination';
+import { useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { BACKEND_REQUEST_FINISHED, BACKEND_REQUEST_STARTED } from './utils/backendRequestLoading';
 
@@ -19,6 +20,9 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   axios.get.mockImplementation((url) => {
+    if (typeof url === 'string' && url.includes('/pages/availability')) {
+      return Promise.resolve({ data: { available: true, disabledLinks: [] } });
+    }
     if (typeof url === 'string' && url.includes('/branding')) {
       return Promise.resolve({ data: {} });
     }
@@ -51,6 +55,7 @@ beforeEach(() => {
 });
 
 test('pagination controls reset the browser position to the top when users move to another page', () => {
+  useLocation.mockReturnValue({ pathname: '/explore', search: '' });
   const setCurrentPage = jest.fn();
   const scrollToSpy = jest.fn();
   window.scrollTo = scrollToSpy;
@@ -71,9 +76,9 @@ test('pagination controls reset the browser position to the top when users move 
   expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
 });
 
-test('renders the home hero content', () => {
+test('renders the home hero content after route availability is confirmed', async () => {
   render(<App />);
-  expect(screen.getByText(/Discover Millions of/i)).toBeInTheDocument();
+  expect(await screen.findByText(/Discover Millions of/i)).toBeInTheDocument();
 });
 
 test('shows the branded loading animation while backend data is pending', async () => {

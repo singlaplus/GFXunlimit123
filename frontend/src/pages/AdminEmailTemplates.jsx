@@ -34,6 +34,8 @@ const DEFAULT_TEMPLATE_LIBRARY = {
 
 export default function AdminEmailTemplates() {
   const [templates, setTemplates] = useState([]);
+  const [templatesLoading, setTemplatesLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [editing, setEditing] = useState(null);
   const [previewHtml, setPreviewHtml] = useState('');
   const [sampleData, setSampleData] = useState('{"user_name":"Jane Doe","user_email":"jane@example.com","order_id":"ORD-1001","asset_name":"Mountain Photo","asset_id":"A-100","amount":"49.99","currency":"USD","download_url":"https://example.com/download","subscription_name":"Pro Plan","expiry_date":"2026-12-31","coupon_code":"SAVE10","site_name":"GFXunlimit"}');
@@ -65,7 +67,23 @@ export default function AdminEmailTemplates() {
     }
     return undefined;
   }, []);
-  const load = async () => { try { const token = typeof window !== 'undefined' ? getEffectiveAuthToken() : null; const res = await axios.get(`${API_BASE_URL}/admin/email/templates`, { headers: { Authorization: `Bearer ${token}` } }); setTemplates(res.data || []); } catch (err) { console.error(err); } };
+  const load = async () => {
+    try {
+      setTemplatesLoading(true);
+      setLoadError("");
+      const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
+      const res = await axios.get(`${API_BASE_URL}/admin/email/templates`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!Array.isArray(res.data)) {
+        throw new Error("Email templates response was invalid.");
+      }
+      setTemplates(res.data);
+    } catch (err) {
+      console.error(err);
+      setLoadError(err.response?.data?.error || "Unable to load email templates.");
+    } finally {
+      setTemplatesLoading(false);
+    }
+  };
 
   const startNewTemplate = (templateType = 'email') => {
     const defaultTemplate = DEFAULT_TEMPLATE_LIBRARY[templateType] || DEFAULT_TEMPLATE_LIBRARY.email;
@@ -401,7 +419,14 @@ export default function AdminEmailTemplates() {
             <div style={{ padding: 18, borderRadius: 18, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(15, 23, 42, 0.03)', border: `1px solid ${panelBorder}` }}>
               <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.24em', color: isDark ? '#93c5fd' : '#2563eb', marginBottom: 10 }}>Saved templates</div>
               <div style={{ display: 'grid', gap: 10 }}>
-                {templates.length === 0 ? (
+                {templatesLoading ? (
+                  <div role="status">Loading email templates...</div>
+                ) : loadError ? (
+                  <div role="alert" style={{ color: '#b91c1c' }}>
+                    <p>{loadError}</p>
+                    <button type="button" onClick={load}>Retry</button>
+                  </div>
+                ) : templates.length === 0 ? (
                   <div style={{ color: '#cbd5e1', fontSize: 14 }}>No saved templates yet.</div>
                 ) : (
                   templates.map((template) => (

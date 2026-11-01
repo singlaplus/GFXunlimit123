@@ -13,15 +13,18 @@ export const isUserAuthenticated = () => {
 /**
  * Load cart from server if user is logged in, otherwise from localStorage
  */
-export const loadCartItems = async () => {
+export const loadCartItems = async ({ strict = false } = {}) => {
   const token = getEffectiveAuthToken();
 
   if (!token) {
     // User not logged in - use localStorage
     const stored = localStorage.getItem('customer-cart');
     try {
-      return JSON.parse(stored || '[]');
-    } catch {
+      const items = JSON.parse(stored || '[]');
+      if (strict && !Array.isArray(items)) throw new Error('Stored cart response was invalid.');
+      return items;
+    } catch (error) {
+      if (strict) throw error;
       return [];
     }
   }
@@ -31,9 +34,13 @@ export const loadCartItems = async () => {
     const response = await axios.get(`${API_BASE_URL}/cart/get`, {
       headers: { Authorization: `Bearer ${token}` }
     });
+    if (strict && !Array.isArray(response.data?.items)) {
+      throw new Error('Cart response was invalid.');
+    }
     return response.data?.items || [];
   } catch (err) {
     console.error('Failed to load cart from server:', err.message || err);
+    if (strict) throw err;
     // Fallback to localStorage if server fails
     const stored = localStorage.getItem('customer-cart');
     try {

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { hasActiveSession } from "../utils/authSession";
 import { getIndiaDateKey } from "../utils/indiaTime";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import "./CompanyPage.css";
 
 const createDefaultButtons = () => [
@@ -137,6 +138,7 @@ const buildContentState = (slug) => {
 };
 
 export default function CompanyPage({ slug = "about" }) {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [content, setContent] = useState(() => buildContentState(slug));
   const [subscriptionPlans, setSubscriptionPlans] = useState([]);
   const [selectedPlanDurations, setSelectedPlanDurations] = useState({});
@@ -174,9 +176,15 @@ export default function CompanyPage({ slug = "about" }) {
 
   useEffect(() => {
     if (slug !== "pricing") return;
+    let active = true;
+    reportResource("subscriptionPlans", "loading", "", routeId);
     axios.get(`${API_BASE_URL}/subscription-plans`)
       .then((response) => {
-        const plans = Array.isArray(response.data) ? response.data : [];
+        if (!Array.isArray(response.data)) {
+          throw new Error("Subscription plans response was invalid.");
+        }
+        if (!active) return;
+        const plans = response.data;
         setSubscriptionPlans(plans);
         const availableCurrencies = [...new Set(plans.flatMap((plan) => Object.keys(plan.pricing?.currency_prices || {}).concat(plan.pricing?.currency || [])))];
         setSelectedCurrency((previous) => availableCurrencies.includes(previous) ? previous : (availableCurrencies[0] || "INR"));
@@ -184,9 +192,15 @@ export default function CompanyPage({ slug = "about" }) {
           const durations = Object.keys(plan.plan_settings?.durations || {});
           return [plan.id, previous[plan.id] || durations[0] || plan.plan_settings?.duration || "monthly"];
         })));
+        reportResource("subscriptionPlans", "ready", "", routeId);
       })
-      .catch((err) => console.error("Failed to load subscription plans", err));
-  }, [slug]);
+      .catch((err) => {
+        if (!active) return;
+        console.error("Failed to load subscription plans", err);
+        reportResource("subscriptionPlans", "error", "Unable to load subscription plans. Please retry.", routeId);
+      });
+    return () => { active = false; };
+  }, [slug, reportResource, retryKey, routeId]);
 
   const isAdmin = isLoggedIn && String(localStorage.getItem("userRole") || "").toLowerCase() === "admin";
 

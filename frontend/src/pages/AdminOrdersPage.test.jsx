@@ -1,11 +1,22 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import axios from "axios";
 import AdminOrdersPage from "./AdminOrdersPage";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
+const mockReportResource = jest.fn();
 jest.mock("axios");
+jest.mock("../startup/StartupReadinessProvider", () => ({
+  useStartupReadiness: jest.fn(),
+}));
 
 describe("AdminOrdersPage", () => {
   beforeEach(() => {
+    jest.clearAllMocks();
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 0,
+      routeId: "admin-orders-test",
+    });
     localStorage.setItem("token", "demo-admin-token");
     axios.get.mockImplementation((url) => {
       if (url.endsWith("/admin/orders/summary")) {
@@ -72,6 +83,53 @@ describe("AdminOrdersPage", () => {
     cancelFrameSpy.mockRestore();
   });
 
+  it("reports initial order failures and retries with GET requests only", async () => {
+    axios.get.mockImplementation((url) => (
+      url.endsWith("/admin/orders/summary")
+        ? Promise.reject(new Error("Unavailable"))
+        : Promise.resolve({ data: { orders: [], total: 0 } })
+    ));
+    const view = render(<AdminOrdersPage />);
+
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith(
+        "adminOrders",
+        "error",
+        "Unable to load orders right now. Please retry.",
+        "admin-orders-test"
+      );
+    });
+
+    axios.get.mockImplementation((url) => (
+      url.endsWith("/admin/orders/summary")
+        ? Promise.resolve({
+            data: {
+              total_orders: 0,
+              total_revenue: 0,
+              pending_orders: 0,
+              completed_orders: 0,
+              refunded_orders: 0,
+              returning_customers: 0,
+            },
+          })
+        : Promise.resolve({ data: { orders: [], total: 0 } })
+    ));
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 1,
+      routeId: "admin-orders-test",
+    });
+    view.rerender(<AdminOrdersPage />);
+
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith("adminOrders", "ready", "", "admin-orders-test");
+    });
+    expect(axios.put).not.toHaveBeenCalled();
+    expect(axios.patch).not.toHaveBeenCalled();
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axios.delete).not.toHaveBeenCalled();
+  });
+
   it("shows submitted UTR details and requires confirmation before approving payment", async () => {
     const paymentDetails = {
       order: {
@@ -99,7 +157,16 @@ describe("AdminOrdersPage", () => {
     };
     axios.get.mockImplementation((url) => {
       if (url.endsWith("/admin/orders/summary")) {
-        return Promise.resolve({ data: { total_orders: 1, total_revenue: 10 } });
+        return Promise.resolve({
+          data: {
+            total_orders: 1,
+            total_revenue: 10,
+            pending_orders: 0,
+            completed_orders: 1,
+            refunded_orders: 0,
+            returning_customers: 0,
+          },
+        });
       }
       if (url.endsWith("/admin/orders")) {
         return Promise.resolve({ data: { orders: [{ id: 1, order_number: "GFX100826-01", customer_username: "alice", total_amount: 10, currency: "INR", payment_gateway: "Google Pay", order_status: "awaiting_payment", refund_status: "none", download_status: "pending" }], total: 1 } });

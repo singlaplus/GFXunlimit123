@@ -4,6 +4,7 @@ import axios from "axios";
 import AdminPanel from "./AdminPanel";
 import { toast } from "react-toastify";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../utils/authSession";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 function Profile({ darkMode = false }) {
 
@@ -12,12 +13,13 @@ function Profile({ darkMode = false }) {
   const [profile, setProfile] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [stats, setStats] = useState(null);
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
 
   useEffect(() => {
+    let active = true;
 
-    const fetchProfile = async () => {
+    const fetchProfile = async (throwOnError = true) => {
       try {
-
         const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
         const res =
           await axios.get(
@@ -27,24 +29,21 @@ function Profile({ darkMode = false }) {
             }
           );
 
-        setProfile(res.data);
-        if (res.data.role === "admin") {
-          setIsAdmin(true);
+        if (active) {
+          setProfile(res.data);
+          setIsAdmin(res.data.role === "admin");
         }
-
+        return res.data;
       } catch (err) {
-
         console.error(err);
-
+        if (throwOnError) throw err;
+        return null;
       }
-
     };
 
     const fetchStats = async () => {
       try {
-
         const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-
         const res =
           await axios.get(
             `${API_BASE_URL}/profile/stats`,
@@ -53,37 +52,77 @@ function Profile({ darkMode = false }) {
             }
           );
 
-
-        setStats(res.data);
-
-      } catch (err) {
-
-        console.error(err);
-
-      }
-
-    };
-    
-
-    fetchProfile();
-    fetchStats();
-      // Listen for global creditsUpdated event and refetch profile
-      const onCreditsUpdated = async () => {
-        const updated = await fetchProfile();
-        if (updated) {
-          const creditsStr = `₹ ${Number(updated.credits || 0).toFixed(2)}`;
-          toast.success(`Credits updated: ${creditsStr}`);
-          // scroll to credits element if present
-          if (creditsRef.current) {
-            creditsRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }
+        const requiredFields = [
+          "total_uploads",
+          "approved_images",
+          "pending_images",
+          "rejected_images",
+          "total_likes",
+          "total_views",
+          "total_downloads",
+          "total_earnings",
+          "top_downloads",
+          "top_views",
+          "top_likes",
+        ];
+        if (!res.data || typeof res.data !== "object" || Array.isArray(res.data) ||
+            requiredFields.some((field) => !(field in res.data))) {
+          throw new Error("The profile statistics response was invalid.");
         }
-      };
 
-      window.addEventListener('creditsUpdated', onCreditsUpdated);
-      return () => window.removeEventListener('creditsUpdated', onCreditsUpdated);
+        if (active) setStats(res.data);
+        return res.data;
+      } catch (err) {
+        console.error(err);
+        throw err;
+      }
+    };
 
-  }, []);
+    const loadProfile = async () => {
+      reportResource("profile", "loading", "", routeId);
+      const [profileResult, statsResult] = await Promise.allSettled([
+        fetchProfile(),
+        fetchStats(),
+      ]);
+      if (!active) return;
+      if (profileResult.status === "rejected") throw profileResult.reason;
+      const loadedProfile = profileResult.value;
+      const requiredProfileFields = ["id", "username", "email", "role", "credits"];
+      if (!loadedProfile || typeof loadedProfile !== "object" ||
+          requiredProfileFields.some((field) => !(field in loadedProfile)) ||
+          typeof loadedProfile.role !== "string") {
+        throw new Error("The profile response was invalid.");
+      }
+      if (loadedProfile.role === "contributor" && statsResult.status === "rejected") {
+        throw statsResult.reason;
+      }
+      reportResource("profile", "ready", "", routeId);
+    };
+
+    loadProfile().catch((err) => {
+      if (!active) return;
+      console.error("Failed to load profile readiness data", err);
+      reportResource("profile", "error", "Unable to load your profile. Please retry.", routeId);
+    });
+
+    const onCreditsUpdated = async () => {
+      const updated = await fetchProfile(false);
+      if (updated) {
+        const creditsStr = `₹ ${Number(updated.credits || 0).toFixed(2)}`;
+        toast.success(`Credits updated: ${creditsStr}`);
+        if (creditsRef.current) {
+          creditsRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+    };
+
+    window.addEventListener('creditsUpdated', onCreditsUpdated);
+    return () => {
+      active = false;
+      window.removeEventListener('creditsUpdated', onCreditsUpdated);
+    };
+
+  }, [reportResource, retryKey, routeId]);
   const addCredits = async (credits) => {
 
   try {

@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import axios from "axios";
 import { toast } from "react-toastify";
 import "./AdminPanel.css";
@@ -411,6 +412,7 @@ function AdminDashboardContent({ images, users, collections, isDarkMode }) {
 
 function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReportPreviewPage = false }) {
   const location = useLocation();
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
   const [currentWindowPath, setCurrentWindowPath] = useState(() => (typeof window !== "undefined" ? window.location.pathname : location.pathname || "/"));
 
@@ -471,6 +473,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     () => readStorageCardCount(THUMBNAIL_STORAGE_CARD_COUNT_KEY, 9)
   );
   const addStorageMenuRef = useRef(null);
+  const adminAssetRequestSequenceRef = useRef(0);
+  const adminUsersRequestSequenceRef = useRef(0);
+  const adminDashboardRequestSequenceRef = useRef(0);
+  const liveAssetsRequestSequenceRef = useRef(0);
+  const adminAccountRequestSequenceRef = useRef(0);
   const [storageBrowseTarget, setStorageBrowseTarget] = useState("");
   const [storageBrowsePath, setStorageBrowsePath] = useState("");
   const [storageBrowseParentPath, setStorageBrowseParentPath] = useState("");
@@ -497,6 +504,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [sitemapSettingsSaving, setSitemapSettingsSaving] = useState(false);
   const [sitemapSettingsMessage, setSitemapSettingsMessage] = useState("");
   const [sitemapSettingsError, setSitemapSettingsError] = useState("");
+  const [sitemapSettingsRetry, setSitemapSettingsRetry] = useState(0);
 
   useEffect(() => {
     if (!isAddStorageMenuOpen) return undefined;
@@ -613,6 +621,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [selectedImageForStatus, setSelectedImageForStatus] = useState(null);
   const [selectedImageStatus, setSelectedImageStatus] = useState("approved");
   const [liveAssetIds, setLiveAssetIds] = useState(() => new Set());
+  const [liveAssetsLoading, setLiveAssetsLoading] = useState(false);
+  const [liveAssetsError, setLiveAssetsError] = useState("");
   const [liveAssetsExportStatus, setLiveAssetsExportStatus] = useState("");
   const [userExportStatus, setUserExportStatus] = useState("");
   const [selectedPaymentGateway, setSelectedPaymentGateway] = useState(null);
@@ -755,6 +765,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   const isControlsTab = tabParam === "controls";
   const isAdminDashboardTab = tabParam === "admin_dashboard";
+  const isStartupAdminDashboard = String(localStorage.getItem("userRole") || "").trim().toLowerCase() === "admin" &&
+    (
+      ["/dashboard", "/customer"].includes(location.pathname) ||
+      ([ "/admin", adminBasePath ].includes(location.pathname) && isAdminDashboardTab)
+    );
   const isBackupTab = tabParam === "backup";
   const isRestoreTab = tabParam === "restore";
   const isEmptyAdminBodyTab = tabParam === "restore";
@@ -800,7 +815,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     return () => {
       active = false;
     };
-  }, [isSitemapTab]);
+  }, [isSitemapTab, sitemapSettingsRetry]);
 
   useEffect(() => {
     setSelectedLiveAssetIds(new Set());
@@ -1543,6 +1558,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [dailyReportPreviewData, setDailyReportPreviewData] = useState(null);
   const [dailyReportPreviewLoading, setDailyReportPreviewLoading] = useState(false);
   const [dailyReportPreviewError, setDailyReportPreviewError] = useState('');
+  const [dailyReportSettingsLoadError, setDailyReportSettingsLoadError] = useState("");
   const [dailyReportSmtpFormOpen, setDailyReportSmtpFormOpen] = useState(false);
   const [dailyReportSmtpSaving, setDailyReportSmtpSaving] = useState(false);
   const [dailyReportSmtpMessage, setDailyReportSmtpMessage] = useState('');
@@ -1557,6 +1573,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [dailyReportScheduleSnapshot, setDailyReportScheduleSnapshot] = useState(null);
   const [dailyReportSchedules, setDailyReportSchedules] = useState([]);
   const [dailyReportSchedulesLoading, setDailyReportSchedulesLoading] = useState(false);
+  const [dailyReportSchedulesLoadError, setDailyReportSchedulesLoadError] = useState("");
   const [dailyReportScheduleSaving, setDailyReportScheduleSaving] = useState(false);
   const [dailyReportScheduleMessage, setDailyReportScheduleMessage] = useState("");
   const [dailyReportSchedulePreviewData, setDailyReportSchedulePreviewData] = useState(null);
@@ -2201,11 +2218,15 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   };
 
   const loadDailyReportSettings = async () => {
+    setDailyReportSettingsLoadError("");
     try {
       const token = getEffectiveAuthToken();
       const response = await axios.get(`${API_BASE_URL}/admin/email/daily-report-settings`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
+      if (response.data?.ok && response.data.settings === null) {
+        return dailyReportSettings;
+      }
       if (response.data?.ok && response.data.settings) {
         const settings = response.data.settings;
         const mergedSettings = {
@@ -2237,8 +2258,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         setDailyReportSettings((prev) => ({ ...prev, ...mergedSettings }));
         return mergedSettings;
       }
+      throw new Error("Daily report settings response was invalid.");
     } catch (err) {
       console.error('Failed to load daily report settings:', err);
+      setDailyReportSettingsLoadError(
+        err.response?.data?.error || "Unable to load daily report settings. Please retry."
+      );
     }
     return null;
   };
@@ -2278,12 +2303,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       const response = await axios.get(`${API_BASE_URL}/admin/email/daily-report-preview`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      const summary = response.data?.summary ?? response.data;
-      if (summary && (response.data?.ok !== false)) {
-        setDailyReportPreviewData(summary);
-      } else {
-        setDailyReportPreviewError(response.data?.error || 'Daily report preview is unavailable.');
+      const summary = response.data?.summary;
+      if (response.data?.ok !== true || !summary || typeof summary !== "object" || Array.isArray(summary)) {
+        throw new Error(response.data?.error || 'Daily report preview response was invalid.');
       }
+      setDailyReportPreviewData(summary);
     } catch (err) {
       console.error('Failed to fetch daily report preview:', err);
       setDailyReportPreviewError(err.response?.data?.detail || err.response?.data?.error || 'Daily report preview could not be loaded. Check the backend database setup.');
@@ -2423,17 +2447,20 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const loadDailyReportSchedules = async () => {
     try {
       setDailyReportSchedulesLoading(true);
+      setDailyReportSchedulesLoadError("");
       setDailyReportScheduleMessage('');
       const token = getEffectiveAuthToken();
       const response = await axios.get(`${API_BASE_URL}/admin/email/daily-report-schedules`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       const schedules = Array.isArray(response.data) ? response.data : response.data?.schedules;
-      setDailyReportSchedules(Array.isArray(schedules) ? schedules : []);
+      if (!Array.isArray(schedules)) {
+        throw new Error("Daily report schedules response was invalid.");
+      }
+      setDailyReportSchedules(schedules);
     } catch (err) {
       console.error('Error loading schedules:', err);
-      setDailyReportSchedules([]);
-      setDailyReportScheduleMessage(err.response?.data?.error || 'Failed to load saved schedules');
+      setDailyReportSchedulesLoadError(err.response?.data?.error || 'Failed to load saved schedules.');
     } finally {
       setDailyReportSchedulesLoading(false);
     }
@@ -2446,10 +2473,20 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       const response = await axios.get(`${API_BASE_URL}/admin/email/daily-report-preview?scheduleId=${encodeURIComponent(schedule.id)}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      setDailyReportSchedulePreviewHtml(response.data?.html || "");
-      setDailyReportSchedulePreviewData(response.data?.summary ?? response.data);
+      const summary = response.data?.summary;
+      if (
+        response.data?.ok !== true ||
+        !summary ||
+        typeof summary !== "object" ||
+        Array.isArray(summary) ||
+        typeof response.data.html !== "string"
+      ) {
+        throw new Error("Saved schedule preview response was invalid.");
+      }
+      setDailyReportSchedulePreviewHtml(response.data.html);
+      setDailyReportSchedulePreviewData(summary);
     } catch (err) {
-      setDailyReportScheduleMessage(err.response?.data?.error || 'Failed to load saved schedule preview');
+      setDailyReportScheduleMessage(err.response?.data?.error || err.message || 'Failed to load saved schedule preview');
     } finally {
       setDailyReportSchedulePreviewLoading(false);
     }
@@ -2579,6 +2616,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const renderDailyReportSettingsContent = () => (
     <div role="dialog" aria-modal="true" aria-label="Daily Report Settings" onClick={(e) => e.stopPropagation()} style={{ display: 'grid', gap: 18, maxHeight: isDailyReportSettingsPage ? 'none' : '72vh', overflowY: isDailyReportSettingsPage ? 'visible' : 'auto', paddingRight: 4 }}>
       <h3 style={{ margin: 0, color: isDarkMode ? '#f8fafc' : '#0f172a' }}>Daily Report Settings</h3>
+      {dailyReportSettingsLoadError && (
+        <div role="alert" style={{ color: "#b91c1c" }}>
+          {dailyReportSettingsLoadError}{" "}
+          <button type="button" onClick={loadDailyReportSettings}>Retry</button>
+        </div>
+      )}
 
       {dailyReportSettingsMessage && (
         <div role="status" style={{ color: dailyReportSettingsMessage.startsWith('Failed') ? '#b91c1c' : '#166534', fontSize: 13, fontWeight: 600 }}>
@@ -3023,19 +3066,33 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     }
   };
 
-  const fetchProfileForAccount = async () => {
+  const fetchProfileForAccount = async ({ reportReadiness = false } = {}) => {
+    const requestSequence = ++adminAccountRequestSequenceRef.current;
+    const isStartupAdminAccountRoute = reportReadiness && Boolean(routeId) && tabParam === "myaccount" &&
+      ["/admin", adminBasePath].includes(location.pathname) &&
+      String(localStorage.getItem("userRole") || "").trim().toLowerCase() === "admin";
+    if (isStartupAdminAccountRoute) reportResource("adminMyAccount", "loading", "", routeId);
     setAccountLoading(true);
     setAccountMessage("");
     try {
       const res = await axios.get(`${API_BASE_URL}/profile`, { headers: buildAuthHeaders() });
-      const data = res.data || {};
+      if (requestSequence !== adminAccountRequestSequenceRef.current) return;
+      const data = res?.data;
+      if (!data || typeof data !== "object" || Array.isArray(data) || data.id == null) {
+        throw new Error("Admin account profile response was invalid.");
+      }
       setAccountUserId(data.id || null);
       setAccountForm((s) => ({ ...s, email: data.email || s.email, full_name: data.full_name || s.full_name }));
+      if (isStartupAdminAccountRoute) reportResource("adminMyAccount", "ready", "", routeId);
     } catch (err) {
+      if (requestSequence !== adminAccountRequestSequenceRef.current) return;
       console.error(err);
       setAccountMessage(err.response?.data || "Failed to load profile");
+      if (isStartupAdminAccountRoute) {
+        reportResource("adminMyAccount", "error", "Unable to load account details right now. Please retry.", routeId);
+      }
     } finally {
-      setAccountLoading(false);
+      if (requestSequence === adminAccountRequestSequenceRef.current) setAccountLoading(false);
     }
   };
 
@@ -3749,15 +3806,19 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   };
 
   useEffect(() => {
-    fetchCategories();
-    fetchCollections();
+    const usesSharedAdminLookups = !["controls", "users", "myaccount"].includes(tabParam);
+    if (usesSharedAdminLookups && !isStartupAdminDashboard) {
+      fetchCategories();
+    }
+    if (usesSharedAdminLookups) {
+      fetchCollections({ reportReadiness: isStartupAdminDashboard });
+    }
 
     if (isControlsTab) {
       fetchCategories();
       fetchCollections();
       fetchBrandingConfig();
       fetchOtpSettings();
-      fetchUsers();
       fetchCreditPrice();
       fetchContributorCommission();
       // settings are loaded when their modal opens to avoid unnecessary calls
@@ -3766,15 +3827,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     } else if (tabParam === "users") {
       // honor the incoming status query param by mapping it to the user filter
       setUserFilter(statusFilter || "all");
-      fetchUsers();
     } else if (tabParam === "myaccount") {
-      fetchProfileForAccount();
+      fetchProfileForAccount({ reportReadiness: true });
     } else {
       fetchImages();
     }
     setCurrentPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, tabParam]);
+  }, [statusFilter, tabParam, retryKey]);
 
   // Load admin settings on-demand when a modal opens
   useEffect(() => {
@@ -3793,16 +3853,16 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminModal]);
 
-  const fetchLiveAssetIds = async () => {
+  const fetchLiveAssetIds = async ({ strict = false } = {}) => {
     try {
       const res = await axios.get(`${API_BASE_URL}/images?limit=1000&page=1`);
-      const liveImages = Array.isArray(res?.data?.images) ? res.data.images : [];
-      const nextLiveIds = new Set(liveImages.map((image) => Number(image?.id)).filter(Number.isFinite));
-      setLiveAssetIds(nextLiveIds);
-      return nextLiveIds;
+      if (!Array.isArray(res?.data?.images)) {
+        throw new Error("Live asset response was invalid.");
+      }
+      return new Set(res.data.images.map((image) => Number(image?.id)).filter(Number.isFinite));
     } catch (err) {
       console.error(err);
-      setLiveAssetIds(new Set());
+      if (strict) throw err;
       return new Set();
     }
   };
@@ -3831,16 +3891,29 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   };
 
   const fetchImages = async () => {
+    const requestSequence = ++adminAssetRequestSequenceRef.current;
+    const isStartupDashboard = isStartupAdminDashboard;
+    const isStartupAdminRoute = ["/admin", adminBasePath].includes(location.pathname) &&
+      String(localStorage.getItem("userRole") || "").trim().toLowerCase() === "admin" &&
+      !["controls", "admin_dashboard", "backup", "restore", "live-assets", "users", "myaccount"].includes(tabParam);
+    if (isStartupDashboard) reportResource("adminDashboard", "loading", "", routeId);
+    if (isStartupAdminRoute) reportResource("adminRoute", "loading", "", routeId);
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      await fetchLiveAssetIds();
+      const nextLiveAssetIds = isStartupDashboard ? null : await fetchLiveAssetIds();
+      if (requestSequence !== adminAssetRequestSequenceRef.current) return;
+      if (nextLiveAssetIds) setLiveAssetIds(nextLiveAssetIds);
       const res = await axios.get(
         `${API_BASE_URL}/admin/images`,
         {
           headers: { Authorization: `Bearer ${token}` }
         }
       );
-      const assets = Array.isArray(res.data) ? res.data : [];
+      if (requestSequence !== adminAssetRequestSequenceRef.current) return;
+      if (!Array.isArray(res.data)) {
+        throw new Error("Admin asset response was invalid.");
+      }
+      const assets = res.data;
       const normalizedStatus = statusFilter === "all" ? "" : statusFilter;
       const reviewedSince = Date.now() - 30 * 24 * 60 * 60 * 1000;
       const filteredAssets = assets.filter((image) => {
@@ -3858,31 +3931,62 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       });
 
       setImages(filteredAssets);
+      if (isStartupDashboard) reportResource("adminDashboard", "ready", "", routeId);
+      if (isStartupAdminRoute) reportResource("adminRoute", "ready", "", routeId);
     } catch (err) {
+      if (requestSequence !== adminAssetRequestSequenceRef.current) return;
       console.error(err);
       setImages([]);
+      if (isStartupDashboard) {
+        reportResource(
+          "adminDashboard",
+          "error",
+          "Unable to load the administrator dashboard. Please retry.",
+          routeId
+        );
+      }
+      if (isStartupAdminRoute) {
+        reportResource(
+          "adminRoute",
+          "error",
+          "Unable to load administrator assets. Please retry.",
+          routeId
+        );
+      }
     }
   };
 
   const fetchApprovedImages = async () => {
+    const requestSequence = ++liveAssetsRequestSequenceRef.current;
+    setLiveAssetsLoading(true);
+    setLiveAssetsError("");
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      await fetchLiveAssetIds();
+      const nextLiveAssetIds = await fetchLiveAssetIds({ strict: true });
+      if (requestSequence !== liveAssetsRequestSequenceRef.current) return [];
       const res = await axios.get(
         `${API_BASE_URL}/admin/images`,
         {
           headers: { Authorization: `Bearer ${token}` }
         }
       );
-      const approvedImages = Array.isArray(res.data)
-        ? res.data.filter((image) => String(image.status || "").toLowerCase() === "approved")
-        : [];
+      if (!Array.isArray(res.data)) {
+        throw new Error("Approved assets response was invalid.");
+      }
+      if (requestSequence !== liveAssetsRequestSequenceRef.current) return [];
+      const approvedImages = res.data.filter((image) => String(image.status || "").toLowerCase() === "approved");
+      setLiveAssetIds(nextLiveAssetIds);
       setImages(approvedImages);
       return approvedImages;
     } catch (err) {
+      if (requestSequence !== liveAssetsRequestSequenceRef.current) return [];
       console.error(err);
-      setImages([]);
+      setLiveAssetsError("Unable to load live assets right now. Please retry.");
       return [];
+    } finally {
+      if (requestSequence === liveAssetsRequestSequenceRef.current) {
+        setLiveAssetsLoading(false);
+      }
     }
   };
 
@@ -3990,7 +4094,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       .filter(Boolean);
   };
 
-  const fetchCollections = async () => {
+  const fetchCollections = async ({ reportReadiness = false } = {}) => {
     const requestAdminCollections = async () => {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
       const res = await axios.get(
@@ -3999,11 +4103,36 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           headers: { Authorization: `Bearer ${token}` }
         }
       );
-      return normalizeCollectionList(res.data);
+      return res;
     };
 
+    if (reportReadiness && isStartupAdminDashboard) {
+      reportResource("adminDashboardCollections", "loading", "", routeId);
+      try {
+        const response = await requestAdminCollections();
+        if (!Array.isArray(response.data)) {
+          throw new Error("Admin collections response was invalid.");
+        }
+        const nextCollections = normalizeCollectionList(response.data);
+        setCollections(nextCollections);
+        persistCollections(nextCollections);
+        reportResource("adminDashboardCollections", "ready", "", routeId);
+        return;
+      } catch (error) {
+        console.error("Failed to load dashboard collections", error);
+        reportResource(
+          "adminDashboardCollections",
+          "error",
+          "Unable to load administrator dashboard collections. Please retry.",
+          routeId
+        );
+        return;
+      }
+    }
+
     try {
-      const nextCollections = await requestAdminCollections();
+      const response = await requestAdminCollections();
+      const nextCollections = normalizeCollectionList(response.data);
       if (Array.isArray(nextCollections)) {
         setCollections(nextCollections);
         persistCollections(nextCollections);
@@ -4043,7 +4172,17 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     }
   };
 
-  const fetchUsers = async () => {
+  const fetchUsers = async ({ reportReadiness = false } = {}) => {
+    const requestSequence = ++adminUsersRequestSequenceRef.current;
+    const startupUsersResource = reportReadiness && Boolean(routeId) &&
+      String(localStorage.getItem("userRole") || "").trim().toLowerCase() === "admin"
+      ? isStartupAdminDashboard
+        ? "adminDashboardUsers"
+        : isUsersTab && ["/admin", adminBasePath].includes(location.pathname)
+          ? "adminUsers"
+          : null
+      : null;
+    if (startupUsersResource) reportResource(startupUsersResource, "loading", "", routeId);
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
       const res = await axios.get(
@@ -4052,10 +4191,26 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           headers: { Authorization: `Bearer ${token}` }
         }
       );
-      setUsers(Array.isArray(res.data) ? res.data.map(normalizeAdminUser) : []);
+      if (requestSequence !== adminUsersRequestSequenceRef.current) return;
+      if (!Array.isArray(res.data)) {
+        throw new Error("Admin users response was invalid.");
+      }
+      setUsers(res.data.map(normalizeAdminUser));
+      if (startupUsersResource) reportResource(startupUsersResource, "ready", "", routeId);
     } catch (err) {
+      if (requestSequence !== adminUsersRequestSequenceRef.current) return;
       console.error(err);
-      setUsers([]);
+      if (!startupUsersResource) setUsers([]);
+      if (startupUsersResource) {
+        reportResource(
+          startupUsersResource,
+          "error",
+          startupUsersResource === "adminDashboardUsers"
+            ? "Unable to load administrator dashboard users. Please retry."
+            : "Unable to load users right now. Please retry.",
+          routeId
+        );
+      }
     }
   };
 
@@ -4158,11 +4313,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   // Ensure we refresh users when the users tab or the active user filter changes
   useEffect(() => {
-    if (tabParam === "users" || tabParam === "controls" || isContributorDetailsTab || isTaxFormsTab || isControlsTaxFormsTab || isCustomerDetailsTab) {
-      fetchUsers();
+    if (tabParam === "users" || tabParam === "controls" || isContributorDetailsTab || isTaxFormsTab || isControlsTaxFormsTab || isCustomerDetailsTab || isStartupAdminDashboard) {
+      fetchUsers({ reportReadiness: isUsersTab || isStartupAdminDashboard });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabParam, userFilter, isContributorDetailsTab, isTaxFormsTab, isControlsTaxFormsTab, isCustomerDetailsTab]);
+  }, [tabParam, routeId, retryKey, isContributorDetailsTab, isTaxFormsTab, isControlsTaxFormsTab, isCustomerDetailsTab, isStartupAdminDashboard]);
 
   useEffect(() => {
     if (!isContributorDetailsTab || !Array.isArray(users) || users.length === 0) return;
@@ -5793,6 +5948,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           ) : dailyReportPreviewError ? (
             <div role="alert" style={{ padding: 18, borderRadius: 12, color: isDarkMode ? '#fecaca' : '#991b1b', background: isDarkMode ? 'rgba(127,29,29,0.25)' : '#fef2f2', border: isDarkMode ? '1px solid rgba(248,113,113,0.35)' : '1px solid #fecaca' }}>
               {dailyReportPreviewError}
+              <button type="button" onClick={fetchDailyReportPreviewData} disabled={dailyReportPreviewLoading} style={{ marginLeft: 12 }}>Retry</button>
             </div>
           ) : (
             <div style={{ display: "grid", gap: 18, width: "100%" }}>
@@ -5913,7 +6069,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 {sitemapSettingsLoading ? "Loading..." : sitemapSettingsSaving ? "Saving..." : "Save Sitemap Path"}
               </button>
               {sitemapSettingsMessage && <p role="status" style={{ color: "#16a34a" }}>{sitemapSettingsMessage}</p>}
-              {sitemapSettingsError && <p role="alert" style={{ color: "#dc2626" }}>{sitemapSettingsError}</p>}
+              {sitemapSettingsError && (
+                <p role="alert" style={{ color: "#dc2626" }}>
+                  {sitemapSettingsError}{" "}
+                  <button type="button" onClick={() => setSitemapSettingsRetry((attempt) => attempt + 1)} disabled={sitemapSettingsLoading}>
+                    Retry
+                  </button>
+                </p>
+              )}
             </div>
           )}
           {isSitemapTab && <SitemapGenerationPanel isDarkMode={isDarkMode} />}
@@ -9171,6 +9334,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     {emailModal === 'dailyReportSettings' && (
                       <div role="dialog" aria-modal="true" aria-label="Daily Report Settings" onClick={(e) => e.stopPropagation()} style={{ display: 'grid', gap: 18, maxHeight: '72vh', overflowY: 'auto', paddingRight: 4 }}>
                         <h3 style={{ margin: 0, color: isDarkMode ? '#f8fafc' : '#0f172a' }}>Daily Report Settings</h3>
+                        {dailyReportSettingsLoadError && (
+                          <div role="alert" style={{ color: "#b91c1c" }}>
+                            {dailyReportSettingsLoadError}{" "}
+                            <button type="button" onClick={loadDailyReportSettings}>Retry</button>
+                          </div>
+                        )}
 
                         {dailyReportSettingsMessage && (
                           <div role="status" style={{ color: dailyReportSettingsMessage.startsWith('Failed') ? '#b91c1c' : '#166534', fontSize: 13, fontWeight: 600 }}>
@@ -9573,9 +9742,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 )}
 
                 <div style={{ borderTop: isDarkMode ? "1px solid rgba(148,163,184,0.2)" : "1px solid rgba(15,23,42,0.12)", paddingTop: 16 }}>
-                  <h4 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 700 }}>Saved Schedules ({dailyReportSchedules.length})</h4>
+                  <h4 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 700 }}>Saved Schedules ({dailyReportSchedulesLoadError ? "—" : dailyReportSchedules.length})</h4>
                   {dailyReportSchedulesLoading ? (
                     <div style={{ textAlign: "center", padding: "16px", color: isDarkMode ? "#cbd5e1" : "#64748b", fontSize: 13 }}>Loading schedules...</div>
+                  ) : dailyReportSchedulesLoadError ? (
+                    <div role="alert" style={{ textAlign: "center", padding: "16px", color: "#b91c1c", fontSize: 13 }}>
+                      {dailyReportSchedulesLoadError}{" "}
+                      <button type="button" onClick={loadDailyReportSchedules}>Retry</button>
+                    </div>
                   ) : dailyReportSchedules.length === 0 ? (
                     <div style={{ textAlign: "center", padding: "16px", color: isDarkMode ? "#cbd5e1" : "#64748b", fontSize: 13 }}>No schedules yet. Create your first one above.</div>
                   ) : (
@@ -10071,12 +10245,20 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                           <span>Type</span>
                           <select value={tax.type || 'percentage'} onChange={(e) => {
                             const nextType = e.target.value;
-                            setTaxSettings((prev) => prev.map((t, i) => i === idx ? {
-                              ...t,
-                              type: nextType,
-                              rate: nextType === 'percentage' ? Number(t.rate ?? t.amount ?? 0) : 0,
-                              amount: nextType === 'fixed' ? Number(t.amount ?? t.rate ?? 0) : 0,
-                            } : t));
+                            setTaxSettings((prev) => prev.map((t, i) => {
+                              if (i !== idx) return t;
+                              const currentValue = Number(
+                                (t.type || 'percentage') === 'fixed'
+                                  ? t.amount ?? t.rate ?? 0
+                                  : t.rate ?? t.amount ?? 0
+                              );
+                              return {
+                                ...t,
+                                type: nextType,
+                                rate: nextType === 'percentage' ? currentValue : 0,
+                                amount: nextType === 'fixed' ? currentValue : 0,
+                              };
+                            }));
                           }} style={{ padding: '10px', borderRadius: '8px', border: '1px solid #ccc' }}>
                             <option value="percentage">Percentage</option>
                             <option value="fixed">Fixed amount</option>
@@ -11181,6 +11363,13 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   <div style={{ color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.9rem" }}>{liveAssetsExportStatus}</div>
                 </div>
               </div>
+              {liveAssetsLoading && <p role="status">Loading live assets…</p>}
+              {liveAssetsError && (
+                <div role="alert" style={{ color: "#dc2626" }}>
+                  <p>{liveAssetsError}</p>
+                  <button type="button" onClick={fetchApprovedImages} disabled={liveAssetsLoading}>Retry</button>
+                </div>
+              )}
               <div
                 aria-hidden={isEditing}
                 style={{

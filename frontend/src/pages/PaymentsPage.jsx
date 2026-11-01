@@ -1,16 +1,20 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { formatIndiaDateTime } from '../utils/indiaTime';
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 export default function PaymentsPage() {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
+  const previousRetryKey = useRef(retryKey);
+  const payoutRequestsLoaderRef = useRef(async () => false);
   const [loading, setLoading] = useState(true);
   const [payments, setPayments] = useState([]);
   const [payoutRequests, setPayoutRequests] = useState([]);
   const [error, setError] = useState(null);
 
   // fetchPayments is callable from the event listener below
-  const fetchPayments = async () => {
+  const fetchPayments = useCallback(async (readinessAttempt = false) => {
     setLoading(true);
     setError(null);
     try {
@@ -20,10 +24,13 @@ export default function PaymentsPage() {
       const url = token ? base : `${base}?all=true`;
       const res = await axios.get(url, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
 
-      setPayments(res.data || []);
+      if (!Array.isArray(res.data)) {
+        throw new Error("Payment history response was invalid.");
+      }
+      setPayments(res.data);
       try {
         // save generic cache
-        localStorage.setItem('payments_cache', JSON.stringify(res.data || []));
+        localStorage.setItem('payments_cache', JSON.stringify(res.data));
         // save per-user cache using userId as the canonical key to avoid username collisions
         const uid = localStorage.getItem('userId');
         if (uid) {
@@ -32,6 +39,8 @@ export default function PaymentsPage() {
       } catch (e) {
         // ignore storage errors
       }
+      if (readinessAttempt) reportResource("payments", "ready", "", routeId);
+      return true;
     } catch (err) {
       // try to fall back to cached payments so the UI still shows recent history
       try {
@@ -45,9 +54,12 @@ export default function PaymentsPage() {
           cached = localStorage.getItem('payments_cache');
         }
         if (cached) {
-          setPayments(JSON.parse(cached));
+          const cachedPayments = JSON.parse(cached);
+          if (!Array.isArray(cachedPayments)) throw new Error("Cached payment history was invalid.");
+          setPayments(cachedPayments);
           setLoading(false);
-          return;
+          if (readinessAttempt) reportResource("payments", "ready", "", routeId);
+          return true;
         }
       } catch (e) {
         // ignore
@@ -55,27 +67,51 @@ export default function PaymentsPage() {
 
       if (err.response && err.response.status === 404) {
         setPayments([]);
+        if (readinessAttempt) reportResource("payments", "ready", "", routeId);
+        return true;
       } else {
         setError('Failed to load payment history');
+        if (readinessAttempt) {
+          reportResource("payments", "error", "Unable to load payment history. Please retry.", routeId);
+        }
+        return false;
       }
     } finally {
       setLoading(false);
     }
-  };
+  }, [reportResource, routeId]);
+
+  const loadPaymentData = useCallback(async () => {
+    reportResource("payments", "loading", "", routeId);
+    const [historyLoaded, payoutsLoaded] = await Promise.all([
+      fetchPayments(),
+      payoutRequestsLoaderRef.current(),
+    ]);
+    if (historyLoaded && payoutsLoaded) {
+      reportResource("payments", "ready", "", routeId);
+    } else {
+      setError("Unable to load payment history. Please retry.");
+      reportResource("payments", "error", "Unable to load payment history. Please retry.", routeId);
+    }
+  }, [fetchPayments, reportResource, routeId]);
 
   useEffect(() => {
-    fetchPayments();
 
     const fetchPayoutRequests = async () => {
       try {
         const token = localStorage.getItem('token');
         const res = await axios.get(`${API_BASE_URL}/payout-requests`, { headers: { Authorization: `Bearer ${token}` } });
-        setPayoutRequests(res.data || []);
+        if (!Array.isArray(res.data)) throw new Error("Payout request response was invalid.");
+        setPayoutRequests(res.data);
+        return true;
       } catch (err) {
+        console.error("Failed to load payout requests", err);
         setPayoutRequests([]);
+        return false;
       }
     };
-    fetchPayoutRequests();
+    payoutRequestsLoaderRef.current = fetchPayoutRequests;
+    loadPaymentData();
 
     const onPaymentsRequested = () => {
       fetchPayments();
@@ -92,7 +128,13 @@ export default function PaymentsPage() {
       window.removeEventListener('paymentsRequested', onPaymentsRequested);
       window.removeEventListener('creditsUpdated', onCreditsUpdated);
     };
-  }, []);
+  }, [fetchPayments, loadPaymentData]);
+
+  useEffect(() => {
+    if (previousRetryKey.current === retryKey) return;
+    previousRetryKey.current = retryKey;
+    loadPaymentData();
+  }, [loadPaymentData, retryKey]);
 
   if (loading) return <p>Loading...</p>;
   if (error) return <p>{error}</p>;

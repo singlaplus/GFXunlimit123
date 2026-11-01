@@ -7,6 +7,8 @@ export default function ContributorPage(props) {
       <ContributorDashboard
         reputationScore={props.dashboardProps?.reputationScore}
         reputationTier={props.dashboardProps?.reputationTier}
+        dashboardStats={props.dashboardProps?.dashboardStats}
+        earningsStats={props.dashboardProps?.earningsStats}
         totalEarnings={props.dashboardProps?.earningsStats?.total_earnings}
         totalDownloads={props.dashboardProps?.earningsStats?.total_downloads}
         totalUploads={props.dashboardProps?.dashboardStats?.uploads}

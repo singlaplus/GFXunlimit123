@@ -1,8 +1,9 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import "./SubscriptionCheckoutPage.css";
 
 const CREDITS_PAYMENT_METHOD = "GFX's Credits";
@@ -10,9 +11,14 @@ const CREDITS_PAYMENT_METHOD = "GFX's Credits";
 export default function SubscriptionCheckoutPage({ darkMode = false }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [plan, setPlan] = useState(null);
   const [duration, setDuration] = useState(searchParams.get("duration") || "");
   const [currency, setCurrency] = useState(searchParams.get("currency") || "");
+  const durationRef = useRef(duration);
+  const currencyRef = useRef(currency);
+  durationRef.current = duration;
+  currencyRef.current = currency;
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [paymentMethod, setPaymentMethod] = useState("");
   const [creditBalance, setCreditBalance] = useState(0);
@@ -28,26 +34,40 @@ export default function SubscriptionCheckoutPage({ darkMode = false }) {
   const [couponMessage, setCouponMessage] = useState("");
 
   useEffect(() => {
+    let active = true;
     const loadCheckout = async () => {
+      reportResource("subscriptionCheckout", "loading", "", routeId);
+      setLoading(true);
+      setMessage("");
       try {
         const token = getEffectiveAuthToken();
         const [plansResponse, settingsResponse] = await Promise.all([
           axios.get(`${API_BASE_URL}/subscription-plans`),
           axios.get(`${API_BASE_URL}/payment-settings`),
         ]);
-        const selectedPlan = (plansResponse.data || []).find(
+        if (!Array.isArray(plansResponse.data) ||
+            !settingsResponse.data || typeof settingsResponse.data !== "object") {
+          throw new Error("Subscription checkout response was invalid.");
+        }
+        if (!active) return;
+        const selectedPlan = plansResponse.data.find(
           (item) => String(item.id) === searchParams.get("plan"),
         );
         if (!selectedPlan) {
           setMessage("This subscription plan is no longer available.");
+          reportResource("subscriptionCheckout", "error", "This subscription plan is no longer available.", routeId);
           return;
+        }
+        if (!selectedPlan.pricing || typeof selectedPlan.pricing !== "object" ||
+            !selectedPlan.plan_settings || typeof selectedPlan.plan_settings !== "object") {
+          throw new Error("Subscription plan response was invalid.");
         }
         setPlan(selectedPlan);
         const availableCurrencies = Object.keys(
           selectedPlan.pricing?.currency_prices || {},
         );
         const nextCurrency =
-          currency ||
+          currencyRef.current ||
           availableCurrencies[0] ||
           selectedPlan.pricing?.currency ||
           "USD";
@@ -56,7 +76,7 @@ export default function SubscriptionCheckoutPage({ darkMode = false }) {
           selectedPlan.plan_settings?.durations || {},
         );
         const nextDuration =
-          duration ||
+          durationRef.current ||
           durations[0] ||
           selectedPlan.plan_settings?.duration ||
           "monthly";
@@ -71,6 +91,12 @@ export default function SubscriptionCheckoutPage({ darkMode = false }) {
           const profile = await axios.get(`${API_BASE_URL}/profile`, {
             headers: { Authorization: `Bearer ${token}` },
           });
+          if (!active) return;
+          if (!profile.data || typeof profile.data !== "object" || Array.isArray(profile.data)) {
+            throw new Error("Subscription customer profile response was invalid.");
+          }
+          const credits = Number(profile.data?.credits ?? profile.data?.user?.credits);
+          if (!Number.isFinite(credits)) throw new Error("Subscription credit balance was invalid.");
           setBilling((current) => ({
             fullName:
               profile.data?.full_name ||
@@ -80,21 +106,25 @@ export default function SubscriptionCheckoutPage({ darkMode = false }) {
               profile.data?.email || profile.data?.user?.email || current.email,
           }));
           setCreditBalance(
-            Number(profile.data?.credits ?? profile.data?.user?.credits ?? 0),
+            Math.max(0, credits),
           );
         }
+        if (active) reportResource("subscriptionCheckout", "ready", "", routeId);
       } catch (error) {
+        if (!active) return;
         console.error(error);
         setMessage(
           error.response?.data?.error ||
             "Unable to load subscription checkout.",
         );
+        reportResource("subscriptionCheckout", "error", "Unable to load subscription checkout. Please retry.", routeId);
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
     loadCheckout();
-  }, [searchParams, duration]);
+    return () => { active = false; };
+  }, [searchParams, retryKey, routeId, reportResource]);
 
   const basePrices = plan?.pricing?.prices || {};
   const prices =

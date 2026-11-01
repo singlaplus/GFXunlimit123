@@ -6,6 +6,7 @@ import Pagination from "../components/Pagination";
 import "./MessagesPage.css";
 import { formatNotificationId } from "../utils/notificationUtils";
 import { formatIndiaDateTime, getIndiaDateKey, indiaDateTimeLocalToISOString } from "../utils/indiaTime";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 const API = API_BASE_URL;
 
@@ -62,6 +63,8 @@ function BroadcastPanel({ broadcast, setBroadcast, notice, onSave, onPreview = (
 }
 
 export default function MessagesPage({ darkMode, userRole }) {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
+  const readinessAttemptRef = useRef({ routeId: "", retryKey: -1 });
   const [tab, setTab] = useState("inbox");
   const [messages, setMessages] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -104,23 +107,45 @@ export default function MessagesPage({ darkMode, userRole }) {
   const visibleInboxMessages = messages.slice((inboxPage - 1) * messagePageSize, inboxPage * messagePageSize);
   const visibleConversations = conversations.slice((conversationPage - 1) * messagePageSize, conversationPage * messagePageSize);
 
+  const requestScope = `${routeId}:${tab}:${search}:${JSON.stringify(activityFilters)}`;
+  const requestScopeRef = useRef(requestScope);
+  const loadRef = useRef(null);
+  requestScopeRef.current = requestScope;
+
   const load = useCallback(async () => {
     if (pollingRef.current) return;
     pollingRef.current = true;
+    const activeScope = requestScope;
+    const readinessAttempt = readinessAttemptRef.current.routeId !== routeId ||
+      readinessAttemptRef.current.retryKey !== retryKey;
+    if (readinessAttempt) {
+      readinessAttemptRef.current = { routeId, retryKey };
+      reportResource("messages", "loading", "", routeId);
+    }
     const headers = { Authorization: `Bearer ${getEffectiveAuthToken()}` };
     const messageView = tab === "announcements" ? "announcements" : "inbox";
     setActivityLoading(isAdmin);
     try {
-      const [messageResponse, activityResponse, conversationResponse, typeResponse, notificationResponse, recipientResponse, activityCountResponse] = await Promise.all([
-        axios.get(`${API}/api/messages?view=${messageView}&search=${encodeURIComponent(search)}`, { headers }),
+      const messageRequest = axios.get(`${API}/api/messages?view=${messageView}&search=${encodeURIComponent(search)}`, { headers });
+      const secondaryRequests = Promise.all([
         axios.get(`${API}/api/messages/${isAdmin ? "admin/" : ""}activity`, { headers, params: isAdmin ? { ...activityFilters, search, limit: 50, offset: 0 } : undefined }),
         axios.get(`${API}/api/messages/conversations`, { headers }),
         axios.get(`${API}/api/messages/types`, { headers }),
         axios.get(`${API}/notifications/${encodeURIComponent(localStorage.getItem("username") || "")}`, { headers }),
         ...(isAdmin ? [axios.get(`${API}/api/messages/recipients`, { headers })] : []),
         ...(isAdmin ? [axios.get(`${API}/api/messages/admin/activity/counts`, { headers })] : []),
-      ]);
-      setMessages(messageResponse.data || []);
+      ]).then((data) => ({ data }), (error) => ({ error }));
+      const messageResponse = await messageRequest;
+      if (activeScope !== requestScopeRef.current) return;
+      if (!Array.isArray(messageResponse.data)) {
+        throw new Error("Messages response was invalid.");
+      }
+      setMessages(messageResponse.data);
+      if (readinessAttempt) reportResource("messages", "ready", "", routeId);
+      const secondaryResult = await secondaryRequests;
+      if (activeScope !== requestScopeRef.current) return;
+      if (secondaryResult.error) throw secondaryResult.error;
+      const [activityResponse, conversationResponse, typeResponse, notificationResponse, recipientResponse, activityCountResponse] = secondaryResult.data;
       setNotifications(notificationResponse.data || []);
       const activityPayload = activityResponse.data || {};
       setActivity(activityPayload.rows || []);
@@ -136,12 +161,17 @@ export default function MessagesPage({ darkMode, userRole }) {
       if (isAdmin) {
         try {
           const adminInboxResponse = await axios.get(`${API}/api/messages/admin/inbox`, { headers });
+          if (activeScope !== requestScopeRef.current) return;
           setAdminInbox(adminInboxResponse.data || []);
         } catch (adminInboxError) {
           setError(adminInboxError.response?.data?.error || "Unable to load the admin inbox.");
         }
       }
-      if (isAdmin) setRules((await axios.get(`${API}/api/messages/admin/rules`, { headers })).data || []);
+      if (isAdmin) {
+        const rulesResponse = await axios.get(`${API}/api/messages/admin/rules`, { headers });
+        if (activeScope !== requestScopeRef.current) return;
+        setRules(rulesResponse.data || []);
+      }
       if (isAdmin) {
         try {
           setTemplates((await axios.get(`${API}/admin/email/templates`, { headers })).data || []);
@@ -152,8 +182,16 @@ export default function MessagesPage({ darkMode, userRole }) {
       setError("");
     } catch (err) {
       setError(err.response?.data?.error || "Unable to load messages.");
-    } finally { setActivityLoading(false); pollingRef.current = false; }
-  }, [activityFilters, isAdmin, search, tab]);
+      if (readinessAttempt) {
+        reportResource("messages", "error", "Unable to load your messages. Please retry.", routeId);
+      }
+    } finally {
+      setActivityLoading(false);
+      pollingRef.current = false;
+      if (activeScope !== requestScopeRef.current) loadRef.current?.();
+    }
+  }, [activityFilters, isAdmin, reportResource, requestScope, retryKey, routeId, search, tab]);
+  loadRef.current = load;
 
   useEffect(() => {
     setInboxPage(1);

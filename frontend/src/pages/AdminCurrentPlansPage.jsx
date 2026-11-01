@@ -17,6 +17,8 @@ const PLAN_DURATION_LABELS = {
 export default function AdminCurrentPlansPage({ darkMode = false }) {
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [error, setError] = useState("");
   const [editingPlan, setEditingPlan] = useState(null);
   const [form, setForm] = useState(null);
@@ -30,17 +32,22 @@ export default function AdminCurrentPlansPage({ darkMode = false }) {
           `${API_BASE_URL}/admin/subscription-plans`,
           { headers: token ? { Authorization: `Bearer ${token}` } : {} }
         );
-        setPlans(Array.isArray(response.data) ? response.data : []);
+        if (!Array.isArray(response.data)) {
+          throw new Error("Current plans response was invalid.");
+        }
+        setPlans(response.data);
       } catch (err) {
         console.error(err);
-        setError(err.response?.data?.error || "Unable to load current plans.");
+        setLoadError(err.response?.data?.error || err.message || "Unable to load current plans.");
       } finally {
         setLoading(false);
       }
     };
 
+    setLoading(true);
+    setLoadError("");
     fetchPlans();
-  }, []);
+  }, [loadAttempt]);
 
   const reloadPlans = async () => {
     const token = getEffectiveAuthToken();
@@ -48,7 +55,10 @@ export default function AdminCurrentPlansPage({ darkMode = false }) {
       `${API_BASE_URL}/admin/subscription-plans`,
       { headers: token ? { Authorization: `Bearer ${token}` } : {} }
     );
-    setPlans(Array.isArray(response.data) ? response.data : []);
+    if (!Array.isArray(response.data)) {
+      throw new Error("Current plans response was invalid.");
+    }
+    setPlans(response.data);
   };
 
   const startEditing = (plan) => {
@@ -142,6 +152,7 @@ export default function AdminCurrentPlansPage({ darkMode = false }) {
 
   const activePlans = plans.filter((plan) => plan.active !== false).length;
   const recommendedPlans = plans.filter((plan) => plan.recommended).length;
+  const plansLoaded = !loading && !loadError;
 
   return (
     <main className="current-plans-page">
@@ -156,15 +167,16 @@ export default function AdminCurrentPlansPage({ darkMode = false }) {
       </div>
 
       <div className="current-plans-summary">
-        <div className="current-plans-summary-item"><strong>{plans.length}</strong><span>Total plans</span></div>
-        <div className="current-plans-summary-item"><strong>{activePlans}</strong><span>Active plans</span></div>
-        <div className="current-plans-summary-item"><strong>{recommendedPlans}</strong><span>Most popular</span></div>
+        <div className="current-plans-summary-item"><strong>{plansLoaded ? plans.length : "-"}</strong><span>Total plans</span></div>
+        <div className="current-plans-summary-item"><strong>{plansLoaded ? activePlans : "-"}</strong><span>Active plans</span></div>
+        <div className="current-plans-summary-item"><strong>{plansLoaded ? recommendedPlans : "-"}</strong><span>Most popular</span></div>
       </div>
 
       {loading && <p>Loading current plans...</p>}
+      {loadError && <div role="alert" style={{ color: "#d32f2f" }}><p>{loadError}</p><button type="button" onClick={() => setLoadAttempt((attempt) => attempt + 1)} disabled={loading}>Retry</button></div>}
       {error && <p style={{ color: "#d32f2f" }}>{error}</p>}
-      {!loading && !error && plans.length === 0 && <p>No current plans found.</p>}
-      {!loading && !error && plans.length > 0 && (
+      {!loading && !loadError && !error && plans.length === 0 && <p>No current plans found.</p>}
+      {!loading && !loadError && !error && plans.length > 0 && (
         <div className="current-plans-list">
           {plans.map((plan, planIndex) => (
             <article key={plan.id} className={`current-plan-card${plan.recommended ? " is-recommended" : ""}`}>

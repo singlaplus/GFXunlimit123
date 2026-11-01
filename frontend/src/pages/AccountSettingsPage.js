@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../utils/authSession";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import "./AccountSettingsPage.css";
 
 const initialSettings = {
@@ -24,23 +25,63 @@ const initialSettings = {
 };
 
 export default function AccountSettingsPage({ darkMode, username }) {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [settings, setSettings] = useState(initialSettings);
   const [licensing, setLicensing] = useState({ image: true, video: true, imageData: true, videoData: true });
   const [saved, setSaved] = useState(false);
   const [uploadCount, setUploadCount] = useState(0);
+  const [loadStatus, setLoadStatus] = useState("loading");
+  const [loadError, setLoadError] = useState("");
+  const [localRetry, setLocalRetry] = useState(0);
 
   useEffect(() => {
+    let active = true;
     const token = getEffectiveAuthToken();
-    if (!token) return undefined;
-    Promise.all([
-      axios.get(`${API_BASE_URL}/profile`, { headers: buildAuthHeaders(token) }),
-      axios.get(`${API_BASE_URL}/profile/stats`, { headers: buildAuthHeaders(token) }),
-    ]).then(([profileResponse, statsResponse]) => {
-      setSettings((current) => ({ ...current, email: profileResponse.data?.email || "", id: profileResponse.data?.id || "", displayName: profileResponse.data?.full_name || profileResponse.data?.username || username || "" }));
-      setUploadCount(Number(statsResponse.data?.total_uploads || 0));
-    }).catch(() => {});
-    return undefined;
-  }, [username]);
+    setLoadStatus("loading");
+    reportResource("accountSettings", "loading", "", routeId);
+    setLoadError("");
+
+    const loadSettings = async () => {
+      try {
+        if (!token) throw new Error("Please sign in to load account settings.");
+        const [profileResponse, statsResponse] = await Promise.all([
+          axios.get(`${API_BASE_URL}/profile`, { headers: buildAuthHeaders(token) }),
+          axios.get(`${API_BASE_URL}/profile/stats`, { headers: buildAuthHeaders(token) }),
+        ]);
+        const profile = profileResponse?.data;
+        const stats = statsResponse?.data;
+        const totalUploads = Number(stats?.total_uploads);
+        if (!profile || typeof profile !== "object" || Array.isArray(profile) || profile.id == null ||
+            (profile.email != null && typeof profile.email !== "string") ||
+            !stats || typeof stats !== "object" || Array.isArray(stats) ||
+            stats.total_uploads == null || !Number.isFinite(totalUploads) || totalUploads < 0) {
+          throw new Error("Account settings data was invalid.");
+        }
+        if (!active) return;
+        setSettings((current) => ({
+          ...current,
+          email: profile.email || "",
+          id: profile.id,
+          displayName: profile.full_name || profile.username || username || "",
+        }));
+        setUploadCount(totalUploads);
+        setLoadStatus("ready");
+        reportResource("accountSettings", "ready", "", routeId);
+      } catch (error) {
+        if (!active) return;
+        console.error("Unable to load account settings", error);
+        const message = error?.response
+          ? `Unable to load account settings (HTTP ${error.response.status}).`
+          : error?.message || "Unable to load account settings.";
+        setLoadError(message);
+        setLoadStatus("error");
+        reportResource("accountSettings", "error", message, routeId);
+      }
+    };
+
+    loadSettings();
+    return () => { active = false; };
+  }, [localRetry, reportResource, retryKey, routeId, username]);
 
   const update = (field, value) => {
     setSaved(false);
@@ -54,6 +95,26 @@ export default function AccountSettingsPage({ darkMode, username }) {
   };
 
   const input = (label, field, options = {}) => <label className="account-settings-field"><span>{label}</span><input value={settings[field]} onChange={(event) => update(field, event.target.value)} {...options} /></label>;
+
+  if (loadStatus === "loading") {
+    return (
+      <main className={`account-settings-page ${darkMode ? "is-dark" : ""}`}>
+        <p role="status">Loading account settings...</p>
+      </main>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <main className={`account-settings-page ${darkMode ? "is-dark" : ""}`}>
+        <section role="alert" className="account-settings-section">
+          <h1>Unable to load account settings</h1>
+          <p>{loadError}</p>
+          <button type="button" onClick={() => setLocalRetry((attempt) => attempt + 1)}>Retry</button>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className={`account-settings-page ${darkMode ? "is-dark" : ""}`}>

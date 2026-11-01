@@ -9,6 +9,7 @@ import {
   getAssetSourceUrl,
 } from "../utils/assetPreview";
 import { getAssetSourceDimensions } from "../utils/assetDimensions";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import AssetWatermark from "../components/AssetWatermark";
 import "./AssetPage.css";
 
@@ -16,6 +17,7 @@ const MAX_PREVIEW_HEIGHT = 432;
 
 export default function AssetPage(props) {
   const { imageId, darkMode } = props;
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [image, setImage] = useState(null);
   const [previewDimensions, setPreviewDimensions] = useState(null);
   const [zoomPreviewDimensions, setZoomPreviewDimensions] = useState(null);
@@ -35,6 +37,7 @@ export default function AssetPage(props) {
   const [relatedImages, setRelatedImages] = useState([]);
   const [privatePreview, setPrivatePreview] = useState({ url: "", loading: false, error: "" });
   const relatedSliderRef = useRef(null);
+  const viewedAssetIdsRef = useRef(new Set());
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -45,33 +48,53 @@ export default function AssetPage(props) {
   }, []);
 
   useEffect(() => {
+    let active = true;
     const fetchAndViewImage = async () => {
       if (!imageId) {
-        setError("Invalid asset identifier.");
-        setLoading(false);
+        if (active) {
+          setError("Invalid asset identifier.");
+          setLoading(false);
+        }
+        reportResource("asset", "ready", "", routeId);
         return;
       }
 
       try {
         setLoading(true);
-        await viewImageRequest(imageId);
+        setError("");
+        reportResource("asset", "loading", "", routeId);
+        const assetKey = String(imageId);
+        if (!viewedAssetIdsRef.current.has(assetKey)) {
+          viewedAssetIdsRef.current.add(assetKey);
+          viewImageRequest(imageId).catch((viewError) => {
+            console.error("Failed to record asset view", viewError);
+          });
+        }
         const res = await getSingleImage(imageId);
         const result = res.data;
+        if (!active) return;
 
-        if (!result || Object.keys(result).length === 0) {
+        if (!result || typeof result !== "object" || Array.isArray(result)) {
+          throw new Error("Asset details response was invalid.");
+        }
+        if (Object.keys(result).length === 0) {
           setError("Asset not found.");
         } else {
           setImage(result);
         }
+        reportResource("asset", "ready", "", routeId);
       } catch (err) {
+        if (!active) return;
         console.error(err);
         setError("Unable to load asset details.");
+        reportResource("asset", "error", "Unable to load this asset. Please retry.", routeId);
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
     fetchAndViewImage();
-  }, [imageId]);
+    return () => { active = false; };
+  }, [imageId, reportResource, retryKey, routeId]);
 
   useEffect(() => {
     if (!image?.id) return;

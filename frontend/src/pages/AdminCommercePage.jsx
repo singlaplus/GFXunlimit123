@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
+import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import { formatIndiaDate } from "../utils/indiaTime";
 import {
   ResponsiveContainer,
@@ -136,6 +137,7 @@ function AnimatedCommerceValue({ value }) {
 }
 
 export default function AdminCommercePage() {
+  const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [summary, setSummary] = useState(null);
   const [analytics, setAnalytics] = useState(null);
   const [recentOrders, setRecentOrders] = useState([]);
@@ -156,7 +158,9 @@ export default function AdminCommercePage() {
   }, []);
 
   useEffect(() => {
+    let active = true;
     const loadData = async () => {
+      reportResource("adminCommerce", "loading", "", routeId);
       try {
         setLoading(true);
         setError("");
@@ -175,24 +179,37 @@ export default function AdminCommercePage() {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           })
         ]);
+        if (!active) return;
+        if (!summaryRes.data || typeof summaryRes.data !== "object" || Array.isArray(summaryRes.data) ||
+            STAT_CARDS.some(({ key }) => (
+              summaryRes.data[key] == null || !Number.isFinite(Number(summaryRes.data[key]))
+            )) ||
+            !analyticsRes.data || typeof analyticsRes.data !== "object" || Array.isArray(analyticsRes.data) ||
+            !Array.isArray(recentOrdersRes.data) || !Array.isArray(payoutRequestsRes.data)) {
+          throw new Error("Administrator commerce response was invalid.");
+        }
         setSummary(summaryRes.data || {});
         setAnalytics(analyticsRes.data || {});
         setRecentOrders(recentOrdersRes.data || []);
         setPayoutRequests(payoutRequestsRes.data || []);
+        reportResource("adminCommerce", "ready", "", routeId);
       } catch (err) {
+        if (!active) return;
         console.error(err);
         setError("Unable to load commerce analytics.");
         setSummary({});
         setAnalytics({});
         setRecentOrders([]);
         setPayoutRequests([]);
+        reportResource("adminCommerce", "error", "Unable to load commerce analytics. Please retry.", routeId);
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     loadData();
-  }, []);
+    return () => { active = false; };
+  }, [reportResource, retryKey, routeId]);
 
   const handleOrderAction = async (orderId, payload) => {
     try {

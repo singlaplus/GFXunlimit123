@@ -4,9 +4,12 @@ import axios from "axios";
 import { normalizeRole } from "../utils/role";
 import { getEffectiveAuthToken } from "../utils/authSession";
 
-export default function useProfile(setUserRole, setUserPermissions) {
+export default function useProfile(setUserRole, setUserPermissions, {
+  sessionResolved = false,
+  authStatus = "",
+} = {}) {
   useEffect(() => {
-    const fetchProfile = async () => {
+    const fetchProfile = async (skipResolvedSession = true) => {
       try {
         const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
         const cookieSessionExists = typeof document !== "undefined" && /(?:^|;\s*)authToken=/.test(document.cookie);
@@ -19,6 +22,21 @@ export default function useProfile(setUserRole, setUserPermissions) {
           }
         })() : {};
         const normalizedStoredRole = normalizeRole(storedRole);
+
+        if (skipResolvedSession && sessionResolved) {
+          if (authStatus === "anonymous") {
+            if (typeof window !== "undefined") {
+              localStorage.removeItem("userRole");
+              localStorage.removeItem("userPermissions");
+            }
+            setUserRole("");
+            if (setUserPermissions) setUserPermissions({});
+            return;
+          }
+          setUserRole(normalizedStoredRole);
+          if (setUserPermissions) setUserPermissions(storedPermissions);
+          return;
+        }
 
         if (!token && !cookieSessionExists) {
           if (typeof window !== "undefined") {
@@ -79,11 +97,9 @@ export default function useProfile(setUserRole, setUserPermissions) {
 
     fetchProfile();
 
-    const handleAuthChanged = () => {
-      fetchProfile();
-    };
+    const handleAuthChanged = () => { fetchProfile(false); };
 
     window.addEventListener("auth-changed", handleAuthChanged);
     return () => window.removeEventListener("auth-changed", handleAuthChanged);
-  }, []);
+  }, [authStatus, sessionResolved, setUserPermissions, setUserRole]);
 }

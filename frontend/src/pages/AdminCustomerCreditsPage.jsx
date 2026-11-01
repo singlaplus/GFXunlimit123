@@ -29,6 +29,8 @@ const DARK_THEME = {
 export default function AdminCustomerCreditsPage() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [error, setError] = useState("");
   const [isDarkMode, setIsDarkMode] = useState(getIsDarkMode);
   const [currentPage, setCurrentPage] = useState(1);
@@ -52,14 +54,18 @@ export default function AdminCustomerCreditsPage() {
       try {
         setLoading(true);
         setError("");
+        setLoadError("");
         const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
         const response = await axios.get(`${API_BASE_URL}/admin/users`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {}
         });
-        setUsers(Array.isArray(response.data) ? response.data : []);
+        if (!Array.isArray(response.data)) {
+          throw new Error("Customer credits response was invalid.");
+        }
+        setUsers(response.data);
       } catch (err) {
         console.error("Failed to load customer credits", err);
-        setError("Unable to load customer credits right now.");
+        setLoadError(err.message || "Unable to load customer credits right now.");
         setUsers([]);
       } finally {
         setLoading(false);
@@ -67,7 +73,7 @@ export default function AdminCustomerCreditsPage() {
     };
 
     loadUsers();
-  }, []);
+  }, [loadAttempt]);
 
   const theme = isDarkMode ? DARK_THEME : LIGHT_THEME;
   const pageSize = 50;
@@ -169,8 +175,13 @@ export default function AdminCustomerCreditsPage() {
           </div>
           {loading ? (
             <p style={{ padding: "22px", margin: 0 }}>Loading users...</p>
+          ) : loadError ? (
+            <div role="alert" style={{ padding: "22px", color: theme.accent }}>
+              <p>{loadError}</p>
+              <button type="button" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>Retry</button>
+            </div>
           ) : error ? (
-            <p style={{ padding: "22px", margin: 0, color: theme.accent }}>{error}</p>
+            <p role="alert" style={{ padding: "22px", margin: 0, color: theme.accent }}>{error}</p>
           ) : filteredUsers.length === 0 ? (
             <p style={{ padding: "22px", margin: 0 }}>No users found.</p>
           ) : (
