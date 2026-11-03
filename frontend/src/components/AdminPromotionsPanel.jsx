@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
 import { formatIndiaDate } from "../utils/indiaTime";
+import { getAssetThumbnailUrl } from "../utils/assetPreview";
 import NewsletterSMTPSettings from "./NewsletterSMTPSettings";
 import "./AdminPromotionsPanel.css";
 
@@ -112,6 +113,64 @@ function formatNewsletterSchedule(value) {
   }).format(date);
 }
 
+function formatCouponCurrency(value, currency) {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2
+    }).format(value);
+  } catch {
+    return `${currency} ${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  }
+}
+
+function downloadCouponCsv(filename, headerCells, rows) {
+  const escapeCell = (value) => {
+    const text = String(value ?? "");
+    const safeText = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+    return `"${safeText.replace(/"/g, '""')}"`;
+  };
+  const csv = [headerCells, ...rows]
+    .map((row) => row.map(escapeCell).join(","))
+    .join("\r\n");
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function downloadPromotionCsvWithRecordFields(filename, headerCells, rows, recordGroups, recordLabels = []) {
+  const recordColumns = [];
+  recordGroups.forEach((records) => {
+    records.forEach((record, recordIndex) => {
+      Object.keys(record || {}).forEach((key) => {
+        const columnKey = `${recordIndex}:${key}`;
+        if (!recordColumns.some((column) => column.columnKey === columnKey)) {
+          recordColumns.push({ columnKey, recordIndex, key });
+        }
+      });
+    });
+  });
+
+  const additionalHeaders = recordColumns.map(({ recordIndex, key }) => (
+    `${recordLabels[recordIndex] || (recordIndex === 0 ? "Record" : "Related record")}: ${key}`
+  ));
+  const additionalRows = rows.map((row, rowIndex) => [
+    ...row,
+    ...recordColumns.map(({ recordIndex, key }) => {
+      const value = recordGroups[rowIndex]?.[recordIndex]?.[key];
+      return value !== null && typeof value === "object" ? JSON.stringify(value) : value ?? "";
+    })
+  ]);
+  downloadCouponCsv(filename, [...headerCells, ...additionalHeaders], additionalRows);
+}
+
 const initialCouponForm = {
   name: "",
   code: "",
@@ -199,9 +258,12 @@ const initialNewsletterForm = {
 
 const initialBannerForm = {
   name: "",
-  placement: "homepage",
-  priority: "medium",
-  schedule: "",
+  placement: "left",
+  popupAudience: "homepage",
+  sparkleStyle: "glitter_burst",
+  iconFile: null,
+  start_date: "",
+  end_date: "",
   status: "draft"
 };
 
@@ -316,6 +378,53 @@ function getISTDateString(date = new Date()) {
 function getISTDateStart(value) {
   const [year, month, day] = value.split("-").map(Number);
   return new Date(Date.UTC(year, month - 1, day) - (5 * 60 + 30) * 60 * 1000);
+}
+
+function getISTDateKey(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : getISTDateString(date);
+}
+
+function formatCsvDate(value) {
+  if (!value) return "";
+  const dateValue = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return dateValue;
+  return getISTDateKey(dateValue);
+}
+
+function shiftDateKey(value, days) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+function getContributorAnalyticsRange(range, today = getISTDateString()) {
+  const [year, month] = today.split("-").map(Number);
+  const currentQuarterMonth = Math.floor((month - 1) / 3) * 3;
+  const currentQuarterStart = new Date(Date.UTC(year, currentQuarterMonth, 1)).toISOString().slice(0, 10);
+  const lastQuarterStart = new Date(Date.UTC(year, currentQuarterMonth - 3, 1)).toISOString().slice(0, 10);
+  const financialYearStart = month >= 4 ? `${year}-04-01` : `${year - 1}-04-01`;
+  const currentMonthStart = `${today.slice(0, 7)}-01`;
+
+  switch (range) {
+    case "last_30_days":
+      return { start: shiftDateKey(today, -29), end: today };
+    case "current_month":
+      return { start: currentMonthStart, end: today };
+    case "current_quarter":
+      return { start: currentQuarterStart, end: today };
+    case "last_quarter":
+      return { start: lastQuarterStart, end: shiftDateKey(currentQuarterStart, -1) };
+    case "current_financial_year":
+      return { start: financialYearStart, end: today };
+    case "last_financial_year":
+      return {
+        start: `${Number(financialYearStart.slice(0, 4)) - 1}-04-01`,
+        end: shiftDateKey(financialYearStart, -1)
+      };
+    default:
+      return { start: "", end: "" };
+  }
 }
 
 function getFlashEventTiming(sale, now = new Date()) {
@@ -545,6 +654,13 @@ function AdminPromotionsPanel() {
     coupon_redemption_rate: 0
   });
   const [coupons, setCoupons] = useState([]);
+  const [couponAnalytics, setCouponAnalytics] = useState({});
+  const [topCoupons, setTopCoupons] = useState([]);
+  const [couponCurrencies, setCouponCurrencies] = useState([]);
+  const [couponExchangeRates, setCouponExchangeRates] = useState({});
+  const [couponAnalyticsError, setCouponAnalyticsError] = useState("");
+  const [couponCurrency, setCouponCurrency] = useState("INR");
+  const [contributorBenefitsCurrency, setContributorBenefitsCurrency] = useState("INR");
   const [customers, setCustomers] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [contributorApplications, setContributorApplications] = useState([]);
@@ -552,6 +668,10 @@ function AdminPromotionsPanel() {
   const [approvingBonusApplicationId, setApprovingBonusApplicationId] = useState(null);
   const [flashSales, setFlashSales] = useState([]);
   const [flashEventFilter, setFlashEventFilter] = useState("active");
+  const [couponUsageRange, setCouponUsageRange] = useState("last_30_days");
+  const [couponRevenueRange, setCouponRevenueRange] = useState("last_30_days");
+  const [contributorApplicationRange, setContributorApplicationRange] = useState("last_30_days");
+  const [contributorBenefitsRange, setContributorBenefitsRange] = useState("last_30_days");
   const [flashEventsNow, setFlashEventsNow] = useState(() => Date.now());
   const [contributorApplicationFilter, setContributorApplicationFilter] = useState("active");
   const [referrals, setReferrals] = useState([]);
@@ -595,6 +715,20 @@ function AdminPromotionsPanel() {
   const savedNewsletterBodySelectionRef = useRef(null);
   const newsletterLinkPointerRef = useRef(null);
   const [bannerDraft, setBannerDraft] = useState(initialBannerForm);
+  const [editingBannerId, setEditingBannerId] = useState(null);
+  const [editingBannerIconFilename, setEditingBannerIconFilename] = useState("");
+  const bannerIconInputRef = useRef(null);
+  const [isBannerAssetsDialogOpen, setIsBannerAssetsDialogOpen] = useState(false);
+  const [bannerAssets, setBannerAssets] = useState([]);
+  const [bannerAssetCategories, setBannerAssetCategories] = useState([]);
+  const [bannerAssetCollections, setBannerAssetCollections] = useState([]);
+  const [selectedBannerAssetIds, setSelectedBannerAssetIds] = useState([]);
+  const [draftBannerAssetIds, setDraftBannerAssetIds] = useState([]);
+  const [bannerAssetSearch, setBannerAssetSearch] = useState("");
+  const [bannerAssetCategory, setBannerAssetCategory] = useState("");
+  const [bannerAssetCollection, setBannerAssetCollection] = useState("");
+  const [isLoadingBannerAssets, setIsLoadingBannerAssets] = useState(false);
+  const [bannerAssetLoadError, setBannerAssetLoadError] = useState("");
   const [popupDraft, setPopupDraft] = useState(initialPopupForm);
   const [announcementDraft, setAnnouncementDraft] = useState(initialAnnouncementForm);
   const [pushDraft, setPushDraft] = useState(initialPushForm);
@@ -669,6 +803,42 @@ function AdminPromotionsPanel() {
     loadPromotions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "dashboard") return undefined;
+    let active = true;
+    const loadCouponAnalytics = async () => {
+      setCouponAnalyticsError("");
+      try {
+        const response = await axios.get(`${API_BASE_URL}/admin/promotions/coupon-analytics`, {
+          headers: buildAuthHeaders()
+        });
+        const { currencies, rates, analytics, top_coupons: couponRanking } = response.data || {};
+        if (!Array.isArray(currencies) || !rates || typeof rates !== "object" || !analytics || typeof analytics !== "object" || !Array.isArray(couponRanking)) {
+          throw new Error("Coupon revenue analytics response was invalid.");
+        }
+        if (active) {
+          setCouponCurrencies(currencies);
+          setCouponExchangeRates(rates);
+          setCouponAnalytics(analytics);
+          setTopCoupons(couponRanking);
+          setCouponCurrency((currentCurrency) => (
+            currencies.includes(currentCurrency) ? currentCurrency : currencies[0] || "INR"
+          ));
+          setContributorBenefitsCurrency((currentCurrency) => (
+            currencies.includes(currentCurrency) ? currentCurrency : currencies[0] || "INR"
+          ));
+        }
+      } catch (error) {
+        console.error("Failed to load coupon revenue analytics", error);
+        if (active) {
+          setCouponAnalyticsError(error.response?.data?.error || "Unable to load coupon revenue and exchange rates.");
+        }
+      }
+    };
+    loadCouponAnalytics();
+    return () => { active = false; };
+  }, [activeSection]);
 
   useEffect(() => {
     if (activeSection !== "campaigns") return undefined;
@@ -835,6 +1005,63 @@ function AdminPromotionsPanel() {
       setMessage(err.response?.data?.error || "Request failed.");
       throw err;
     }
+  };
+
+  const loadBannerAssets = async () => {
+    try {
+      setIsLoadingBannerAssets(true);
+      setBannerAssetLoadError("");
+      const [firstPageResponse, categoriesResponse, collectionsResponse] = await Promise.all([
+        axios.get(`${API_BASE_URL}/images?limit=1000&page=1`),
+        axios.get(`${API_BASE_URL}/categories`),
+        axios.get(`${API_BASE_URL}/collections`)
+      ]);
+      const firstPage = firstPageResponse.data;
+      if (
+        !firstPage ||
+        !Array.isArray(firstPage.images) ||
+        !Number.isFinite(Number(firstPage.totalImages)) ||
+        !Array.isArray(categoriesResponse.data) ||
+        !Array.isArray(collectionsResponse.data)
+      ) {
+        throw new Error("Live asset catalogue response was invalid.");
+      }
+
+      const allAssets = [...firstPage.images];
+      const totalPages = Math.ceil(Number(firstPage.totalImages) / 1000);
+      if (allAssets.length < Number(firstPage.totalImages)) {
+        const remainingPages = Array.from({ length: Math.max(0, totalPages - 1) }, (_, index) => index + 2);
+        const remainingResponses = await Promise.all(remainingPages.map((page) => (
+          axios.get(`${API_BASE_URL}/images?limit=1000&page=${page}`)
+        )));
+        for (const response of remainingResponses) {
+          if (!Array.isArray(response.data?.images)) {
+            throw new Error("Live asset catalogue response was invalid.");
+          }
+          allAssets.push(...response.data.images);
+        }
+      }
+      if (allAssets.length < Number(firstPage.totalImages)) {
+        throw new Error(`Loaded ${allAssets.length} of ${Number(firstPage.totalImages)} live assets.`);
+      }
+      setBannerAssets(allAssets);
+      setBannerAssetCategories(categoriesResponse.data);
+      setBannerAssetCollections(collectionsResponse.data);
+    } catch (error) {
+      console.error("Failed to load live assets for promotional banner", error);
+      setBannerAssetLoadError(error.response?.data?.error || error.message || "Unable to load live assets.");
+    } finally {
+      setIsLoadingBannerAssets(false);
+    }
+  };
+
+  const openBannerAssetsDialog = () => {
+    setDraftBannerAssetIds(selectedBannerAssetIds);
+    setBannerAssetSearch("");
+    setBannerAssetCategory("");
+    setBannerAssetCollection("");
+    setIsBannerAssetsDialogOpen(true);
+    if (bannerAssets.length === 0) loadBannerAssets();
   };
 
   const searchNewsletterRecipients = async () => {
@@ -1634,13 +1861,793 @@ function AdminPromotionsPanel() {
   ));
 
   const renderKpiCards = () => {
+    const couponUsageRangeOptions = [
+      { value: "last_30_days", label: "Last 30 days" },
+      { value: "current_month", label: "Current month" },
+      { value: "current_quarter", label: "Current quarter" },
+      { value: "last_quarter", label: "Last quarter" },
+      { value: "current_financial_year", label: "Current financial year (Apr to Mar)" },
+      { value: "last_financial_year", label: "Last financial year" }
+    ];
+    const selectedUsage = couponAnalytics[couponUsageRange] || { uses: 0 };
+    const todayDateKey = getISTDateString();
+    const isInDateRange = (value, { start, end }) => {
+      const dateKey = getISTDateKey(value);
+      return Boolean(dateKey && (!start || dateKey >= start) && (!end || dateKey <= end));
+    };
+    const getApplicationCount = (range) => {
+      const dateRange = range === "today"
+        ? { start: todayDateKey, end: todayDateKey }
+        : range === "yesterday"
+          ? { start: shiftDateKey(todayDateKey, -1), end: shiftDateKey(todayDateKey, -1) }
+          : range === "last_7_days"
+            ? { start: shiftDateKey(todayDateKey, -6), end: todayDateKey }
+            : { start: "", end: "" };
+      return contributorApplications.filter((application) => isInDateRange(application.created_at, dateRange)).length;
+    };
+    const getApprovedBenefits = (range) => {
+      const dateRange = range === "today"
+        ? { start: todayDateKey, end: todayDateKey }
+        : range === "yesterday"
+          ? { start: shiftDateKey(todayDateKey, -1), end: shiftDateKey(todayDateKey, -1) }
+          : range === "last_7_days"
+            ? { start: shiftDateKey(todayDateKey, -6), end: todayDateKey }
+            : { start: "", end: "" };
+      return contributorApplications.filter((application) => (
+        application.benefit_approved && isInDateRange(application.benefit_approved_at, dateRange)
+      ));
+    };
+    const contributorApplicationRangeBounds = getContributorAnalyticsRange(contributorApplicationRange, todayDateKey);
+    const contributorBenefitsRangeBounds = getContributorAnalyticsRange(contributorBenefitsRange, todayDateKey);
+    const selectedContributorApplications = contributorApplications.filter((application) => (
+      isInDateRange(application.created_at, contributorApplicationRangeBounds)
+    ));
+    const selectedContributorBenefits = contributorApplications.filter((application) => (
+      application.benefit_approved
+      && isInDateRange(application.benefit_approved_at, contributorBenefitsRangeBounds)
+    ));
+    const getBenefitPaidAmount = (application) => Number(application.paid_amount || 0);
+    const getBenefitTotal = (applications) => applications.reduce((total, application) => (
+      total + getBenefitPaidAmount(application)
+    ), 0);
+    const convertBenefitAmount = (amount) => {
+      const rate = Number(couponExchangeRates[contributorBenefitsCurrency]);
+      return Number.isFinite(rate) && rate > 0 ? amount * rate : null;
+    };
+    const formatBenefitsCurrency = (amount) => {
+      const convertedAmount = convertBenefitAmount(amount);
+      return convertedAmount === null ? "—" : formatCouponCurrency(convertedAmount, contributorBenefitsCurrency);
+    };
+    const contributorOfferStatusCounts = campaigns.reduce((counts, campaign) => {
+      const status = getCampaignDisplayStatus(campaign.status);
+      if (Object.prototype.hasOwnProperty.call(counts, status)) counts[status] += 1;
+      return counts;
+    }, { active: 0, scheduled: 0, ended: 0, draft: 0 });
+    const contributorOfferStats = campaigns.map((campaign) => {
+      const offerApplications = contributorApplications.filter((application) => (
+        String(application.offer_id) === String(campaign.id)
+      ));
+      const approvedApplications = offerApplications.filter((application) => application.benefit_approved);
+      const metadata = getCampaignMetadata(campaign);
+      const requirement = String(metadata.eligibility_requirements || "").trim();
+      const requirementTarget = metadata.eligibility_requirement_value === ""
+        || metadata.eligibility_requirement_value === null
+        || metadata.eligibility_requirement_value === undefined
+        ? null
+        : Number(metadata.eligibility_requirement_value);
+      const achievedRequirements = requirement && Number.isFinite(requirementTarget) && requirementTarget > 0
+        ? offerApplications.filter((application) => Number(application.progress_count || 0) >= requirementTarget).length
+        : null;
+      const lastUsedAt = offerApplications.reduce((latestDate, application) => {
+        const applicationDate = new Date(application.created_at || "");
+        return !Number.isNaN(applicationDate.getTime())
+          && (!latestDate || applicationDate > latestDate)
+          ? applicationDate
+          : latestDate;
+      }, null);
+      return {
+        ...campaign,
+        applicationCount: offerApplications.length,
+        metadata,
+        achievedRequirements,
+        lastUsedAt,
+        benefitsPaid: getBenefitTotal(approvedApplications)
+      };
+    }).sort((left, right) => (
+      right.applicationCount - left.applicationCount
+      || right.benefitsPaid - left.benefitsPaid
+      || String(left.name || "").localeCompare(String(right.name || ""))
+    ));
+    const featuredContributorOffers = contributorOfferStats.slice(0, 5);
+    const remainingContributorOffers = contributorOfferStats.slice(5);
+    const exportContributorOffers = (offers) => downloadPromotionCsvWithRecordFields(
+      "contributor-offers.csv",
+      [
+        "Offer name",
+        "Description",
+        "Benefit type",
+        "Benefit value",
+        "Eligibility requirements",
+        "Eligible contributors",
+        "Eligibility requirement value",
+        "Eligibility requirements achieved",
+        "Status",
+        "Start date",
+        "End date",
+        "Applications",
+        "Last used date (IST)",
+        "Benefits paid (INR)"
+      ],
+      offers.map((offer) => {
+        const metadata = offer.metadata || {};
+        const eligibleContributors = metadata.eligibility_scope === "selected"
+          ? (Array.isArray(metadata.eligible_contributors)
+            ? metadata.eligible_contributors.join(", ")
+            : metadata.eligible_contributors || offer.audience || "Selected contributors")
+          : "All contributors";
+        const requirement = String(metadata.eligibility_requirements || "").trim();
+        const achievedRequirements = offer.achievedRequirements === null
+          ? ""
+          : `${offer.achievedRequirements}/${offer.applicationCount} contributors`;
+        return [
+          offer.name || "Unnamed offer",
+          offer.objective || "",
+          metadata.benefit_type || "",
+          metadata.benefit_value ?? "",
+          requirement,
+          eligibleContributors,
+          metadata.eligibility_requirement_value ?? "",
+          achievedRequirements,
+          getCampaignDisplayStatus(offer.status),
+          formatCsvDate(offer.start_date),
+          formatCsvDate(offer.end_date),
+          offer.applicationCount,
+          formatCsvDate(offer.lastUsedAt),
+          offer.benefitsPaid.toFixed(2)
+        ];
+      }),
+      offers.map((offer) => [offer]),
+      ["Contributor offer"]
+    );
+    const getApplicationOfferExportMetadata = (application) => {
+      const campaign = campaigns.find((item) => String(item.id) === String(application.offer_id));
+      if (!campaign) return ["", "", "", "", "", "", ""];
+      const metadata = getCampaignMetadata(campaign);
+      const requirement = String(metadata.eligibility_requirements || "").trim();
+      const rawTarget = metadata.eligibility_requirement_value;
+      const target = rawTarget === "" || rawTarget === null || rawTarget === undefined
+        ? null
+        : Number(rawTarget);
+      const eligibleContributors = metadata.eligibility_scope === "selected"
+        ? (Array.isArray(metadata.eligible_contributors)
+          ? metadata.eligible_contributors.join(", ")
+          : metadata.eligible_contributors || campaign.audience || "Selected contributors")
+        : "All contributors";
+      const progress = Number(application.progress_count);
+      const achieved = requirement && Number.isFinite(target) && target > 0
+        ? `${Number.isFinite(progress) ? progress : 0}/${target} ${requirement}`
+        : "";
+      return [
+        campaign.objective || "",
+        metadata.benefit_type || "",
+        metadata.benefit_value ?? "",
+        requirement,
+        eligibleContributors,
+        rawTarget ?? "",
+        achieved
+      ];
+    };
+    const exportContributorApplications = () => downloadPromotionCsvWithRecordFields(
+      "contributor-offer-applications.csv",
+      [
+        "Contributor",
+        "Username",
+        "Email",
+        "Offer name",
+        "Description",
+        "Benefit type",
+        "Benefit value",
+        "Eligibility requirements",
+        "Eligible contributors",
+        "Eligibility requirement value",
+        "Eligibility requirements achieved",
+        "Offer start date",
+        "Offer end date",
+        "Status",
+        "Offer used date (IST)",
+        "Benefit approved",
+        "Benefits paid (INR)"
+      ],
+      contributorApplications.map((application) => {
+        const campaign = campaigns.find((item) => String(item.id) === String(application.offer_id));
+        return [
+          application.full_name || application.username || `Contributor #${application.contributor_id}`,
+          application.username || "",
+          application.email || "",
+          application.offer_name || `Offer #${application.offer_id}`,
+          ...getApplicationOfferExportMetadata(application),
+          formatCsvDate(campaign?.start_date),
+          formatCsvDate(campaign?.end_date),
+          getContributorApplicationDisplayStatus(application),
+          formatCsvDate(application.created_at),
+          application.benefit_approved ? "Yes" : "No",
+          application.benefit_approved ? getBenefitPaidAmount(application).toFixed(2) : ""
+        ];
+      }),
+      contributorApplications.map((application) => [
+        application,
+        campaigns.find((item) => String(item.id) === String(application.offer_id)) || {}
+      ]),
+      ["Application", "Contributor offer"]
+    );
+    const exportContributorBenefits = () => downloadPromotionCsvWithRecordFields(
+      "contributor-benefits-paid.csv",
+      [
+        "Contributor",
+        "Username",
+        "Offer name",
+        "Description",
+        "Benefit type",
+        "Benefit value",
+        "Eligibility requirements",
+        "Eligible contributors",
+        "Eligibility requirement value",
+        "Eligibility requirements achieved",
+        "Offer start date",
+        "Offer end date",
+        "Offer used date (IST)",
+        "Approved date",
+        `Benefits paid (${contributorBenefitsCurrency})`,
+        "Currency"
+      ],
+      selectedContributorBenefits.map((application) => {
+        const convertedAmount = convertBenefitAmount(getBenefitPaidAmount(application));
+        const campaign = campaigns.find((item) => String(item.id) === String(application.offer_id));
+        return [
+          application.full_name || application.username || `Contributor #${application.contributor_id}`,
+          application.username || "",
+          application.offer_name || `Offer #${application.offer_id}`,
+          ...getApplicationOfferExportMetadata(application),
+          formatCsvDate(campaign?.start_date),
+          formatCsvDate(campaign?.end_date),
+          formatCsvDate(application.created_at),
+          formatCsvDate(application.benefit_approved_at),
+          convertedAmount === null ? "" : convertedAmount.toFixed(2),
+          contributorBenefitsCurrency
+        ];
+      }),
+      selectedContributorBenefits.map((application) => [
+        application,
+        campaigns.find((item) => String(item.id) === String(application.offer_id)) || {}
+      ]),
+      ["Application", "Contributor offer"]
+    );
+    const convertRevenueByCurrency = (revenueByCurrency = {}) => {
+      const targetRate = Number(couponExchangeRates[couponCurrency]);
+      if (!Number.isFinite(targetRate) || targetRate <= 0) return null;
+      return Object.entries(revenueByCurrency).reduce((total, [sourceCurrency, amount]) => {
+        const sourceRate = Number(couponExchangeRates[sourceCurrency]);
+        if (!Number.isFinite(sourceRate) || sourceRate <= 0) return null;
+        if (total === null) return null;
+        return total + (Number(amount || 0) / sourceRate) * targetRate;
+      }, 0);
+    };
+    const convertCouponRevenue = (period) => (
+      convertRevenueByCurrency(couponAnalytics[period]?.revenue_by_currency || {})
+    );
+    const rankedCoupons = [...topCoupons].sort((left, right) => (
+      Number(right.uses || 0) - Number(left.uses || 0) ||
+      String(left.name || left.code || "").localeCompare(String(right.name || right.code || ""))
+    ));
+    const couponRecordsById = new Map(coupons.map((coupon) => [String(coupon.id), coupon]));
+    const getCouponExportRecords = (coupon) => [
+      couponRecordsById.get(String(coupon.id)) || {},
+      coupon
+    ];
+    const featuredCoupons = rankedCoupons.slice(0, 5);
+    const exportCouponUsage = () => downloadPromotionCsvWithRecordFields(
+      "coupons-used.csv",
+      ["Coupon name", "Coupon code", "Total uses", "Last used date (IST)", "Start date", "End date"],
+      rankedCoupons.map((coupon) => [
+        coupon.name || "Unnamed coupon",
+        coupon.code || "",
+        Number(coupon.uses || 0),
+        formatCsvDate(coupon.last_used_date),
+        formatCsvDate(coupon.start_at),
+        formatCsvDate(coupon.end_at)
+      ]),
+      rankedCoupons.map(getCouponExportRecords),
+      ["Coupon", "Usage analytics"]
+    );
+    const exportCouponRevenue = () => downloadPromotionCsvWithRecordFields(
+      "coupon-revenue.csv",
+      ["Coupon name", "Coupon code", `Revenue (${couponCurrency})`, "Currency", "Last used date (IST)", "Start date", "End date"],
+      rankedCoupons.map((coupon) => {
+        const revenue = convertRevenueByCurrency(coupon.revenue_by_currency || {});
+        return [
+          coupon.name || "Unnamed coupon",
+          coupon.code || "",
+          revenue === null ? "" : revenue.toFixed(2),
+          couponCurrency,
+          formatCsvDate(coupon.last_used_date),
+          formatCsvDate(coupon.start_at),
+          formatCsvDate(coupon.end_at)
+        ];
+      }),
+      rankedCoupons.map(getCouponExportRecords),
+      ["Coupon", "Revenue analytics"]
+    );
+    const exportAllCoupons = () => {
+      const csvRows = rankedCoupons.map((coupon) => {
+        const revenue = convertRevenueByCurrency(coupon.revenue_by_currency || {});
+        return [
+          coupon.name || "Unnamed coupon",
+          coupon.code || "",
+          Number(coupon.uses || 0),
+          revenue === null ? "" : revenue.toFixed(2),
+          couponCurrency,
+          formatCsvDate(coupon.last_used_date),
+          formatCsvDate(coupon.start_at),
+          formatCsvDate(coupon.end_at)
+        ];
+      });
+      downloadPromotionCsvWithRecordFields(
+        "coupons.csv",
+        ["Coupon name", "Coupon code", "Coupons used", `Revenue (${couponCurrency})`, "Currency", "Last used date (IST)", "Start date", "End date"],
+        csvRows,
+        rankedCoupons.map(getCouponExportRecords),
+        ["Coupon", "Usage and revenue analytics"]
+      );
+    };
+    const hasUnconvertibleCouponRevenue = Object.values(couponAnalytics).some((period) => (
+      Object.keys(period?.revenue_by_currency || {}).some((currency) => {
+        const rate = Number(couponExchangeRates[currency]);
+        return !Number.isFinite(rate) || rate <= 0;
+      })
+    ));
+    const flashSaleStatusCounts = flashEventRecords.reduce((counts, { timing }) => {
+      if (Object.prototype.hasOwnProperty.call(counts, timing.status)) counts[timing.status] += 1;
+      return counts;
+    }, { active: 0, scheduled: 0, expired: 0 });
+    const getFlashSaleDiscountLabel = (sale) => (
+      FLASH_SALE_DISCOUNT_RULES.find((rule) => (
+        rule.value.toLowerCase() === String(sale.discount_rule || "").trim().toLowerCase()
+      ))?.label || sale.discount_rule || "Other"
+    );
+    const flashSaleDiscountCounts = flashEventRecords.reduce((counts, { sale }) => {
+      const label = getFlashSaleDiscountLabel(sale);
+      counts[label] = (counts[label] || 0) + 1;
+      return counts;
+    }, {});
+    const flashSalePlacementCounts = flashEventRecords.reduce((counts, { sale }) => {
+      const placement = String(sale.featured_placement || "homepage").trim().toLowerCase();
+      const label = placement === "category"
+        ? "Category"
+        : placement === "collection"
+          ? "Collection"
+          : "Homepage";
+      counts[label] += 1;
+      return counts;
+    }, { Homepage: 0, Category: 0, Collection: 0 });
+    const bundleTodayDateKey = getISTDateString(new Date(flashEventsNow));
+    const bundleEventRecords = bundles.map((bundle) => {
+      const metadata = getCampaignMetadata(bundle);
+      const startDate = String(metadata.start_date || "").slice(0, 10);
+      const endDate = String(metadata.end_date || "").slice(0, 10);
+      const savedStatus = String(bundle.status || "").trim().toLowerCase();
+      const status = savedStatus === "draft"
+        ? "draft"
+        : savedStatus === "expired" || (endDate && endDate < bundleTodayDateKey)
+          ? "expired"
+          : savedStatus === "scheduled" || (startDate && startDate > bundleTodayDateKey)
+            ? "scheduled"
+            : savedStatus === "active" || !savedStatus
+              ? "active"
+              : savedStatus;
+      const tiers = Array.isArray(metadata.discount_tiers) ? metadata.discount_tiers : [];
+      return {
+        bundle,
+        metadata,
+        status,
+        startDate,
+        endDate,
+        tiers,
+        tierDetails: tiers
+          .map((tier) => `${Number(tier.asset_count || 0)} assets: ${Number(tier.discount_percent || 0)}%`)
+          .join("; ")
+      };
+    });
+    const bundleStatusCounts = bundleEventRecords.reduce((counts, { status }) => {
+      if (Object.prototype.hasOwnProperty.call(counts, status)) counts[status] += 1;
+      return counts;
+    }, { active: 0, scheduled: 0, expired: 0, draft: 0 });
+    const bundleTierCounts = bundleEventRecords.reduce((counts, { tiers }) => {
+      tiers.forEach((tier) => {
+        const label = `${Number(tier.asset_count || 0)} assets · ${Number(tier.discount_percent || 0)}%`;
+        counts[label] = (counts[label] || 0) + 1;
+      });
+      return counts;
+    }, {});
+    const downloadBundleCsv = (filename, headers, getRow) => {
+      const exportRows = bundleEventRecords.flatMap((record) => {
+        const userUsage = Array.isArray(record.bundle.usage_details) && record.bundle.usage_details.length
+          ? record.bundle.usage_details
+          : [{}];
+        return userUsage.map((usage) => ({
+          row: [
+            ...getRow(record),
+            usage.user_id ?? "",
+            usage.username || "",
+            usage.full_name || "",
+            usage.email || "",
+            Number(usage.uses || 0),
+            Number(usage.assets_downloaded || 0)
+          ],
+          records: [record.bundle, usage]
+        }));
+      });
+      downloadPromotionCsvWithRecordFields(
+        filename,
+        [...headers, "User ID", "Username", "Full name", "Email", "Times used", "Assets downloaded"],
+        exportRows.map(({ row }) => row),
+        exportRows.map(({ records }) => records),
+        ["Bundle discount", "User usage"]
+      );
+    };
+    const exportBundleStatuses = () => downloadBundleCsv(
+      "bundle-discount-statuses.csv",
+      ["Bundle discount", "Status", "Start date", "End date"],
+      ({ bundle, status, startDate, endDate }) => [
+        bundle.name || "Unnamed bundle",
+        status,
+        formatCsvDate(startDate),
+        formatCsvDate(endDate)
+      ]
+    );
+    const exportBundleTiers = () => downloadBundleCsv(
+      "bundle-discount-tiers.csv",
+      ["Bundle discount", "Discount tiers"],
+      ({ bundle, tierDetails }) => [bundle.name || "Unnamed bundle", tierDetails]
+    );
+    const exportAllBundles = () => downloadBundleCsv(
+      "bundle-discounts.csv",
+      ["Bundle discount", "Status", "Applications", "Users used", "Assets downloaded", "Discount tiers", "Start date", "End date"],
+      ({ bundle, status, tierDetails, startDate, endDate }) => [
+        bundle.name || "Unnamed bundle",
+        status,
+        Number(bundle.applications || 0),
+        Number(bundle.users_used || 0),
+        Number(bundle.assets_downloaded || 0),
+        tierDetails,
+        formatCsvDate(startDate),
+        formatCsvDate(endDate)
+      ]
+    );
+    const featuredBundles = [...bundleEventRecords]
+      .sort((left, right) => (
+        Number(right.bundle.users_used || 0) - Number(left.bundle.users_used || 0)
+        || Number(right.bundle.assets_downloaded || 0) - Number(left.bundle.assets_downloaded || 0)
+        || String(left.bundle.name || "").localeCompare(String(right.bundle.name || ""))
+      ))
+      .slice(0, 5);
+    const getNewsletterRecipientsForExport = (campaign) => {
+      if (Array.isArray(campaign.recipient_details) && campaign.recipient_details.length) {
+        return campaign.recipient_details;
+      }
+      return (Array.isArray(campaign.recipients) ? campaign.recipients : []).map((recipient) => (
+        typeof recipient === "string" ? { recipient } : recipient || {}
+      ));
+    };
+    const getNewsletterRecipientCount = (campaign) => Math.max(
+      Number(campaign.queued_recipients || 0),
+      Array.isArray(campaign.recipients) ? campaign.recipients.length : 0
+    );
+    const newsletterStatusCounts = newsletters.reduce((counts, campaign) => {
+      const metadata = getCampaignMetadata(campaign);
+      const savedStatus = String(campaign.status || "draft").trim().toLowerCase();
+      const status = savedStatus === "draft" && metadata.delivery_error ? "failed" : savedStatus;
+      counts[status] = (counts[status] || 0) + 1;
+      return counts;
+    }, {});
+    const newsletterAudienceCounts = newsletters.reduce((counts, campaign) => {
+      const audience = String(campaign.audience || "unspecified").trim().toLowerCase();
+      const configuredAudience = NEWSLETTER_AUDIENCES.find((item) => item.value === audience);
+      const label = configuredAudience?.label || (audience === "unspecified" ? "Unspecified audience" : audience);
+      const current = counts.get(label) || { campaigns: 0, recipients: 0 };
+      current.campaigns += 1;
+      current.recipients += getNewsletterRecipientCount(campaign);
+      counts.set(label, current);
+      return counts;
+    }, new Map());
+    const newsletterAudienceRows = [...newsletterAudienceCounts.entries()]
+      .sort(([left], [right]) => left.localeCompare(right));
+    const newsletterDeliveryTotals = newsletters.reduce((totals, campaign) => ({
+      recipients: totals.recipients + getNewsletterRecipientCount(campaign),
+      queued: totals.queued + Number(campaign.queued_recipients || 0),
+      sent: totals.sent + Number(campaign.sent_recipients || 0),
+      opened: totals.opened + Number(campaign.opened_recipients || 0),
+      clicked: totals.clicked + Number(campaign.clicked_recipients || 0)
+    }), { recipients: 0, queued: 0, sent: 0, opened: 0, clicked: 0 });
+    const downloadNewsletterCsv = (filename, headers, getRow) => {
+      const exportRows = newsletters.flatMap((campaign) => {
+        const recipients = getNewsletterRecipientsForExport(campaign);
+        const recipientRecords = recipients.length ? recipients : [{}];
+        return recipientRecords.map((recipient) => ({
+          row: getRow(campaign, recipient),
+          records: [campaign, recipient]
+        }));
+      });
+      downloadPromotionCsvWithRecordFields(
+        filename,
+        headers,
+        exportRows.map(({ row }) => row),
+        exportRows.map(({ records }) => records),
+        ["Newsletter campaign", "Recipient delivery"]
+      );
+    };
+    const getNewsletterDisplayStatus = (campaign) => {
+      const metadata = getCampaignMetadata(campaign);
+      const status = String(campaign.status || "draft").trim().toLowerCase();
+      return status === "draft" && metadata.delivery_error ? "failed" : status;
+    };
+    const exportNewsletterStatuses = () => downloadNewsletterCsv(
+      "newsletter-campaign-statuses.csv",
+      ["Campaign", "Subject", "Status", "Audience", "Recipients", "Scheduled at (IST)", "Sent at (IST)"],
+      (campaign) => [
+        campaign.name || "Untitled newsletter",
+        campaign.subject || "",
+        getNewsletterDisplayStatus(campaign),
+        campaign.audience || "",
+        getNewsletterRecipientCount(campaign),
+        campaign.scheduled_at || campaign.schedule ? formatNewsletterSchedule(campaign.scheduled_at || campaign.schedule) : "",
+        campaign.sent_at ? formatNewsletterSchedule(campaign.sent_at) : ""
+      ]
+    );
+    const exportNewsletterAudiences = () => downloadCouponCsv(
+      "newsletter-campaign-audiences.csv",
+      ["Audience", "Campaigns", "Recipients"],
+      newsletterAudienceRows.map(([audience, totals]) => [audience, totals.campaigns, totals.recipients])
+    );
+    const exportAllNewsletters = () => downloadNewsletterCsv(
+      "newsletter-campaigns.csv",
+      ["Campaign", "Subject", "Status", "Audience", "Recipients", "Queued", "Sent", "Opened", "Clicked", "Scheduled at (IST)", "Sent at (IST)", "Recipient email", "Recipient status", "Opened at (IST)", "Clicked at (IST)"],
+      (campaign, recipient) => [
+        campaign.name || "Untitled newsletter",
+        campaign.subject || "",
+        campaign.status || "draft",
+        campaign.audience || "",
+        getNewsletterRecipientCount(campaign),
+        Number(campaign.queued_recipients || 0),
+        Number(campaign.sent_recipients || 0),
+        Number(campaign.opened_recipients || 0),
+        Number(campaign.clicked_recipients || 0),
+        campaign.scheduled_at || campaign.schedule ? formatNewsletterSchedule(campaign.scheduled_at || campaign.schedule) : "",
+        campaign.sent_at ? formatNewsletterSchedule(campaign.sent_at) : "",
+        recipient.recipient || recipient.email || "",
+        recipient.status || "",
+        formatCsvDate(recipient.opened_at),
+        formatCsvDate(recipient.clicked_at)
+      ]
+    );
+    const featuredNewsletters = [...newsletters]
+      .sort((left, right) => (
+        getNewsletterRecipientCount(right) - getNewsletterRecipientCount(left)
+        || Number(right.opened_recipients || 0) - Number(left.opened_recipients || 0)
+        || String(left.name || "").localeCompare(String(right.name || ""))
+      ))
+      .slice(0, 5);
+    const bannerTodayDateKey = getISTDateString(new Date(flashEventsNow));
+    const bannerEventRecords = banners.map((banner) => {
+      const metadata = getCampaignMetadata(banner);
+      const startDate = String(metadata.start_date || "").slice(0, 10);
+      const endDate = String(metadata.end_date || "").slice(0, 10);
+      const savedStatus = String(banner.status || "draft").trim().toLowerCase();
+      const status = savedStatus === "draft"
+        ? "draft"
+        : savedStatus === "expired" || (endDate && endDate < bannerTodayDateKey)
+          ? "expired"
+          : startDate && startDate > bannerTodayDateKey
+            ? "scheduled"
+            : savedStatus === "active"
+              ? "active"
+              : savedStatus;
+      const placement = String(banner.placement || "unknown").trim().toLowerCase();
+      const selectedAssetIds = Array.isArray(metadata.selected_asset_ids) ? metadata.selected_asset_ids : [];
+      return {
+        banner,
+        metadata,
+        status,
+        placement,
+        startDate,
+        endDate,
+        selectedAssetIds
+      };
+    });
+    const bannerStatusCounts = bannerEventRecords.reduce((counts, { status }) => {
+      if (Object.prototype.hasOwnProperty.call(counts, status)) counts[status] += 1;
+      return counts;
+    }, { active: 0, scheduled: 0, expired: 0, draft: 0 });
+    const bannerPlacementCounts = bannerEventRecords.reduce((counts, { placement }) => {
+      counts[placement] = (counts[placement] || 0) + 1;
+      return counts;
+    }, {});
+    const bannerPopupAudienceCounts = bannerEventRecords.reduce((counts, { placement, metadata }) => {
+      if (placement !== "popup") return counts;
+      const audience = String(metadata.popup_audience || "unspecified").trim().toLowerCase();
+      counts[audience] = (counts[audience] || 0) + 1;
+      return counts;
+    }, {});
+    const bannerPlacementLabels = {
+      left: "Left",
+      right: "Right",
+      up: "Up",
+      down: "Down",
+      popup: "Popup"
+    };
+    const bannerSparkleStyleLabels = {
+      none: "None",
+      glitter_burst: "Glitter burst",
+      twinkle: "Twinkle",
+      falling_sparkles: "Falling sparkles",
+      snowfall: "Snowfall",
+      shimmer_sweep: "Shimmer sweep",
+      fireflies: "Fireflies",
+      star_trail: "Star trail",
+      pulsing_glow: "Pulsing glow",
+      aurora_glow: "Aurora glow",
+      confetti_sparkles: "Confetti sparkles",
+      orbiting_sparkles: "Orbiting sparkles"
+    };
+    const downloadBannerCsv = (filename, headers, getRow, records = bannerEventRecords) => {
+      const exportRows = records.map((record) => ({
+        row: getRow(record),
+        records: [record.banner]
+      }));
+      downloadPromotionCsvWithRecordFields(
+        filename,
+        headers,
+        exportRows.map(({ row }) => row),
+        exportRows.map(({ records }) => records),
+        ["Promotional banner"]
+      );
+    };
+    const exportBannerStatuses = () => downloadBannerCsv(
+      "promotional-banner-statuses.csv",
+      ["Banner", "Status", "Placement", "Start date", "End date"],
+      ({ banner, status, placement, startDate, endDate }) => [
+        banner.name || "Unnamed banner",
+        status,
+        bannerPlacementLabels[placement] || placement,
+        formatCsvDate(startDate),
+        formatCsvDate(endDate)
+      ]
+    );
+    const exportBannerPlacements = () => downloadBannerCsv(
+      "promotional-banner-placements.csv",
+      ["Banner", "Placement", "Popup audience", "Linked live assets"],
+      ({ banner, placement, metadata, selectedAssetIds }) => [
+        banner.name || "Unnamed banner",
+        bannerPlacementLabels[placement] || placement,
+        placement === "popup" ? metadata.popup_audience || "" : "",
+        selectedAssetIds.length
+      ]
+    );
+    const exportBannerPopupAudiences = () => downloadBannerCsv(
+      "promotional-banner-popup-audiences.csv",
+      ["Banner", "Popup audience"],
+      ({ banner, metadata }) => [banner.name || "Unnamed banner", metadata.popup_audience || "Unspecified"],
+      bannerEventRecords.filter(({ placement }) => placement === "popup")
+    );
+    const exportAllBanners = () => downloadBannerCsv(
+      "promotional-banners.csv",
+      ["Banner", "Status", "Placement", "Popup audience", "Sparkle style", "Icon filename", "Linked live assets", "Start date", "End date"],
+      ({ banner, status, placement, metadata, selectedAssetIds, startDate, endDate }) => [
+        banner.name || "Unnamed banner",
+        status,
+        bannerPlacementLabels[placement] || placement,
+        placement === "popup" ? metadata.popup_audience || "" : "",
+        bannerSparkleStyleLabels[metadata.sparkle_style] || metadata.sparkle_style || "Glitter burst",
+        metadata.icon_filename || "",
+        selectedAssetIds.join(", "),
+        formatCsvDate(startDate),
+        formatCsvDate(endDate)
+      ]
+    );
+    const featuredBanners = [...bannerEventRecords]
+      .sort((left, right) => (
+        String(right.banner.created_at || "").localeCompare(String(left.banner.created_at || ""))
+        || Number(right.banner.id || 0) - Number(left.banner.id || 0)
+      ))
+      .slice(0, 5);
+    const downloadFlashSaleCsv = (filename, headers, getRow) => {
+      const exportRows = flashEventRecords.flatMap((record) => {
+        const usageDetails = Array.isArray(record.sale.usage_details) && record.sale.usage_details.length
+          ? record.sale.usage_details
+          : [{}];
+        return usageDetails.map((usage) => ({
+          row: [
+            ...getRow(record),
+            usage.user_id ?? "",
+            usage.username || "",
+            usage.full_name || "",
+            usage.email || "",
+            Number(usage.uses || 0),
+            Number(usage.assets_downloaded || 0)
+          ],
+          records: [record.sale, usage]
+        }));
+      });
+      downloadPromotionCsvWithRecordFields(
+        filename,
+        [...headers, "User ID", "Username", "Full name", "Email", "Times used", "Assets downloaded"],
+        exportRows.map(({ row }) => row),
+        exportRows.map(({ records }) => records),
+        ["Flash sale", "User usage"]
+      );
+    };
+    const exportFlashSaleStatuses = () => downloadFlashSaleCsv(
+      "flash-sale-statuses.csv",
+      ["Flash sale", "Status", "Start date", "End date"],
+      ({ sale, timing }) => [
+        sale.name || "Flash Sale",
+        timing.status,
+        formatCsvDate(sale.start_date),
+        formatCsvDate(sale.end_date)
+      ]
+    );
+    const exportFlashSaleDiscountRules = () => downloadFlashSaleCsv(
+      "flash-sale-discount-rules.csv",
+      ["Flash sale", "Discount rule", "Discount details"],
+      ({ sale, ruleDetails }) => [
+        sale.name || "Flash Sale",
+        getFlashSaleDiscountLabel(sale),
+        ruleDetails
+      ]
+    );
+    const exportFlashSalePlacements = () => downloadFlashSaleCsv(
+      "flash-sale-placements.csv",
+      ["Flash sale", "Placement"],
+      ({ sale, targetLabel }) => [sale.name || "Flash Sale", targetLabel]
+    );
+    const exportAllFlashSales = () => downloadFlashSaleCsv(
+      "flash-sales.csv",
+      ["Flash sale", "Status", "Applications", "Users used", "Assets downloaded", "Discount rule", "Discount value", "Placement", "Featured category ID", "Featured collection ID", "Keywords", "Start date", "End date"],
+      ({ sale, metadata, timing }) => [
+        sale.name || "Flash Sale",
+        timing.status,
+        Number(sale.applications || 0),
+        Number(sale.users_used || 0),
+        Number(sale.assets_downloaded || 0),
+        getFlashSaleDiscountLabel(sale),
+        metadata.discount_value ?? "",
+        sale.featured_placement || "homepage",
+        metadata.featured_category_id ?? "",
+        metadata.featured_collection_id ?? "",
+        metadata.keywords || "",
+        formatCsvDate(sale.start_date),
+        formatCsvDate(sale.end_date)
+      ]
+    );
+    const featuredFlashSales = [...flashEventRecords]
+      .sort((left, right) => (
+        Number(right.sale.users_used || 0) - Number(left.sale.users_used || 0)
+        || Number(right.sale.assets_downloaded || 0) - Number(left.sale.assets_downloaded || 0)
+        || String(left.sale.name || "").localeCompare(String(right.sale.name || ""))
+      ))
+      .slice(0, 5);
+    const revenuePeriods = [
+      ["today", "Today"],
+      ["yesterday", "Yesterday"],
+      ["last_7_days", "Last 7 days"],
+      ["lifetime", "Lifetime"]
+    ];
     const cards = [
       { label: "Active Campaigns", value: dashboard.active_campaigns || 0 },
       { label: "Scheduled Campaigns", value: dashboard.scheduled_campaigns || 0 },
       { label: "Expired Campaigns", value: dashboard.expired_campaigns || 0 },
       { label: "Coupons Created", value: dashboard.coupons_created || 0 },
       { label: "Coupons Redeemed", value: dashboard.coupons_redeemed || 0 },
-      { label: "Revenue Generated", value: `₹${Number(dashboard.revenue_generated || 0).toLocaleString()}` },
+      { label: "Revenue Generated", value: `₹${Number(dashboard.revenue_generated || 0).toLocaleString()}`, accent: true },
       { label: "Revenue Discounted", value: `₹${Number(dashboard.revenue_discounted || 0).toLocaleString()}` },
       { label: "Average Discount", value: `${Number(dashboard.average_discount || 0).toFixed(1)}%` },
       { label: "Referral Revenue", value: `₹${Number(dashboard.referral_revenue || 0).toLocaleString()}` },
@@ -1656,8 +2663,847 @@ function AdminPromotionsPanel() {
 
     return (
       <div className="promotions-kpi-grid">
+        <div className="promotions-card promotions-coupons-overview">
+          <div className="promotions-card-label">Coupons</div>
+          <div className="promotions-coupons-overview-grid">
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header">Coupon statuses</div>
+              <div className="promotions-coupons-toggle-list">
+                <div className="promotions-coupons-metric-row">
+                  <span>Active</span>
+                  <strong><AnimatedPromotionValue value={dashboard.active_campaigns || 0} /></strong>
+                </div>
+                <div className="promotions-coupons-metric-row">
+                  <span>Scheduled</span>
+                  <strong><AnimatedPromotionValue value={dashboard.scheduled_campaigns || 0} /></strong>
+                </div>
+                <div className="promotions-coupons-metric-row">
+                  <span>Expired</span>
+                  <strong><AnimatedPromotionValue value={dashboard.expired_campaigns || 0} /></strong>
+                </div>
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Coupons used</span>
+                <button type="button" className="promotions-export-button" aria-label="Export coupons used CSV" title="Export CSV" onClick={exportCouponUsage} disabled={rankedCoupons.length === 0}>
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                <div className="promotions-coupons-metric-row">
+                  <span>Today</span>
+                  <strong><AnimatedPromotionValue value={Number(couponAnalytics.today?.uses || 0).toLocaleString()} /></strong>
+                </div>
+                <div className="promotions-coupons-metric-row">
+                  <span>Yesterday</span>
+                  <strong><AnimatedPromotionValue value={Number(couponAnalytics.yesterday?.uses || 0).toLocaleString()} /></strong>
+                </div>
+                <div className="promotions-coupons-metric-row">
+                  <span>Last 7 days</span>
+                  <strong><AnimatedPromotionValue value={Number(couponAnalytics.last_7_days?.uses || 0).toLocaleString()} /></strong>
+                </div>
+                <div className="promotions-coupons-metric-row">
+                  <span>Lifetime</span>
+                  <strong><AnimatedPromotionValue value={Number(couponAnalytics.lifetime?.uses || 0).toLocaleString()} /></strong>
+                </div>
+                <div className="promotions-coupons-footer-row">
+                  <select value={couponUsageRange} onChange={(event) => setCouponUsageRange(event.target.value)} aria-label="Coupon usage range selector">
+                    {couponUsageRangeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  <strong className="promotions-selected-range-value" aria-live="polite">
+                    <AnimatedPromotionValue value={Number(selectedUsage.uses || 0).toLocaleString()} />
+                  </strong>
+                </div>
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Revenue generated</span>
+                <div className="promotions-revenue-header-actions">
+                  <select
+                    className="promotions-currency-selector"
+                    value={couponCurrency}
+                    onChange={(event) => setCouponCurrency(event.target.value)}
+                    aria-label="Coupon revenue currency selector"
+                    disabled={couponCurrencies.length === 0}
+                  >
+                    {couponCurrencies.map((currency) => (
+                      <option key={currency} value={currency}>{currency}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="promotions-export-button" aria-label="Export revenue generated CSV" title="Export CSV" onClick={exportCouponRevenue} disabled={rankedCoupons.length === 0}>
+                    ⤓
+                  </button>
+                </div>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {revenuePeriods.map(([period, label]) => (
+                  <div className="promotions-coupons-metric-row" key={period}>
+                    <span>{label}</span>
+                    <strong>
+                      <AnimatedPromotionValue value={convertCouponRevenue(period) === null
+                        ? "—"
+                        : formatCouponCurrency(convertCouponRevenue(period), couponCurrency)} />
+                    </strong>
+                  </div>
+                ))}
+                <div className="promotions-coupons-footer-row">
+                  <select value={couponRevenueRange} onChange={(event) => setCouponRevenueRange(event.target.value)} aria-label="Coupon revenue range selector">
+                    {couponUsageRangeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  <strong className="promotions-selected-range-value" aria-live="polite">
+                    <AnimatedPromotionValue value={convertCouponRevenue(couponRevenueRange) === null
+                      ? "—"
+                      : formatCouponCurrency(convertCouponRevenue(couponRevenueRange), couponCurrency)} />
+                  </strong>
+                </div>
+                {(couponAnalyticsError || (hasUnconvertibleCouponRevenue && "Some coupon revenue could not be converted because an exchange rate is unavailable.")) && (
+                  <p className="promotions-currency-error" role="alert">
+                    {couponAnalyticsError || "Some coupon revenue could not be converted because an exchange rate is unavailable."}
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel promotions-coupons-top-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Top coupons</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label={`Export all ${rankedCoupons.length} coupons CSV`}
+                  title="Export all coupons, including the top five"
+                  onClick={exportAllCoupons}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-table-wrap">
+                <table className="promotions-coupons-table" aria-label="Top coupons ranked by usage">
+                  <thead>
+                    <tr>
+                      <th scope="col">#</th>
+                      <th scope="col">Coupon</th>
+                      <th scope="col">Used</th>
+                      <th scope="col">Revenue ({couponCurrency})</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {featuredCoupons.map((coupon, index) => {
+                      const revenue = convertRevenueByCurrency(coupon.revenue_by_currency || {});
+                      return (
+                        <tr key={coupon.id || coupon.code || coupon.name}>
+                          <td><span className="promotions-coupon-rank">{index + 1}</span></td>
+                          <td>
+                            <span className="promotions-coupon-table-name">{coupon.name || "Unnamed coupon"}</span>
+                            {coupon.code && <span className="promotions-coupon-table-code">{coupon.code}</span>}
+                          </td>
+                          <td><strong><AnimatedPromotionValue value={Number(coupon.uses || 0).toLocaleString()} /></strong></td>
+                          <td>
+                            <strong>
+                              <AnimatedPromotionValue value={revenue === null ? "—" : formatCouponCurrency(revenue, couponCurrency)} />
+                            </strong>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {featuredCoupons.length === 0 && (
+                      <tr>
+                        <td className="promotions-coupons-table-empty" colSpan="4">No coupons to rank yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="promotions-coupons-table-note">
+                Showing the five most-used coupons. The CSV export includes all coupons.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="promotions-card promotions-coupons-overview promotions-contributor-overview">
+          <div className="promotions-card-label">Contributor Offers</div>
+          <div className="promotions-coupons-overview-grid">
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Offer statuses</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export contributor offer statuses CSV"
+                  title="Export CSV"
+                  onClick={() => exportContributorOffers(contributorOfferStats)}
+                  disabled={contributorOfferStats.length === 0}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {[
+                  ["Active", "active"],
+                  ["Scheduled", "scheduled"],
+                  ["Ended", "ended"],
+                  ["Draft", "draft"]
+                ].map(([label, status]) => (
+                  <div className="promotions-coupons-metric-row" key={status}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={contributorOfferStatusCounts[status]} /></strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Applications</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export contributor applications CSV"
+                  title="Export CSV"
+                  onClick={exportContributorApplications}
+                  disabled={contributorApplications.length === 0}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {[
+                  ["Today", "today"],
+                  ["Yesterday", "yesterday"],
+                  ["Last 7 days", "last_7_days"],
+                  ["Lifetime", "lifetime"]
+                ].map(([label, range]) => (
+                  <div className="promotions-coupons-metric-row" key={range}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={getApplicationCount(range).toLocaleString()} /></strong>
+                  </div>
+                ))}
+                <div className="promotions-coupons-footer-row">
+                  <select
+                    value={contributorApplicationRange}
+                    onChange={(event) => setContributorApplicationRange(event.target.value)}
+                    aria-label="Contributor application range selector"
+                  >
+                    {couponUsageRangeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  <strong className="promotions-selected-range-value" aria-live="polite">
+                    <AnimatedPromotionValue value={selectedContributorApplications.length.toLocaleString()} />
+                  </strong>
+                </div>
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Benefits paid</span>
+              <div className="promotions-revenue-header-actions">
+                <select
+                  className="promotions-currency-selector"
+                  value={contributorBenefitsCurrency}
+                  onChange={(event) => setContributorBenefitsCurrency(event.target.value)}
+                  aria-label="Contributor benefits currency selector"
+                  disabled={couponCurrencies.length === 0}
+                >
+                  {couponCurrencies.map((currency) => (
+                    <option key={currency} value={currency}>{currency}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export contributor benefits paid CSV"
+                  title="Export CSV"
+                  onClick={exportContributorBenefits}
+                  disabled={selectedContributorBenefits.length === 0}
+                >
+                  ⤓
+                </button>
+              </div>
+            </div>
+              <div className="promotions-coupons-toggle-list">
+                {[
+                  ["Today", "today"],
+                  ["Yesterday", "yesterday"],
+                  ["Last 7 days", "last_7_days"],
+                  ["Lifetime", "lifetime"]
+                ].map(([label, range]) => (
+                  <div className="promotions-coupons-metric-row" key={range}>
+                    <span>{label}</span>
+                    <strong>
+                      <AnimatedPromotionValue value={formatBenefitsCurrency(getBenefitTotal(getApprovedBenefits(range)))} />
+                    </strong>
+                  </div>
+                ))}
+                <div className="promotions-coupons-footer-row">
+                  <select
+                    value={contributorBenefitsRange}
+                    onChange={(event) => setContributorBenefitsRange(event.target.value)}
+                    aria-label="Contributor benefits range selector"
+                  >
+                    {couponUsageRangeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  <strong className="promotions-selected-range-value" aria-live="polite">
+                    <AnimatedPromotionValue value={formatBenefitsCurrency(getBenefitTotal(selectedContributorBenefits))} />
+                  </strong>
+                </div>
+              </div>
+            </div>
+            <div className="promotions-coupons-panel promotions-coupons-top-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Top contributor offers</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label={`Export all ${contributorOfferStats.length} contributor offers CSV`}
+                  title="Export all contributor offers, including the top five"
+                  onClick={() => exportContributorOffers(contributorOfferStats)}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-table-wrap">
+                <table className="promotions-coupons-table" aria-label="Top contributor offers ranked by applications">
+                  <thead>
+                    <tr>
+                      <th scope="col">#</th>
+                      <th scope="col">Offer</th>
+                      <th scope="col">Applications</th>
+                      <th scope="col">Benefits paid (INR)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {featuredContributorOffers.map((offer, index) => (
+                      <tr key={offer.id}>
+                        <td><span className="promotions-coupon-rank">{index + 1}</span></td>
+                        <td><span className="promotions-coupon-table-name">{offer.name || "Unnamed offer"}</span></td>
+                        <td><strong><AnimatedPromotionValue value={offer.applicationCount.toLocaleString()} /></strong></td>
+                        <td><strong><AnimatedPromotionValue value={formatCouponCurrency(offer.benefitsPaid, "INR")} /></strong></td>
+                      </tr>
+                    ))}
+                    {featuredContributorOffers.length === 0 && (
+                      <tr>
+                        <td className="promotions-coupons-table-empty" colSpan="4">No contributor offers to rank yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="promotions-coupons-table-note">
+                Ranked by application count. {remainingContributorOffers.length} remaining offers are available in the CSV export.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="promotions-card promotions-coupons-overview promotions-flash-overview">
+          <div className="promotions-card-label">Flash Sales</div>
+          <div className="promotions-coupons-overview-grid">
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Flash sale statuses</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export flash sale statuses CSV"
+                  title="Export flash sale statuses CSV"
+                  onClick={exportFlashSaleStatuses}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {[
+                  ["Active", "active"],
+                  ["Scheduled", "scheduled"],
+                  ["Expired", "expired"]
+                ].map(([label, status]) => (
+                  <div className="promotions-coupons-metric-row" key={status}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={flashSaleStatusCounts[status]} /></strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Discount rules</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export flash sale discount rules CSV"
+                  title="Export flash sale discount rules CSV"
+                  onClick={exportFlashSaleDiscountRules}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {[
+                  ...FLASH_SALE_DISCOUNT_RULES.map((rule) => [
+                    rule.label,
+                    flashSaleDiscountCounts[rule.label] || 0
+                  ]),
+                  ...Object.entries(flashSaleDiscountCounts).filter(([label]) => (
+                    !FLASH_SALE_DISCOUNT_RULES.some((rule) => rule.label === label)
+                  ))
+                ].map(([label, count]) => (
+                  <div className="promotions-coupons-metric-row" key={label}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={count} /></strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Featured placements</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export flash sale placements CSV"
+                  title="Export flash sale placements CSV"
+                  onClick={exportFlashSalePlacements}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {Object.entries(flashSalePlacementCounts).map(([label, count]) => (
+                  <div className="promotions-coupons-metric-row" key={label}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={count} /></strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel promotions-coupons-top-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Flash sales</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label={`Export all ${flashEventRecords.length} flash sales CSV`}
+                  title="Export all flash sale configurations CSV"
+                  onClick={exportAllFlashSales}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-table-wrap">
+                <table className="promotions-coupons-table" aria-label="Flash sales ordered by usage">
+                  <thead>
+                    <tr>
+                      <th scope="col">#</th>
+                      <th scope="col">Flash sale</th>
+                      <th scope="col">Applications</th>
+                      <th scope="col">Users used</th>
+                      <th scope="col">Assets downloaded</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {featuredFlashSales.map(({ sale }, index) => (
+                      <tr key={sale.id}>
+                        <td><span className="promotions-coupon-rank">{index + 1}</span></td>
+                        <td><span className="promotions-coupon-table-name">{sale.name || "Flash Sale"}</span></td>
+                        <td><strong><AnimatedPromotionValue value={Number(sale.applications || 0).toLocaleString()} /></strong></td>
+                        <td><strong><AnimatedPromotionValue value={Number(sale.users_used || 0).toLocaleString()} /></strong></td>
+                        <td><strong><AnimatedPromotionValue value={Number(sale.assets_downloaded || 0).toLocaleString()} /></strong></td>
+                      </tr>
+                    ))}
+                    {featuredFlashSales.length === 0 && (
+                      <tr>
+                        <td className="promotions-coupons-table-empty" colSpan="5">No flash sales to show yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="promotions-coupons-table-note">
+                Ranked by users who used each sale, then assets downloaded. Usage tracking starts with orders placed after this update; older orders are not attributed.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="promotions-card promotions-coupons-overview promotions-bundle-overview">
+          <div className="promotions-card-label">Bundle Discounts</div>
+          <div className="promotions-coupons-overview-grid">
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Bundle statuses</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export bundle discount statuses CSV"
+                  title="Export bundle discount statuses CSV"
+                  onClick={exportBundleStatuses}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {[
+                  ["Active", "active"],
+                  ["Scheduled", "scheduled"],
+                  ["Expired", "expired"],
+                  ["Draft", "draft"]
+                ].map(([label, status]) => (
+                  <div className="promotions-coupons-metric-row" key={status}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={bundleStatusCounts[status]} /></strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Discount tiers</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export bundle discount tiers CSV"
+                  title="Export bundle discount tiers CSV"
+                  onClick={exportBundleTiers}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {Object.entries(bundleTierCounts).map(([label, count]) => (
+                  <div className="promotions-coupons-metric-row" key={label}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={count} /></strong>
+                  </div>
+                ))}
+                {Object.keys(bundleTierCounts).length === 0 && (
+                  <div className="promotions-coupons-metric-row">
+                    <span>No discount tiers</span>
+                    <strong>0</strong>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel promotions-coupons-top-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Top bundle discounts</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label={`Export all ${bundleEventRecords.length} bundle discounts CSV`}
+                  title="Export all bundle discount configurations CSV"
+                  onClick={exportAllBundles}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-table-wrap">
+                <table className="promotions-coupons-table" aria-label="Bundle discounts ordered by usage">
+                  <thead>
+                    <tr>
+                      <th scope="col">#</th>
+                      <th scope="col">Bundle discount</th>
+                      <th scope="col">Applications</th>
+                      <th scope="col">Users used</th>
+                      <th scope="col">Assets downloaded</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {featuredBundles.map(({ bundle }, index) => (
+                      <tr key={bundle.id}>
+                        <td><span className="promotions-coupon-rank">{index + 1}</span></td>
+                        <td><span className="promotions-coupon-table-name">{bundle.name || "Unnamed bundle"}</span></td>
+                        <td><strong><AnimatedPromotionValue value={Number(bundle.applications || 0).toLocaleString()} /></strong></td>
+                        <td><strong><AnimatedPromotionValue value={Number(bundle.users_used || 0).toLocaleString()} /></strong></td>
+                        <td><strong><AnimatedPromotionValue value={Number(bundle.assets_downloaded || 0).toLocaleString()} /></strong></td>
+                      </tr>
+                    ))}
+                    {featuredBundles.length === 0 && (
+                      <tr>
+                        <td className="promotions-coupons-table-empty" colSpan="5">No bundle discounts to show yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="promotions-coupons-table-note">
+                Ranked by users who used each bundle, then assets downloaded. Usage tracking starts with orders placed after this update; older orders are not attributed.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="promotions-card promotions-coupons-overview promotions-newsletter-overview">
+          <div className="promotions-card-label">Newsletter Campaigns</div>
+          <div className="promotions-coupons-overview-grid">
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Campaign statuses</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export newsletter campaign statuses CSV"
+                  title="Export newsletter campaign statuses CSV"
+                  onClick={exportNewsletterStatuses}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {[
+                  ["Draft", "draft"],
+                  ["Scheduled", "scheduled"],
+                  ["Sending", "sending"],
+                  ["Sent", "sent"],
+                  ["Failed", "failed"]
+                ].map(([label, status]) => (
+                  <div className="promotions-coupons-metric-row" key={status}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={newsletterStatusCounts[status] || 0} /></strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Recipients by audience</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export newsletter campaign audiences CSV"
+                  title="Export newsletter campaign audiences CSV"
+                  onClick={exportNewsletterAudiences}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {newsletterAudienceRows.map(([audience, totals]) => (
+                  <div className="promotions-coupons-metric-row" key={audience}>
+                    <span>{audience}</span>
+                    <strong><AnimatedPromotionValue value={totals.recipients.toLocaleString()} /></strong>
+                  </div>
+                ))}
+                {newsletterAudienceRows.length === 0 && (
+                  <div className="promotions-coupons-metric-row">
+                    <span>No campaign recipients</span>
+                    <strong>0</strong>
+                  </div>
+                )}
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {[
+                  ["Campaigns", newsletters.length],
+                  ["Queued", newsletterDeliveryTotals.queued],
+                  ["Opened", newsletterDeliveryTotals.opened],
+                  ["Clicked", newsletterDeliveryTotals.clicked]
+                ].map(([label, value]) => (
+                  <div className="promotions-coupons-metric-row" key={label}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={Number(value).toLocaleString()} /></strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel promotions-coupons-top-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Top newsletter campaigns</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label={`Export all ${newsletters.length} newsletter campaigns CSV`}
+                  title="Export campaign details and recipient records"
+                  onClick={exportAllNewsletters}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-table-wrap">
+                <table className="promotions-coupons-table" aria-label="Newsletter campaigns ranked by recipients">
+                  <thead>
+                    <tr>
+                      <th scope="col">#</th>
+                      <th scope="col">Campaign</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Recipients</th>
+                      <th scope="col">Queued</th>
+                      <th scope="col">Opened</th>
+                      <th scope="col">Clicked</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {featuredNewsletters.map((campaign, index) => (
+                      <tr key={campaign.id}>
+                        <td><span className="promotions-coupon-rank">{index + 1}</span></td>
+                        <td>
+                          <span className="promotions-coupon-table-name">{campaign.name || "Untitled newsletter"}</span>
+                          {campaign.subject && <span className="promotions-coupon-table-code">{campaign.subject}</span>}
+                        </td>
+                        <td>{getNewsletterDisplayStatus(campaign)}</td>
+                        <td><strong><AnimatedPromotionValue value={getNewsletterRecipientCount(campaign).toLocaleString()} /></strong></td>
+                        <td><strong><AnimatedPromotionValue value={Number(campaign.queued_recipients || 0).toLocaleString()} /></strong></td>
+                        <td><strong><AnimatedPromotionValue value={Number(campaign.opened_recipients || 0).toLocaleString()} /></strong></td>
+                        <td><strong><AnimatedPromotionValue value={Number(campaign.clicked_recipients || 0).toLocaleString()} /></strong></td>
+                      </tr>
+                    ))}
+                    {featuredNewsletters.length === 0 && (
+                      <tr>
+                        <td className="promotions-coupons-table-empty" colSpan="7">No newsletter campaigns to show yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="promotions-coupons-table-note">
+                Ranked by recipient count. Campaign exports include campaign settings and available per-recipient queue, open, and click records.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="promotions-card promotions-coupons-overview promotions-banner-overview">
+          <div className="promotions-card-label">Promotional Banners</div>
+          <div className="promotions-coupons-overview-grid">
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Banner statuses</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export promotional banner statuses CSV"
+                  title="Export promotional banner statuses CSV"
+                  onClick={exportBannerStatuses}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {[
+                  ["Active", "active"],
+                  ["Scheduled", "scheduled"],
+                  ["Expired", "expired"],
+                  ["Draft", "draft"]
+                ].map(([label, status]) => (
+                  <div className="promotions-coupons-metric-row" key={status}>
+                    <span>{label}</span>
+                    <strong><AnimatedPromotionValue value={bannerStatusCounts[status]} /></strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Placements</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export promotional banner placements CSV"
+                  title="Export promotional banner placements CSV"
+                  onClick={exportBannerPlacements}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {Object.entries(bannerPlacementCounts)
+                  .sort(([left], [right]) => left.localeCompare(right))
+                  .map(([placement, count]) => (
+                    <div className="promotions-coupons-metric-row" key={placement}>
+                      <span>{bannerPlacementLabels[placement] || placement}</span>
+                      <strong><AnimatedPromotionValue value={count} /></strong>
+                    </div>
+                  ))}
+                {Object.keys(bannerPlacementCounts).length === 0 && (
+                  <div className="promotions-coupons-metric-row">
+                    <span>No placements</span>
+                    <strong>0</strong>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Popup audiences</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label="Export promotional banner popup audiences CSV"
+                  title="Export promotional banner popup audiences CSV"
+                  onClick={exportBannerPopupAudiences}
+                  disabled={Object.keys(bannerPopupAudienceCounts).length === 0}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-toggle-list">
+                {Object.entries(bannerPopupAudienceCounts)
+                  .sort(([left], [right]) => left.localeCompare(right))
+                  .map(([audience, count]) => (
+                    <div className="promotions-coupons-metric-row" key={audience}>
+                      <span>{audience.replace(/_/g, " ")}</span>
+                      <strong><AnimatedPromotionValue value={count} /></strong>
+                    </div>
+                  ))}
+                {Object.keys(bannerPopupAudienceCounts).length === 0 && (
+                  <div className="promotions-coupons-metric-row">
+                    <span>No popup banners</span>
+                    <strong>0</strong>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="promotions-coupons-panel promotions-coupons-top-panel">
+              <div className="promotions-mini-header promotions-card-header-with-action">
+                <span>Recent banners</span>
+                <button
+                  type="button"
+                  className="promotions-export-button"
+                  aria-label={`Export all ${bannerEventRecords.length} promotional banners CSV`}
+                  title="Export all banner settings and metadata"
+                  onClick={exportAllBanners}
+                >
+                  ⤓
+                </button>
+              </div>
+              <div className="promotions-coupons-table-wrap">
+                <table className="promotions-coupons-table" aria-label="Recent promotional banners">
+                  <thead>
+                    <tr>
+                      <th scope="col">#</th>
+                      <th scope="col">Banner</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Placement</th>
+                      <th scope="col">Linked assets</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {featuredBanners.map(({ banner, status, placement, selectedAssetIds }, index) => (
+                      <tr key={banner.id}>
+                        <td><span className="promotions-coupon-rank">{index + 1}</span></td>
+                        <td><span className="promotions-coupon-table-name">{banner.name || "Unnamed banner"}</span></td>
+                        <td>{status}</td>
+                        <td>{bannerPlacementLabels[placement] || placement}</td>
+                        <td><strong><AnimatedPromotionValue value={selectedAssetIds.length.toLocaleString()} /></strong></td>
+                      </tr>
+                    ))}
+                    {featuredBanners.length === 0 && (
+                      <tr>
+                        <td className="promotions-coupons-table-empty" colSpan="5">No promotional banners to show yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="promotions-coupons-table-note">
+                Shows banner configuration, dates, placement, popup audience, visual style, icon, and linked live assets. Impression and click analytics are not available for banners.
+              </p>
+            </div>
+          </div>
+        </div>
         {cards.map((card) => (
-          <div key={card.label} className="promotions-card">
+          <div key={card.label} className="promotions-card" data-accent={card.accent ? "revenue" : undefined}>
             <div className="promotions-card-label">{card.label}</div>
             <div className="promotions-card-value"><AnimatedPromotionValue value={card.value} /></div>
           </div>
@@ -3194,13 +5040,7 @@ function AdminPromotionsPanel() {
           </div>
         );
       case "banners":
-        return renderSimpleSection("Promotional Banners", "banner", banners, bannerDraft, setBannerDraft, initialBannerForm, "Banner saved.", [
-          { key: "name", label: "Banner name", type: "text" },
-          { key: "placement", label: "Placement", type: "text" },
-          { key: "priority", label: "Priority", type: "text" },
-          { key: "schedule", label: "Schedule", type: "text" },
-          { key: "status", label: "Status", type: "select", options: [{ value: "draft", label: "Draft" }, { value: "active", label: "Active" }] }
-        ]);
+        return renderBannerSection();
       case "popups":
         return renderSimpleSection("Popups", "popup", popups, popupDraft, setPopupDraft, initialPopupForm, "Popup saved.", [
           { key: "name", label: "Popup name", type: "text" },
@@ -3295,6 +5135,437 @@ function AdminPromotionsPanel() {
       default:
         return null;
     }
+  };
+
+  const renderBannerSection = () => {
+    const filteredBannerAssets = bannerAssets.filter((asset) => {
+      const search = bannerAssetSearch.trim().toLowerCase();
+      const matchesSearch = !search || [
+        asset.title,
+        asset.filename,
+        asset.category,
+        asset.collection,
+        asset.keywords,
+        asset.description
+      ].filter(Boolean).join(" ").toLowerCase().includes(search);
+      const matchesCategory = !bannerAssetCategory || String(asset.category || "")
+        .split(",")
+        .some((category) => category.trim().toLowerCase() === bannerAssetCategory.toLowerCase());
+      const matchesCollection = !bannerAssetCollection
+        || String(asset.collection || "").trim().toLowerCase() === bannerAssetCollection.toLowerCase();
+      return matchesSearch && matchesCategory && matchesCollection;
+    });
+
+    const handleBannerSubmit = async (event) => {
+      event.preventDefault();
+      if (!bannerDraft.start_date) {
+        setMessage("A start date is required.");
+        document.getElementById("promotion-banner-start-date")?.focus();
+        return;
+      }
+      const formData = new FormData();
+      if (editingBannerId !== null) formData.append("id", String(editingBannerId));
+      formData.append("name", bannerDraft.name);
+      formData.append("placement", bannerDraft.placement);
+      formData.append("popup_audience", bannerDraft.popupAudience);
+      formData.append("sparkle_style", bannerDraft.sparkleStyle);
+      formData.append("start_date", bannerDraft.start_date);
+      formData.append("end_date", bannerDraft.end_date);
+      formData.append("status", bannerDraft.status);
+      formData.append("selected_asset_ids", JSON.stringify(selectedBannerAssetIds));
+      if (bannerDraft.iconFile) formData.append("icon", bannerDraft.iconFile);
+
+      try {
+        await axios.post(`${API_BASE_URL}/admin/promotions/banners`, formData, {
+          headers: buildAuthHeaders()
+        });
+        const successMessage = editingBannerId === null ? "Banner saved." : "Banner updated.";
+        await loadPromotions();
+        setMessage(successMessage);
+        setBannerDraft(initialBannerForm);
+        setEditingBannerId(null);
+        setEditingBannerIconFilename("");
+        setSelectedBannerAssetIds([]);
+        if (bannerIconInputRef.current) bannerIconInputRef.current.value = "";
+      } catch (error) {
+        console.error("Failed to save promotional banner", error);
+        setMessage(error.response?.data?.error || "Request failed.");
+      }
+    };
+
+    const startEditingBanner = (entry, metadata) => {
+      setEditingBannerId(entry.id);
+      setEditingBannerIconFilename(metadata.icon_filename || "");
+      setBannerDraft({
+        name: entry.name || "",
+        placement: entry.placement || "left",
+        popupAudience: metadata.popup_audience || "homepage",
+        sparkleStyle: metadata.sparkle_style || "glitter_burst",
+        iconFile: null,
+        start_date: metadata.start_date ? String(metadata.start_date).slice(0, 10) : "",
+        end_date: metadata.end_date ? String(metadata.end_date).slice(0, 10) : "",
+        status: entry.status || "draft"
+      });
+      setSelectedBannerAssetIds(
+        Array.isArray(metadata.selected_asset_ids) ? metadata.selected_asset_ids.map(String) : []
+      );
+      if (bannerIconInputRef.current) bannerIconInputRef.current.value = "";
+    };
+
+    const cancelBannerEdit = () => {
+      setEditingBannerId(null);
+      setEditingBannerIconFilename("");
+      setBannerDraft(initialBannerForm);
+      setSelectedBannerAssetIds([]);
+      if (bannerIconInputRef.current) bannerIconInputRef.current.value = "";
+    };
+
+    return (
+      <div className="promotions-stack promotions-banner-section">
+        <div className="promotions-card promotions-banner-card">
+          <div className="promotions-card-header">
+            <div className="promotions-banner-heading">
+              <span className="promotions-banner-eyebrow">CAMPAIGN CREATOR</span>
+              <h3>Promotional Banners</h3>
+              <p>Design a placement-ready banner and control when it appears.</p>
+            </div>
+            <span className="promotions-banner-card-badge">
+              <span aria-hidden="true">✦</span> New campaign
+            </span>
+          </div>
+          <form className="promotions-form-grid promotions-banner-form" onSubmit={handleBannerSubmit}>
+            <div className="promotions-field-group promotions-banner-name-field">
+              <label htmlFor="promotion-banner-name">Banner Name</label>
+              <input
+                id="promotion-banner-name"
+                placeholder="e.g. Summer collection"
+                required
+                value={bannerDraft.name}
+                onChange={(event) => setBannerDraft((current) => ({ ...current, name: event.target.value }))}
+              />
+            </div>
+            <div className="promotions-field-group promotions-banner-placement-field">
+              <label htmlFor="promotion-banner-placement">Placement</label>
+              <select
+                id="promotion-banner-placement"
+                value={bannerDraft.placement}
+                onChange={(event) => setBannerDraft((current) => ({ ...current, placement: event.target.value }))}
+              >
+                <option value="left">Left</option>
+                <option value="right">Right</option>
+                <option value="up">UP</option>
+                <option value="down">Down</option>
+                <option value="popup">Popup</option>
+              </select>
+            </div>
+            {bannerDraft.placement === "popup" && (
+              <div className="promotions-field-group promotions-conditional-field">
+                <label htmlFor="promotion-banner-popup-audience">Popup audience</label>
+                <select
+                  id="promotion-banner-popup-audience"
+                  required
+                  value={bannerDraft.popupAudience}
+                  onChange={(event) => setBannerDraft((current) => ({ ...current, popupAudience: event.target.value }))}
+                >
+                  <option value="homepage">Homepage visitors</option>
+                  <option value="logged_in_customers">Logged in customers</option>
+                  <option value="logged_in_contributors">Logged in Contributors</option>
+                </select>
+              </div>
+            )}
+            <div className={`promotions-field-group promotions-banner-upload-field${bannerDraft.iconFile ? " has-file" : ""}`}>
+              <label htmlFor="promotion-banner-icon">Icon (original dimensions preserved)</label>
+              <div className="promotions-banner-file-control">
+                <input
+                  id="promotion-banner-icon"
+                  ref={bannerIconInputRef}
+                  type="file"
+                  accept=".png,image/png,.jpg,.jpeg,image/jpeg,.webp,image/webp,.gif,image/gif,.avif,image/avif,.tif,.tiff,image/tiff,.svg,image/svg+xml"
+                  required={editingBannerId === null}
+                  onChange={(event) => setBannerDraft((current) => ({
+                    ...current,
+                    iconFile: event.target.files?.[0] || null
+                  }))}
+                />
+                <span aria-hidden="true" className="promotions-banner-upload-mark">↑</span>
+                <span className="promotions-banner-upload-copy">
+                  <strong>{bannerDraft.iconFile ? bannerDraft.iconFile.name : editingBannerIconFilename || "Choose an icon"}</strong>
+                  <span>{bannerDraft.iconFile ? "Ready to upload · original filename and dimensions preserved" : "PNG, JPG, WEBP · original dimensions preserved"}</span>
+                </span>
+                <span aria-hidden="true" className="promotions-banner-upload-action">
+                  {bannerDraft.iconFile ? "Change" : "Browse"}
+                </span>
+              </div>
+              {bannerDraft.iconFile && (
+                <span className="promotions-field-help">Stored securely with your thumbnail assets.</span>
+              )}
+            </div>
+            <CouponDatePicker
+              id="promotion-banner-start-date"
+              label="Start date"
+              value={bannerDraft.start_date}
+              onChange={(start_date) => setBannerDraft((current) => ({ ...current, start_date }))}
+              required
+              className="promotions-date-picker--banner promotions-banner-date-field"
+              helpText="Required · choose when the banner goes live."
+            />
+            <CouponDatePicker
+              id="promotion-banner-end-date"
+              label="End date (optional)"
+              value={bannerDraft.end_date}
+              onChange={(end_date) => setBannerDraft((current) => ({ ...current, end_date }))}
+              minDate={bannerDraft.start_date}
+              className="promotions-date-picker--banner promotions-date-picker--banner-end promotions-banner-date-field"
+              helpText="Optional · leave blank for no end date."
+            />
+            <div className="promotions-field-group promotions-banner-assets-field">
+              <span className="promotions-banner-form-label">Assets</span>
+              <button
+                type="button"
+                className="promotions-banner-assets-button"
+                onClick={openBannerAssetsDialog}
+              >
+                <span aria-hidden="true">▦</span>
+                <span>Assets</span>
+                {selectedBannerAssetIds.length > 0 && (
+                  <span className="promotions-banner-assets-count">{selectedBannerAssetIds.length}</span>
+                )}
+              </button>
+              <span className="promotions-field-help">
+                {selectedBannerAssetIds.length
+                  ? `${selectedBannerAssetIds.length} live asset${selectedBannerAssetIds.length === 1 ? "" : "s"} selected`
+                  : "Choose assets for this banner"}
+              </span>
+            </div>
+            <div className="promotions-field-group promotions-banner-sparkle-field">
+              <label htmlFor="promotion-banner-sparkle-style">Sparkle style</label>
+              <select
+                id="promotion-banner-sparkle-style"
+                value={bannerDraft.sparkleStyle}
+                onChange={(event) => setBannerDraft((current) => ({ ...current, sparkleStyle: event.target.value }))}
+              >
+                <option value="none">None</option>
+                <option value="glitter_burst">Glitter burst</option>
+                <option value="twinkle">Twinkle</option>
+                <option value="falling_sparkles">Falling sparkles</option>
+                <option value="snowfall">Snowfall</option>
+                <option value="shimmer_sweep">Shimmer sweep</option>
+                <option value="fireflies">Fireflies</option>
+                <option value="star_trail">Star trail</option>
+                <option value="pulsing_glow">Pulsing glow</option>
+                <option value="aurora_glow">Aurora glow</option>
+                <option value="confetti_sparkles">Confetti sparkles</option>
+                <option value="orbiting_sparkles">Orbiting sparkles</option>
+              </select>
+              <span className="promotions-field-help">Choose the animation shown around this banner icon.</span>
+            </div>
+            <div className="promotions-field-group promotions-banner-status-field">
+              <label htmlFor="promotion-banner-status">Status</label>
+              <select
+                id="promotion-banner-status"
+                value={bannerDraft.status}
+                onChange={(event) => setBannerDraft((current) => ({ ...current, status: event.target.value }))}
+              >
+                <option value="draft">Draft</option>
+                <option value="active">Active</option>
+              </select>
+            </div>
+            <button className="promotions-banner-submit" type="submit">
+              <span>{editingBannerId === null ? "Save Promotional Banners" : "Update Promotional Banner"}</span>
+              <span aria-hidden="true">→</span>
+            </button>
+            {editingBannerId !== null && (
+              <button className="promotions-banner-cancel" type="button" onClick={cancelBannerEdit}>
+                Cancel edit
+              </button>
+            )}
+          </form>
+        </div>
+        {isBannerAssetsDialogOpen && (
+          <div
+            className="promotions-modal-backdrop promotions-banner-assets-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setIsBannerAssetsDialogOpen(false);
+            }}
+          >
+            <section
+              className="promotions-modal promotions-banner-assets-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="promotions-banner-assets-title"
+            >
+              <div className="promotions-banner-assets-header">
+                <div>
+                  <span className="promotions-banner-eyebrow">LIVE LIBRARY</span>
+                  <h3 id="promotions-banner-assets-title">Choose assets</h3>
+                  <p>Select the live assets to associate with this banner.</p>
+                </div>
+                <button
+                  type="button"
+                  className="promotions-banner-assets-close"
+                  aria-label="Close asset picker"
+                  onClick={() => setIsBannerAssetsDialogOpen(false)}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="promotions-banner-assets-filters">
+                <label className="promotions-banner-assets-search">
+                  <span aria-hidden="true">⌕</span>
+                  <input
+                    type="search"
+                    aria-label="Search live assets"
+                    placeholder="Search assets..."
+                    value={bannerAssetSearch}
+                    onChange={(event) => setBannerAssetSearch(event.target.value)}
+                  />
+                </label>
+                <select
+                  aria-label="Filter assets by category"
+                  value={bannerAssetCategory}
+                  onChange={(event) => setBannerAssetCategory(event.target.value)}
+                >
+                  <option value="">All categories</option>
+                  {bannerAssetCategories.map((category) => (
+                    <option key={category.id} value={category.name}>{category.name}</option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Filter assets by collection"
+                  value={bannerAssetCollection}
+                  onChange={(event) => setBannerAssetCollection(event.target.value)}
+                >
+                  <option value="">All collections</option>
+                  {bannerAssetCollections.map((collection) => (
+                    <option key={collection.id} value={collection.name}>{collection.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="promotions-banner-assets-results" aria-live="polite">
+                {isLoadingBannerAssets ? (
+                  <p className="promotions-banner-assets-message" role="status">Loading live assets…</p>
+                ) : bannerAssetLoadError ? (
+                  <div className="promotions-banner-assets-message" role="alert">
+                    <p>{bannerAssetLoadError}</p>
+                    <button type="button" onClick={loadBannerAssets}>Retry</button>
+                  </div>
+                ) : filteredBannerAssets.length === 0 ? (
+                  <p className="promotions-banner-assets-message">
+                    {bannerAssets.length ? "No live assets match these filters." : "No live assets are available yet."}
+                  </p>
+                ) : (
+                  <div className="promotions-banner-assets-grid">
+                    {filteredBannerAssets.map((asset) => {
+                      const assetId = String(asset.id);
+                      const isSelected = draftBannerAssetIds.includes(assetId);
+                      return (
+                        <button
+                          key={assetId}
+                          type="button"
+                          className={`promotions-banner-asset-option${isSelected ? " is-selected" : ""}`}
+                          aria-pressed={isSelected}
+                          onClick={() => setDraftBannerAssetIds((current) => (
+                            isSelected
+                              ? current.filter((id) => id !== assetId)
+                              : [...current, assetId]
+                          ))}
+                        >
+                          <span className="promotions-banner-asset-thumbnail">
+                            <img src={getAssetThumbnailUrl(asset)} alt="" loading="lazy" />
+                          </span>
+                          <span className="promotions-banner-asset-title">{asset.title || asset.filename || `Asset ${assetId}`}</span>
+                          <span className="promotions-banner-asset-check" aria-hidden="true">
+                            {isSelected ? "✓" : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="promotions-banner-assets-footer">
+                <span>{draftBannerAssetIds.length} selected</span>
+                <div>
+                  <button
+                    type="button"
+                    className="promotions-banner-assets-clear"
+                    onClick={() => setDraftBannerAssetIds([])}
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    className="promotions-banner-assets-save"
+                    onClick={() => {
+                      setSelectedBannerAssetIds(draftBannerAssetIds);
+                      setIsBannerAssetsDialogOpen(false);
+                    }}
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
+        <div className="promotions-card promotions-banner-entries-card">
+          <div className="promotions-card-header">
+            <h3>Existing Entries</h3>
+            <span className="promotions-banner-entry-count">{banners.length} {banners.length === 1 ? "banner" : "banners"}</span>
+          </div>
+          <div className="promotions-list">
+            {banners.length === 0 ? (
+              <div className="promotions-banner-empty-state">
+                <span className="promotions-banner-empty-icon" aria-hidden="true">✦</span>
+                <strong>Your banners will appear here</strong>
+                <span>Once saved, you can review placement, schedule, and status in one place.</span>
+              </div>
+            ) : banners.map((entry) => {
+              const metadata = typeof entry.metadata === "string"
+                ? (() => {
+                  try {
+                    return JSON.parse(entry.metadata);
+                  } catch (error) {
+                    console.error("Invalid Promotional Banner metadata", error);
+                    return {};
+                  }
+                })()
+                : entry.metadata || {};
+              return (
+                <div key={entry.id} className="promotions-list-item">
+                  <div>
+                    <strong>{entry.name || "Untitled banner"}</strong>
+                    <div className="promotions-muted">
+                      {entry.placement || "No placement"} · {entry.status || "draft"}
+                      {metadata.popup_audience ? ` · ${metadata.popup_audience}` : ""}
+                    </div>
+                    <div className="promotions-muted">
+                      Start: {metadata.start_date || "Not set"} · End: {metadata.end_date || "No end date"}
+                    </div>
+                    {Array.isArray(metadata.selected_asset_ids) && metadata.selected_asset_ids.length > 0 && (
+                      <div className="promotions-muted">
+                        {metadata.selected_asset_ids.length} linked live asset{metadata.selected_asset_ids.length === 1 ? "" : "s"}
+                      </div>
+                    )}
+                    {metadata.icon_filename && (
+                      <div className="promotions-muted">Icon: {metadata.icon_filename}</div>
+                    )}
+                  </div>
+                  <div className="promotions-inline-actions">
+                    <button type="button" onClick={() => startEditingBanner(entry, metadata)}>
+                      Edit
+                    </button>
+                    <button type="button" onClick={() => persistResource("banner", "delete", { id: entry.id }, "Entry removed.")}>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const renderSimpleSection = (title, resource, items, draft, setter, resetDraft, successMessage, fields) => {

@@ -1,5 +1,5 @@
 import axios from "axios";
-import { loadCartItems } from "./cartPersistence";
+import { loadCartItems, saveCartItems } from "./cartPersistence";
 
 jest.mock("axios");
 
@@ -28,5 +28,15 @@ describe("loadCartItems strict readiness mode", () => {
     axios.get.mockRejectedValueOnce(new Error("Network Error"));
     await expect(loadCartItems({ strict: true })).rejects.toThrow("Network Error");
     await expect(loadCartItems()).resolves.toEqual([{ id: 1 }]);
+  });
+
+  it("reports failed server cart saves in strict mode without changing the existing fallback", async () => {
+    localStorage.setItem("token", "session-token");
+    axios.post.mockRejectedValueOnce(new Error("Network Error"));
+    await expect(saveCartItems([{ id: 1 }], { strict: true })).rejects.toThrow("Network Error");
+    expect(JSON.parse(localStorage.getItem("customer-cart"))).toEqual([{ id: 1 }]);
+
+    axios.post.mockRejectedValueOnce(new Error("Network Error"));
+    await expect(saveCartItems([{ id: 2 }])).resolves.toBe(true);
   });
 });

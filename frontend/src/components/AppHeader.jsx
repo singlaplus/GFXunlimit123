@@ -129,8 +129,12 @@ export default function AppHeader({
   const [appliedContributorOfferId, setAppliedContributorOfferId] = useState(null);
   const [submittingContributorOfferId, setSubmittingContributorOfferId] = useState(null);
   const [flashSaleCountdownNow, setFlashSaleCountdownNow] = useState(Date.now());
-  const [flashSaleGroupWidth, setFlashSaleGroupWidth] = useState(0);
-  const [flashSaleAvailableWidth, setFlashSaleAvailableWidth] = useState(0);
+  const [flashSaleMotion, setFlashSaleMotion] = useState({
+    duration: "29s",
+    easing: "linear",
+    entryShift: "0px",
+    exitShift: "0px",
+  });
   const flashSaleRibbonRef = useRef(null);
   const flashSaleGroupRef = useRef(null);
   const flashSaleLivePanelRef = useRef(null);
@@ -314,12 +318,31 @@ export default function AppHeader({
   useEffect(() => {
     const updateRepeatCount = () => {
       const ribbonWidth = flashSaleRibbonRef.current?.clientWidth;
-      const groupWidth = flashSaleGroupRef.current?.getBoundingClientRect().width;
+      const group = flashSaleGroupRef.current;
+      const groupRect = group?.getBoundingClientRect();
+      const groupWidth = groupRect?.width;
       const livePanelWidth = flashSaleLivePanelRef.current?.getBoundingClientRect().width || 0;
       const availableWidth = Math.max(0, ribbonWidth - 120 - livePanelWidth);
-      if (ribbonWidth > 0 && groupWidth > 0) {
-        setFlashSaleGroupWidth(groupWidth);
-        setFlashSaleAvailableWidth(availableWidth);
+      const firstText = group?.querySelector(".upcoming-flash-sale-item > span");
+      if (ribbonWidth > 0 && groupWidth > 0 && firstText) {
+        const firstTextStart = firstText.getBoundingClientRect().left - groupRect.left;
+        const totalDistance = groupWidth + availableWidth;
+        const visibleDuration = (28 * availableWidth) / totalDistance;
+        const duration = visibleDuration + 1;
+        const nextMotion = {
+          duration: `${duration}s`,
+          easing: `linear(0, 1 ${(visibleDuration / duration) * 100}%, 1)`,
+          entryShift: `${-firstTextStart}px`,
+          exitShift: `${availableWidth - firstTextStart}px`,
+        };
+        setFlashSaleMotion((currentMotion) => (
+          currentMotion.duration === nextMotion.duration
+          && currentMotion.easing === nextMotion.easing
+          && currentMotion.entryShift === nextMotion.entryShift
+          && currentMotion.exitShift === nextMotion.exitShift
+            ? currentMotion
+            : nextMotion
+        ));
       }
     };
 
@@ -1156,8 +1179,10 @@ export default function AppHeader({
               <div
                 className="upcoming-flash-sale-track"
                 style={{
-                  "--flash-sale-shift": `${flashSaleGroupWidth}px`,
-                  "--flash-sale-available-width": `${flashSaleAvailableWidth}px`,
+                  "--flash-sale-duration": flashSaleMotion.duration,
+                  "--flash-sale-easing": flashSaleMotion.easing,
+                  "--flash-sale-entry-shift": flashSaleMotion.entryShift,
+                  "--flash-sale-exit-shift": flashSaleMotion.exitShift,
                 }}
               >
                 <div className="upcoming-flash-sale-group" ref={flashSaleGroupRef}>

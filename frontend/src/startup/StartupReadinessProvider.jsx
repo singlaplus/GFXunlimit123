@@ -130,6 +130,19 @@ function validateHealthResponse(response) {
   }
 }
 
+function getStartupErrorMessage(error) {
+  if (error?.message === "Network Error" || error?.code === "ERR_NETWORK" ||
+      error?.message === "Request failed with status code 0") {
+    return "We couldn’t reach the server. Please try again.";
+  }
+
+  if (error?.response) {
+    return `The server returned HTTP ${error.response.status}.`;
+  }
+
+  return error?.message || "The backend or database could not be reached.";
+}
+
 function writeRestoredUser(user) {
   const token = normalizeAuthToken(getEffectiveAuthToken());
   if (token) localStorage.setItem("token", token);
@@ -181,6 +194,10 @@ function ErrorScreen({ message, onRetry, logo }) {
   const theme = getStartupTheme();
   return (
     <main className="startup-readiness-screen" data-theme={theme} role="alert">
+      <div className="startup-readiness-grid" aria-hidden="true" />
+      <div className="startup-readiness-glow startup-readiness-glow-one" aria-hidden="true" />
+      <div className="startup-readiness-glow startup-readiness-glow-two" aria-hidden="true" />
+      <div className="startup-readiness-glow startup-readiness-glow-three" aria-hidden="true" />
       <div className="startup-readiness-error-card">
         {logo && (
           <img
@@ -192,9 +209,26 @@ function ErrorScreen({ message, onRetry, logo }) {
             onError={(event) => { event.currentTarget.style.visibility = "hidden"; }}
           />
         )}
-        <h1>We couldn&apos;t load GFXunlimit</h1>
-        <p>{message}</p>
-        <button type="button" onClick={onRetry}>Retry</button>
+        <div className="startup-readiness-visual" aria-hidden="true">
+          <div className="startup-readiness-orbit startup-readiness-orbit-one" />
+          <div className="startup-readiness-orbit startup-readiness-orbit-two" />
+          <div className="startup-readiness-status-icon">
+            <span>!</span>
+          </div>
+        </div>
+        <div className="startup-readiness-eyebrow">
+          <span className="startup-readiness-eyebrow-dot" />
+          CONNECTION INTERRUPTED
+        </div>
+        <h1>Let&apos;s get you back in.</h1>
+        <p className="startup-readiness-message">{message}</p>
+        <button className="startup-readiness-retry" type="button" onClick={onRetry}>
+          <span>Try again</span>
+          <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
+            <path d="M4.5 10h10m-4-4 4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <div className="startup-readiness-footnote">Your work is safe. We&apos;ll reconnect as soon as we can.</div>
       </div>
     </main>
   );
@@ -286,9 +320,7 @@ export function StartupReadinessProvider({ children }) {
         console.error("Startup readiness check failed", error);
         setBootstrap({
           status: "error",
-          message: error?.response
-            ? `The server returned HTTP ${error.response.status} during startup.`
-            : error?.message || "The backend or database could not be reached.",
+          message: getStartupErrorMessage(error),
         });
       }
     };

@@ -1,0 +1,734 @@
+.promotion-banner-placement {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.promotion-banner-placement--left {
+  top: 50%;
+  left: 14px;
+  flex-direction: column;
+  transform: translateY(-50%);
+}
+
+.promotion-banner-placement--right {
+  top: 50%;
+  right: 14px;
+  flex-direction: column;
+  transform: translateY(-50%);
+}
+
+.promotion-banner-placement--up {
+  top: 112px;
+  left: 50%;
+  flex-direction: row;
+  transform: translateX(-50%);
+}
+
+.promotion-banner-placement--down {
+  bottom: 18px;
+  left: 50%;
+  flex-direction: row;
+  transform: translateX(-50%);
+}
+
+.promotion-banner-placement-link {
+  position: relative;
+  display: block;
+  width: 150px;
+  height: 150px;
+  isolation: isolate;
+  pointer-events: auto;
+  background: transparent;
+  transition: transform 160ms ease;
+}
+
+.promotion-banner-placement-link--glitter_burst::before,
+.promotion-banner-placement-link--glitter_burst::after,
+.promotion-banner-placement-link--twinkle::before,
+.promotion-banner-placement-link--twinkle::after,
+.promotion-banner-placement-link--falling_sparkles::before,
+.promotion-banner-placement-link--falling_sparkles::after,
+.promotion-banner-placement-link--snowfall::before,
+.promotion-banner-placement-link--snowfall::after,
+.promotion-banner-placement-link--shimmer_sweep::before,
+.promotion-banner-placement-link--shimmer_sweep::after,
+.promotion-banner-placement-link--fireflies::before,
+.promotion-banner-placement-link--fireflies::after,
+.promotion-banner-placement-link--star_trail::before,
+.promotion-banner-placement-link--star_trail::after,
+.promotion-banner-placement-link--pulsing_glow::before,
+.promotion-banner-placement-link--pulsing_glow::after,
+.promotion-banner-placement-link--aurora_glow::before,
+.promotion-banner-placement-link--aurora_glow::after,
+.promotion-banner-placement-link--confetti_sparkles::before,
+.promotion-banner-placement-link--confetti_sparkles::after,
+.promotion-banner-placement-link--orbiting_sparkles::before,
+.promotion-banner-placement-link--orbiting_sparkles::after {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  content: "";
+}
+
+.promotion-banner-placement-link--glitter_burst::before {
+  top: 16px;
+  right: 22px;
+  width: 18px;
+  height: 18px;
+  background:
+    linear-gradient(90deg, transparent 38%, #fff 48% 52%, transparent 62%),
+    linear-gradient(0deg, transparent 38%, #fff 48% 52%, transparent 62%),
+    radial-gradient(circle, #fff 0 18%, #ffe9a3 30%, transparent 68%);
+  border-radius: 50%;
+  box-shadow:
+    -86px 14px 0 -4px rgba(255, 244, 194, 0.95),
+    -32px 80px 0 -5px rgba(255, 255, 255, 0.95),
+    19px 92px 0 -3px rgba(255, 228, 145, 0.95);
+  filter: drop-shadow(0 0 5px #ffd966);
+  opacity: 0.38;
+  transform: scale(0.2) rotate(-25deg);
+  animation: promotion-banner-glitter-burst 2.8s ease-out infinite;
+}
+
+.promotion-banner-placement-link--glitter_burst::after {
+  bottom: 18px;
+  left: 18px;
+  width: 12px;
+  height: 12px;
+  background:
+    linear-gradient(90deg, transparent 37%, #fff 47% 53%, transparent 63%),
+    linear-gradient(0deg, transparent 37%, #fff 47% 53%, transparent 63%),
+    radial-gradient(circle, #fff 0 20%, #ffe08a 35%, transparent 70%);
+  border-radius: 50%;
+  box-shadow:
+    82px -74px 0 -3px rgba(255, 255, 255, 0.95),
+    102px -21px 0 -4px rgba(255, 230, 154, 0.95),
+    12px -104px 0 -4px rgba(255, 244, 194, 0.95);
+  filter: drop-shadow(0 0 5px #ffd966);
+  opacity: 0.32;
+  transform: scale(0.2) rotate(25deg);
+  animation: promotion-banner-glitter-burst 2.8s 180ms ease-out infinite;
+}
+
+.promotion-banner-placement-link--none::before,
+.promotion-banner-placement-link--none::after {
+  display: none;
+}
+
+.promotion-banner-placement-link--twinkle::before,
+.promotion-banner-placement-link--twinkle::after {
+  top: 16px;
+  right: 22px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff 0 20%, #ffe08a 40%, transparent 72%);
+  box-shadow:
+    -86px 14px 0 -3px rgba(255, 244, 194, 0.95),
+    -32px 80px 0 -4px rgba(255, 255, 255, 0.95),
+    19px 92px 0 -2px rgba(255, 228, 145, 0.95);
+  filter: drop-shadow(0 0 5px #ffd966);
+  animation: promotion-banner-twinkle 1.8s ease-in-out infinite alternate;
+}
+
+.promotion-banner-placement-link--twinkle::after {
+  top: auto;
+  right: auto;
+  bottom: 18px;
+  left: 18px;
+  animation-delay: 900ms;
+}
+
+.promotion-banner-placement-link--falling_sparkles::before,
+.promotion-banner-placement-link--falling_sparkles::after {
+  top: -12px;
+  left: 20%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #fff3b0;
+  box-shadow:
+    30px 16px 0 1px #fff,
+    64px -8px 0 0 #ffe08a,
+    96px 28px 0 1px #fff,
+    124px 8px 0 0 #fff3b0;
+  filter: drop-shadow(0 0 4px #ffd966);
+  animation: promotion-banner-falling-sparkles 2.4s linear infinite;
+}
+
+.promotion-banner-placement-link--falling_sparkles::after {
+  left: 5%;
+  animation-delay: 1.2s;
+}
+
+.promotion-banner-placement-link--snowfall::before,
+.promotion-banner-placement-link--snowfall::after {
+  top: -18px;
+  left: 12%;
+  color: #fff;
+  content: "❄";
+  font-size: 15px;
+  line-height: 1;
+  text-shadow:
+    24px 18px 0 #eaf8ff,
+    55px -4px 0 #fff,
+    83px 25px 0 #eaf8ff,
+    116px 7px 0 #fff;
+  filter: drop-shadow(0 1px 3px rgba(106, 175, 215, 0.8));
+  animation: promotion-banner-snowfall 3.2s linear infinite;
+}
+
+.promotion-banner-placement-link--snowfall::after {
+  left: 0;
+  font-size: 10px;
+  text-shadow:
+    18px 4px 0 #fff,
+    47px 26px 0 #eaf8ff,
+    76px 2px 0 #fff,
+    108px 22px 0 #eaf8ff,
+    136px 8px 0 #fff;
+  animation-delay: 1.6s;
+}
+
+.promotion-banner-placement-link--shimmer_sweep::before {
+  inset: 0;
+  background: linear-gradient(
+    112deg,
+    transparent 32%,
+    rgba(255, 255, 255, 0.12) 42%,
+    rgba(255, 255, 255, 0.9) 50%,
+    rgba(255, 255, 255, 0.12) 58%,
+    transparent 68%
+  );
+  mix-blend-mode: screen;
+  animation: promotion-banner-shimmer-sweep 2.8s ease-in-out infinite;
+}
+
+.promotion-banner-placement-link--fireflies::before,
+.promotion-banner-placement-link--fireflies::after {
+  top: 24px;
+  left: 18px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e8ff9c;
+  box-shadow:
+    34px 22px 0 -1px #fff3a1,
+    78px 12px 0 1px #d8ff8a,
+    112px 54px 0 -1px #fff1a0,
+    24px 96px 0 0 #e7ffad,
+    94px 112px 0 -1px #fff3a1;
+  filter: drop-shadow(0 0 5px #dfff72);
+  animation: promotion-banner-fireflies 3.8s ease-in-out infinite alternate;
+}
+
+.promotion-banner-placement-link--fireflies::after {
+  animation-delay: -1.9s;
+  animation-direction: alternate-reverse;
+}
+
+.promotion-banner-placement-link--star_trail::before,
+.promotion-banner-placement-link--star_trail::after {
+  top: 18px;
+  left: 18px;
+  color: #fff7c2;
+  content: "✦";
+  font-size: 15px;
+  line-height: 1;
+  text-shadow:
+    24px 16px 0 #fff,
+    48px 33px 0 #ffe58f,
+    72px 50px 0 #fff,
+    96px 67px 0 #ffe58f,
+    120px 84px 0 #fff;
+  filter: drop-shadow(0 0 4px #ffd966);
+  animation: promotion-banner-star-trail 2.6s ease-in-out infinite;
+}
+
+.promotion-banner-placement-link--star_trail::after {
+  top: 35px;
+  left: 32px;
+  font-size: 9px;
+  opacity: 0.65;
+  animation-delay: 1.3s;
+}
+
+.promotion-banner-placement-link--pulsing_glow::before,
+.promotion-banner-placement-link--pulsing_glow::after {
+  inset: 5px;
+  border: 2px solid rgba(255, 238, 174, 0.82);
+  border-radius: 50%;
+  box-shadow: 0 0 12px 3px rgba(255, 215, 102, 0.65), inset 0 0 14px rgba(255, 245, 196, 0.32);
+  animation: promotion-banner-pulsing-glow 2.2s ease-in-out infinite;
+}
+
+.promotion-banner-placement-link--pulsing_glow::after {
+  inset: 12px;
+  animation-delay: 1.1s;
+}
+
+.promotion-banner-placement-link--aurora_glow::before,
+.promotion-banner-placement-link--aurora_glow::after {
+  inset: -5px;
+  border: 3px solid transparent;
+  border-radius: 44% 56% 61% 39% / 45% 43% 57% 55%;
+  background: linear-gradient(135deg, rgba(97, 255, 205, 0.68), rgba(151, 110, 255, 0.15), rgba(98, 197, 255, 0.7)) border-box;
+  filter: blur(5px);
+  opacity: 0.8;
+  animation: promotion-banner-aurora-glow 4.5s ease-in-out infinite alternate;
+}
+
+.promotion-banner-placement-link--aurora_glow::after {
+  inset: 2px;
+  opacity: 0.55;
+  animation-delay: -2.25s;
+  animation-direction: alternate-reverse;
+}
+
+.promotion-banner-placement-link--confetti_sparkles::before,
+.promotion-banner-placement-link--confetti_sparkles::after {
+  top: 118px;
+  left: 15px;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: #ffe58f;
+  box-shadow:
+    24px 8px 0 -1px #fff,
+    49px 2px 0 0 #f7a7ff,
+    77px 10px 0 -1px #a8f4ff,
+    105px 4px 0 0 #fff3a1,
+    126px 12px 0 -1px #c5ffad;
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.8));
+  animation: promotion-banner-confetti-sparkles 2.8s ease-out infinite;
+}
+
+.promotion-banner-placement-link--confetti_sparkles::after {
+  left: 27px;
+  background: #fff;
+  box-shadow:
+    18px 3px 0 -1px #ffd1f4,
+    51px 9px 0 0 #b9f4ff,
+    83px 1px 0 -1px #fff,
+    110px 8px 0 0 #e6ffad;
+  animation-delay: 1.4s;
+}
+
+.promotion-banner-placement-link--orbiting_sparkles::before,
+.promotion-banner-placement-link--orbiting_sparkles::after {
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff5c8;
+  box-shadow: 0 -68px 0 1px #fff, 0 68px 0 1px #ffe08a;
+  filter: drop-shadow(0 0 5px #ffd966);
+  transform-origin: 0 0;
+  animation: promotion-banner-orbit 3.2s linear infinite;
+}
+
+.promotion-banner-placement-link--orbiting_sparkles::after {
+  animation-delay: -1.6s;
+}
+
+.promotion-banner-placement-link img {
+  position: relative;
+  z-index: 1;
+}
+
+.promotion-banner-placement-link:hover,
+.promotion-banner-placement-link:focus-visible {
+  transform: scale(1.06);
+}
+
+.promotion-banner-placement-link img {
+  display: block;
+  width: 150px;
+  height: 150px;
+  object-fit: contain;
+  background: transparent;
+}
+
+.promotion-banner-popup-backdrop {
+  position: fixed;
+  z-index: 100001;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(12, 18, 30, 0.58);
+  backdrop-filter: blur(5px);
+  animation: promotion-banner-fade-in 180ms ease-out both;
+}
+
+.promotion-banner-popup {
+  position: relative;
+  width: min(390px, 100%);
+  padding: 46px 26px 26px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  animation: promotion-banner-pop-in 220ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.promotion-banner-popup-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid #e8ebf0;
+  border-radius: 50%;
+  background: #fff;
+  color: #475569;
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.promotion-banner-popup-close:hover {
+  border-color: #f1b6ba;
+  background: #fff5f5;
+  color: #c51f2b;
+}
+
+.promotion-banner-popup-link {
+  display: grid;
+  justify-items: center;
+  gap: 13px;
+  color: #fff;
+  text-align: center;
+  text-decoration: none;
+}
+
+.promotion-banner-popup-link img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(320px, 80vw);
+  max-height: min(320px, 50vh);
+  object-fit: contain;
+  background: transparent;
+}
+
+.promotion-banner-popup-link strong {
+  font-size: 1.18rem;
+  font-weight: 760;
+}
+
+.promotion-banner-popup-link span {
+  padding: 10px 18px;
+  border-radius: 10px;
+  background: linear-gradient(115deg, #e42c36, #bd1723);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 720;
+}
+
+.promotion-banner-page {
+  display: grid;
+  min-height: min(68vh, 760px);
+  place-items: center;
+  padding: 32px 12px;
+  background:
+    radial-gradient(ellipse at 50% 20%, rgba(217, 33, 43, 0.08), transparent 45%),
+    #f6f7fa;
+  color: #182235;
+  text-align: center;
+}
+
+.promotion-banner-detail {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(240px, 0.7fr) minmax(0, 1.7fr);
+  align-items: start;
+  gap: clamp(24px, 4vw, 56px);
+  padding: clamp(24px, 5vw, 52px);
+  border: 1px solid #e8ebf0;
+  border-radius: 24px;
+  background: transparent;
+}
+
+.promotion-banner-info {
+  position: sticky;
+  top: 24px;
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.promotion-banner-detail-eyebrow {
+  color: #c51f2b;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.promotion-banner-detail img {
+  display: block;
+  width: auto;
+  max-width: min(360px, 100%);
+  max-height: min(52vh, 420px);
+  object-fit: contain;
+  background: transparent;
+}
+
+.promotion-banner-detail h1 {
+  margin: 0;
+  color: #182235;
+  font-size: clamp(1.5rem, 4vw, 2.4rem);
+  letter-spacing: -0.04em;
+}
+
+.promotion-banner-detail p {
+  margin: 0;
+  color: #667085;
+  line-height: 1.6;
+}
+
+.promotion-banner-assets {
+  display: grid;
+  align-content: start;
+  width: 100%;
+  gap: 16px;
+  min-width: 0;
+  text-align: left;
+}
+
+.promotion-banner-assets h2 {
+  margin: 0;
+  color: #182235;
+  font-size: 1.25rem;
+}
+
+.promotion-banner-assets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.promotion-banner-asset-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow: hidden;
+  padding: 10px;
+  border: 1px solid #e8ebf0;
+  border-radius: 14px;
+  background: #fff;
+  color: #182235;
+  text-align: left;
+  text-decoration: none;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.promotion-banner-asset-image {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.promotion-banner-asset-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.promotion-banner-asset-actions button {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #f8fafc;
+  color: #182235;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.promotion-banner-asset-actions button:last-child {
+  grid-column: 1 / -1;
+  border-color: #c51f2b;
+  background: #c51f2b;
+  color: #fff;
+}
+
+.promotion-banner-asset-actions button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.promotion-banner-asset-action-message {
+  margin: 0;
+  color: #334155;
+  font-size: 0.88rem;
+}
+
+.promotion-banner-asset-card:hover,
+.promotion-banner-asset-card:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.1);
+}
+
+.promotion-banner-asset-card img {
+  width: 100%;
+  height: 150px;
+  border-radius: 9px;
+  background: #f1f3f6;
+  object-fit: cover;
+}
+
+.promotion-banner-asset-card strong {
+  overflow: hidden;
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.promotion-banner-info > a {
+  margin-top: 4px;
+  padding: 11px 18px;
+  border-radius: 10px;
+  background: #182235;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+@media (max-width: 760px) {
+  .promotion-banner-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .promotion-banner-info {
+    position: static;
+    justify-self: center;
+    width: min(420px, 100%);
+  }
+
+  .promotion-banner-assets-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr));
+  }
+}
+
+@keyframes promotion-banner-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes promotion-banner-pop-in {
+  from { opacity: 0; transform: translateY(9px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes promotion-banner-glitter-burst {
+  0%, 42%, 100% { opacity: 0.38; transform: scale(0.55) rotate(-8deg); }
+  48% { opacity: 1; transform: scale(0.65) rotate(0); }
+  62% { opacity: 1; transform: scale(1.25) rotate(12deg); }
+  78% { opacity: 0.32; transform: scale(1.55) rotate(25deg); }
+}
+
+@keyframes promotion-banner-twinkle {
+  from { opacity: 0.2; transform: scale(0.55); }
+  to { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes promotion-banner-falling-sparkles {
+  from { opacity: 0; transform: translateY(0); }
+  15%, 75% { opacity: 1; }
+  to { opacity: 0; transform: translateY(160px); }
+}
+
+@keyframes promotion-banner-snowfall {
+  from { opacity: 0; transform: translate3d(0, -8px, 0) rotate(0deg); }
+  12%, 82% { opacity: 0.95; }
+  to { opacity: 0; transform: translate3d(10px, 175px, 0) rotate(150deg); }
+}
+
+@keyframes promotion-banner-shimmer-sweep {
+  from { opacity: 0; transform: translateX(-85%); }
+  20%, 75% { opacity: 0.9; }
+  to { opacity: 0; transform: translateX(85%); }
+}
+
+@keyframes promotion-banner-fireflies {
+  from { opacity: 0.28; transform: translate3d(-5px, 3px, 0) scale(0.7); }
+  to { opacity: 0.95; transform: translate3d(8px, -7px, 0) scale(1.15); }
+}
+
+@keyframes promotion-banner-star-trail {
+  from { opacity: 0.15; transform: translate3d(-6px, -4px, 0) rotate(-18deg) scale(0.7); }
+  50% { opacity: 1; }
+  to { opacity: 0.2; transform: translate3d(7px, 6px, 0) rotate(18deg) scale(1.1); }
+}
+
+@keyframes promotion-banner-pulsing-glow {
+  from { opacity: 0.25; transform: scale(0.88); }
+  to { opacity: 1; transform: scale(1.04); }
+}
+
+@keyframes promotion-banner-aurora-glow {
+  from { transform: rotate(-8deg) scale(0.94); filter: blur(5px) hue-rotate(0deg); }
+  to { transform: rotate(12deg) scale(1.06); filter: blur(8px) hue-rotate(45deg); }
+}
+
+@keyframes promotion-banner-confetti-sparkles {
+  from { opacity: 0; transform: translateY(0) rotate(0deg); }
+  15%, 72% { opacity: 1; }
+  to { opacity: 0; transform: translateY(-145px) rotate(165deg); }
+}
+
+@keyframes promotion-banner-orbit {
+  from { opacity: 0.45; transform: rotate(0deg); }
+  50% { opacity: 1; }
+  to { opacity: 0.45; transform: rotate(360deg); }
+}
+
+@media (max-width: 680px) {
+  .promotion-banner-placement--left {
+    left: 7px;
+  }
+
+  .promotion-banner-placement--right {
+    right: 7px;
+  }
+
+  .promotion-banner-placement--up {
+    top: 108px;
+  }
+
+  .promotion-banner-placement--down {
+    bottom: 12px;
+  }
+
+  .promotion-banner-popup-link img {
+    max-height: min(240px, 48vh);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .promotion-banner-placement-link,
+  .promotion-banner-placement-link::before,
+  .promotion-banner-placement-link::after,
+  .promotion-banner-popup-backdrop,
+  .promotion-banner-popup {
+    animation: none;
+    transition: none;
+  }
+}

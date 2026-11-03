@@ -251,7 +251,7 @@
   width: max-content;
   height: 100%;
   align-items: center;
-  animation: upcoming-flash-sale-scroll 28s linear infinite;
+  animation: upcoming-flash-sale-scroll var(--flash-sale-duration, 28s) var(--flash-sale-easing, linear) infinite;
 }
 
 .upcoming-flash-sale-group {
@@ -268,6 +268,7 @@
   gap: 12px;
   padding: 0 28px;
   font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
   font-weight: 400;
   line-height: 1;
 }
@@ -282,8 +283,8 @@
 }
 
 @keyframes upcoming-flash-sale-scroll {
-  from { transform: translateX(calc(0px - var(--flash-sale-shift))); }
-  to { transform: translateX(var(--flash-sale-available-width)); }
+  0% { transform: translateX(var(--flash-sale-entry-shift)); }
+  to { transform: translateX(var(--flash-sale-exit-shift)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

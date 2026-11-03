@@ -143,6 +143,47 @@ describe("AdminPanel collection controls", () => {
     expect(axios.delete).not.toHaveBeenCalled();
   });
 
+  it("reloads the admin route when navigating back to the same tab", async () => {
+    window.history.pushState({}, "", "/admin");
+    localStorage.setItem("userRole", "admin");
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=promotions", key: "promotions-first" });
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 0,
+      routeId: "promotions-first",
+    });
+
+    const view = render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith(
+        "adminRoute",
+        "ready",
+        "",
+        "promotions-first"
+      );
+    });
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/admin/images"))).toHaveLength(1);
+
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=promotions", key: "promotions-second" });
+    useStartupReadiness.mockReturnValue({
+      reportResource: mockReportResource,
+      retryKey: 0,
+      routeId: "promotions-second",
+    });
+
+    view.rerender(<AdminPanel />);
+    await waitFor(() => {
+      expect(mockReportResource).toHaveBeenCalledWith(
+        "adminRoute",
+        "ready",
+        "",
+        "promotions-second"
+      );
+    });
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/admin/images"))).toHaveLength(2);
+  });
+
   it("loads each essential administrator dashboard count once before readiness", async () => {
     window.history.pushState({}, "", "/admin");
     localStorage.setItem("userRole", "admin");

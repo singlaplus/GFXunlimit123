@@ -8,12 +8,41 @@
   justify-content: center;
   gap: 24px;
   padding: 24px;
-  background: #f5f5f5;
+  background: linear-gradient(180deg, #f4f5f7 0%, #eef1f5 100%);
   font-family: Inter, Arial, sans-serif;
+  overflow: hidden;
 }
 
 .startup-readiness-screen[data-theme="dark"] {
-  background: #121212;
+  background: radial-gradient(circle at top, rgba(59, 130, 246, 0.12), transparent 35%),
+    linear-gradient(180deg, #101821 0%, #0d1724 100%);
+}
+
+.startup-readiness-glow {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.5;
+  pointer-events: none;
+  animation: startupGlowFloat 6s ease-in-out infinite alternate;
+}
+
+.startup-readiness-glow-one {
+  width: 280px;
+  height: 280px;
+  background: rgba(59, 130, 246, 0.18);
+  top: 22%;
+  left: 50%;
+  transform: translate(-50%, 0);
+}
+
+.startup-readiness-glow-two {
+  width: 220px;
+  height: 220px;
+  background: rgba(14, 165, 233, 0.12);
+  bottom: 16%;
+  right: 24%;
+  animation-delay: 1.5s;
 }
 
 .startup-readiness-logo {
@@ -28,59 +57,105 @@
   width: min(320px, 80vw);
   height: 8px;
   overflow: hidden;
-  border: 1px solid #d1d5db;
+  border: 1px solid rgba(148, 163, 184, 0.35);
   border-radius: 999px;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
 .startup-readiness-progress span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #ed2224;
+  background: linear-gradient(90deg, #3b82f6 0%, #2563eb 45%, #1d4ed8 100%);
   transition: width 350ms ease;
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.35);
 }
 
 .startup-readiness-error-card {
+  position: relative;
   width: min(100%, 420px);
-  padding: 38px 32px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 22px;
-  background: rgba(15, 23, 42, 0.9);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  padding: 30px 28px 26px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 26px;
+  background: rgba(17, 24, 39, 0.92);
+  box-shadow: 0 22px 70px rgba(15, 23, 42, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   color: #f8fafc;
   text-align: center;
+  backdrop-filter: blur(16px);
+  animation: startupCardIn 500ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .startup-readiness-error-card .startup-readiness-logo {
-  margin: 0 auto 20px;
+  margin: 0 auto 18px;
 }
 
-.startup-readiness-error-card p {
-  margin: 0;
-  color: #cbd5e1;
-  line-height: 1.6;
+.startup-readiness-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 18px;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  box-shadow: 0 0 26px rgba(59, 130, 246, 0.22);
+  animation: startupPulse 2.4s ease-in-out infinite;
+}
+
+.startup-readiness-status-icon span {
+  font-size: 1.8rem;
+  line-height: 1;
+  font-weight: 800;
+  color: #93c5fd;
 }
 
 .startup-readiness-error-card h1 {
-  margin: 0 0 12px;
-  font-size: 1.35rem;
+  margin: 0 0 14px;
+  font-size: clamp(1.8rem, 2vw, 2.2rem);
+  line-height: 1.2;
+  letter-spacing: -0.04em;
+  font-weight: 800;
+}
+
+.startup-readiness-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  color: #dbeafe;
+  font-size: 0.95rem;
+  letter-spacing: 0.01em;
 }
 
 .startup-readiness-error-card button {
-  margin-top: 24px;
-  padding: 11px 22px;
+  margin-top: 26px;
+  padding: 13px 28px;
   border: 0;
-  border-radius: 9px;
-  background: #2563eb;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
   color: white;
   font: inherit;
   font-weight: 700;
   cursor: pointer;
+  box-shadow: 0 18px 30px rgba(37, 99, 235, 0.32);
+  transition: transform 150ms ease, box-shadow 150ms ease, filter 150ms ease;
+  animation: startupButtonGlow 2.4s ease-in-out infinite;
 }
 
 .startup-readiness-error-card button:hover {
-  background: #1d4ed8;
+  transform: translateY(-1px) scale(1.01);
+  box-shadow: 0 22px 36px rgba(37, 99, 235, 0.38);
+  filter: brightness(1.05);
+}
+
+.startup-readiness-error-card button:active {
+  transform: translateY(0) scale(0.99);
 }
 
 .startup-readiness-cover {
@@ -91,4 +166,360 @@
 
 .startup-readiness-content[aria-hidden="true"] {
   visibility: hidden;
+}
+
+@keyframes startupCardIn {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes startupPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 rgba(59, 130, 246, 0.2);
+  }
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 0 24px rgba(59, 130, 246, 0.28);
+  }
+}
+
+@keyframes startupButtonGlow {
+  0%, 100% {
+    filter: drop-shadow(0 0 0 rgba(59, 130, 246, 0.2));
+  }
+  50% {
+    filter: drop-shadow(0 0 14px rgba(59, 130, 246, 0.25));
+  }
+}
+
+@keyframes startupGlowFloat {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.98);
+    opacity: 0.38;
+  }
+  100% {
+    transform: translate3d(0, 10px, 0) scale(1.06);
+    opacity: 0.55;
+  }
+}
+
+@media (max-width: 480px) {
+  .startup-readiness-screen {
+    padding: 20px;
+  }
+
+  .startup-readiness-error-card {
+    padding: 24px 18px 20px;
+    border-radius: 22px;
+  }
+
+  .startup-readiness-error-card h1 {
+    font-size: 1.65rem;
+  }
+}
+
+.startup-readiness-screen {
+  background:
+    radial-gradient(ellipse at 50% 42%, rgba(255, 68, 78, 0.2), transparent 36%),
+    radial-gradient(ellipse at 12% 18%, rgba(255, 31, 57, 0.14), transparent 31%),
+    radial-gradient(ellipse at 88% 82%, rgba(255, 111, 58, 0.14), transparent 29%),
+    linear-gradient(145deg, #fff4f3 0%, #fff0ef 50%, #fff7f2 100%);
+}
+
+.startup-readiness-screen[data-theme="dark"] {
+  background:
+    radial-gradient(ellipse at 50% 42%, rgba(255, 43, 62, 0.28), transparent 36%),
+    radial-gradient(ellipse at 12% 18%, rgba(255, 37, 64, 0.19), transparent 31%),
+    radial-gradient(ellipse at 88% 82%, rgba(255, 105, 46, 0.16), transparent 29%),
+    linear-gradient(145deg, #18080d 0%, #1d0a11 52%, #1b0b10 100%);
+}
+
+.startup-readiness-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.25;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(239, 68, 68, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(239, 68, 68, 0.09) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at center, black 0%, transparent 76%);
+}
+
+.startup-readiness-glow {
+  filter: blur(90px);
+  opacity: 0.68;
+  animation-duration: 8s;
+}
+
+.startup-readiness-glow-one {
+  width: min(58vw, 680px);
+  height: min(58vw, 680px);
+  top: 50%;
+  left: 50%;
+  background: rgba(239, 37, 57, 0.28);
+}
+
+.startup-readiness-glow-two {
+  width: min(35vw, 420px);
+  height: min(35vw, 420px);
+  top: -12%;
+  left: -9%;
+  right: auto;
+  bottom: auto;
+  background: rgba(255, 48, 73, 0.27);
+}
+
+.startup-readiness-glow-three {
+  position: absolute;
+  z-index: 0;
+  width: min(32vw, 390px);
+  height: min(32vw, 390px);
+  right: -8%;
+  bottom: -16%;
+  border-radius: 50%;
+  background: rgba(255, 115, 59, 0.24);
+  filter: blur(90px);
+  pointer-events: none;
+  animation: startupGlowFloat 8s ease-in-out 2.2s infinite alternate;
+}
+
+.startup-readiness-error-card {
+  isolation: isolate;
+  width: min(100%, 484px);
+  padding: 36px 40px 30px;
+  border: 1px solid transparent;
+  border-radius: 30px;
+  background:
+    linear-gradient(155deg, rgba(35, 18, 27, 0.97), rgba(25, 13, 23, 0.97)) padding-box,
+    linear-gradient(140deg, rgba(255, 153, 153, 0.9), rgba(239, 34, 36, 0.38) 42%, rgba(255, 129, 72, 0.72)) border-box;
+  box-shadow: 0 34px 100px rgba(111, 17, 34, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(22px);
+  animation-duration: 700ms;
+}
+
+.startup-readiness-error-card::before,
+.startup-readiness-error-card::after {
+  position: absolute;
+  z-index: -1;
+  inset: -1px;
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
+}
+
+.startup-readiness-error-card::before {
+  background: linear-gradient(120deg, rgba(255, 91, 105, 0.17), transparent 42%, rgba(255, 142, 79, 0.13));
+}
+
+.startup-readiness-error-card::after {
+  z-index: -2;
+  inset: -2px;
+  background: linear-gradient(120deg, rgba(238, 35, 58, 0.72), rgba(255, 111, 55, 0.55));
+  filter: blur(30px);
+  opacity: 0.44;
+  animation: startupCardAura 4s ease-in-out infinite alternate;
+}
+
+.startup-readiness-error-card .startup-readiness-logo {
+  margin: 0 auto 12px;
+}
+
+.startup-readiness-visual {
+  position: relative;
+  display: grid;
+  width: 132px;
+  height: 132px;
+  margin: -4px auto 15px;
+  place-items: center;
+  animation: startupVisualFloat 4s ease-in-out infinite;
+}
+
+.startup-readiness-orbit {
+  position: absolute;
+  border: 1px solid rgba(255, 160, 155, 0.34);
+  border-radius: 50%;
+}
+
+.startup-readiness-orbit-one {
+  inset: 8px;
+  border-top-color: rgba(255, 112, 121, 0.95);
+  border-right-color: rgba(255, 166, 119, 0.72);
+  box-shadow: 0 0 24px rgba(255, 55, 70, 0.2);
+  animation: startupOrbit 12s linear infinite;
+}
+
+.startup-readiness-orbit-two {
+  inset: 0;
+  border-bottom-color: rgba(255, 145, 92, 0.9);
+  border-left-color: rgba(255, 69, 82, 0.78);
+  transform: rotate(28deg) scaleX(0.78);
+  animation: startupOrbitReverse 9s linear infinite;
+}
+
+.startup-readiness-status-icon {
+  width: 70px;
+  height: 70px;
+  margin: 0;
+  background: radial-gradient(circle at 35% 28%, rgba(255, 132, 124, 0.62), rgba(168, 32, 54, 0.42) 48%, rgba(53, 17, 31, 0.96));
+  border-color: rgba(255, 185, 171, 0.82);
+  box-shadow: 0 0 36px rgba(255, 48, 65, 0.48), inset 0 0 18px rgba(255, 171, 153, 0.18);
+}
+
+.startup-readiness-status-icon span {
+  font-size: 2rem;
+  color: #fff0e8;
+  text-shadow: 0 0 14px rgba(255, 203, 180, 0.78);
+}
+
+.startup-readiness-eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  margin-bottom: 12px;
+  color: #ffb6ad;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.19em;
+}
+
+.startup-readiness-eyebrow-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ff635f;
+  box-shadow: 0 0 12px rgba(255, 75, 76, 0.95);
+  animation: startupDotBeat 1.6s ease-in-out infinite;
+}
+
+.startup-readiness-error-card h1 {
+  max-width: 380px;
+  margin: 0 auto 12px;
+  font-size: clamp(2rem, 4vw, 2.55rem);
+  line-height: 1.08;
+  background: linear-gradient(100deg, #fff 14%, #ffd1ce 58%, #ffad86 100%);
+  background-clip: text;
+  color: transparent;
+  -webkit-background-clip: text;
+}
+
+.startup-readiness-message {
+  max-width: 340px;
+  margin: 0 auto;
+  color: #d5bdc0;
+  font-size: 0.98rem;
+  line-height: 1.65;
+}
+
+.startup-readiness-footnote {
+  margin-top: 21px;
+  color: #a38a91;
+  font-size: 0.75rem;
+  letter-spacing: 0.015em;
+}
+
+.startup-readiness-error-card button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-width: 164px;
+  min-height: 52px;
+  margin-top: 24px;
+  padding: 13px 23px;
+  border-radius: 15px;
+  background: linear-gradient(105deg, #df1e32 0%, #f02e35 52%, #ff713f 100%);
+  box-shadow: 0 14px 28px rgba(239, 34, 54, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  animation: startupButtonGlow 3s ease-in-out infinite;
+}
+
+.startup-readiness-error-card button svg {
+  width: 18px;
+  height: 18px;
+  transition: transform 180ms ease;
+}
+
+.startup-readiness-error-card button:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 20px 36px rgba(239, 34, 54, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  filter: brightness(1.12);
+}
+
+.startup-readiness-error-card button:hover svg {
+  transform: translateX(3px);
+}
+
+.startup-readiness-error-card button:active {
+  transform: translateY(-1px) scale(0.99);
+}
+
+.startup-readiness-error-card button:focus-visible {
+  outline: 3px solid rgba(255, 174, 138, 0.9);
+  outline-offset: 4px;
+}
+
+@keyframes startupOrbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes startupOrbitReverse {
+  to { transform: rotate(-332deg) scaleX(0.78); }
+}
+
+@keyframes startupVisualFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+
+@keyframes startupDotBeat {
+  0%, 100% { opacity: 0.65; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes startupCardAura {
+  from { opacity: 0.28; }
+  to { opacity: 0.62; }
+}
+
+@media (max-width: 480px) {
+  .startup-readiness-error-card {
+    padding: 28px 20px 24px;
+    border-radius: 25px;
+  }
+
+  .startup-readiness-error-card h1 {
+    font-size: 2rem;
+  }
+
+  .startup-readiness-visual {
+    width: 116px;
+    height: 116px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-readiness-glow,
+  .startup-readiness-error-card,
+  .startup-readiness-error-card::after,
+  .startup-readiness-visual,
+  .startup-readiness-orbit,
+  .startup-readiness-status-icon,
+  .startup-readiness-eyebrow-dot,
+  .startup-readiness-error-card button {
+    animation: none;
+  }
+
+  .startup-readiness-progress span,
+  .startup-readiness-error-card button,
+  .startup-readiness-error-card button svg {
+    transition: none;
+  }
 }

@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import axios from "axios";
 import FloatingAuth from "./components/FloatingAuth";
 import AppRoutes from "./components/AppRoutes";
+import { PromotionalBannerPlacements } from "./components/PromotionalBannerExperience";
 import useNotifications from "./hooks/useNotifications";
 import useNotificationLoader from "./hooks/useNotificationLoader";
 import useProfile from "./hooks/useProfile";
@@ -676,6 +677,12 @@ const popupProps = {
   setSelectedCategory={setSelectedCategory}
   setSelectedCollection={setSelectedCollection}
 />
+
+      <PromotionalBannerPlacements
+        userRole={auth.status === "authenticated" ? auth.role || userRole : auth.status === "anonymous" ? "" : userRole}
+        authStatus={auth.status}
+        pathname={location.pathname}
+      />
 
       {!isBlankSeoPage && (isAuthBusy || isBackendBusy) && (
         <div

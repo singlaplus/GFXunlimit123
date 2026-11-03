@@ -45,6 +45,7 @@ import TaxW9Form from "./dashboard/TaxW9Form";
 import { getEffectiveAuthToken } from "../utils/authSession";
 import { GOOGLE_FONT_FAMILIES } from "../data/googleFonts";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
+import PromotionalBannerPage from "./PromotionalBannerExperience";
 
 const BLOG_DRAFTS_STORAGE_KEY = "gfx-blog-drafts";
 const blogDraftHeaders = () => ({ Authorization: `Bearer ${getEffectiveAuthToken()}` });
@@ -1448,6 +1449,16 @@ export default function AppRoutes(props) {
   const search = (loc && loc.search) ?? (typeof window !== 'undefined' ? window.location.search : '');
   const normalizedUserRole = (props.userRole || "").toString();
   const isAdmin = isAdminRole(normalizedUserRole);
+  const promotionBannerMatch = pathname.match(/^\/promotionbanners\/([^/]+)\/?$/);
+  const isPromotionBannerRoute = Boolean(promotionBannerMatch);
+  let promotionBannerSlug = "";
+  if (promotionBannerMatch) {
+    try {
+      promotionBannerSlug = decodeURIComponent(promotionBannerMatch[1]);
+    } catch (error) {
+      console.error("Invalid promotional banner URL", error);
+    }
+  }
   const [pageAvailability, setPageAvailability] = useState(null);
   const [blogSection, setBlogSection] = useState(() => new URLSearchParams(search).get("section") || "");
   const [blogDraftId, setBlogDraftId] = useState(() => new URLSearchParams(search).get("draft") || "");
@@ -1458,6 +1469,11 @@ export default function AppRoutes(props) {
     let active = true;
     setPageAvailability(null);
     reportAvailability("loading", "", routeId);
+    if (isPromotionBannerRoute) {
+      setPageAvailability({ pathname, available: true, sourcePath: "", disabledLinks: [] });
+      reportAvailability("ready", "", routeId);
+      return () => { active = false; };
+    }
     axios.get(`${API_BASE_URL}/pages/availability`, { params: { path: `${pathname}${search}` } })
       .then(({ data }) => {
         if (typeof data?.available !== "boolean") {
@@ -1486,7 +1502,7 @@ export default function AppRoutes(props) {
       });
 
     return () => { active = false; };
-  }, [availabilityRetryKey, isAdmin, pathname, reportAvailability, routeId, search]);
+  }, [availabilityRetryKey, isAdmin, isPromotionBannerRoute, pathname, reportAvailability, routeId, search]);
 
   useEffect(() => {
     if (pageAvailability?.pathname !== pathname || !pageAvailability.sourcePath) return undefined;
@@ -1572,6 +1588,10 @@ export default function AppRoutes(props) {
         <main aria-label="Blank page" style={{ minHeight: "60vh" }} />
       </ProtectedRoute>
     );
+  }
+
+  if (isPromotionBannerRoute) {
+    return <PromotionalBannerPage slug={promotionBannerSlug} userRole={normalizedUserRole} />;
   }
 
   if (!isAdmin && pageAvailability?.pathname !== pathname) {

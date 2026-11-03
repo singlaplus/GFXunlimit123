@@ -3834,7 +3834,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     }
     setCurrentPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, tabParam, retryKey]);
+  }, [statusFilter, tabParam, retryKey, routeId]);
 
   // Load admin settings on-demand when a modal opens
   useEffect(() => {

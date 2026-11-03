@@ -32,6 +32,16 @@ const {
   queueNewsletterCampaign,
 } = require("./services/promotionNewsletters");
 const {
+  PROMOTIONAL_BANNER_ICON_FOLDER,
+  assignPromotionalBannerSlugs,
+  createPromotionalBannerIcon,
+  getPromotionalBannerIconFilename,
+  isSupportedPromotionalBannerIconUpload,
+  parsePromotionalBannerAssetIds,
+  slugifyPromotionalBannerName,
+  validatePromotionalBanner,
+} = require("./services/promotionBannerIcons");
+const {
   calculateBestBundleTierDiscount,
   isBundleOfferDateActive,
   validateBundleDiscountSchedule,
@@ -276,6 +286,21 @@ const newsletterAttachmentUpload = multer({
   }
 });
 
+const promotionalBannerIconUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+    files: 1
+  },
+  fileFilter: (req, file, cb) => {
+    if (!isSupportedPromotionalBannerIconUpload(file)) {
+      cb(new Error("Choose an image file for the banner icon."));
+      return;
+    }
+    cb(null, true);
+  }
+});
+
 const handleNewsletterAttachmentUpload = (req, res, next) => {
   newsletterAttachmentUpload.array("attachments", 5)(req, res, (error) => {
     if (error) {
@@ -283,6 +308,18 @@ const handleNewsletterAttachmentUpload = (req, res, next) => {
         ? 413
         : 400;
       return res.status(status).json({ error: error.message || "Newsletter attachment upload failed." });
+    }
+    next();
+  });
+};
+
+const handlePromotionalBannerIconUpload = (req, res, next) => {
+  promotionalBannerIconUpload.single("icon")(req, res, (error) => {
+    if (error) {
+      const status = ["LIMIT_FILE_SIZE", "LIMIT_FILE_COUNT", "LIMIT_UNEXPECTED_FILE"].includes(error.code)
+        ? 413
+        : 400;
+      return res.status(status).json({ error: error.message || "Banner icon upload failed." });
     }
     next();
   });
@@ -5909,9 +5946,19 @@ if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
         downloads_count INTEGER DEFAULT 0,
         contributor_earnings NUMERIC DEFAULT 0,
         platform_commission NUMERIC DEFAULT 0,
+        flash_sale_id INTEGER REFERENCES flash_sales(id) ON DELETE SET NULL,
+        bundle_offer_id INTEGER REFERENCES bundle_offers(id) ON DELETE SET NULL,
         created_at TIMESTAMPTZ DEFAULT now(),
         updated_at TIMESTAMPTZ DEFAULT now()
       );
+    `);
+    await pool.query(`
+      ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS flash_sale_id INTEGER REFERENCES flash_sales(id) ON DELETE SET NULL
+    `);
+    await pool.query(`
+      ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS bundle_offer_id INTEGER REFERENCES bundle_offers(id) ON DELETE SET NULL
     `);
 
     await pool.query(`
@@ -6906,6 +6953,306 @@ app.get("/admin/promotions/newsletter-recipients", verifyAdmin, async (req, res)
   }
 });
 
+const loadLivePromotionalBanners = async () => {
+  const result = await pool.query(
+    `SELECT id, name, placement, status, metadata
+     FROM marketing_banners
+     WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'active'
+       AND NULLIF(BTRIM(metadata->>'icon_filename'), '') IS NOT NULL
+       AND COALESCE(metadata->>'start_date', '0001-01-01') <= TO_CHAR(
+         (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date,
+         'YYYY-MM-DD'
+       )
+       AND (
+         NULLIF(metadata->>'end_date', '') IS NULL
+         OR metadata->>'end_date' >= TO_CHAR(
+           (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date,
+           'YYYY-MM-DD'
+         )
+       )
+     ORDER BY created_at DESC, id DESC`
+  );
+  const banners = assignPromotionalBannerSlugs(result.rows);
+  return banners.map((banner) => ({
+    id: banner.id,
+    name: banner.name,
+    placement: banner.placement,
+    slug: banner.slug,
+    metadata: banner.metadata,
+    icon_url: `/public/promotional-banners/${encodeURIComponent(banner.slug)}/icon`
+  }));
+};
+
+app.get("/public/promotional-banners", async (_req, res) => {
+  try {
+    return res.json({ banners: await loadLivePromotionalBanners() });
+  } catch (error) {
+    console.error("Failed to load public promotional banners", error);
+    return res.status(500).json({ error: "Failed to load promotional banners." });
+  }
+});
+
+app.get("/public/promotional-banners/:slug/icon", async (req, res) => {
+  try {
+    const slug = String(req.params.slug || "");
+    const banner = (await loadLivePromotionalBanners()).find((item) => item.slug === slug);
+    if (!banner) return res.status(404).json({ error: "Promotional banner not found." });
+
+    const metadata = typeof banner.metadata === "string" ? JSON.parse(banner.metadata) : banner.metadata || {};
+    const filename = String(metadata.icon_filename || "");
+    if (!filename || getPromotionalBannerIconFilename(filename) !== filename) {
+      return res.status(404).json({ error: "Promotional banner icon not found." });
+    }
+
+    const iconDirectory = path.resolve(
+      assetThumbnails.getThumbnailStorageRoot(),
+      PROMOTIONAL_BANNER_ICON_FOLDER
+    );
+    const iconPath = path.resolve(iconDirectory, filename);
+    if (path.dirname(iconPath) !== iconDirectory) {
+      return res.status(404).json({ error: "Promotional banner icon not found." });
+    }
+    const iconStats = await fs.promises.stat(iconPath);
+    if (!iconStats.isFile()) return res.status(404).json({ error: "Promotional banner icon not found." });
+
+    const contentTypes = {
+      ".avif": "image/avif",
+      ".gif": "image/gif",
+      ".jpeg": "image/jpeg",
+      ".jpg": "image/jpeg",
+      ".png": "image/png",
+      ".svg": "image/svg+xml",
+      ".tif": "image/tiff",
+      ".tiff": "image/tiff",
+      ".webp": "image/webp"
+    };
+    res.set("Content-Type", contentTypes[path.extname(filename).toLowerCase()] || "application/octet-stream");
+    res.set("Content-Disposition", "inline");
+    res.set("Cache-Control", "public, max-age=300");
+    res.set("X-Content-Type-Options", "nosniff");
+    return res.sendFile(iconPath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return res.status(404).json({ error: "Promotional banner icon not found." });
+    }
+    console.error("Failed to load public promotional banner icon", error);
+    return res.status(500).json({ error: "Failed to load promotional banner icon." });
+  }
+});
+
+app.get("/public/promotional-banners/:slug", async (req, res) => {
+  try {
+    const banner = (await loadLivePromotionalBanners()).find((item) => item.slug === String(req.params.slug || ""));
+    if (!banner) return res.status(404).json({ error: "Promotional banner not found." });
+    const metadata = typeof banner.metadata === "string" ? JSON.parse(banner.metadata) : banner.metadata || {};
+    const selectedAssetIds = Array.isArray(metadata.selected_asset_ids)
+      ? metadata.selected_asset_ids.filter((id) => Number.isSafeInteger(Number(id)) && Number(id) > 0).map(Number)
+      : [];
+    const assetsResult = selectedAssetIds.length > 0
+      ? await pool.query(
+        `SELECT images.*, users.username
+         FROM images
+         LEFT JOIN users ON users.id = images.uploaded_by
+         WHERE images.id = ANY($1::int[])
+           AND LOWER(BTRIM(COALESCE(images.status, ''))) IN ('approved', 'published', 'live')
+         ORDER BY ARRAY_POSITION($1::int[], images.id)`,
+        [selectedAssetIds]
+      )
+      : { rows: [] };
+    return res.json({ banner: { ...banner, assets: sanitizePublicAssets(assetsResult.rows) } });
+  } catch (error) {
+    console.error("Failed to load public promotional banner", error);
+    return res.status(500).json({ error: "Failed to load promotional banner." });
+  }
+});
+
+app.post(
+  "/admin/promotions/banners",
+  verifyAdmin,
+  handlePromotionalBannerIconUpload,
+  async (req, res) => {
+    const validation = validatePromotionalBanner(req.body || {});
+    if (validation.error) return res.status(400).json({ error: validation.error });
+    const selectedAssets = parsePromotionalBannerAssetIds(req.body?.selected_asset_ids);
+    if (selectedAssets.error) return res.status(400).json({ error: selectedAssets.error });
+    const bannerId = req.body?.id === undefined ? null : Number(req.body.id);
+    if (bannerId !== null && (!Number.isSafeInteger(bannerId) || bannerId <= 0)) {
+      return res.status(400).json({ error: "Choose a valid banner to update." });
+    }
+    if (!req.file && bannerId === null) {
+      return res.status(400).json({ error: "Choose an icon for the promotional banner." });
+    }
+
+    let iconPath = null;
+    let temporaryIconPath = null;
+    let replacedIconBackup = null;
+    let createdIconFile = false;
+    let client;
+    let transactionStarted = false;
+    let currentBanner;
+    try {
+      const { name, placement, status, metadata } = validation.value;
+      metadata.selected_asset_ids = selectedAssets.value;
+      const thumbnailRoot = assetThumbnails.getThumbnailStorageRoot();
+      const iconDirectory = path.join(thumbnailRoot, PROMOTIONAL_BANNER_ICON_FOLDER);
+      await fs.promises.mkdir(iconDirectory, { recursive: true });
+
+      client = await pool.connect();
+      await client.query("BEGIN");
+      transactionStarted = true;
+      if (bannerId !== null) {
+        const existing = await client.query(
+          "SELECT * FROM marketing_banners WHERE id = $1 FOR UPDATE",
+          [bannerId]
+        );
+        currentBanner = existing.rows[0];
+        if (!currentBanner) {
+          await client.query("ROLLBACK");
+          transactionStarted = false;
+          return res.status(404).json({ error: "Promotional banner was not found." });
+        }
+      }
+      if (selectedAssets.value.length > 0) {
+        const selectedAssetsResult = await client.query(
+          `SELECT id
+           FROM images
+           WHERE id = ANY($1::int[])
+             AND LOWER(BTRIM(COALESCE(status, ''))) = 'approved'`,
+          [selectedAssets.value]
+        );
+        if (selectedAssetsResult.rows.length !== selectedAssets.value.length) {
+          await client.query("ROLLBACK");
+          transactionStarted = false;
+          if (iconPath) {
+            await fs.promises.unlink(iconPath).catch((cleanupError) => {
+              if (cleanupError.code !== "ENOENT") {
+                console.error("Failed to remove a promotional banner icon after asset validation failure", cleanupError);
+              }
+            });
+            iconPath = null;
+          }
+          return res.status(400).json({ error: "One or more selected assets are no longer live." });
+        }
+      }
+
+      const currentMetadata = typeof currentBanner?.metadata === "string"
+        ? JSON.parse(currentBanner.metadata)
+        : currentBanner?.metadata || {};
+      let oldIconFilename = currentMetadata.icon_filename || null;
+      if (req.file) {
+        const iconBuffer = await createPromotionalBannerIcon(req.file.buffer);
+        const iconFilename = getPromotionalBannerIconFilename(req.file.originalname);
+        iconPath = path.join(iconDirectory, iconFilename);
+        const replacesCurrentIcon = bannerId !== null && oldIconFilename === iconFilename;
+        if (replacesCurrentIcon) {
+          try {
+            replacedIconBackup = await fs.promises.readFile(iconPath);
+            temporaryIconPath = `${iconPath}.${crypto.randomUUID()}.tmp`;
+            await fs.promises.writeFile(temporaryIconPath, iconBuffer, { flag: "wx" });
+            await fs.promises.rename(temporaryIconPath, iconPath);
+            temporaryIconPath = null;
+            createdIconFile = Boolean(replacedIconBackup);
+          } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+            await fs.promises.writeFile(iconPath, iconBuffer, { flag: "wx" });
+            replacedIconBackup = null;
+            createdIconFile = true;
+          }
+        } else {
+          await fs.promises.writeFile(iconPath, iconBuffer, { flag: "wx" });
+          createdIconFile = true;
+        }
+        metadata.icon_filename = iconFilename;
+      } else {
+        metadata.icon_filename = oldIconFilename;
+      }
+      const result = bannerId === null
+        ? await client.query(
+          `INSERT INTO marketing_banners (name, placement, status, metadata)
+           VALUES ($1, $2, $3, $4::jsonb)
+           RETURNING *`,
+          [name, placement, status, JSON.stringify(metadata)]
+        )
+        : await client.query(
+          `UPDATE marketing_banners
+           SET name = $1, placement = $2, status = $3, metadata = $4::jsonb, updated_at = now()
+           WHERE id = $5
+           RETURNING *`,
+          [name, placement, status, JSON.stringify({ ...currentMetadata, ...metadata }), bannerId]
+        );
+      const banner = result.rows[0];
+      await client.query(
+        `INSERT INTO promotion_activity_logs (action, details, actor_id, metadata)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          bannerId === null ? "banner_created" : "banner_updated",
+          `${bannerId === null ? "Created" : "Updated"} banner ${name}`,
+          req.user?.id || null,
+          JSON.stringify({ resourceId: banner.id })
+        ]
+      );
+      await recordBusinessEvent(client, "ADMIN_ACTION", {
+        userId: req.user?.id,
+        userRole: "admin",
+        description: `${bannerId === null ? "Created" : "Updated"} banner ${name}`,
+        metadata: { action: bannerId === null ? "banner_created" : "banner_updated", resourceId: banner.id }
+      });
+      await client.query("COMMIT");
+      transactionStarted = false;
+      if (bannerId !== null && oldIconFilename && oldIconFilename !== metadata.icon_filename) {
+        await fs.promises.unlink(path.join(iconDirectory, oldIconFilename)).catch((cleanupError) => {
+          if (cleanupError.code !== "ENOENT") {
+            console.error("Failed to remove replaced promotional banner icon", cleanupError);
+          }
+        });
+      }
+      return res.json(banner);
+    } catch (error) {
+      if (transactionStarted && client) {
+        await client.query("ROLLBACK").catch((rollbackError) => {
+          console.error("Failed to roll back promotional banner creation", rollbackError);
+        });
+      }
+      if (iconPath) {
+        if (replacedIconBackup) {
+          await fs.promises.writeFile(iconPath, replacedIconBackup).catch((cleanupError) => {
+            console.error("Failed to restore a promotional banner icon after save failure", cleanupError);
+          });
+        } else if (createdIconFile) {
+          await fs.promises.unlink(iconPath).catch((cleanupError) => {
+            if (cleanupError.code !== "ENOENT") {
+              console.error("Failed to remove a promotional banner icon after save failure", cleanupError);
+            }
+          });
+        }
+      }
+      if (temporaryIconPath) {
+        await fs.promises.unlink(temporaryIconPath).catch((cleanupError) => {
+          if (cleanupError.code !== "ENOENT") {
+            console.error("Failed to remove temporary promotional banner icon", cleanupError);
+          }
+        });
+      }
+      console.error("Failed to save promotional banner", error);
+      if (error.code === "INVALID_PROMOTIONAL_BANNER_ICON" || error.code === "INVALID_PROMOTIONAL_BANNER_ICON_FILENAME") {
+        return res.status(400).json({ error: error.message });
+      }
+      if (error.code === "EEXIST") {
+        return res.status(409).json({ error: "A banner icon with this filename already exists. Rename the file or edit its existing banner." });
+      }
+      const storageUnavailable = error.code === "THUMBNAIL_STORAGE_DISCONNECTED"
+        || /THUMBNAIL_STORAGE_PATH|thumbnail volume is not mounted/i.test(error.message || "");
+      return res.status(storageUnavailable ? 503 : 500).json({
+        error: storageUnavailable
+          ? "Promotional banner icon storage is unavailable. Check the configured thumbnail storage."
+          : "Failed to save promotional banner."
+      });
+    } finally {
+      client?.release();
+    }
+  }
+);
+
 app.post(
   "/admin/promotions/newsletter-attachments",
   verifyAdmin,
@@ -7029,6 +7376,216 @@ app.post("/admin/promotions/applications/:applicationId/withdraw", verifyAdmin, 
 
 registerContributorOfferBenefitRoutes(app, pool, verifyAdmin);
 
+app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => {
+  try {
+    const settingsResult = await pool.query(
+      "SELECT default_currency, custom_currency_rows FROM pricing_settings ORDER BY id DESC LIMIT 1"
+    );
+    const settings = settingsResult.rows[0] || {};
+    let customCurrencyRows = settings.custom_currency_rows || [];
+    if (typeof customCurrencyRows === "string") {
+      try {
+        customCurrencyRows = JSON.parse(customCurrencyRows);
+      } catch (error) {
+        console.error("Invalid configured currency rows", error);
+        return res.status(500).json({ error: "Configured website currencies are invalid." });
+      }
+    }
+    if (!Array.isArray(customCurrencyRows)) {
+      return res.status(500).json({ error: "Configured website currencies are invalid." });
+    }
+
+    const subscriptionPlansResult = await pool.query(
+      `SELECT pricing
+       FROM subscription_plans
+       WHERE active = TRUE
+         AND (
+           plan_settings->>'duration' IS DISTINCT FROM 'limited'
+           OR (
+             (plan_settings->>'start_date' IS NULL OR (plan_settings->>'start_date')::date <= CURRENT_DATE)
+             AND (plan_settings->>'end_date' IS NULL OR (plan_settings->>'end_date')::date >= CURRENT_DATE)
+           )
+         )`
+    );
+    const subscriptionCurrencies = subscriptionPlansResult.rows.flatMap((row) => {
+      let pricing = row.pricing || {};
+      if (typeof pricing === "string") pricing = JSON.parse(pricing);
+      let currencyPrices = pricing.currency_prices || {};
+      if (typeof currencyPrices === "string") currencyPrices = JSON.parse(currencyPrices);
+      return [
+        String(pricing.currency || "").trim().toUpperCase(),
+        ...Object.keys(currencyPrices).map((currency) => currency.trim().toUpperCase())
+      ];
+    });
+    const currencies = [...new Set([
+      "INR",
+      "USD",
+      "EUR",
+      String(settings.default_currency || "").trim().toUpperCase(),
+      ...customCurrencyRows.map((row) => String(row?.code || row?.currency || "").trim().toUpperCase()),
+      ...subscriptionCurrencies
+    ].filter((currency) => /^[A-Z]{3}$/.test(currency)))];
+
+    const axios = require("axios");
+    const ratesResponse = await axios.get(
+      "https://api.exchangerate-api.com/v4/latest/INR",
+      { timeout: 10000 }
+    );
+    const rates = ratesResponse.data?.rates;
+    if (!rates || typeof rates !== "object" || Array.isArray(rates)) {
+      return res.status(502).json({ error: "Unable to load currency exchange rates." });
+    }
+    const normalizedRates = { ...rates, INR: 1 };
+    const supportedCurrencies = currencies.filter((currency) => Number(normalizedRates[currency]) > 0);
+    if (supportedCurrencies.length === 0) {
+      return res.status(502).json({ error: "No configured website currencies have exchange rates." });
+    }
+
+    const redemptionRows = await pool.query(
+      `WITH calendar AS (
+         SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date AS today
+       ), bounds AS (
+         SELECT
+           today,
+           today - 1 AS yesterday,
+           today - 6 AS last_7_days_start,
+           today - 29 AS last_30_days_start,
+           date_trunc('month', today::timestamp)::date AS current_month_start,
+           date_trunc('quarter', today::timestamp)::date AS current_quarter_start,
+           CASE
+             WHEN EXTRACT(MONTH FROM today) >= 4
+               THEN make_date(EXTRACT(YEAR FROM today)::int, 4, 1)
+             ELSE make_date(EXTRACT(YEAR FROM today)::int - 1, 4, 1)
+           END AS current_financial_year_start
+         FROM calendar
+       ), redemptions AS (
+         SELECT
+           (redemption.redeemed_at AT TIME ZONE 'Asia/Kolkata')::date AS redeemed_date,
+           redemption.amount,
+           COALESCE(
+             NULLIF(UPPER(BTRIM(orders.currency)), ''),
+             NULLIF(UPPER(BTRIM(settings.default_currency)), ''),
+             'INR'
+           ) AS currency
+         FROM coupon_redemptions redemption
+         LEFT JOIN orders ON orders.id::text = redemption.metadata->>'orderId'
+         CROSS JOIN (SELECT default_currency FROM pricing_settings ORDER BY id DESC LIMIT 1) settings
+       )
+       SELECT
+         redemptions.currency,
+         COUNT(*)::int AS lifetime_uses,
+         COALESCE(SUM(amount), 0) AS lifetime_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date = today)::int AS today_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date = today), 0) AS today_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date = yesterday)::int AS yesterday_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date = yesterday), 0) AS yesterday_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date BETWEEN last_7_days_start AND today)::int AS last_7_days_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date BETWEEN last_7_days_start AND today), 0) AS last_7_days_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date BETWEEN last_30_days_start AND today)::int AS last_30_days_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date BETWEEN last_30_days_start AND today), 0) AS last_30_days_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date >= current_month_start AND redeemed_date <= today)::int AS current_month_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_month_start AND redeemed_date <= today), 0) AS current_month_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date >= current_quarter_start AND redeemed_date <= today)::int AS current_quarter_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_quarter_start AND redeemed_date <= today), 0) AS current_quarter_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date >= current_quarter_start - INTERVAL '3 months' AND redeemed_date < current_quarter_start)::int AS last_quarter_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_quarter_start - INTERVAL '3 months' AND redeemed_date < current_quarter_start), 0) AS last_quarter_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date >= current_financial_year_start AND redeemed_date <= today)::int AS current_financial_year_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_financial_year_start AND redeemed_date <= today), 0) AS current_financial_year_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date >= current_financial_year_start - INTERVAL '1 year' AND redeemed_date < current_financial_year_start)::int AS last_financial_year_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_financial_year_start - INTERVAL '1 year' AND redeemed_date < current_financial_year_start), 0) AS last_financial_year_revenue
+       FROM redemptions
+       CROSS JOIN bounds
+       GROUP BY redemptions.currency`
+    );
+
+    const topCouponRows = await pool.query(
+      `SELECT
+         coupons.id,
+         coupons.name,
+         coupons.code,
+         coupons.start_at::text AS start_at,
+         coupons.end_at::text AS end_at,
+         COALESCE(
+           NULLIF(UPPER(BTRIM(orders.currency)), ''),
+           NULLIF(UPPER(BTRIM(settings.default_currency)), ''),
+           'INR'
+         ) AS currency,
+         COUNT(redemptions.id)::int AS uses,
+         COALESCE(SUM(redemptions.amount), 0) AS revenue,
+         MAX((redemptions.redeemed_at AT TIME ZONE 'Asia/Kolkata')::date)::text AS last_used_date
+       FROM coupon_codes coupons
+       LEFT JOIN coupon_redemptions redemptions ON redemptions.coupon_id = coupons.id
+       LEFT JOIN orders ON orders.id::text = redemptions.metadata->>'orderId'
+       CROSS JOIN (SELECT default_currency FROM pricing_settings ORDER BY id DESC LIMIT 1) settings
+       GROUP BY coupons.id, coupons.name, coupons.code, coupons.start_at, coupons.end_at,
+         COALESCE(
+           NULLIF(UPPER(BTRIM(orders.currency)), ''),
+           NULLIF(UPPER(BTRIM(settings.default_currency)), ''),
+           'INR'
+         )
+       ORDER BY coupons.id`
+    );
+
+    const topCouponsById = new Map();
+    topCouponRows.rows.forEach((row) => {
+      const coupon = topCouponsById.get(row.id) || {
+        id: row.id,
+        name: row.name || row.code || "Unnamed coupon",
+        code: row.code || "",
+        start_at: row.start_at,
+        end_at: row.end_at,
+        last_used_date: row.last_used_date,
+        uses: 0,
+        revenue_by_currency: {}
+      };
+      coupon.uses += Number(row.uses || 0);
+      coupon.revenue_by_currency[row.currency] = Number(row.revenue || 0);
+      if (row.last_used_date && (!coupon.last_used_date || row.last_used_date > coupon.last_used_date)) {
+        coupon.last_used_date = row.last_used_date;
+      }
+      topCouponsById.set(row.id, coupon);
+    });
+    const topCoupons = [...topCouponsById.values()]
+      .sort((left, right) => right.uses - left.uses || left.name.localeCompare(right.name));
+
+    const analytics = {
+      lifetime: { uses: 0, revenue_by_currency: {} },
+      today: { uses: 0, revenue_by_currency: {} },
+      yesterday: { uses: 0, revenue_by_currency: {} },
+      last_7_days: { uses: 0, revenue_by_currency: {} },
+      last_30_days: { uses: 0, revenue_by_currency: {} },
+      current_month: { uses: 0, revenue_by_currency: {} },
+      current_quarter: { uses: 0, revenue_by_currency: {} },
+      last_quarter: { uses: 0, revenue_by_currency: {} },
+      current_financial_year: { uses: 0, revenue_by_currency: {} },
+      last_financial_year: { uses: 0, revenue_by_currency: {} }
+    };
+    const periods = [
+      ["lifetime", "lifetime"],
+      ["today", "today"],
+      ["yesterday", "yesterday"],
+      ["last_7_days", "last_7_days"],
+      ["last_30_days", "last_30_days"],
+      ["current_month", "current_month"],
+      ["current_quarter", "current_quarter"],
+      ["last_quarter", "last_quarter"],
+      ["current_financial_year", "current_financial_year"],
+      ["last_financial_year", "last_financial_year"]
+    ];
+    redemptionRows.rows.forEach((row) => {
+      periods.forEach(([period, field]) => {
+        analytics[period].uses += Number(row[`${field}_uses`] || 0);
+        analytics[period].revenue_by_currency[row.currency] = Number(row[`${field}_revenue`] || 0);
+      });
+    });
+
+    return res.json({ currencies: supportedCurrencies, rates: normalizedRates, analytics, top_coupons: topCoupons });
+  } catch (error) {
+    console.error("Failed to load coupon revenue analytics", error);
+    return res.status(500).json({ error: "Failed to load coupon revenue analytics." });
+  }
+});
+
 app.get("/admin/promotions", verifyAdmin, async (req, res) => {
   try {
     await syncFlashSaleStatuses();
@@ -7055,20 +7612,164 @@ app.get("/admin/promotions", verifyAdmin, async (req, res) => {
       coupon_redemption_rate: (await pool.query("SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE ROUND((SELECT COUNT(*) FROM coupon_redemptions)::numeric / COUNT(*) * 100, 2) END AS rate FROM coupon_codes")).rows[0].rate || 0
     };
 
-    const [coupons, campaigns, flashSales, referrals, loyalty, giftCards, bundles, newsletters, banners, popups, announcements, pushNotifications, automations, activityLogs, contributorApplications] = await Promise.all([
+    const [coupons, campaigns, flashSales, referrals, loyalty, giftCards, bundles, newsletters, banners, popups, announcements, pushNotifications, automations, activityLogs, contributorApplications, couponAnalytics] = await Promise.all([
       pool.query("SELECT * FROM coupon_codes ORDER BY created_at DESC"),
       pool.query("SELECT * FROM marketing_campaigns ORDER BY created_at DESC"),
       pool.query(
-        `SELECT id, name, discount_rule, status, start_date::text AS start_date,
-                end_date::text AS end_date, featured_placement, metadata, created_at, updated_at
-         FROM flash_sales
-         ORDER BY created_at DESC`
+        `SELECT sales.id, sales.name, sales.discount_rule, sales.status,
+                sales.start_date::text AS start_date, sales.end_date::text AS end_date,
+                sales.featured_placement, sales.metadata, sales.created_at, sales.updated_at,
+                COALESCE(usage.applications, 0)::int AS applications,
+                COALESCE(usage.users_used, 0)::int AS users_used,
+                COALESCE(usage.assets_downloaded, 0)::int AS assets_downloaded,
+                COALESCE(user_usage.details, '[]'::jsonb) AS usage_details
+         FROM flash_sales sales
+         LEFT JOIN (
+           SELECT orders.flash_sale_id,
+                  COUNT(DISTINCT orders.id) FILTER (
+                    WHERE LOWER(COALESCE(orders.payment_status, '')) IN ('paid', 'completed')
+                      AND LOWER(COALESCE(orders.order_status, '')) IN ('paid', 'completed')
+                  )::int AS applications,
+                  COUNT(DISTINCT orders.customer_id) FILTER (
+                    WHERE LOWER(COALESCE(orders.payment_status, '')) IN ('paid', 'completed')
+                      AND LOWER(COALESCE(orders.order_status, '')) IN ('paid', 'completed')
+                  )::int AS users_used,
+                  COUNT(downloads.id) FILTER (
+                    WHERE LOWER(COALESCE(orders.payment_status, '')) IN ('paid', 'completed')
+                      AND LOWER(COALESCE(orders.order_status, '')) IN ('paid', 'completed')
+                  )::int AS assets_downloaded
+           FROM orders
+           LEFT JOIN downloads ON downloads.order_id = orders.id
+           WHERE orders.flash_sale_id IS NOT NULL
+           GROUP BY orders.flash_sale_id
+         ) usage ON usage.flash_sale_id = sales.id
+         LEFT JOIN LATERAL (
+           SELECT COALESCE(
+             jsonb_agg(
+               jsonb_build_object(
+                 'user_id', user_summary.customer_id,
+                 'username', users.username,
+                 'full_name', COALESCE(NULLIF(users.full_name, ''), NULLIF(user_summary.customer_name, ''), ''),
+                 'email', users.email,
+                 'uses', user_summary.uses,
+                 'assets_downloaded', user_summary.assets_downloaded
+               )
+               ORDER BY user_summary.uses DESC, users.username, user_summary.customer_id
+             ),
+             '[]'::jsonb
+           ) AS details
+           FROM (
+             SELECT orders.customer_id,
+                    MAX(orders.customer_name) AS customer_name,
+                    COUNT(DISTINCT orders.id)::int AS uses,
+                    COUNT(DISTINCT downloads.id)::int AS assets_downloaded
+             FROM orders
+             LEFT JOIN downloads ON downloads.order_id = orders.id
+             WHERE orders.flash_sale_id = sales.id
+               AND orders.customer_id IS NOT NULL
+               AND LOWER(COALESCE(orders.payment_status, '')) IN ('paid', 'completed')
+               AND LOWER(COALESCE(orders.order_status, '')) IN ('paid', 'completed')
+             GROUP BY orders.customer_id
+           ) user_summary
+           LEFT JOIN users ON users.id = user_summary.customer_id
+         ) user_usage ON TRUE
+         ORDER BY sales.created_at DESC`
       ),
       pool.query("SELECT * FROM referral_programs ORDER BY created_at DESC"),
       pool.query("SELECT * FROM loyalty_programs ORDER BY created_at DESC"),
       pool.query("SELECT * FROM gift_cards ORDER BY created_at DESC"),
-      pool.query("SELECT * FROM bundle_offers ORDER BY created_at DESC"),
-      pool.query("SELECT * FROM promotion_email_campaigns ORDER BY created_at DESC"),
+      pool.query(
+        `SELECT bundles.*,
+                COALESCE(usage.applications, 0)::int AS applications,
+                COALESCE(usage.users_used, 0)::int AS users_used,
+                COALESCE(usage.assets_downloaded, 0)::int AS assets_downloaded,
+                COALESCE(user_usage.details, '[]'::jsonb) AS usage_details
+         FROM bundle_offers bundles
+         LEFT JOIN (
+           SELECT orders.bundle_offer_id,
+                  COUNT(DISTINCT orders.id) FILTER (
+                    WHERE LOWER(COALESCE(orders.payment_status, '')) IN ('paid', 'completed')
+                      AND LOWER(COALESCE(orders.order_status, '')) IN ('paid', 'completed')
+                  )::int AS applications,
+                  COUNT(DISTINCT orders.customer_id) FILTER (
+                    WHERE LOWER(COALESCE(orders.payment_status, '')) IN ('paid', 'completed')
+                      AND LOWER(COALESCE(orders.order_status, '')) IN ('paid', 'completed')
+                  )::int AS users_used,
+                  COUNT(downloads.id) FILTER (
+                    WHERE LOWER(COALESCE(orders.payment_status, '')) IN ('paid', 'completed')
+                      AND LOWER(COALESCE(orders.order_status, '')) IN ('paid', 'completed')
+                  )::int AS assets_downloaded
+           FROM orders
+           LEFT JOIN downloads ON downloads.order_id = orders.id
+           WHERE orders.bundle_offer_id IS NOT NULL
+           GROUP BY orders.bundle_offer_id
+         ) usage ON usage.bundle_offer_id = bundles.id
+         LEFT JOIN LATERAL (
+           SELECT COALESCE(
+             jsonb_agg(
+               jsonb_build_object(
+                 'user_id', user_summary.customer_id,
+                 'username', users.username,
+                 'full_name', COALESCE(NULLIF(users.full_name, ''), NULLIF(user_summary.customer_name, ''), ''),
+                 'email', users.email,
+                 'uses', user_summary.uses,
+                 'assets_downloaded', user_summary.assets_downloaded
+               )
+               ORDER BY user_summary.uses DESC, users.username, user_summary.customer_id
+             ),
+             '[]'::jsonb
+           ) AS details
+           FROM (
+             SELECT orders.customer_id,
+                    MAX(orders.customer_name) AS customer_name,
+                    COUNT(DISTINCT orders.id)::int AS uses,
+                    COUNT(DISTINCT downloads.id)::int AS assets_downloaded
+             FROM orders
+             LEFT JOIN downloads ON downloads.order_id = orders.id
+             WHERE orders.bundle_offer_id = bundles.id
+               AND orders.customer_id IS NOT NULL
+               AND LOWER(COALESCE(orders.payment_status, '')) IN ('paid', 'completed')
+               AND LOWER(COALESCE(orders.order_status, '')) IN ('paid', 'completed')
+             GROUP BY orders.customer_id
+           ) user_summary
+           LEFT JOIN users ON users.id = user_summary.customer_id
+         ) user_usage ON TRUE
+         ORDER BY bundles.created_at DESC`
+      ),
+      pool.query(
+        `SELECT campaigns.*,
+                COALESCE(email_stats.queued_recipients, 0)::int AS queued_recipients,
+                COALESCE(email_stats.sent_recipients, 0)::int AS sent_recipients,
+                COALESCE(email_stats.opened_recipients, 0)::int AS opened_recipients,
+                COALESCE(email_stats.clicked_recipients, 0)::int AS clicked_recipients,
+                COALESCE(email_stats.recipient_details, '[]'::jsonb) AS recipient_details
+         FROM promotion_email_campaigns campaigns
+         LEFT JOIN LATERAL (
+           SELECT
+             COUNT(*)::int AS queued_recipients,
+             COUNT(*) FILTER (WHERE LOWER(COALESCE(status, '')) IN ('sent', 'delivered', 'opened', 'clicked'))::int AS sent_recipients,
+             COUNT(*) FILTER (WHERE opened_at IS NOT NULL)::int AS opened_recipients,
+             COUNT(*) FILTER (WHERE clicked_at IS NOT NULL)::int AS clicked_recipients,
+             COALESCE(
+               jsonb_agg(
+                 jsonb_build_object(
+                   'id', id,
+                   'recipient', recipient,
+                   'status', status,
+                   'opened_at', opened_at,
+                   'clicked_at', clicked_at,
+                   'created_at', created_at,
+                   'metadata', metadata
+                 )
+                 ORDER BY id
+               ),
+               '[]'::jsonb
+             ) AS recipient_details
+           FROM promotion_email_logs
+           WHERE campaign_id = campaigns.id
+         ) email_stats ON TRUE
+         ORDER BY campaigns.created_at DESC`
+      ),
       pool.query("SELECT * FROM marketing_banners ORDER BY created_at DESC"),
       pool.query("SELECT * FROM marketing_popups ORDER BY created_at DESC"),
       pool.query("SELECT * FROM announcement_bar ORDER BY created_at DESC"),
@@ -7117,11 +7818,60 @@ app.get("/admin/promotions", verifyAdmin, async (req, res) => {
                 AND earnings.created_at > applications.created_at) AS earnings_count
          ) progress ON TRUE
          ORDER BY applications.created_at DESC, applications.id DESC`
+      ),
+      pool.query(
+        `WITH calendar AS (
+           SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date AS today
+         ), bounds AS (
+           SELECT
+             today,
+             today - 29 AS last_30_days_start,
+             date_trunc('month', today::timestamp)::date AS current_month_start,
+             date_trunc('quarter', today::timestamp)::date AS current_quarter_start,
+             CASE
+               WHEN EXTRACT(MONTH FROM today) >= 4
+                 THEN make_date(EXTRACT(YEAR FROM today)::int, 4, 1)
+               ELSE make_date(EXTRACT(YEAR FROM today)::int - 1, 4, 1)
+             END AS current_financial_year_start
+           FROM calendar
+         ), redemptions AS (
+           SELECT (redeemed_at AT TIME ZONE 'Asia/Kolkata')::date AS redeemed_date, amount
+           FROM coupon_redemptions
+         )
+         SELECT jsonb_build_object(
+           'last_30_days', jsonb_build_object(
+             'uses', COUNT(*) FILTER (WHERE redeemed_date BETWEEN last_30_days_start AND today),
+             'revenue', COALESCE(SUM(amount) FILTER (WHERE redeemed_date BETWEEN last_30_days_start AND today), 0)
+           ),
+           'current_month', jsonb_build_object(
+             'uses', COUNT(*) FILTER (WHERE redeemed_date >= current_month_start AND redeemed_date <= today),
+             'revenue', COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_month_start AND redeemed_date <= today), 0)
+           ),
+           'current_quarter', jsonb_build_object(
+             'uses', COUNT(*) FILTER (WHERE redeemed_date >= current_quarter_start AND redeemed_date <= today),
+             'revenue', COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_quarter_start AND redeemed_date <= today), 0)
+           ),
+           'last_quarter', jsonb_build_object(
+             'uses', COUNT(*) FILTER (WHERE redeemed_date >= current_quarter_start - INTERVAL '3 months' AND redeemed_date < current_quarter_start),
+             'revenue', COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_quarter_start - INTERVAL '3 months' AND redeemed_date < current_quarter_start), 0)
+           ),
+           'current_financial_year', jsonb_build_object(
+             'uses', COUNT(*) FILTER (WHERE redeemed_date >= current_financial_year_start AND redeemed_date <= today),
+             'revenue', COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_financial_year_start AND redeemed_date <= today), 0)
+           ),
+           'last_financial_year', jsonb_build_object(
+             'uses', COUNT(*) FILTER (WHERE redeemed_date >= current_financial_year_start - INTERVAL '1 year' AND redeemed_date < current_financial_year_start),
+             'revenue', COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_financial_year_start - INTERVAL '1 year' AND redeemed_date < current_financial_year_start), 0)
+           )
+         ) AS analytics
+         FROM redemptions
+         CROSS JOIN bounds`
       )
     ]);
 
     return res.json({
       dashboard,
+      coupon_analytics: couponAnalytics.rows[0]?.analytics || {},
       coupons: coupons.rows,
       campaigns: campaigns.rows,
       flash_sales: flashSales.rows,
@@ -10459,7 +11209,24 @@ app.get(
 
           if (!isContributor && !isAdmin) {
             await pool.query(
-              `INSERT INTO downloads (user_id, image_id, downloaded_at) VALUES ($1, $2, NOW())`,
+              `INSERT INTO downloads (user_id, image_id, downloaded_at, order_id)
+               VALUES (
+                 $1,
+                 $2,
+                 NOW(),
+                 (
+                   SELECT customer_downloads.order_id
+                   FROM customer_downloads
+                   JOIN orders ON orders.id = customer_downloads.order_id
+                   WHERE customer_downloads.user_id = $1
+                     AND customer_downloads.image_id = $2
+                     AND customer_downloads.is_active = TRUE
+                     AND orders.flash_sale_id IS NOT NULL
+                   ORDER BY customer_downloads.created_at DESC, customer_downloads.id DESC
+                   LIMIT 1
+                 )
+               )
+               ON CONFLICT DO NOTHING`,
               [userId, image.id]
             );
             await pool.query(
@@ -11531,6 +12298,50 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
     const user = userResult.rows[0];
+    const promotionalItems = normalizedItems.filter((item) => item.promotionalBannerSlug);
+    if (promotionalItems.length > 0) {
+      if (!["customer", "buyer"].includes(String(user.role || "").trim().toLowerCase())) {
+        return res.status(403).json({ error: "Promotional assets are only available to logged-in customers." });
+      }
+
+      const liveBanners = await loadLivePromotionalBanners();
+      const requestedPromotionalAssetIds = [...new Set(promotionalItems
+        .map((item) => Number(item.id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0))];
+      const eligiblePromotionalAssets = requestedPromotionalAssetIds.length
+        ? await pool.query(
+          `SELECT id
+           FROM images
+           WHERE id = ANY($1::int[])
+             AND LOWER(BTRIM(COALESCE(status, ''))) IN ('approved', 'published', 'live')`,
+          [requestedPromotionalAssetIds]
+        )
+        : { rows: [] };
+      const eligiblePromotionalAssetIds = new Set(eligiblePromotionalAssets.rows.map((asset) => Number(asset.id)));
+      for (const item of promotionalItems) {
+        const bannerSlug = String(item.promotionalBannerSlug || "");
+        const promotionalBanner = liveBanners.find((banner) => banner.slug === bannerSlug);
+        const assetId = Number(item.id);
+        const metadata = promotionalBanner?.metadata || {};
+        const selectedAssetIds = Array.isArray(metadata.selected_asset_ids)
+          ? metadata.selected_asset_ids.map(Number)
+          : [];
+        if (
+          !promotionalBanner
+          || !Number.isSafeInteger(assetId)
+          || !eligiblePromotionalAssetIds.has(assetId)
+          || !selectedAssetIds.includes(assetId)
+          || Number(item.quantity || 1) !== 1
+        ) {
+          return res.status(400).json({ error: "This asset is not eligible for the selected promotion." });
+        }
+        item.price = 0;
+        item.unitPrice = 0;
+        item.freeAsset = true;
+        item.isFree = true;
+      }
+    }
+
     const subscriptionEntitlement = isCreditPurchase ? null : await getSubscriptionDownloadEntitlement(req.user.id);
     if (subscriptionEntitlement && (subscriptionEntitlement.unlimited || subscriptionEntitlement.remaining > 0)) {
       return res.status(400).json({ error: "Your active subscription is valid until its download limit is reached or the plan expires" });
@@ -11707,6 +12518,7 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
     }
 
     let bundleDiscount = 0;
+    let appliedBundleOfferId = null;
     if (!coupon && !flashSale && !isCreditPurchase && !normalizedItems.some((item) => item.subscription)) {
       const requestedAssetIds = [...new Set(normalizedItems
         .filter((item) => !item.creditPackage && item.id != null)
@@ -11729,12 +12541,14 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
           && item.id != null
           && availableAssetIds.has(String(Number(item.id)))
         ));
-        bundleDiscount = calculateBestBundleTierDiscount(
+        const bundleDeal = calculateBestBundleTierDiscount(
           eligibleBundleItems,
           offerResult.rows,
           flashSaleFreeAssetIds,
           bundleOfferId
-        ).discount;
+        );
+        bundleDiscount = bundleDeal.discount;
+        appliedBundleOfferId = bundleDiscount > 0 ? bundleDeal.offer?.id || null : null;
       }
     }
 
@@ -11874,6 +12688,8 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
           0,
           0,
           0,
+          flashSale?.id || null,
+          appliedBundleOfferId,
         ];
         const orderResult = await pool.query(
           `INSERT INTO orders (
@@ -11901,9 +12717,11 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
             downloads_count,
             contributor_earnings,
             platform_commission,
+            flash_sale_id,
+            bundle_offer_id,
             created_at,
             updated_at
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,NOW(),NOW()) RETURNING id`,
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,NOW(),NOW()) RETURNING id`,
           orderValues
         );
 
@@ -11992,7 +12810,12 @@ app.post("/checkout/place-order", authenticateToken, async (req, res) => {
         }
 
         if (!freeAsset && !isGooglePayPayment) {
-          await pool.query(`INSERT INTO downloads (user_id, image_id, downloaded_at) VALUES ($1,$2,NOW())`, [req.user.id, assetId]);
+          await pool.query(
+            `INSERT INTO downloads (user_id, image_id, downloaded_at, order_id)
+             VALUES ($1,$2,NOW(),$3)
+             ON CONFLICT DO NOTHING`,
+            [req.user.id, assetId, orderId]
+          );
           downloadedAssets.push({ id: assetId, title: image.title });
         }
 
@@ -15794,6 +16617,10 @@ app.get('/cart/get', authenticateToken, async (req, res) => {
         free_asset as freeAsset,
         contributor_id as contributorId,
         item_type as "itemType",
+        CASE
+          WHEN item_type LIKE 'promotion:%' THEN SUBSTRING(item_type FROM 11)
+          ELSE NULL
+        END AS "promotionalBannerSlug",
         (item_type = 'credit_package') AS "creditPackage",
         credit_amount as "creditAmount",
         quantity
@@ -15823,6 +16650,15 @@ app.post('/cart/save', authenticateToken, async (req, res) => {
     if (!Array.isArray(items)) {
       return res.status(400).json({ error: 'Items must be an array' });
     }
+    if (items.some((item) => item?.promotionalBannerSlug && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(String(item.promotionalBannerSlug)))) {
+      return res.status(400).json({ error: 'Promotional banner reference is invalid.' });
+    }
+    if (items.some((item) => item?.promotionalBannerSlug)) {
+      const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
+      if (!["customer", "buyer"].includes(String(userResult.rows[0]?.role || "").trim().toLowerCase())) {
+        return res.status(403).json({ error: 'Promotional assets are only available to logged-in customers.' });
+      }
+    }
 
     // Clear existing cart for this user
     await pool.query('DELETE FROM user_cart_items WHERE user_id = $1', [userId]);
@@ -15836,6 +16672,9 @@ app.post('/cart/save', authenticateToken, async (req, res) => {
             price, currency, license, free_asset, contributor_id, item_type, credit_amount, quantity
           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
           ON CONFLICT (user_id, image_id, currency) DO UPDATE SET
+            price = EXCLUDED.price,
+            free_asset = EXCLUDED.free_asset,
+            item_type = EXCLUDED.item_type,
             quantity = EXCLUDED.quantity,
             updated_at = NOW()`,
           [
@@ -15850,7 +16689,11 @@ app.post('/cart/save', authenticateToken, async (req, res) => {
             String(item.license || 'Standard license'),
             !!item.freeAsset,
             item.contributorId || null,
-            item.creditPackage ? 'credit_package' : 'asset',
+            item.creditPackage
+              ? 'credit_package'
+              : item.promotionalBannerSlug
+                ? `promotion:${String(item.promotionalBannerSlug)}`
+                : 'asset',
             item.creditPackage ? Number(item.creditAmount || 0) : null,
             Number(item.quantity || 1)
           ]

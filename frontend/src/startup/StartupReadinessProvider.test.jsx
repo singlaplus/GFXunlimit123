@@ -336,7 +336,7 @@ describe("StartupReadinessProvider", () => {
       if (url.endsWith("/me")) return Promise.reject({ response: { status: 401 } });
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "0");
     await act(async () => {
       resolveRetryHealth(HEALTH_RESPONSE);
@@ -344,11 +344,11 @@ describe("StartupReadinessProvider", () => {
     expect(await screen.findByTestId("ready-app")).toHaveTextContent("/about:anonymous");
   });
 
-  it("keeps network failures as errors instead of successful responses", async () => {
+  it("shows a user-friendly message instead of raw network errors", async () => {
     axios.get.mockRejectedValueOnce(Object.assign(new Error("Network Error"), { code: "ERR_NETWORK" }));
 
     renderReadiness();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Network Error");
+    expect(await screen.findByRole("alert")).toHaveTextContent("We couldn’t reach the server. Please try again.");
   });
 
   it.each([401, 403])("continues anonymously after /me returns %s", async (status) => {
@@ -713,7 +713,7 @@ describe("StartupReadinessProvider", () => {
     clickButton(container, "Catalog failed");
     expect(await screen.findByRole("alert")).toHaveTextContent("Catalog unavailable.");
 
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(screen.getByTestId("retry-key")).toHaveTextContent("1"));
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "75");
     clickButton(container, "Catalog ready");
@@ -726,7 +726,7 @@ describe("StartupReadinessProvider", () => {
 
     clickButton(container, "Availability failed");
     expect(await screen.findByRole("alert")).toHaveTextContent("Availability unavailable.");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => {
       expect(screen.getByTestId("availability-retry-key")).toHaveTextContent("1");
     });
@@ -734,7 +734,7 @@ describe("StartupReadinessProvider", () => {
 
     clickButton(container, "Availability failed");
     expect(await screen.findByRole("alert")).toHaveTextContent("Availability unavailable.");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => {
       expect(screen.getByTestId("availability-retry-key")).toHaveTextContent("2");
     });

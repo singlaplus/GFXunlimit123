@@ -54,7 +54,7 @@ export const loadCartItems = async ({ strict = false } = {}) => {
 /**
  * Save cart to server if user is logged in, otherwise to localStorage
  */
-export const saveCartItems = async (items) => {
+export const saveCartItems = async (items, { strict = false } = {}) => {
   const token = getEffectiveAuthToken();
 
   // Always save to localStorage for offline support
@@ -74,6 +74,7 @@ export const saveCartItems = async (items) => {
     return true;
   } catch (err) {
     console.error('Failed to save cart to server:', err.message || err);
+    if (strict) throw err;
     // Still return true since localStorage was saved
     return true;
   }
