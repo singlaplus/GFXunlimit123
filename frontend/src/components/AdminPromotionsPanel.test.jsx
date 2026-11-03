@@ -842,13 +842,13 @@ test("shows the selected coupon period totals beside each dropdown", async () =>
   expect(await screen.findByLabelText("Coupon usage range selector")).toBeInTheDocument();
   expect(screen.getByLabelText("Coupon revenue currency selector")).toHaveValue("INR");
   expect(await screen.findByRole("table", { name: "Top coupons ranked by usage" })).toBeInTheDocument();
-  expect(screen.getByText("Coupon 1")).toBeInTheDocument();
-  expect(screen.getByText("Coupon 5")).toBeInTheDocument();
+  expect(screen.getAllByText("Coupon 1").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Coupon 5").length).toBeGreaterThan(0);
   expect(screen.queryByText("Coupon 6")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Export all 6 coupons CSV" })).toBeEnabled();
   await waitFor(() => expect(screen.getByText("12")).toBeInTheDocument(), { timeout: 2000 });
   await waitFor(() => expect(screen.getByText("₹1,000.00")).toBeInTheDocument(), { timeout: 2000 });
-  await waitFor(() => expect(screen.getByText("₹1,500.50")).toBeInTheDocument(), { timeout: 2000 });
+  await waitFor(() => expect(screen.getAllByText("₹1,500.50").length).toBeGreaterThan(0), { timeout: 2000 });
   const couponsOverview = screen.getByText("Coupons", { selector: ".promotions-card-label" }).closest(".promotions-coupons-overview");
   expect(within(couponsOverview).getAllByText("Lifetime")).toHaveLength(2);
   const usagePanel = couponsOverview.querySelector(".promotions-coupons-panel:nth-child(2)");
@@ -981,6 +981,122 @@ test("top coupon and contributor offer exports remain available when there are n
     if (previousRevokeObjectURL) Object.defineProperty(URL, "revokeObjectURL", previousRevokeObjectURL);
     else delete URL.revokeObjectURL;
   }
+});
+
+test("provides dashboard quick actions, promotion alerts, upcoming items, comparison, and chart controls", async () => {
+  window.localStorage.setItem("adminPromotionsActiveSection", "dashboard");
+  const today = getIndiaDateKey();
+  const shiftDate = (days) => {
+    const [year, month, day] = today.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+  };
+  axios.get.mockImplementation((url) => Promise.resolve({
+    data: url.endsWith("/coupon-analytics")
+      ? {
+          currencies: ["INR"],
+          rates: { INR: 1 },
+          analytics: {
+            last_30_days: { uses: 3, revenue_by_currency: { INR: 1000 } },
+            previous_30_days: { uses: 2, revenue_by_currency: { INR: 500 } }
+          },
+          daily_series: [{ date: today, uses: 2, revenue_by_currency: { INR: 750 } }],
+          top_coupons: [
+            { id: 1, name: "Unused active coupon", uses: 0, revenue_by_currency: {} },
+            { id: 2, name: "Best coupon", uses: 3, revenue_by_currency: { INR: 1000 } }
+          ]
+        }
+      : {
+          coupons: [
+            { id: 1, name: "Unused active coupon", code: "UNUSED", status: "active", end_at: shiftDate(3) },
+            { id: 2, name: "Best coupon", code: "BEST", status: "active" },
+            { id: 3, name: "Scheduled coupon", status: "active", start_at: shiftDate(2), end_at: shiftDate(20) }
+          ],
+          campaigns: [],
+          contributor_applications: [],
+          flash_sales: [{
+            id: 7,
+            name: "Popular flash sale",
+            status: "running",
+            start_date: shiftDate(-1),
+            end_date: shiftDate(5),
+            users_used: 5,
+            assets_downloaded: 11,
+            featured_placement: "homepage",
+            metadata: {}
+          }],
+          bundles: [],
+          newsletters: [],
+          banners: []
+        }
+  }));
+  render(<AdminPromotionsPanel />);
+
+  expect(await screen.findByRole("button", { name: "Create coupon" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Create flash sale" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Top-performing promotions" })).toBeInTheDocument();
+  expect(screen.getAllByText("Best coupon").length).toBeGreaterThan(0);
+  expect(screen.getByText("1 active coupon with no recorded redemptions")).toBeInTheDocument();
+  expect(screen.getByText("Unused active coupon expires in 3 days")).toBeInTheDocument();
+  expect(screen.getByText("Scheduled coupon")).toBeInTheDocument();
+  expect(screen.getByText("+50.0%")).toBeInTheDocument();
+  expect(screen.getByText("+100.0%")).toBeInTheDocument();
+  expect(screen.getByLabelText("Daily coupon redemptions for the last 30 days")).toBeInTheDocument();
+  expect(document.querySelectorAll(".promotions-coupon-trend-bar")).toHaveLength(30);
+
+  fireEvent.click(screen.getByRole("button", { name: "Revenue" }));
+  expect(screen.getByLabelText("Daily coupon revenue in INR for the last 30 days")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Create coupon" }));
+  expect(await screen.findByRole("heading", { name: "Coupon Management" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Coupon name")).toBeInTheDocument();
+});
+
+test("shows only promotion metrics and coupon activity analytics in the Analytics tab", async () => {
+  window.localStorage.setItem("adminPromotionsActiveSection", "analytics");
+  axios.get.mockImplementation((url) => Promise.resolve({
+    data: url.endsWith("/coupon-analytics")
+      ? {
+          currencies: ["INR"],
+          rates: { INR: 1 },
+          analytics: {
+            last_30_days: { uses: 4, revenue_by_currency: { INR: 800 } },
+            previous_30_days: { uses: 2, revenue_by_currency: { INR: 300 } }
+          },
+          daily_series: [{ date: getIndiaDateKey(), uses: 2, revenue_by_currency: { INR: 500 } }],
+          top_coupons: [{ id: 8, name: "Analytics coupon", uses: 4, revenue_by_currency: { INR: 800 } }]
+        }
+      : {
+          dashboard: {
+            active_campaigns: 3,
+            coupons_created: 8,
+            coupons_redeemed: 12,
+            revenue_generated: 1200
+          },
+          campaigns: [],
+          contributor_applications: [],
+          coupons: [],
+          flash_sales: [],
+          bundles: [],
+          newsletters: [],
+          banners: []
+        }
+  }));
+  render(<AdminPromotionsPanel />);
+
+  expect(await screen.findByRole("heading", { name: "Promotion analytics" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Promotion performance metrics" })).toBeInTheDocument();
+  expect(screen.getByText("Active Campaigns")).toBeInTheDocument();
+  expect(screen.getByText("Coupons Redeemed")).toBeInTheDocument();
+  expect(screen.getByText("Revenue Generated")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Coupon activity" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Daily coupon redemptions for the last 30 days")).toBeInTheDocument();
+  expect(screen.getByText("+100.0%")).toBeInTheDocument();
+  expect(screen.getByText("+166.7%")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Quick actions" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Top-performing promotions" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Promotion alerts" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Upcoming promotions" })).not.toBeInTheDocument();
+  expect(document.querySelector(".promotions-coupons-overview")).not.toBeInTheDocument();
 });
 
 test("shows Flash Sales configuration analytics and exports every flash sale", async () => {
@@ -1539,8 +1655,8 @@ test("shows Contributor Offers analytics and the five most-used offers on the da
   expect(benefitsCurrencySelector).toHaveValue("INR");
   fireEvent.change(benefitsCurrencySelector, { target: { value: "USD" } });
   await waitFor(() => expect(within(benefitsPanel).getByText("Yesterday").parentElement).toHaveTextContent("$0.10"), { timeout: 2000 });
-  expect(screen.getByText("Contributor offer 1")).toBeInTheDocument();
-  expect(screen.getByText("Contributor offer 5")).toBeInTheDocument();
+  expect(screen.getAllByText("Contributor offer 1").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Contributor offer 5").length).toBeGreaterThan(0);
   expect(screen.queryByText("Contributor offer 6")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Export all 6 contributor offers CSV" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Export contributor applications CSV" })).toBeEnabled();

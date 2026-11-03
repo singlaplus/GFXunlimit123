@@ -7450,6 +7450,8 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
            today - 1 AS yesterday,
            today - 6 AS last_7_days_start,
            today - 29 AS last_30_days_start,
+           today - 30 AS previous_30_days_end,
+           today - 59 AS previous_30_days_start,
            date_trunc('month', today::timestamp)::date AS current_month_start,
            date_trunc('quarter', today::timestamp)::date AS current_quarter_start,
            CASE
@@ -7483,6 +7485,8 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
          COALESCE(SUM(amount) FILTER (WHERE redeemed_date BETWEEN last_7_days_start AND today), 0) AS last_7_days_revenue,
          COUNT(*) FILTER (WHERE redeemed_date BETWEEN last_30_days_start AND today)::int AS last_30_days_uses,
          COALESCE(SUM(amount) FILTER (WHERE redeemed_date BETWEEN last_30_days_start AND today), 0) AS last_30_days_revenue,
+         COUNT(*) FILTER (WHERE redeemed_date BETWEEN previous_30_days_start AND previous_30_days_end)::int AS previous_30_days_uses,
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date BETWEEN previous_30_days_start AND previous_30_days_end), 0) AS previous_30_days_revenue,
          COUNT(*) FILTER (WHERE redeemed_date >= current_month_start AND redeemed_date <= today)::int AS current_month_uses,
          COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_month_start AND redeemed_date <= today), 0) AS current_month_revenue,
          COUNT(*) FILTER (WHERE redeemed_date >= current_quarter_start AND redeemed_date <= today)::int AS current_quarter_uses,
@@ -7492,7 +7496,20 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
          COUNT(*) FILTER (WHERE redeemed_date >= current_financial_year_start AND redeemed_date <= today)::int AS current_financial_year_uses,
          COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_financial_year_start AND redeemed_date <= today), 0) AS current_financial_year_revenue,
          COUNT(*) FILTER (WHERE redeemed_date >= current_financial_year_start - INTERVAL '1 year' AND redeemed_date < current_financial_year_start)::int AS last_financial_year_uses,
-         COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_financial_year_start - INTERVAL '1 year' AND redeemed_date < current_financial_year_start), 0) AS last_financial_year_revenue
+         COALESCE(SUM(amount) FILTER (WHERE redeemed_date >= current_financial_year_start - INTERVAL '1 year' AND redeemed_date < current_financial_year_start), 0) AS last_financial_year_revenue,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('date', daily.redeemed_date::text, 'uses', daily.uses, 'revenue', daily.revenue)
+             ORDER BY daily.redeemed_date
+           )
+           FROM (
+             SELECT redeemed_date, COUNT(*)::int AS uses, COALESCE(SUM(amount), 0) AS revenue
+             FROM redemptions daily
+             WHERE daily.currency = redemptions.currency
+               AND daily.redeemed_date BETWEEN last_30_days_start AND today
+             GROUP BY redeemed_date
+           ) daily
+         ), '[]'::jsonb) AS daily_series
        FROM redemptions
        CROSS JOIN bounds
        GROUP BY redemptions.currency`
@@ -7554,6 +7571,7 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
       yesterday: { uses: 0, revenue_by_currency: {} },
       last_7_days: { uses: 0, revenue_by_currency: {} },
       last_30_days: { uses: 0, revenue_by_currency: {} },
+      previous_30_days: { uses: 0, revenue_by_currency: {} },
       current_month: { uses: 0, revenue_by_currency: {} },
       current_quarter: { uses: 0, revenue_by_currency: {} },
       last_quarter: { uses: 0, revenue_by_currency: {} },
@@ -7566,20 +7584,30 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
       ["yesterday", "yesterday"],
       ["last_7_days", "last_7_days"],
       ["last_30_days", "last_30_days"],
+      ["previous_30_days", "previous_30_days"],
       ["current_month", "current_month"],
       ["current_quarter", "current_quarter"],
       ["last_quarter", "last_quarter"],
       ["current_financial_year", "current_financial_year"],
       ["last_financial_year", "last_financial_year"]
     ];
+    const dailySeriesByDate = new Map();
     redemptionRows.rows.forEach((row) => {
       periods.forEach(([period, field]) => {
         analytics[period].uses += Number(row[`${field}_uses`] || 0);
         analytics[period].revenue_by_currency[row.currency] = Number(row[`${field}_revenue`] || 0);
       });
+      const dailySeries = Array.isArray(row.daily_series) ? row.daily_series : [];
+      dailySeries.forEach((day) => {
+        const daily = dailySeriesByDate.get(day.date) || { date: day.date, uses: 0, revenue_by_currency: {} };
+        daily.uses += Number(day.uses || 0);
+        daily.revenue_by_currency[row.currency] = Number(day.revenue || 0);
+        dailySeriesByDate.set(day.date, daily);
+      });
     });
 
-    return res.json({ currencies: supportedCurrencies, rates: normalizedRates, analytics, top_coupons: topCoupons });
+    const dailySeries = [...dailySeriesByDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+    return res.json({ currencies: supportedCurrencies, rates: normalizedRates, analytics, daily_series: dailySeries, top_coupons: topCoupons });
   } catch (error) {
     console.error("Failed to load coupon revenue analytics", error);
     return res.status(500).json({ error: "Failed to load coupon revenue analytics." });

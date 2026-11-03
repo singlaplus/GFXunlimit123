@@ -655,6 +655,8 @@ function AdminPromotionsPanel() {
   });
   const [coupons, setCoupons] = useState([]);
   const [couponAnalytics, setCouponAnalytics] = useState({});
+  const [couponDailySeries, setCouponDailySeries] = useState([]);
+  const [couponTrendMetric, setCouponTrendMetric] = useState("uses");
   const [topCoupons, setTopCoupons] = useState([]);
   const [couponCurrencies, setCouponCurrencies] = useState([]);
   const [couponExchangeRates, setCouponExchangeRates] = useState({});
@@ -805,7 +807,7 @@ function AdminPromotionsPanel() {
   }, []);
 
   useEffect(() => {
-    if (activeSection !== "dashboard") return undefined;
+    if (!["dashboard", "analytics"].includes(activeSection)) return undefined;
     let active = true;
     const loadCouponAnalytics = async () => {
       setCouponAnalyticsError("");
@@ -813,7 +815,13 @@ function AdminPromotionsPanel() {
         const response = await axios.get(`${API_BASE_URL}/admin/promotions/coupon-analytics`, {
           headers: buildAuthHeaders()
         });
-        const { currencies, rates, analytics, top_coupons: couponRanking } = response.data || {};
+        const {
+          currencies,
+          rates,
+          analytics,
+          daily_series: dailySeries,
+          top_coupons: couponRanking
+        } = response.data || {};
         if (!Array.isArray(currencies) || !rates || typeof rates !== "object" || !analytics || typeof analytics !== "object" || !Array.isArray(couponRanking)) {
           throw new Error("Coupon revenue analytics response was invalid.");
         }
@@ -821,6 +829,7 @@ function AdminPromotionsPanel() {
           setCouponCurrencies(currencies);
           setCouponExchangeRates(rates);
           setCouponAnalytics(analytics);
+          setCouponDailySeries(Array.isArray(dailySeries) ? dailySeries : []);
           setTopCoupons(couponRanking);
           setCouponCurrency((currentCurrency) => (
             currencies.includes(currentCurrency) ? currentCurrency : currencies[0] || "INR"
@@ -1860,7 +1869,7 @@ function AdminPromotionsPanel() {
     flashEventFilter === "all" || timing.status === flashEventFilter
   ));
 
-  const renderKpiCards = () => {
+  const renderKpiCards = ({ analyticsOnly = false } = {}) => {
     const couponUsageRangeOptions = [
       { value: "last_30_days", label: "Last 30 days" },
       { value: "current_month", label: "Current month" },
@@ -2559,6 +2568,192 @@ function AdminPromotionsPanel() {
         || Number(right.banner.id || 0) - Number(left.banner.id || 0)
       ))
       .slice(0, 5);
+    const promotionEvents = [];
+    const addUpcomingPromotion = ({ name, category, section, status, startDate, endDate }) => {
+      const start = String(startDate || "").slice(0, 10);
+      const end = String(endDate || "").slice(0, 10);
+      const daysUntilStart = start ? Math.round((Date.parse(`${start}T00:00:00Z`) - Date.parse(`${todayDateKey}T00:00:00Z`)) / 86400000) : null;
+      const daysUntilEnd = end ? Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${todayDateKey}T00:00:00Z`)) / 86400000) : null;
+      if (status === "scheduled" && start && daysUntilStart >= 0 && daysUntilStart <= 30) {
+        promotionEvents.push({ name, category, section, status, date: start, daysUntil: daysUntilStart, dateType: "start" });
+      } else if (status === "active" && daysUntilEnd !== null && daysUntilEnd >= 0 && daysUntilEnd <= 7) {
+        promotionEvents.push({ name, category, section, status, date: end, daysUntil: daysUntilEnd, dateType: "end" });
+      }
+    };
+    coupons.forEach((coupon) => {
+      const metadata = getCouponMetadata(coupon);
+      const savedStatus = String(coupon.status || "active").trim().toLowerCase();
+      const startDate = coupon.start_at || metadata.start_date;
+      const endDate = coupon.end_at || metadata.end_date;
+      const startKey = String(startDate || "").slice(0, 10);
+      const endKey = String(endDate || "").slice(0, 10);
+      const status = ["draft", "disabled", "inactive", "archived"].includes(savedStatus)
+        ? savedStatus
+        : endKey && endKey < todayDateKey
+          ? "expired"
+          : startKey && startKey > todayDateKey
+            ? "scheduled"
+            : "active";
+      addUpcomingPromotion({
+        name: coupon.name || coupon.code || "Untitled coupon",
+        category: "Coupon",
+        section: "coupons",
+        status,
+        startDate,
+        endDate
+      });
+    });
+    campaigns.forEach((campaign) => {
+      const metadata = getCampaignMetadata(campaign);
+      addUpcomingPromotion({
+        name: campaign.name || "Contributor offer",
+        category: "Contributor offer",
+        section: "campaigns",
+        status: getCampaignDisplayStatus(campaign.status),
+        startDate: metadata.start_date || campaign.start_date,
+        endDate: metadata.end_date || campaign.end_date
+      });
+    });
+    flashEventRecords.forEach(({ sale, timing }) => addUpcomingPromotion({
+      name: sale.name || "Flash sale",
+      category: "Flash sale",
+      section: "flash-sales",
+      status: timing.status,
+      startDate: sale.start_date,
+      endDate: sale.end_date
+    }));
+    bundleEventRecords.forEach(({ bundle, status, startDate, endDate }) => addUpcomingPromotion({
+      name: bundle.name || "Bundle discount",
+      category: "Bundle discount",
+      section: "bundles",
+      status,
+      startDate,
+      endDate
+    }));
+    bannerEventRecords.forEach(({ banner, status, startDate, endDate }) => addUpcomingPromotion({
+      name: banner.name || "Promotional banner",
+      category: "Promotional banner",
+      section: "banners",
+      status,
+      startDate,
+      endDate
+    }));
+    newsletters.forEach((newsletter) => {
+      const scheduledDate = newsletter.scheduled_at || newsletter.schedule;
+      if (String(newsletter.status || "").toLowerCase() !== "scheduled" || !scheduledDate) return;
+      const scheduledDateKey = getISTDateKey(scheduledDate);
+      addUpcomingPromotion({
+        name: newsletter.name || "Newsletter campaign",
+        category: "Newsletter",
+        section: "newsletters",
+        status: "scheduled",
+        startDate: scheduledDateKey
+      });
+    });
+    const upcomingPromotions = promotionEvents
+      .sort((left, right) => left.daysUntil - right.daysUntil || left.name.localeCompare(right.name))
+      .slice(0, 6);
+    const promotionsStartingSoon = promotionEvents.filter((promotion) => (
+      promotion.dateType === "start" && promotion.daysUntil <= 7
+    ));
+    const promotionsExpiringSoon = promotionEvents.filter((promotion) => (
+      promotion.dateType === "end" && promotion.daysUntil <= 7
+    ));
+    const topCouponUsageById = new Map(topCoupons.map((coupon) => [String(coupon.id), coupon]));
+    const activeCouponsWithoutRedemptions = coupons.filter((coupon) => {
+      const usage = topCouponUsageById.get(String(coupon.id));
+      const status = String(coupon.status || "active").trim().toLowerCase();
+      return usage && usage.uses === 0 && status === "active";
+    });
+    const promotionAlerts = [
+      ...promotionsExpiringSoon.slice(0, 2).map((promotion) => ({
+        type: "warning",
+        title: `${promotion.name} expires ${promotion.daysUntil === 0 ? "today" : `in ${promotion.daysUntil} day${promotion.daysUntil === 1 ? "" : "s"}`}`,
+        section: promotion.section
+      })),
+      ...promotionsStartingSoon.slice(0, 2).map((promotion) => ({
+        type: "info",
+        title: `${promotion.name} starts ${promotion.daysUntil === 0 ? "today" : `in ${promotion.daysUntil} day${promotion.daysUntil === 1 ? "" : "s"}`}`,
+        section: promotion.section
+      })),
+      ...(activeCouponsWithoutRedemptions.length > 0 ? [{
+        type: "notice",
+        title: `${activeCouponsWithoutRedemptions.length} active coupon${activeCouponsWithoutRedemptions.length === 1 ? "" : "s"} with no recorded redemptions`,
+        section: "coupons"
+      }] : [])
+    ];
+    const currentPeriodAnalytics = couponAnalytics.last_30_days;
+    const previousPeriodAnalytics = couponAnalytics.previous_30_days;
+    const getPeriodChange = (currentValue, previousValue, loaded) => {
+      if (!loaded) return "—";
+      if (previousValue === 0) return currentValue === 0 ? "—" : "New";
+      const percent = ((currentValue - previousValue) / previousValue) * 100;
+      return `${percent > 0 ? "+" : ""}${percent.toFixed(1)}%`;
+    };
+    const currentPeriodRevenue = convertRevenueByCurrency(currentPeriodAnalytics?.revenue_by_currency || {});
+    const previousPeriodRevenue = convertRevenueByCurrency(previousPeriodAnalytics?.revenue_by_currency || {});
+    const periodComparison = [
+      {
+        label: "Coupon redemptions",
+        current: Number(currentPeriodAnalytics?.uses || 0).toLocaleString(),
+        change: getPeriodChange(
+          Number(currentPeriodAnalytics?.uses || 0),
+          Number(previousPeriodAnalytics?.uses || 0),
+          Boolean(currentPeriodAnalytics && previousPeriodAnalytics)
+        )
+      },
+      {
+        label: `Coupon revenue (${couponCurrency})`,
+        current: currentPeriodRevenue === null ? "—" : formatCouponCurrency(currentPeriodRevenue, couponCurrency),
+        change: getPeriodChange(
+          currentPeriodRevenue || 0,
+          previousPeriodRevenue || 0,
+          Boolean(currentPeriodAnalytics && previousPeriodAnalytics && currentPeriodRevenue !== null && previousPeriodRevenue !== null)
+        )
+      }
+    ];
+    const dailySeriesByDate = new Map(couponDailySeries.map((day) => [day.date, day]));
+    const couponTrendData = Array.from({ length: 30 }, (_, index) => {
+      const date = shiftDateKey(todayDateKey, index - 29);
+      const daily = dailySeriesByDate.get(date);
+      const convertedRevenue = convertRevenueByCurrency(daily?.revenue_by_currency || {});
+      return {
+        date,
+        label: date.slice(5),
+        value: couponTrendMetric === "uses" ? Number(daily?.uses || 0) : (convertedRevenue || 0)
+      };
+    });
+    const couponTrendMaximum = Math.max(1, ...couponTrendData.map(({ value }) => value));
+    const featuredFlashSales = [...flashEventRecords]
+      .sort((left, right) => (
+        Number(right.sale.users_used || 0) - Number(left.sale.users_used || 0)
+        || Number(right.sale.assets_downloaded || 0) - Number(left.sale.assets_downloaded || 0)
+        || String(left.sale.name || "").localeCompare(String(right.sale.name || ""))
+      ))
+      .slice(0, 5);
+    const topPromotionHighlights = [
+      rankedCoupons[0] && {
+        category: "Top coupon",
+        name: rankedCoupons[0].name || rankedCoupons[0].code || "Unnamed coupon",
+        value: Number(rankedCoupons[0].uses || 0),
+        metric: "redemptions",
+        section: "coupons"
+      },
+      featuredFlashSales[0] && {
+        category: "Top flash sale",
+        name: featuredFlashSales[0].sale.name || "Flash sale",
+        value: Number(featuredFlashSales[0].sale.users_used || 0),
+        metric: "users",
+        section: "flash-sales"
+      },
+      featuredBundles[0] && {
+        category: "Top bundle discount",
+        name: featuredBundles[0].bundle.name || "Bundle discount",
+        value: Number(featuredBundles[0].bundle.applications || 0),
+        metric: "applications",
+        section: "bundles"
+      }
+    ].filter(Boolean);
     const downloadFlashSaleCsv = (filename, headers, getRow) => {
       const exportRows = flashEventRecords.flatMap((record) => {
         const usageDetails = Array.isArray(record.sale.usage_details) && record.sale.usage_details.length
@@ -2628,13 +2823,6 @@ function AdminPromotionsPanel() {
         formatCsvDate(sale.end_date)
       ]
     );
-    const featuredFlashSales = [...flashEventRecords]
-      .sort((left, right) => (
-        Number(right.sale.users_used || 0) - Number(left.sale.users_used || 0)
-        || Number(right.sale.assets_downloaded || 0) - Number(left.sale.assets_downloaded || 0)
-        || String(left.sale.name || "").localeCompare(String(right.sale.name || ""))
-      ))
-      .slice(0, 5);
     const revenuePeriods = [
       ["today", "Today"],
       ["yesterday", "Yesterday"],
@@ -2661,8 +2849,135 @@ function AdminPromotionsPanel() {
       { label: "Coupon Redemption Rate", value: `${Number(dashboard.coupon_redemption_rate || 0).toFixed(1)}%` }
     ];
 
+    if (analyticsOnly) {
+      const analyticsCards = cards.filter(({ label }) => (
+        [
+          "Active Campaigns",
+          "Scheduled Campaigns",
+          "Coupons Created",
+          "Coupons Redeemed",
+          "Revenue Generated",
+          "Revenue Discounted",
+          "Average Discount",
+          "Referral Revenue",
+          "Flash Sales",
+          "Active Banners",
+          "Newsletter Campaigns",
+          "Conversion Rate",
+          "Coupon Redemption Rate"
+        ].includes(label)
+      ));
+
+      return (
+        <div className="promotions-analytics-dashboard">
+          <div className="promotions-analytics-metrics" role="region" aria-label="Promotion performance metrics">
+            {analyticsCards.map((card) => (
+              <div key={card.label} className="promotions-card" data-accent={card.accent ? "revenue" : undefined}>
+                <div className="promotions-card-label">{card.label}</div>
+                <div className="promotions-card-value"><AnimatedPromotionValue value={card.value} /></div>
+              </div>
+            ))}
+          </div>
+          <section className="promotions-card promotions-insight-card promotions-coupon-trend-card">
+            <div className="promotions-dashboard-section-heading">
+              <div>
+                <span className="promotions-dashboard-eyebrow">LAST 30 DAYS</span>
+                <h3>Coupon activity</h3>
+              </div>
+              <div className="promotions-trend-toggle" role="group" aria-label="Coupon chart metric">
+                <button
+                  type="button"
+                  aria-pressed={couponTrendMetric === "uses"}
+                  onClick={() => setCouponTrendMetric("uses")}
+                >
+                  Uses
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={couponTrendMetric === "revenue"}
+                  onClick={() => setCouponTrendMetric("revenue")}
+                >
+                  Revenue
+                </button>
+              </div>
+            </div>
+            <div
+              className="promotions-coupon-trend-chart"
+              role="img"
+              aria-label={`Daily coupon ${couponTrendMetric === "uses" ? "redemptions" : `revenue in ${couponCurrency}`} for the last 30 days`}
+            >
+              {couponTrendData.map(({ date, label, value }, index) => (
+                <span
+                  className="promotions-coupon-trend-bar"
+                  key={date}
+                  title={`${date}: ${couponTrendMetric === "uses" ? `${value} uses` : formatCouponCurrency(value, couponCurrency)}`}
+                  style={{ height: `${value > 0 ? Math.max(4, (value / couponTrendMaximum) * 100) : 2}%` }}
+                >
+                  {index % 7 === 0 || index === couponTrendData.length - 1
+                    ? <span className="promotions-coupon-trend-tick">{label}</span>
+                    : null}
+                </span>
+              ))}
+            </div>
+            <p className="promotions-trend-caption" role={couponAnalyticsError ? "alert" : undefined}>
+              {couponAnalyticsError || (couponDailySeries.length === 0
+                ? "No coupon redemptions are recorded in the last 30 days."
+                : "Daily totals are based on recorded coupon redemptions.")}
+            </p>
+            <div className="promotions-period-comparison">
+              <div className="promotions-period-comparison-heading">
+                <strong>Last 30 days</strong>
+                <span>vs previous 30 days</span>
+              </div>
+              {periodComparison.map((metric) => (
+                <div className="promotions-period-comparison-row" key={metric.label}>
+                  <span>{metric.label}</span>
+                  <strong>{metric.current}</strong>
+                  <span className={`promotions-period-change${metric.change.startsWith("-") ? " is-down" : metric.change.startsWith("+") || metric.change === "New" ? " is-up" : ""}`}>
+                    {metric.change}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+          {couponAnalyticsError && (
+            <p className="promotions-dashboard-analytics-error" role="alert">{couponAnalyticsError}</p>
+          )}
+        </div>
+      );
+    }
+
     return (
       <div className="promotions-kpi-grid">
+        <section className="promotions-card promotions-quick-actions" aria-labelledby="promotions-quick-actions-title">
+          <div className="promotions-dashboard-section-heading">
+            <div>
+              <span className="promotions-dashboard-eyebrow">GET STARTED</span>
+              <h3 id="promotions-quick-actions-title">Quick actions</h3>
+            </div>
+            <span>Create or manage a promotion</span>
+          </div>
+          <div className="promotions-quick-action-list">
+            {[
+              ["Create coupon", "coupons"],
+              ["Create contributor offer", "campaigns"],
+              ["Create flash sale", "flash-sales"],
+              ["Create bundle discount", "bundles"],
+              ["Create newsletter", "newsletters"],
+              ["Create banner", "banners"]
+            ].map(([label, section]) => (
+              <button
+                type="button"
+                className="promotions-quick-action"
+                key={section}
+                onClick={() => setActiveSection(section)}
+              >
+                <span>{label}</span>
+                <span aria-hidden="true">→</span>
+              </button>
+            ))}
+          </div>
+        </section>
         <div className="promotions-card promotions-coupons-overview">
           <div className="promotions-card-label">Coupons</div>
           <div className="promotions-coupons-overview-grid">
@@ -3502,6 +3817,158 @@ function AdminPromotionsPanel() {
             </div>
           </div>
         </div>
+        <section className="promotions-dashboard-insights" aria-label="Promotion insights">
+          <div className="promotions-card promotions-insight-card">
+            <div className="promotions-dashboard-section-heading">
+              <div>
+                <span className="promotions-dashboard-eyebrow">PERFORMANCE</span>
+                <h3>Top-performing promotions</h3>
+              </div>
+            </div>
+            <div className="promotions-top-performer-list">
+              {topPromotionHighlights.map((promotion) => (
+                <button
+                  type="button"
+                  className="promotions-top-performer"
+                  key={promotion.category}
+                  onClick={() => setActiveSection(promotion.section)}
+                >
+                  <span className="promotions-top-performer-copy">
+                    <span>{promotion.category}</span>
+                    <strong>{promotion.name}</strong>
+                  </span>
+                  <span className="promotions-top-performer-value">
+                    <strong>{promotion.value.toLocaleString()}</strong>
+                    <span>{promotion.metric}</span>
+                  </span>
+                </button>
+              ))}
+              {topPromotionHighlights.length === 0 && (
+                <p className="promotions-dashboard-empty">Performance data will appear when promotion activity is recorded.</p>
+              )}
+            </div>
+          </div>
+          <div className="promotions-card promotions-insight-card">
+            <div className="promotions-dashboard-section-heading">
+              <div>
+                <span className="promotions-dashboard-eyebrow">NEEDS ATTENTION</span>
+                <h3>Promotion alerts</h3>
+              </div>
+              <span>{promotionAlerts.length} alert{promotionAlerts.length === 1 ? "" : "s"}</span>
+            </div>
+            <div className="promotions-alert-list">
+              {promotionAlerts.map((alert, index) => (
+                <button
+                  type="button"
+                  className={`promotions-alert-item is-${alert.type}`}
+                  key={`${alert.section}-${alert.title}-${index}`}
+                  onClick={() => setActiveSection(alert.section)}
+                >
+                  <span className="promotions-alert-indicator" aria-hidden="true" />
+                  <span>{alert.title}</span>
+                  <span aria-hidden="true">→</span>
+                </button>
+              ))}
+              {promotionAlerts.length === 0 && (
+                <p className="promotions-dashboard-empty">No upcoming starts or expirations need attention.</p>
+              )}
+            </div>
+          </div>
+          <div className="promotions-card promotions-insight-card promotions-upcoming-card">
+            <div className="promotions-dashboard-section-heading">
+              <div>
+                <span className="promotions-dashboard-eyebrow">NEXT 30 DAYS</span>
+                <h3>Upcoming promotions</h3>
+              </div>
+              <span>{upcomingPromotions.length} shown</span>
+            </div>
+            <div className="promotions-upcoming-list">
+              {upcomingPromotions.map((promotion) => (
+                <button
+                  type="button"
+                  className="promotions-upcoming-item"
+                  key={`${promotion.section}-${promotion.name}-${promotion.dateType}-${promotion.date}`}
+                  onClick={() => setActiveSection(promotion.section)}
+                >
+                  <span className="promotions-upcoming-date">
+                    <strong>{promotion.daysUntil === 0 ? "Today" : `${promotion.daysUntil}d`}</strong>
+                    <span>{promotion.date}</span>
+                  </span>
+                  <span className="promotions-upcoming-copy">
+                    <strong>{promotion.name}</strong>
+                    <span>{promotion.category} · {promotion.dateType === "start" ? "Starts" : "Expires"}</span>
+                  </span>
+                  <span aria-hidden="true">→</span>
+                </button>
+              ))}
+              {upcomingPromotions.length === 0 && (
+                <p className="promotions-dashboard-empty">No scheduled starts in the next 30 days or active promotions expiring in the next 7 days.</p>
+              )}
+            </div>
+          </div>
+          <div className="promotions-card promotions-insight-card promotions-coupon-trend-card">
+            <div className="promotions-dashboard-section-heading">
+              <div>
+                <span className="promotions-dashboard-eyebrow">LAST 30 DAYS</span>
+                <h3>Coupon activity</h3>
+              </div>
+              <div className="promotions-trend-toggle" role="group" aria-label="Coupon chart metric">
+                <button
+                  type="button"
+                  aria-pressed={couponTrendMetric === "uses"}
+                  onClick={() => setCouponTrendMetric("uses")}
+                >
+                  Uses
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={couponTrendMetric === "revenue"}
+                  onClick={() => setCouponTrendMetric("revenue")}
+                >
+                  Revenue
+                </button>
+              </div>
+            </div>
+            <div
+              className="promotions-coupon-trend-chart"
+              role="img"
+              aria-label={`Daily coupon ${couponTrendMetric === "uses" ? "redemptions" : `revenue in ${couponCurrency}`} for the last 30 days`}
+            >
+              {couponTrendData.map(({ date, label, value }, index) => (
+                <span
+                  className="promotions-coupon-trend-bar"
+                  key={date}
+                  title={`${date}: ${couponTrendMetric === "uses" ? `${value} uses` : formatCouponCurrency(value, couponCurrency)}`}
+                  style={{ height: `${value > 0 ? Math.max(4, (value / couponTrendMaximum) * 100) : 2}%` }}
+                >
+                  {index % 7 === 0 || index === couponTrendData.length - 1
+                    ? <span className="promotions-coupon-trend-tick">{label}</span>
+                    : null}
+                </span>
+              ))}
+            </div>
+            <p className="promotions-trend-caption" role={couponAnalyticsError ? "alert" : undefined}>
+              {couponAnalyticsError || (couponDailySeries.length === 0
+                ? "No coupon redemptions are recorded in the last 30 days."
+                : "Daily totals are based on recorded coupon redemptions.")}
+            </p>
+            <div className="promotions-period-comparison">
+              <div className="promotions-period-comparison-heading">
+                <strong>Last 30 days</strong>
+                <span>vs previous 30 days</span>
+              </div>
+              {periodComparison.map((metric) => (
+                <div className="promotions-period-comparison-row" key={metric.label}>
+                  <span>{metric.label}</span>
+                  <strong>{metric.current}</strong>
+                  <span className={`promotions-period-change${metric.change.startsWith("-") ? " is-down" : metric.change.startsWith("+") || metric.change === "New" ? " is-up" : ""}`}>
+                    {metric.change}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
         {cards.map((card) => (
           <div key={card.label} className="promotions-card" data-accent={card.accent ? "revenue" : undefined}>
             <div className="promotions-card-label">{card.label}</div>
@@ -3521,7 +3988,7 @@ function AdminPromotionsPanel() {
               <div>
                 <div className="promotions-eyebrow">Enterprise Marketing Hub</div>
                 <h3>Promotions Hub</h3>
-                <p>Create, schedule, and analyze promotions from one place with PostgreSQL-backed workflows.</p>
+                <p>Manage offers, campaigns, and customer engagement from one place.</p>
               </div>
               <div className="promotions-chip">Super Admin + Authorized Admin</div>
             </div>
@@ -5072,24 +5539,14 @@ function AdminPromotionsPanel() {
         ]);
       case "analytics":
         return (
-          <div className="promotions-stack">
-            <div className="promotions-card">
+          <div className="promotions-stack promotions-analytics-section">
+            <section className="promotions-card promotions-analytics-intro">
               <div className="promotions-card-header">
-                <h3>Analytics</h3>
-                <span>Interactive charts and performance snapshots for campaigns, referrals, and loyalty.</span>
+                <h3>Promotion analytics</h3>
+                <span>Performance metrics and coupon activity, based on recorded promotion data.</span>
               </div>
-              <div className="promotions-list">
-                <div className="promotions-list-item">
-                  <div><strong>Coupon Usage</strong><div className="promotions-muted">Track top coupons and redemption velocity.</div></div>
-                </div>
-                <div className="promotions-list-item">
-                  <div><strong>Revenue Generated</strong><div className="promotions-muted">Compare promotion revenue with discount impact.</div></div>
-                </div>
-                <div className="promotions-list-item">
-                  <div><strong>Campaign Performance</strong><div className="promotions-muted">Review conversion, email engagement, and participation rates.</div></div>
-                </div>
-              </div>
-            </div>
+            </section>
+            {renderKpiCards({ analyticsOnly: true })}
           </div>
         );
       case "reports":
