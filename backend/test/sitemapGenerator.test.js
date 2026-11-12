@@ -136,6 +136,7 @@ test("publishes validated sitemap files under the configured YYYY/MM/DD director
     completed.result.outputPath
   );
   const xml = fs.readFileSync(completed.result.outputPath, "utf8");
+  assert.match(xml, /<\?xml-stylesheet type="text\/xsl" href="\/sitemap\.xsl"\?>/);
   assert.match(xml, /<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9">/);
   assert.match(xml, /a-and-b-published_8/);
   assert.match(xml, /<lastmod>2026-02-11T00:00:00\.000Z<\/lastmod>/);
@@ -203,6 +204,7 @@ test("publishes a validated sitemap index and retrievable child files when the U
   assert.equal(completed.result.primaryFilename, "sitemap.xml");
 
   const indexXml = fs.readFileSync(completed.result.outputPath, "utf8");
+  assert.match(indexXml, /<\?xml-stylesheet type="text\/xsl" href="\/sitemap\.xsl"\?>/);
   assert.match(indexXml, new RegExp(`/sitemap-archive/${job.id}/sitemap1\\.xml`));
   assert.match(indexXml, new RegExp(`/sitemap-archive/${job.id}/sitemap2\\.xml`));
   await validateSitemapFile(completed.result.outputPath, "sitemapindex", SITE_URL, 2);

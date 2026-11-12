@@ -807,15 +807,15 @@ test("shows the selected coupon period totals beside each dropdown", async () =>
             today: { uses: 3, revenue_by_currency: { INR: 1000 } },
             yesterday: { uses: 2, revenue_by_currency: { INR: 500 } },
             last_7_days: { uses: 8, revenue_by_currency: { INR: 2200 } },
-            last_30_days: { uses: 12, revenue_by_currency: { INR: 1500.5 } },
-            last_quarter: { uses: 42, revenue_by_currency: { INR: 7350.25 } }
+            last_30_days: { uses: 12, revenue_by_currency: { INR: 1500.5, USD: 14.25 } },
+            last_quarter: { uses: 42, revenue_by_currency: { INR: 7350.25, USD: 24.5 } }
           },
           top_coupons: Array.from({ length: 6 }, (_, index) => ({
             id: index + 1,
             name: `Coupon ${index + 1}`,
             code: `SAVE${index + 1}`,
             uses: 6 - index,
-            revenue_by_currency: { INR: (6 - index) * 100 },
+            revenue_by_currency: { INR: (6 - index) * 100, USD: (6 - index) * 2 },
             last_used_date: "2026-11-02",
             start_at: "2026-10-01",
             end_at: "2026-11-30"
@@ -840,6 +840,7 @@ test("shows the selected coupon period totals beside each dropdown", async () =>
   render(<AdminPromotionsPanel />);
 
   expect(await screen.findByLabelText("Coupon usage range selector")).toBeInTheDocument();
+  expect(screen.queryByText("Live exchange rates are unavailable; using configured rates where available.")).not.toBeInTheDocument();
   expect(screen.getByLabelText("Coupon revenue currency selector")).toHaveValue("INR");
   expect(await screen.findByRole("table", { name: "Top coupons ranked by usage" })).toBeInTheDocument();
   expect(screen.getAllByText("Coupon 1").length).toBeGreaterThan(0);
@@ -871,7 +872,8 @@ test("shows the selected coupon period totals beside each dropdown", async () =>
   fireEvent.change(screen.getByLabelText("Coupon revenue currency selector"), {
     target: { value: "USD" }
   });
-  await waitFor(() => expect(screen.getByText("$73.50")).toBeInTheDocument(), { timeout: 2000 });
+  await waitFor(() => expect(screen.getByText("$24.50")).toBeInTheDocument(), { timeout: 2000 });
+  expect(screen.queryByText("$73.50")).not.toBeInTheDocument();
 
   const previousCreateObjectURL = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
   const previousRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
@@ -983,6 +985,174 @@ test("top coupon and contributor offer exports remain available when there are n
   }
 });
 
+test("opens readable coupon details from each dashboard status count", async () => {
+  window.localStorage.setItem("adminPromotionsActiveSection", "dashboard");
+  const today = getIndiaDateKey();
+  const shiftDate = (days) => {
+    const [year, month, day] = today.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+  };
+  const formatLibraryDate = (date) => `${date.slice(8, 10)}-${date.slice(5, 7)}-${date.slice(0, 4)}`;
+  axios.get.mockImplementation((url) => Promise.resolve({
+    data: url.endsWith("/coupon-analytics")
+      ? { currencies: ["INR"], rates: { INR: 1 }, analytics: {}, top_coupons: [] }
+      : {
+          coupons: [
+            { id: 1, name: "Spring offer", code: "SPRING", status: "active", discount_type: "percentage", discount_value: 20, start_at: today, end_at: shiftDate(10), usage_limit: 15, notes: "For spring sales" },
+            { id: 2, name: "Summer offer", code: "SUMMER", status: "active", start_at: shiftDate(3) },
+            { id: 3, name: "Winter offer", code: "WINTER", status: "active", end_at: shiftDate(-1) },
+            { id: 4, name: "Member offer", code: "MEMBER", status: "disabled", start_at: today, end_at: shiftDate(8) },
+            { id: 5, name: "Old offer", code: "OLD", status: "archived" }
+          ],
+          campaigns: [],
+          contributor_applications: [],
+          flash_sales: [],
+          bundles: [],
+          newsletters: [],
+          banners: []
+        }
+  }));
+  render(<AdminPromotionsPanel />);
+
+  const statuses = [
+    ["active", "Spring offer"],
+    ["scheduled", "Summer offer"],
+    ["expired", "Winter offer"],
+    ["disabled", "Member offer"],
+    ["archived", "Old offer"]
+  ];
+  for (const [status, couponName] of statuses) {
+    fireEvent.click(await screen.findByRole("button", { name: `View ${status} coupons (1)` }));
+    const dialog = screen.getByRole("dialog", { name: `${status[0].toUpperCase()}${status.slice(1)} coupons` });
+    expect(within(dialog).getByRole("heading", { name: couponName })).toBeInTheDocument();
+    if (status === "active") {
+      expect(within(dialog).getByText("SPRING")).toBeInTheDocument();
+      expect(within(dialog).getByText("20%")).toBeInTheDocument();
+      expect(within(dialog).getByText(formatLibraryDate(today))).toBeInTheDocument();
+      expect(within(dialog).getByText(formatLibraryDate(shiftDate(10)))).toBeInTheDocument();
+      expect(within(dialog).getByText("For spring sales")).toBeInTheDocument();
+    }
+    if (status === "disabled") {
+      expect(within(dialog).getByText(formatLibraryDate(today))).toBeInTheDocument();
+      expect(within(dialog).getByText(formatLibraryDate(shiftDate(8)))).toBeInTheDocument();
+    }
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close coupon details" }));
+    expect(screen.queryByRole("dialog", { name: `${status[0].toUpperCase()}${status.slice(1)} coupons` })).not.toBeInTheDocument();
+  }
+});
+
+test("shows coupon dates in the library and edit form and schedules future coupons", async () => {
+  window.localStorage.setItem("adminPromotionsActiveSection", "coupons");
+  const today = getIndiaDateKey();
+  const shiftDate = (days) => {
+    const [year, month, day] = today.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+  };
+  const startAt = shiftDate(3);
+  const endAt = shiftDate(20);
+  const toPostgresDateJson = (date) => new Date(`${date}T00:00:00+05:30`).toISOString();
+  axios.get.mockResolvedValue({
+    data: {
+      coupons: [{
+        id: 31,
+        name: "Future coupon",
+        code: "FUTURE",
+        coupon_type: "manual",
+        discount_type: "percentage",
+        discount_value: 15,
+        status: "active",
+        start_at: toPostgresDateJson(startAt),
+        end_at: toPostgresDateJson(endAt),
+        usage_limit: 10,
+        notes: ""
+      }],
+      campaigns: [],
+      contributor_applications: [],
+      flash_sales: [],
+      bundles: [],
+      newsletters: [],
+      banners: []
+    }
+  });
+  render(<AdminPromotionsPanel />);
+
+  const couponRow = (await screen.findByText("Future coupon")).closest(".promotions-list-item");
+  expect(couponRow).toHaveTextContent("scheduled");
+  expect(couponRow).toHaveTextContent("FUTURE • Manual • Percentage • 15% • scheduled");
+  const formatLibraryDate = (date) => `${date.slice(8, 10)}-${date.slice(5, 7)}-${date.slice(0, 4)}`;
+  expect(couponRow).toHaveTextContent(`Start date: ${formatLibraryDate(startAt)} • End date: ${formatLibraryDate(endAt)}`);
+  expect(couponRow).toHaveTextContent(`Starts in 3 days on ${formatLibraryDate(startAt)}`);
+  expect(couponRow).toHaveTextContent("Expires in 20 days");
+  expect(couponRow.textContent.match(/Expires in 20 days/g)).toHaveLength(1);
+
+  fireEvent.click(within(couponRow).getByRole("button", { name: "Edit" }));
+  expect(screen.getByLabelText("Status")).toHaveValue("scheduled");
+  const formatDate = (date) => new Intl.DateTimeFormat(undefined, {
+    timeZone: "Asia/Kolkata",
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(new Date(`${date}T12:00:00+05:30`));
+  const startDateButton = screen.getByRole("button", { name: "Start date" });
+  const endDateButton = screen.getByRole("button", { name: "End date" });
+  expect(startDateButton).toHaveTextContent(formatDate(startAt));
+  expect(endDateButton).toHaveTextContent(formatDate(endAt));
+
+  fireEvent.change(screen.getByLabelText("Status"), { target: { value: "active" } });
+  fireEvent.click(startDateButton);
+  const startDateLabel = new Intl.DateTimeFormat(undefined, {
+    timeZone: "Asia/Kolkata",
+    month: "long",
+    day: "numeric",
+    year: "numeric"
+  }).format(new Date(`${startAt}T12:00:00+05:30`));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Start date calendar" }))
+    .getByRole("button", { name: startDateLabel }));
+  expect(screen.getByLabelText("Status")).toHaveValue("scheduled");
+
+  fireEvent.click(screen.getByRole("button", { name: "Update Coupon" }));
+  await waitFor(() => expect(axios.post).toHaveBeenCalled());
+  const submittedCoupon = axios.post.mock.calls[0][1].data;
+  expect(submittedCoupon.status).toBe("active");
+  expect(submittedCoupon.start_at).toBe(startAt);
+  expect(submittedCoupon.end_at).toBe(endAt);
+});
+
+test("disabling a coupon does not submit changes to its dates", async () => {
+  window.localStorage.setItem("adminPromotionsActiveSection", "coupons");
+  axios.get.mockResolvedValue({
+    data: {
+      coupons: [{
+        id: 32,
+        name: "Scheduled coupon",
+        code: "SCHEDULED",
+        status: "active",
+        start_at: "2026-11-10",
+        end_at: "2026-11-18",
+        discount_type: "percentage",
+        discount_value: 10,
+        usage_limit: 0
+      }],
+      campaigns: [],
+      contributor_applications: [],
+      flash_sales: [],
+      bundles: [],
+      newsletters: [],
+      banners: []
+    }
+  });
+  render(<AdminPromotionsPanel />);
+
+  const couponRow = (await screen.findByText("Scheduled coupon")).closest(".promotions-list-item");
+  fireEvent.click(within(couponRow).getByRole("button", { name: "Disable" }));
+
+  await waitFor(() => expect(axios.post).toHaveBeenCalledWith(
+    expect.stringContaining("/admin/promotions"),
+    { resource: "coupon", action: "update", data: { id: 32, status: "disabled" } },
+    expect.any(Object)
+  ));
+});
+
 test("provides dashboard quick actions, promotion alerts, upcoming items, comparison, and chart controls", async () => {
   window.localStorage.setItem("adminPromotionsActiveSection", "dashboard");
   const today = getIndiaDateKey();
@@ -1006,6 +1176,16 @@ test("provides dashboard quick actions, promotion alerts, upcoming items, compar
           ]
         }
       : {
+          dashboard: {
+            active_campaigns: 18,
+            scheduled_campaigns: 14,
+            expired_campaigns: 12,
+            active_coupons: 3,
+            scheduled_coupons: 2,
+            expired_coupons: 1,
+            disabled_coupons: 4,
+            archived_coupons: 5
+          },
           coupons: [
             { id: 1, name: "Unused active coupon", code: "UNUSED", status: "active", end_at: shiftDate(3) },
             { id: 2, name: "Best coupon", code: "BEST", status: "active" },
@@ -1032,6 +1212,14 @@ test("provides dashboard quick actions, promotion alerts, upcoming items, compar
   render(<AdminPromotionsPanel />);
 
   expect(await screen.findByRole("button", { name: "Create coupon" })).toBeInTheDocument();
+  const couponStatusPanel = document.querySelector(".promotions-coupons-overview .promotions-coupons-panel");
+  await waitFor(() => {
+    expect(within(couponStatusPanel).getByText("Active").parentElement).toHaveTextContent("2");
+    expect(within(couponStatusPanel).getByText("Scheduled").parentElement).toHaveTextContent("1");
+    expect(within(couponStatusPanel).getByText("Expired").parentElement).toHaveTextContent("0");
+    expect(within(couponStatusPanel).getByText("Disabled").parentElement).toHaveTextContent("0");
+    expect(within(couponStatusPanel).getByText("Archived").parentElement).toHaveTextContent("0");
+  });
   expect(screen.getByRole("button", { name: "Create flash sale" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Top-performing promotions" })).toBeInTheDocument();
   expect(screen.getAllByText("Best coupon").length).toBeGreaterThan(0);

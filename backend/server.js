@@ -21,6 +21,7 @@ const { createMessagingRouter, createAssetNotifications, createCouponNotificatio
 const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { registerOrderRoutes } = require("./orders");
 const { registerContributorOfferBenefitRoutes } = require("./routes/contributor-offer-benefit");
+const { createGoogleSearchConsoleRouter } = require("./routes/google-search-console");
 const {
   NEWSLETTER_AUDIENCES,
   NEWSLETTER_ATTACHMENT_FOLDER,
@@ -436,6 +437,7 @@ app.use("/admin/backup", createBackupRouter({
   },
 }));
 app.use(cookieParser());
+app.use(createGoogleSearchConsoleRouter({ pool, verifyAdmin, allowedOrigins: allowedCorsOrigins }));
 app.use((req, res, next) => {
   let connections;
   try {
@@ -7379,7 +7381,7 @@ registerContributorOfferBenefitRoutes(app, pool, verifyAdmin);
 app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => {
   try {
     const settingsResult = await pool.query(
-      "SELECT default_currency, custom_currency_rows FROM pricing_settings ORDER BY id DESC LIMIT 1"
+      "SELECT default_currency, custom_currency_rows, exchange_rate FROM pricing_settings ORDER BY id DESC LIMIT 1"
     );
     const settings = settingsResult.rows[0] || {};
     let customCurrencyRows = settings.custom_currency_rows || [];
@@ -7427,18 +7429,29 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
     ].filter((currency) => /^[A-Z]{3}$/.test(currency)))];
 
     const axios = require("axios");
-    const ratesResponse = await axios.get(
-      "https://api.exchangerate-api.com/v4/latest/INR",
-      { timeout: 10000 }
-    );
-    const rates = ratesResponse.data?.rates;
-    if (!rates || typeof rates !== "object" || Array.isArray(rates)) {
-      return res.status(502).json({ error: "Unable to load currency exchange rates." });
+    let normalizedRates = { INR: 1 };
+    let ratesWarning = "";
+    try {
+      const ratesResponse = await axios.get(
+        "https://api.exchangerate-api.com/v4/latest/INR",
+        { timeout: 10000 }
+      );
+      const rates = ratesResponse.data?.rates;
+      if (!rates || typeof rates !== "object" || Array.isArray(rates)) {
+        throw new Error("Currency exchange rates response was invalid.");
+      }
+      normalizedRates = { ...rates, INR: 1 };
+    } catch (error) {
+      console.error("Failed to load live exchange rates for coupon analytics", error);
+      ratesWarning = "Live exchange rates are unavailable; using configured rates where available.";
     }
-    const normalizedRates = { ...rates, INR: 1 };
+    const configuredInrPerUsd = Number(settings.exchange_rate);
+    if (!Number(normalizedRates.USD) && Number.isFinite(configuredInrPerUsd) && configuredInrPerUsd > 0) {
+      normalizedRates.USD = 1 / configuredInrPerUsd;
+    }
     const supportedCurrencies = currencies.filter((currency) => Number(normalizedRates[currency]) > 0);
-    if (supportedCurrencies.length === 0) {
-      return res.status(502).json({ error: "No configured website currencies have exchange rates." });
+    if (!ratesWarning && supportedCurrencies.length < currencies.length) {
+      ratesWarning = "Some configured currencies do not have an available exchange rate.";
     }
 
     const redemptionRows = await pool.query(
@@ -7471,7 +7484,7 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
            ) AS currency
          FROM coupon_redemptions redemption
          LEFT JOIN orders ON orders.id::text = redemption.metadata->>'orderId'
-         CROSS JOIN (SELECT default_currency FROM pricing_settings ORDER BY id DESC LIMIT 1) settings
+         LEFT JOIN (SELECT default_currency FROM pricing_settings ORDER BY id DESC LIMIT 1) settings ON TRUE
        )
        SELECT
          redemptions.currency,
@@ -7505,8 +7518,9 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
            FROM (
              SELECT redeemed_date, COUNT(*)::int AS uses, COALESCE(SUM(amount), 0) AS revenue
              FROM redemptions daily
+             CROSS JOIN bounds daily_bounds
              WHERE daily.currency = redemptions.currency
-               AND daily.redeemed_date BETWEEN last_30_days_start AND today
+               AND daily.redeemed_date BETWEEN daily_bounds.last_30_days_start AND daily_bounds.today
              GROUP BY redeemed_date
            ) daily
          ), '[]'::jsonb) AS daily_series
@@ -7533,7 +7547,7 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
        FROM coupon_codes coupons
        LEFT JOIN coupon_redemptions redemptions ON redemptions.coupon_id = coupons.id
        LEFT JOIN orders ON orders.id::text = redemptions.metadata->>'orderId'
-       CROSS JOIN (SELECT default_currency FROM pricing_settings ORDER BY id DESC LIMIT 1) settings
+       LEFT JOIN (SELECT default_currency FROM pricing_settings ORDER BY id DESC LIMIT 1) settings ON TRUE
        GROUP BY coupons.id, coupons.name, coupons.code, coupons.start_at, coupons.end_at,
          COALESCE(
            NULLIF(UPPER(BTRIM(orders.currency)), ''),
@@ -7607,7 +7621,18 @@ app.get("/admin/promotions/coupon-analytics", verifyAdmin, async (_req, res) => 
     });
 
     const dailySeries = [...dailySeriesByDate.values()].sort((left, right) => left.date.localeCompare(right.date));
-    return res.json({ currencies: supportedCurrencies, rates: normalizedRates, analytics, daily_series: dailySeries, top_coupons: topCoupons });
+    const availableCurrencies = [...new Set([
+      ...supportedCurrencies,
+      ...redemptionRows.rows.map((row) => row.currency)
+    ])];
+    return res.json({
+      currencies: availableCurrencies,
+      rates: normalizedRates,
+      rates_warning: ratesWarning,
+      analytics,
+      daily_series: dailySeries,
+      top_coupons: topCoupons
+    });
   } catch (error) {
     console.error("Failed to load coupon revenue analytics", error);
     return res.status(500).json({ error: "Failed to load coupon revenue analytics." });
@@ -7623,6 +7648,32 @@ app.get("/admin/promotions", verifyAdmin, async (req, res) => {
       active_campaigns: (await pool.query("SELECT COUNT(*)::int AS count FROM marketing_campaigns WHERE status = 'active'")) .rows[0].count,
       scheduled_campaigns: (await pool.query("SELECT COUNT(*)::int AS count FROM marketing_campaigns WHERE status = 'scheduled'")) .rows[0].count,
       expired_campaigns: (await pool.query("SELECT COUNT(*)::int AS count FROM marketing_campaigns WHERE status = 'expired'")) .rows[0].count,
+      ...((await pool.query(
+        `SELECT
+           COUNT(*) FILTER (
+             WHERE LOWER(BTRIM(COALESCE(status, 'active'))) = 'active'
+               AND (start_at IS NULL OR start_at <= CURRENT_DATE)
+               AND (end_at IS NULL OR end_at >= CURRENT_DATE)
+           )::int AS active_coupons,
+           COUNT(*) FILTER (
+             WHERE LOWER(BTRIM(COALESCE(status, 'active'))) = 'active'
+               AND start_at > CURRENT_DATE
+           )::int AS scheduled_coupons,
+           COUNT(*) FILTER (
+             WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'expired'
+                OR (
+                  LOWER(BTRIM(COALESCE(status, 'active'))) = 'active'
+                  AND end_at < CURRENT_DATE
+                )
+           )::int AS expired_coupons,
+           COUNT(*) FILTER (
+             WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'disabled'
+           )::int AS disabled_coupons,
+           COUNT(*) FILTER (
+             WHERE LOWER(BTRIM(COALESCE(status, ''))) = 'archived'
+           )::int AS archived_coupons
+         FROM coupon_codes`
+      )).rows[0]),
       coupons_created: (await pool.query("SELECT COUNT(*)::int AS count FROM coupon_codes")) .rows[0].count,
       coupons_redeemed: (await pool.query("SELECT COUNT(*)::int AS count FROM coupon_redemptions")) .rows[0].count,
       revenue_generated: Number((await pool.query("SELECT COALESCE(SUM(amount), 0) AS total FROM coupon_redemptions")).rows[0].total || 0),
@@ -7641,7 +7692,13 @@ app.get("/admin/promotions", verifyAdmin, async (req, res) => {
     };
 
     const [coupons, campaigns, flashSales, referrals, loyalty, giftCards, bundles, newsletters, banners, popups, announcements, pushNotifications, automations, activityLogs, contributorApplications, couponAnalytics] = await Promise.all([
-      pool.query("SELECT * FROM coupon_codes ORDER BY created_at DESC"),
+      pool.query(
+        `SELECT coupon_codes.*,
+                coupon_codes.start_at::text AS coupon_start_at,
+                coupon_codes.end_at::text AS coupon_end_at
+         FROM coupon_codes
+         ORDER BY created_at DESC`
+      ),
       pool.query("SELECT * FROM marketing_campaigns ORDER BY created_at DESC"),
       pool.query(
         `SELECT sales.id, sales.name, sales.discount_rule, sales.status,
@@ -7897,10 +7954,16 @@ app.get("/admin/promotions", verifyAdmin, async (req, res) => {
       )
     ]);
 
+    const couponRows = coupons.rows.map(({ coupon_start_at, coupon_end_at, ...coupon }) => ({
+      ...coupon,
+      start_at: coupon_start_at,
+      end_at: coupon_end_at
+    }));
+
     return res.json({
       dashboard,
       coupon_analytics: couponAnalytics.rows[0]?.analytics || {},
-      coupons: coupons.rows,
+      coupons: couponRows,
       campaigns: campaigns.rows,
       flash_sales: flashSales.rows,
       referrals: referrals.rows,
@@ -8378,8 +8441,8 @@ app.post("/admin/promotions", verifyAdmin, async (req, res) => {
           discount_type: data.discount_type,
           discount_value: data.discount_value,
           status: data.status,
-          start_at: data.start_at || null,
-          end_at: data.end_at || null,
+          start_at: data.start_at === undefined ? undefined : data.start_at || null,
+          end_at: data.end_at === undefined ? undefined : data.end_at || null,
           usage_limit: data.usage_limit,
           notes: data.notes,
           metadata: data.metadata ? JSON.stringify(data.metadata) : undefined
@@ -16922,6 +16985,16 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(disabledAppLinkRowsMigration);
+      const googleSearchConsoleMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "034_google_search_console.sql"),
+        "utf8"
+      );
+      await pool.query(googleSearchConsoleMigration);
+      const googleSearchConsolePropertyMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "035_google_search_console_selected_property.sql"),
+        "utf8"
+      );
+      await pool.query(googleSearchConsolePropertyMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);

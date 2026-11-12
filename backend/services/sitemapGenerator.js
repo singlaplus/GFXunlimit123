@@ -259,7 +259,7 @@ function urlEntryXml(entry) {
 }
 
 function sitemapXmlHeader(rootElement) {
-  return `<?xml version="1.0" encoding="UTF-8"?><${rootElement} xmlns="${SITEMAP_NAMESPACE}">`;
+  return `<?xml version="1.0" encoding="UTF-8"?><?xml-stylesheet type="text/xsl" href="/sitemap.xsl"?><${rootElement} xmlns="${SITEMAP_NAMESPACE}">`;
 }
 
 function splitSitemapEntries(urls) {

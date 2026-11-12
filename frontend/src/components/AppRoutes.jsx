@@ -46,6 +46,7 @@ import { getEffectiveAuthToken } from "../utils/authSession";
 import { GOOGLE_FONT_FAMILIES } from "../data/googleFonts";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import PromotionalBannerPage from "./PromotionalBannerExperience";
+import SearchConsolePage from "../pages/SearchConsolePage";
 
 const BLOG_DRAFTS_STORAGE_KEY = "gfx-blog-drafts";
 const blogDraftHeaders = () => ({ Authorization: `Bearer ${getEffectiveAuthToken()}` });
@@ -1579,10 +1580,15 @@ export default function AppRoutes(props) {
     };
   }, [pageAvailability, pathname]);
 
-  if (
-    pathname === `${adminBasePath}/search_console`
-    || pathname === `${adminBasePath}/google_analytics`
-  ) {
+  if (pathname === `${adminBasePath}/search_console`) {
+    return (
+      <ProtectedRoute allowedRoles={["admin"]} userRole={normalizedUserRole}>
+        <SearchConsolePage darkMode={props.darkMode} />
+      </ProtectedRoute>
+    );
+  }
+
+  if (pathname === `${adminBasePath}/google_analytics`) {
     return (
       <ProtectedRoute allowedRoles={["admin"]} userRole={normalizedUserRole}>
         <main aria-label="Blank page" style={{ minHeight: "60vh" }} />

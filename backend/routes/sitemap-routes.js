@@ -1,6 +1,210 @@
 const express = require("express");
 const path = require("node:path");
+const fs = require("node:fs/promises");
+const { SaxesParser } = require("saxes");
 const { SitemapGenerationError } = require("../services/sitemapGenerator");
+
+const SITEMAP_NAMESPACE = "http://www.sitemaps.org/schemas/sitemap/0.9";
+const SITEMAP_PAGE_GROUPS = [
+  { id: "main", title: "Main pages" },
+  { id: "browse", title: "Explore and browse" },
+  { id: "blog", title: "Blog" },
+  { id: "assets", title: "Creative assets" },
+  { id: "contributors", title: "Contributors" },
+  { id: "other", title: "Other pages" },
+];
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function readSitemapEntries(filePath) {
+  const xml = await fs.readFile(filePath, "utf8");
+  const parser = new SaxesParser({ xmlns: true });
+  const entries = [];
+  let rootName = "";
+  let currentEntry = null;
+  let currentField = "";
+  let fieldValue = "";
+  let parseError = null;
+
+  parser.on("error", (error) => {
+    parseError = error;
+  });
+  parser.on("opentag", (tag) => {
+    if (!rootName) {
+      rootName = tag.local;
+      if (tag.uri !== SITEMAP_NAMESPACE || !["urlset", "sitemapindex"].includes(tag.local)) {
+        parseError = new Error("Published sitemap has an invalid root element.");
+      }
+      return;
+    }
+    if (
+      tag.uri === SITEMAP_NAMESPACE
+      && ((rootName === "urlset" && tag.local === "url")
+        || (rootName === "sitemapindex" && tag.local === "sitemap"))
+    ) {
+      currentEntry = {};
+    } else if (currentEntry && tag.uri === SITEMAP_NAMESPACE && ["loc", "lastmod"].includes(tag.local)) {
+      currentField = tag.local;
+      fieldValue = "";
+    }
+  });
+  parser.on("text", (text) => {
+    if (currentField) fieldValue += text;
+  });
+  parser.on("closetag", (tag) => {
+    if (tag.uri === SITEMAP_NAMESPACE && currentField === tag.local) {
+      currentEntry[currentField] = fieldValue.trim();
+      currentField = "";
+      fieldValue = "";
+    }
+    if (
+      currentEntry
+      && tag.uri === SITEMAP_NAMESPACE
+      && ((rootName === "urlset" && tag.local === "url")
+        || (rootName === "sitemapindex" && tag.local === "sitemap"))
+    ) {
+      entries.push(currentEntry);
+      currentEntry = null;
+    }
+  });
+  parser.write(xml).close();
+  if (parseError) throw parseError;
+  return { rootName, entries };
+}
+
+function categorizeSitemapEntry(entry, siteOrigin) {
+  let url;
+  try {
+    url = new URL(entry.loc);
+  } catch {
+    throw new Error("Published sitemap contains an invalid URL.");
+  }
+  if (url.protocol !== "https:" || url.origin !== siteOrigin) {
+    throw new Error("Published sitemap contains a URL outside the configured website.");
+  }
+
+  const pathname = url.pathname;
+  const topLevel = pathname.split("/")[1] || "";
+  let groupId = "other";
+  if (["", "about", "pricing", "careers", "contact"].includes(topLevel)) {
+    groupId = "main";
+  } else if (/^(explore|photos|vectors|psd|psds|videos|templates)$/.test(topLevel)) {
+    groupId = "browse";
+  } else if (topLevel === "blog") {
+    groupId = "blog";
+  } else if (topLevel === "asset") {
+    groupId = "assets";
+  } else if (topLevel === "c") {
+    groupId = "contributors";
+  }
+
+  const knownLabels = {
+    "": "Home",
+    about: "About us",
+    pricing: "Pricing",
+    careers: "Careers",
+    contact: "Contact",
+    explore: "Explore",
+    photos: "Photos",
+    vectors: "Vectors",
+    psd: "PSD",
+    psds: "PSD files",
+    videos: "Videos",
+    templates: "Templates",
+    blog: "Blog",
+  };
+  let label = knownLabels[topLevel];
+  if (topLevel === "asset") {
+    label = `Asset ${pathname.split("/")[2] || ""}`.trim();
+  } else if (topLevel === "c") {
+    label = `Contributor ${pathname.split("/")[2] || ""}`.trim();
+  } else if (!label) {
+    label = pathname.split("/").filter(Boolean).map((part) => {
+      try {
+        return decodeURIComponent(part).replace(/[-_]+/g, " ");
+      } catch {
+        return part.replace(/[-_]+/g, " ");
+      }
+    }).join(" / ");
+  }
+  label = label.replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return {
+    groupId,
+    href: url.href,
+    label,
+    lastModified: entry.lastmod || "",
+  };
+}
+
+function renderSitemapPage(groups, totalUrls, generatedAt) {
+  const groupMarkup = SITEMAP_PAGE_GROUPS
+    .map((group) => {
+      const entries = groups.get(group.id) || [];
+      if (!entries.length) return "";
+      const links = entries
+        .map((entry) => `<li><a href="${escapeHtml(entry.href)}">${escapeHtml(entry.label)}</a>${entry.lastModified ? `<time datetime="${escapeHtml(entry.lastModified)}">${escapeHtml(entry.lastModified.slice(0, 10))}</time>` : ""}</li>`)
+        .join("");
+      return `<details class="sitemap-category"><summary><span>${escapeHtml(group.title)}</span><span class="category-count">${entries.length} pages</span></summary><ul>${links}</ul></details>`;
+    })
+    .join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Browse pages, creative assets, and resources across GFXunlimit.">
+  <title>Site Map | GFXunlimit</title>
+  <style>
+    :root{color-scheme:light;--ink:#141b2d;--muted:#64748b;--line:#e2e8f0;--blue:#2459d3;--soft:#f6f8fc;--white:#fff}
+    *{box-sizing:border-box}
+    body{margin:0;background:#f4f6fb;color:var(--ink);font:16px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    a{color:inherit;text-decoration:none}
+    a:hover{color:var(--blue);text-decoration:underline}
+    .site-header{height:68px;display:flex;align-items:center;justify-content:space-between;padding:0 max(24px,calc((100vw - 1160px)/2));background:var(--white);border-bottom:1px solid var(--line)}
+    .brand{font-size:20px;font-weight:850;letter-spacing:-.06em}.brand span{color:var(--blue)}
+    .header-link{color:#334155;font-size:14px;font-weight:650}
+    main{width:min(100% - 32px,960px);margin:56px auto 80px}
+    .hero{padding:42px 44px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(120deg,#fff 25%,#edf3ff);box-shadow:0 12px 32px #1e293b0a}
+    .eyebrow{color:var(--blue);font-size:12px;font-weight:800;letter-spacing:.15em;text-transform:uppercase}
+    h1{margin:9px 0 8px;font-size:clamp(34px,6vw,52px);line-height:1.05;letter-spacing:-.055em}
+    .intro{max-width:620px;margin:0;color:var(--muted);font-size:16px}
+    .stats{display:flex;flex-wrap:wrap;gap:10px;margin-top:24px}
+    .stat{padding:8px 13px;border:1px solid #dbe5f6;border-radius:999px;background:#fff;color:#294879;font-size:13px;font-weight:700}
+    .directory{margin-top:24px;padding:12px 28px;border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 16px 40px #1e293b0a}
+    .directory-heading{padding:16px 0 12px}.directory-heading h2{margin:0;font-size:20px;letter-spacing:-.025em}.directory-heading p{margin:4px 0 0;color:var(--muted);font-size:13px}
+    .sitemap-category{border-top:1px solid var(--line)}
+    .sitemap-category summary{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 2px;cursor:pointer;list-style:none;font-size:18px;font-weight:750}
+    .sitemap-category summary::-webkit-details-marker{display:none}
+    .sitemap-category summary:after{content:"+";order:2;color:var(--blue);font-size:25px;font-weight:400;line-height:1}
+    .sitemap-category[open] summary:after{content:"−"}
+    .category-count{margin-left:auto;color:var(--muted);font-size:12px;font-weight:600}
+    .sitemap-category ul{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 28px;margin:0;padding:0 4px 18px;list-style:none}
+    .sitemap-category li{display:flex;justify-content:space-between;gap:14px;padding:11px 0;border-top:1px solid #f0f2f6;font-size:14px}
+    .sitemap-category li a{overflow-wrap:anywhere}
+    time{flex:none;color:#94a3b8;font-size:11px}
+    footer{display:flex;justify-content:space-between;gap:16px;padding:20px 4px;color:var(--muted);font-size:12px}
+    footer a{color:var(--blue);font-weight:650}
+    @media(max-width:640px){.site-header{height:60px;padding:0 18px}main{width:min(100% - 20px,960px);margin:24px auto 48px}.hero{padding:30px 24px}.directory{padding:8px 18px}.sitemap-category summary{font-size:16px}.sitemap-category ul{grid-template-columns:1fr}footer{flex-direction:column}}
+  </style>
+</head>
+<body>
+  <header class="site-header"><a class="brand" href="/">GFX<span>unlimit</span></a><a class="header-link" href="/">Back to home</a></header>
+  <main>
+    <section class="hero"><span class="eyebrow">GFXunlimit · Discover</span><h1>Site Map</h1><p class="intro">Find your way around GFXunlimit. Explore our pages, creative resources, and latest articles.</p><div class="stats"><span class="stat">${totalUrls.toLocaleString("en-US")} pages</span><span class="stat">Organized by category</span></div></section>
+    <section class="directory" aria-labelledby="directory-title"><div class="directory-heading"><h2 id="directory-title">Browse all pages</h2><p>Choose a category to see its pages.</p></div>${groupMarkup}</section>
+    <footer><span>${generatedAt ? `Sitemap updated ${escapeHtml(generatedAt.slice(0, 10))}` : "GFXunlimit site directory"}</span><a href="/sitemap.xml">View XML sitemap</a></footer>
+  </main>
+</body>
+</html>`;
+}
 
 function createSitemapRouter({ generator, schedule, verifyAdmin }) {
   const router = express.Router();
@@ -99,6 +303,50 @@ function createSitemapRouter({ generator, schedule, verifyAdmin }) {
     }
   });
 
+  router.get(["/sitemap", "/sitemap/"], async (_req, res) => {
+    try {
+      const published = await generator.getPublished();
+      if (!published) return res.status(404).type("text/plain").send("A sitemap has not been generated yet.");
+
+      const sitemapFiles = [published.primaryPath];
+      if (published.rootElement === "sitemapindex") {
+        for (const filename of published.childFilenames || []) {
+          const filePath = await generator.getArchiveFile(published.archiveId, filename);
+          if (!filePath) throw new Error("A published sitemap child file is unavailable.");
+          sitemapFiles.push(filePath);
+        }
+      }
+
+      const entries = [];
+      for (const filePath of sitemapFiles) {
+        const parsed = await readSitemapEntries(filePath);
+        if (parsed.rootName !== "urlset") throw new Error("Published sitemap index did not resolve to URL entries.");
+        entries.push(...parsed.entries.map((entry) => categorizeSitemapEntry(entry, published.siteOrigin)));
+      }
+      entries.sort((a, b) => a.label.localeCompare(b.label));
+      const groups = new Map(SITEMAP_PAGE_GROUPS.map(({ id }) => [id, []]));
+      entries.forEach((entry) => groups.get(entry.groupId).push(entry));
+
+      res.type("html");
+      res.set("Cache-Control", "public, max-age=300");
+      return res.send(renderSitemapPage(groups, entries.length, published.generatedAt));
+    } catch (error) {
+      console.error("Unable to render the public sitemap page", error);
+      return res.status(500).type("text/plain").send("Unable to display the site map.");
+    }
+  });
+
+  router.get("/sitemap.xsl", (_req, res) => {
+    res.type("application/xslt+xml");
+    res.set("Cache-Control", "public, max-age=3600");
+    return res.sendFile(path.join(__dirname, "..", "views", "sitemap.xsl"), (error) => {
+      if (error && !res.headersSent) {
+        console.error("Unable to serve the sitemap stylesheet", error);
+        res.status(500).type("text/plain").send("Unable to display the sitemap.");
+      }
+    });
+  });
+
   router.get("/sitemap-archive/:archiveId/:filename", async (req, res) => {
     try {
       const filePath = await generator.getArchiveFile(req.params.archiveId, req.params.filename);
@@ -120,4 +368,4 @@ function createSitemapRouter({ generator, schedule, verifyAdmin }) {
   return router;
 }
 
-module.exports = { createSitemapRouter };
+module.exports = { createSitemapRouter, categorizeSitemapEntry, readSitemapEntries, renderSitemapPage };

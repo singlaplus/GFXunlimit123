@@ -535,6 +535,19 @@
   transition: background 150ms ease, border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
 }
 
+.promotions-coupons-status-button {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.promotions-coupons-status-button:focus-visible,
+.promotions-coupon-status-close:focus-visible {
+  outline: 3px solid rgba(59, 130, 246, 0.55);
+  outline-offset: 2px;
+}
+
 .promotions-coupons-metric-row:hover {
   transform: translateY(-2px);
   border-color: rgba(148, 163, 184, 0.32);
@@ -603,6 +616,95 @@
 
 .promotions-coupons-panel:nth-child(1) .promotions-coupons-metric-row:nth-child(3) span::before {
   background: #94a3b8;
+}
+
+.promotions-coupons-panel:nth-child(1) .promotions-coupons-metric-row:nth-child(4) span::before {
+  background: #ef4444;
+}
+
+.promotions-coupons-panel:nth-child(1) .promotions-coupons-metric-row:nth-child(5) span::before {
+  background: #64748b;
+}
+
+.promotions-coupon-status-dialog {
+  display: flex;
+  width: min(680px, 100%);
+  max-height: min(82vh, 760px);
+  flex-direction: column;
+  gap: 16px;
+}
+
+.promotions-coupon-status-dialog > .promotions-card-header {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.promotions-coupon-status-dialog .promotions-card-header h3 {
+  margin: 0 0 4px;
+}
+
+.promotions-coupon-status-dialog .promotions-card-header p {
+  margin: 0;
+}
+
+.promotions-coupon-status-close {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  place-items: center;
+  border: 1px solid var(--promotions-line);
+  border-radius: 10px;
+  background: var(--promotions-soft);
+  color: var(--promotions-ink);
+  font-size: 1.4rem;
+  cursor: pointer;
+}
+
+.promotions-coupon-status-list {
+  display: grid;
+  min-height: 0;
+  gap: 10px;
+  overflow: auto;
+  padding: 2px;
+}
+
+.promotions-coupon-status-item {
+  padding: 14px;
+  border: 1px solid var(--promotions-line);
+  border-radius: 12px;
+  background: var(--promotions-soft);
+}
+
+.promotions-coupon-status-item h4 {
+  margin: 0 0 10px;
+  color: var(--promotions-ink);
+  font-size: 0.92rem;
+}
+
+.promotions-coupon-status-item dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.promotions-coupon-status-item dl > div {
+  min-width: 0;
+}
+
+.promotions-coupon-status-item dt {
+  margin-bottom: 3px;
+  color: var(--promotions-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.promotions-coupon-status-item dd {
+  margin: 0;
+  color: var(--promotions-ink);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
 }
 
 .dark-mode .promotions-coupons-overview {

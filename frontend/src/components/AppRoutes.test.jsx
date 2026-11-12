@@ -54,8 +54,17 @@ describe("AppRoutes", () => {
     expect(screen.getByText("Admin Analytics")).toBeInTheDocument();
   });
 
-  it.each(["search_console", "google_analytics"])("renders a blank admin page for %s", (page) => {
-    mockLocation.pathname = `/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/${page}`;
+  it("renders the Google Search Console connection section", () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/search_console";
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+
+    expect(screen.getByRole("heading", { name: "Search integrations" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect Search Console" })).toBeInTheDocument();
+  });
+
+  it("renders a blank admin page for google_analytics", () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
 
     const { container } = render(<AppRoutes userRole="admin" activePage="home" />);
 

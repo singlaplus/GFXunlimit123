@@ -57,7 +57,6 @@ function App() {
   const isStartTaxFormPage = location.pathname === "/dashboard" && new URLSearchParams(location.search).get("tab") === "starttaxform";
   const adminBasePath = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
   const isBlankSeoPage = [
-    `${adminBasePath}/search_console`,
     `${adminBasePath}/google_analytics`,
   ].includes(location.pathname);
 
