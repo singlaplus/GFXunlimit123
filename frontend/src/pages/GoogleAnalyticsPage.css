@@ -1,0 +1,940 @@
+.google-analytics-page {
+  min-height: 65vh;
+  padding: clamp(20px, 3vw, 36px);
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(255, 237, 213, 0.62), transparent 34%),
+    #f8fafc;
+  color: #172033;
+}
+
+.google-analytics-page.is-dark {
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(124, 45, 18, 0.18), transparent 34%),
+    #0b1220;
+  color: #f1f5f9;
+}
+
+.google-analytics-page-inner {
+  width: 100%;
+  margin: 0 auto;
+}
+
+.google-analytics-page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.google-analytics-page-heading {
+  margin: 0 0 22px;
+}
+
+.google-analytics-eyebrow {
+  color: #7c8799;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.is-dark .google-analytics-eyebrow {
+  color: #aab6c8;
+}
+
+.google-analytics-page-heading h1 {
+  margin: 7px 0 6px;
+  font-size: clamp(1.55rem, 3vw, 1.95rem);
+  letter-spacing: -0.04em;
+}
+
+.google-analytics-page-heading p {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.93rem;
+  line-height: 1.5;
+}
+
+.is-dark .google-analytics-page-heading p {
+  color: #aab6c8;
+}
+
+.google-analytics-status-group {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.google-analytics-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #475569;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.google-analytics-status-icon {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #ffedd5;
+  color: #c2410c;
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.google-analytics-status.is-connected .google-analytics-status-icon {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.google-analytics-hero-footer i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
+}
+
+.is-dark .google-analytics-status {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: rgba(17, 24, 39, 0.82);
+  color: #cbd5e1;
+}
+
+.is-dark .google-analytics-status-icon {
+  background: rgba(124, 45, 18, 0.35);
+  color: #fdba74;
+}
+
+.is-dark .google-analytics-status.is-connected .google-analytics-status-icon {
+  background: rgba(22, 101, 52, 0.35);
+  color: #86efac;
+}
+
+.google-analytics-hero {
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  padding: clamp(24px, 4vw, 44px);
+  border: 1px solid #f1d8b8;
+  border-radius: 22px;
+  background:
+    radial-gradient(ellipse at 95% 5%, rgba(254, 215, 170, 0.5), transparent 38%),
+    linear-gradient(125deg, #fff 0%, #fffdf9 58%, #fff8ed 100%);
+  box-shadow: 0 18px 48px rgba(80, 48, 15, 0.08), 0 2px 6px rgba(80, 48, 15, 0.03);
+}
+
+.is-dark .google-analytics-hero {
+  border-color: rgba(251, 146, 60, 0.2);
+  background:
+    radial-gradient(ellipse at 95% 5%, rgba(124, 45, 18, 0.25), transparent 40%),
+    linear-gradient(125deg, #111827 0%, #1c1b20 100%);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+}
+
+.google-analytics-orbit {
+  position: absolute;
+  top: -135px;
+  right: -85px;
+  width: 320px;
+  height: 320px;
+  border: 1px solid rgba(249, 115, 22, 0.1);
+  border-radius: 50%;
+  background: rgba(255, 237, 213, 0.2);
+  pointer-events: none;
+}
+
+.google-analytics-orbit::before,
+.google-analytics-orbit::after {
+  position: absolute;
+  inset: 25px;
+  border: 1px solid rgba(249, 115, 22, 0.1);
+  border-radius: 50%;
+  content: "";
+}
+
+.google-analytics-orbit::after {
+  inset: 55px;
+}
+
+.is-dark .google-analytics-orbit {
+  border-color: rgba(251, 146, 60, 0.13);
+  background: rgba(124, 45, 18, 0.1);
+}
+
+.google-analytics-hero-content {
+  position: relative;
+  z-index: 1;
+}
+
+.google-analytics-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #52647f;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.is-dark .google-analytics-brand {
+  color: #aab6c8;
+}
+
+.google-analytics-brand-mark {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  box-sizing: border-box;
+  width: 52px;
+  height: 52px;
+  padding: 11px 13px;
+  border: 1px solid #fed7aa;
+  border-radius: 15px;
+  background: linear-gradient(145deg, #fff7ed, #fff);
+  box-shadow: 0 5px 14px rgba(234, 88, 12, 0.1);
+}
+
+.google-analytics-brand-mark i {
+  display: block;
+  width: 6px;
+  border-radius: 5px;
+  background: #f97316;
+}
+
+.google-analytics-brand-mark i:nth-child(1) { height: 17px; opacity: 0.7; }
+.google-analytics-brand-mark i:nth-child(2) { height: 25px; background: #f9ab00; }
+.google-analytics-brand-mark i:nth-child(3) { height: 14px; background: #34a853; }
+
+.is-dark .google-analytics-brand-mark {
+  border-color: rgba(251, 146, 60, 0.2);
+  background: #2a211d;
+}
+
+.google-analytics-hero-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  padding: clamp(24px, 4vw, 38px) 0;
+}
+
+.google-analytics-hero-copy h2 {
+  max-width: 700px;
+  margin: 0 0 12px;
+  font-size: clamp(1.7rem, 4vw, 2.65rem);
+  letter-spacing: -0.045em;
+  line-height: 1.1;
+}
+
+.google-analytics-hero-copy p {
+  max-width: 700px;
+  margin: 0;
+  color: #64748b;
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+.is-dark .google-analytics-hero-copy p {
+  color: #aab6c8;
+}
+
+.google-analytics-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.google-analytics-tags span {
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  color: #475569;
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.is-dark .google-analytics-tags span {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.5);
+  color: #cbd5e1;
+}
+
+.google-analytics-connect {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: center;
+  gap: 10px;
+}
+
+.google-analytics-connect button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 0 18px;
+  border: 1px solid #ea580c;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #f97316, #ea580c);
+  color: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 750;
+  box-shadow: 0 8px 18px rgba(234, 88, 12, 0.2);
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.google-analytics-connect button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 11px 22px rgba(234, 88, 12, 0.26);
+}
+
+.google-analytics-connect button:focus-visible {
+  outline: 3px solid rgba(249, 115, 22, 0.28);
+  outline-offset: 3px;
+}
+
+.google-analytics-connect button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.google-analytics-connect > span {
+  color: #64748b;
+  font-size: 0.76rem;
+}
+
+.is-dark .google-analytics-connect > span {
+  color: #94a3b8;
+}
+
+.google-analytics-hero-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 17px;
+  border-top: 1px solid rgba(148, 163, 184, 0.24);
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.google-analytics-hero-footer > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 650;
+}
+
+.google-analytics-hero-footer i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  box-shadow: none;
+}
+
+.is-dark .google-analytics-hero-footer {
+  border-color: rgba(148, 163, 184, 0.18);
+  color: #94a3b8;
+}
+
+.google-analytics-notice {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border: 1px solid #fed7aa;
+  border-radius: 11px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.is-dark .google-analytics-notice {
+  border-color: rgba(251, 146, 60, 0.25);
+  background: rgba(124, 45, 18, 0.25);
+  color: #fed7aa;
+}
+
+.google-analytics-dialog-backdrop {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.58);
+  backdrop-filter: blur(5px);
+}
+
+.google-analytics-dialog {
+  box-sizing: border-box;
+  width: min(100%, 560px);
+  max-height: min(90vh, 680px);
+  overflow: auto;
+  padding: clamp(20px, 4vw, 30px);
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  background: #fff;
+  color: #172033;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+}
+
+.is-dark .google-analytics-dialog {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: #111827;
+  color: #f1f5f9;
+}
+
+.google-analytics-dialog:focus {
+  outline: none;
+}
+
+.google-analytics-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.google-analytics-dialog-header h2 {
+  margin: 7px 0 0;
+  font-size: clamp(1.25rem, 3vw, 1.55rem);
+  letter-spacing: -0.035em;
+}
+
+.google-analytics-dialog-close {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.is-dark .google-analytics-dialog-close {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: #1e293b;
+  color: #cbd5e1;
+}
+
+.google-analytics-methods {
+  display: grid;
+  gap: 12px;
+}
+
+.google-analytics-method-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #fff;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.google-analytics-method-card:hover {
+  transform: translateY(-1px);
+  border-color: #fdba74;
+  background: #fffaf5;
+}
+
+.google-analytics-method-card.is-static {
+  cursor: default;
+  font: inherit;
+}
+
+.google-analytics-method-card.is-static:hover {
+  transform: none;
+  border-color: #e2e8f0;
+  background: #fff;
+}
+
+.google-analytics-method-card:focus-visible,
+.google-analytics-dialog-close:focus-visible,
+.google-analytics-dialog-actions button:focus-visible,
+.google-analytics-disconnect-button:focus-visible {
+  outline: 3px solid rgba(249, 115, 22, 0.3);
+  outline-offset: 2px;
+}
+
+.is-dark .google-analytics-method-card {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: #172033;
+}
+
+.is-dark .google-analytics-method-card:hover {
+  border-color: rgba(251, 146, 60, 0.55);
+  background: #211d1d;
+}
+
+.is-dark .google-analytics-method-card.is-static:hover {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: #172033;
+}
+
+.google-analytics-disconnect-button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff;
+  color: #b91c1c;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 750;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.google-analytics-disconnect-button:not(:disabled):hover {
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.google-analytics-disconnect-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.is-dark .google-analytics-disconnect-button {
+  border-color: rgba(248, 113, 113, 0.32);
+  background: #1e293b;
+  color: #fca5a5;
+}
+
+.is-dark .google-analytics-disconnect-button:not(:disabled):hover {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(127, 29, 29, 0.3);
+}
+
+.google-analytics-method-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 12px;
+  background: #fff7ed;
+  color: #ea580c;
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.google-analytics-method-icon.is-manual {
+  font-size: 0.85rem;
+}
+
+.is-dark .google-analytics-method-icon {
+  background: rgba(124, 45, 18, 0.3);
+  color: #fdba74;
+}
+
+.google-analytics-method-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.google-analytics-method-copy strong {
+  font-size: 0.94rem;
+}
+
+.google-analytics-method-copy small {
+  color: #64748b;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.is-dark .google-analytics-method-copy small {
+  color: #aab6c8;
+}
+
+.google-analytics-method-meta {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+}
+
+.google-analytics-method-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 1px solid #fed7aa;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 0.7rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.google-analytics-method-status.is-connected {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.is-dark .google-analytics-method-status {
+  border-color: rgba(251, 146, 60, 0.3);
+  background: rgba(124, 45, 18, 0.2);
+  color: #fdba74;
+}
+
+.is-dark .google-analytics-method-status.is-connected {
+  border-color: rgba(74, 222, 128, 0.25);
+  background: rgba(22, 101, 52, 0.2);
+  color: #86efac;
+}
+
+.google-analytics-method-arrow {
+  color: #94a3b8;
+  font-size: 1.2rem;
+}
+
+.google-analytics-connection-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.google-analytics-connection-summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.google-analytics-connection-summary > span.is-connected {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.google-analytics-connection-summary > span > span {
+  font-size: 0.95rem;
+  font-weight: 850;
+}
+
+.is-dark .google-analytics-connection-summary > span {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: #172033;
+  color: #cbd5e1;
+}
+
+.is-dark .google-analytics-connection-summary > span.is-connected {
+  border-color: rgba(74, 222, 128, 0.25);
+  background: rgba(22, 101, 52, 0.2);
+  color: #86efac;
+}
+
+.google-analytics-manual-content > p {
+  color: #475569;
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
+.google-analytics-tag-type {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0 12px;
+  color: #334155;
+  font-size: 0.85rem;
+  font-weight: 750;
+}
+
+.google-analytics-tag-type-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+  background: #f8fafc;
+}
+
+.google-analytics-tag-type-options button {
+  min-height: 40px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  cursor: pointer;
+}
+
+.google-analytics-tag-type-options button[aria-pressed="true"] {
+  border-color: #fed7aa;
+  background: #fff;
+  color: #c2410c;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+.google-analytics-tag-type-options button:focus-visible {
+  outline: 3px solid rgba(249, 115, 22, 0.3);
+  outline-offset: 2px;
+}
+
+.google-analytics-tag-type-options button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.is-dark .google-analytics-tag-type {
+  color: #e2e8f0;
+}
+
+.is-dark .google-analytics-tag-type-options {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: #0f172a;
+}
+
+.is-dark .google-analytics-tag-type-options button[aria-pressed="true"] {
+  border-color: rgba(251, 146, 60, 0.45);
+  background: #2a211d;
+  color: #fdba74;
+}
+
+.google-analytics-measurement-field {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0 12px;
+  color: #334155;
+  font-size: 0.85rem;
+  font-weight: 750;
+}
+
+.google-analytics-measurement-field input,
+.google-analytics-measurement-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 46px;
+  padding: 12px 13px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #172033;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.02em;
+}
+
+.google-analytics-measurement-field input {
+  padding: 0 13px;
+}
+
+.google-analytics-measurement-field textarea {
+  min-height: 120px;
+  resize: vertical;
+  line-height: 1.5;
+  letter-spacing: normal;
+}
+
+.google-analytics-measurement-field input:focus,
+.google-analytics-measurement-field textarea:focus {
+  border-color: #f97316;
+  outline: 3px solid rgba(249, 115, 22, 0.16);
+}
+
+.google-analytics-measurement-field input:disabled,
+.google-analytics-measurement-field textarea:disabled {
+  opacity: 0.65;
+}
+
+.is-dark .google-analytics-measurement-field {
+  color: #e2e8f0;
+}
+
+.is-dark .google-analytics-measurement-field input,
+.is-dark .google-analytics-measurement-field textarea {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: #0f172a;
+  color: #f1f5f9;
+}
+
+.google-analytics-tag-error {
+  margin: 12px 0;
+  color: #b91c1c;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.is-dark .google-analytics-tag-error {
+  color: #fca5a5;
+}
+
+.google-analytics-manual-content code {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: #f1f5f9;
+  color: #9a3412;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.84em;
+}
+
+.is-dark .google-analytics-manual-content > p {
+  color: #cbd5e1;
+}
+
+.is-dark .google-analytics-manual-content code {
+  background: #1e293b;
+  color: #fdba74;
+}
+
+.google-analytics-manual-note {
+  padding: 11px 13px;
+  border-left: 3px solid #f97316;
+  border-radius: 0 8px 8px 0;
+  background: #fff7ed;
+}
+
+.is-dark .google-analytics-manual-note {
+  background: rgba(124, 45, 18, 0.2);
+}
+
+.google-analytics-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.google-analytics-dialog-actions button {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.google-analytics-dialog-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.google-analytics-secondary-button {
+  border: 1px solid #cbd5e1;
+  background: transparent;
+  color: #475569;
+}
+
+.google-analytics-primary-button {
+  border: 1px solid #ea580c;
+  background: #ea580c;
+  color: #fff;
+}
+
+.google-analytics-clear-button {
+  margin-right: auto;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #b91c1c;
+}
+
+.google-analytics-generate-key {
+  margin-right: auto;
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.google-analytics-generate-key:not(:disabled):hover {
+  background: #ffedd5;
+}
+
+.google-analytics-clear-button:not(:disabled):hover {
+  background: #fef2f2;
+}
+
+.google-analytics-clear-button:disabled {
+  opacity: 0.45;
+}
+
+.is-dark .google-analytics-secondary-button {
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #cbd5e1;
+}
+
+.is-dark .google-analytics-clear-button:not(:disabled):hover {
+  background: rgba(185, 28, 28, 0.12);
+}
+
+.is-dark .google-analytics-generate-key {
+  border-color: rgba(251, 146, 60, 0.35);
+  background: rgba(124, 45, 18, 0.2);
+  color: #fdba74;
+}
+
+.is-dark .google-analytics-generate-key:not(:disabled):hover {
+  background: rgba(124, 45, 18, 0.35);
+}
+@media (max-width: 760px) {
+  .google-analytics-hero-copy {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .google-analytics-connect {
+    justify-items: start;
+  }
+}
+
+@media (max-width: 620px) {
+  .google-analytics-page-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .google-analytics-hero-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .google-analytics-connect,
+  .google-analytics-connect button {
+    width: 100%;
+  }
+}

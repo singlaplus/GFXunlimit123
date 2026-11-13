@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import AppRoutes from "./AppRoutes";
 import axios from "axios";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
@@ -63,13 +63,276 @@ describe("AppRoutes", () => {
     expect(screen.getByRole("button", { name: "Connect Search Console" })).toBeInTheDocument();
   });
 
-  it("renders a blank admin page for google_analytics", () => {
+  it("opens Google authorization in a new popup from the connection dialog", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
+    const popup = { location: { replace: jest.fn() }, close: jest.fn() };
+    const openPopup = jest.spyOn(window, "open").mockReturnValue(popup);
+    const authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth?client_id=test";
+    axios.post.mockResolvedValue({ data: { authorizationUrl } });
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+
+    expect(screen.getByRole("heading", { name: "Google Analytics" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Make every visit count." })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Analytics" }));
+    const dialog = screen.getByRole("dialog", { name: "Choose a connection method" });
+    const connectionOption = within(dialog).getByRole("button", { name: /Connect Google Analytics/ });
+    await waitFor(() => expect(connectionOption).toBeEnabled());
+    fireEvent.click(connectionOption);
+    await waitFor(() => expect(popup.location.replace).toHaveBeenCalledWith(authorizationUrl));
+    expect(openPopup).toHaveBeenCalledWith(
+      "about:blank",
+      "google-analytics-oauth",
+      "popup=yes,width=560,height=720,resizable=yes,scrollbars=yes"
+    );
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/google-analytics/connect"),
+      {},
+      expect.objectContaining({ headers: expect.any(Object) })
+    );
+    openPopup.mockRestore();
+  });
+
+  it("reports missing backend OAuth settings after closing the temporary popup", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
+    const popup = { location: { replace: jest.fn() }, close: jest.fn() };
+    const openPopup = jest.spyOn(window, "open").mockReturnValue(popup);
+    axios.post.mockRejectedValue({
+      response: {
+        data: {
+          error: "Google Analytics OAuth is not configured on the server.",
+          missingConfiguration: ["GOOGLE_ANALYTICS_CLIENT_ID", "GOOGLE_ANALYTICS_CLIENT_SECRET"],
+        },
+      },
+    });
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Analytics" }));
+    const dialog = screen.getByRole("dialog", { name: "Choose a connection method" });
+    const connectionOption = within(dialog).getByRole("button", { name: /Connect Google Analytics/ });
+    await waitFor(() => expect(connectionOption).toBeEnabled());
+    fireEvent.click(connectionOption);
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(
+      "Configure these backend settings first: GOOGLE_ANALYTICS_CLIENT_ID, GOOGLE_ANALYTICS_CLIENT_SECRET."
+    ));
+    expect(popup.close).toHaveBeenCalled();
+    openPopup.mockRestore();
+  });
+
+  it("shows account and tag connection indicators in the page and connection dialog", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/google-analytics/connection")) {
+        return Promise.resolve({
+          data: {
+            configured: true,
+            connected: true,
+            accountEmail: "analytics@example.test",
+            missingConfiguration: [],
+            redirectUri: "http://localhost:5000/google-analytics/oauth/callback",
+            tokenKeyConfigured: true,
+            usingSearchConsoleOAuthCredentials: true,
+          },
+        });
+      }
+      if (url.includes("/admin/google-analytics/tag")) {
+        return Promise.resolve({ data: { measurementId: "G-ABC1234567", tagManagerId: "GTM-T2NG27X8" } });
+      }
+      return Promise.resolve({ data: { available: true, path: mockLocation.pathname, disabledLinks: [] } });
+    });
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+    const pageStatus = await screen.findByRole("group", { name: "Connection status" });
+    await waitFor(() => {
+      expect(pageStatus).toHaveTextContent(/Google account:\s*Connected/);
+      expect(pageStatus).toHaveTextContent(/Website tag:\s*Connected/);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Analytics" }));
+    const dialog = screen.getByRole("dialog", { name: "Choose a connection method" });
+    const dialogStatus = within(dialog).getByRole("group", { name: "Connection status" });
+    expect(dialogStatus).toHaveTextContent(/Google account:\s*Connected/);
+    expect(dialogStatus).toHaveTextContent(/Website tag:\s*Connected/);
+    expect(within(dialog).getByText("Connected as analytics@example.test")).toBeInTheDocument();
+    expect(within(dialog).getByText("Installed: GA4 and GTM")).toBeInTheDocument();
+  });
+
+  it("offers a separate disconnect action for a connected Google account without affecting the tag", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/google-analytics/connection")) {
+        return Promise.resolve({
+          data: { configured: true, connected: true, accountEmail: "analytics@example.test" },
+        });
+      }
+      if (url.includes("/admin/google-analytics/tag")) {
+        return Promise.resolve({ data: { measurementId: "", tagManagerId: "GTM-T2NG27X8" } });
+      }
+      return Promise.resolve({ data: { available: true, path: mockLocation.pathname, disabledLinks: [] } });
+    });
+    axios.delete.mockResolvedValue({ data: { connected: false } });
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+    await screen.findByText("Google account: analytics@example.test");
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Analytics" }));
+    const dialog = screen.getByRole("dialog", { name: "Choose a connection method" });
+    const dialogStatus = within(dialog).getByRole("group", { name: "Connection status" });
+
+    expect(within(dialog).queryByRole("button", { name: /Connect Google Analytics/ })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/google-analytics/connection"),
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+      expect(dialogStatus).toHaveTextContent(/Google account:\s*Not connected/);
+      expect(dialogStatus).toHaveTextContent(/Website tag:\s*Connected/);
+    });
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole("button", { name: /Connect Google Analytics/ })).toBeInTheDocument();
+    expect(within(dialog).getByText("Google Analytics account disconnected.")).toBeInTheDocument();
+  });
+
+  it("reuses Search Console OAuth credentials and saves Analytics-specific settings manually", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/google-analytics/connection")) {
+        return Promise.resolve({
+          data: {
+            configured: false,
+            connected: false,
+            missingConfiguration: ["GOOGLE_ANALYTICS_REDIRECT_URI", "GOOGLE_ANALYTICS_TOKEN_KEY"],
+            redirectUri: "http://localhost:5000/google-analytics/oauth/callback",
+            tokenKeyConfigured: false,
+            usingSearchConsoleOAuthCredentials: true,
+          },
+        });
+      }
+      return Promise.resolve({ data: { available: true, path: mockLocation.pathname, disabledLinks: [] } });
+    });
+    axios.put.mockResolvedValue({
+      data: {
+        configured: true,
+        redirectUri: "http://localhost:5000/google-analytics/oauth/callback",
+        tokenKeyConfigured: true,
+        usingSearchConsoleOAuthCredentials: true,
+        message: "Google Analytics settings saved.",
+      },
+    });
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Analytics" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Choose a connection method" }))
+      .getByRole("button", { name: /Configure OAuth Manually/ }));
+
+    const configDialog = screen.getByRole("dialog", { name: "Configure Google authorization" });
+    expect(await within(configDialog).findByText(/Search Console OAuth client ID and secret will be reused/)).toBeInTheDocument();
+    expect(within(configDialog).getByLabelText("Analytics OAuth callback URL"))
+      .toHaveValue("http://localhost:5000/google-analytics/oauth/callback");
+    fireEvent.change(within(configDialog).getByLabelText("Analytics token key"), {
+      target: { value: "0123456789abcdef".repeat(4) },
+    });
+    fireEvent.click(within(configDialog).getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => expect(axios.put).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/google-analytics/config"),
+      {
+        redirectUri: "http://localhost:5000/google-analytics/oauth/callback",
+        tokenKey: "0123456789abcdef".repeat(4),
+      },
+      expect.objectContaining({ headers: expect.any(Object) })
+    ));
+    expect(await screen.findByRole("status")).toHaveTextContent("Google Analytics settings saved.");
+  });
+
+  it("switches between GA4 and GTM code types and saves both IDs", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
+    axios.put.mockResolvedValue({
+      data: { measurementId: "G-ABC1234567", tagManagerId: "GTM-T2NG27X8" },
+    });
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Analytics" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Choose a connection method" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Add Google Tag Manually/ }));
+
+    const manualDialog = screen.getByRole("dialog", { name: "Add a Google tag manually" });
+    const measurementInput = within(manualDialog).getByRole("textbox", { name: "GA4 Measurement ID" });
+    await waitFor(() => expect(measurementInput).toBeEnabled());
+    fireEvent.change(measurementInput, { target: { value: "g-abc1234567" } });
+
+    fireEvent.click(within(manualDialog).getByRole("button", { name: "GTM" }));
+    const tagManagerInput = within(manualDialog).getByRole("textbox", { name: "Google Tag Manager Container ID" });
+    fireEvent.change(tagManagerInput, { target: { value: "gtm-t2ng27x8" } });
+    expect(within(manualDialog).getByRole("button", { name: "GTM" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(manualDialog).getByRole("button", { name: "Done" }));
+
+    await waitFor(() => expect(axios.put).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/google-analytics/tag"),
+      { measurementId: "G-ABC1234567", tagManagerId: "GTM-T2NG27X8" },
+      expect.objectContaining({ headers: expect.any(Object) })
+    ));
+    expect(await screen.findByRole("status")).toHaveTextContent("GA4 G-ABC1234567 and GTM GTM-T2NG27X8 are now installed site-wide");
+  });
+
+  it("extracts IDs from the shared Google tag script field before saving", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
+    axios.put.mockResolvedValue({
+      data: { measurementId: "G-ABC1234567", tagManagerId: "GTM-T2NG27X8" },
+    });
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Analytics" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Choose a connection method" }))
+      .getByRole("button", { name: /Add Google Tag Manually/ }));
+
+    const manualDialog = screen.getByRole("dialog", { name: "Add a Google tag manually" });
+    const scriptInput = within(manualDialog).getByRole("textbox", { name: "Google tag script snippet" });
+    await waitFor(() => expect(scriptInput).toBeEnabled());
+    fireEvent.change(scriptInput, {
+      target: {
+        value: [
+          '<script async src="https://www.googletagmanager.com/gtag/js?id=G-ABC1234567"></script>',
+          '<script src="https://www.googletagmanager.com/gtm.js?id=GTM-T2NG27X8"></script>',
+        ].join(""),
+      },
+    });
+    fireEvent.click(within(manualDialog).getByRole("button", { name: "Done" }));
+
+    await waitFor(() => expect(axios.put).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/google-analytics/tag"),
+      { measurementId: "G-ABC1234567", tagManagerId: "GTM-T2NG27X8" },
+      expect.objectContaining({ headers: expect.any(Object) })
+    ));
+  });
+
+  it("clears both ID fields and the script snippet together", async () => {
     mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
 
-    const { container } = render(<AppRoutes userRole="admin" activePage="home" />);
+    render(<AppRoutes userRole="admin" activePage="home" />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Analytics" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Choose a connection method" }))
+      .getByRole("button", { name: /Add Google Tag Manually/ }));
 
-    expect(screen.getByRole("main", { name: "Blank page" })).toBeEmptyDOMElement();
-    expect(container).toHaveTextContent("");
+    const manualDialog = screen.getByRole("dialog", { name: "Add a Google tag manually" });
+    const measurementInput = within(manualDialog).getByRole("textbox", { name: "GA4 Measurement ID" });
+    const scriptInput = within(manualDialog).getByRole("textbox", { name: "Google tag script snippet" });
+    await waitFor(() => expect(measurementInput).toBeEnabled());
+
+    fireEvent.change(measurementInput, { target: { value: "G-ABC1234567" } });
+    fireEvent.click(within(manualDialog).getByRole("button", { name: "GTM" }));
+    const tagManagerInput = within(manualDialog).getByRole("textbox", { name: "Google Tag Manager Container ID" });
+    fireEvent.change(tagManagerInput, { target: { value: "GTM-T2NG27X8" } });
+    fireEvent.change(scriptInput, { target: { value: "<script>sample</script>" } });
+    fireEvent.click(within(manualDialog).getByRole("button", { name: "Clear all" }));
+
+    expect(tagManagerInput).toHaveValue("");
+    fireEvent.click(within(manualDialog).getByRole("button", { name: "GA4" }));
+    expect(within(manualDialog).getByRole("textbox", { name: "GA4 Measurement ID" })).toHaveValue("");
+    expect(scriptInput).toHaveValue("");
   });
 
   it("renders a blank protected page with the blog sidebar menu", () => {

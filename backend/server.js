@@ -22,6 +22,7 @@ const { buildMyUploadsQuery } = require("./myUploadsQuery");
 const { registerOrderRoutes } = require("./orders");
 const { registerContributorOfferBenefitRoutes } = require("./routes/contributor-offer-benefit");
 const { createGoogleSearchConsoleRouter } = require("./routes/google-search-console");
+const { createGoogleAnalyticsRouter } = require("./routes/google-analytics");
 const {
   NEWSLETTER_AUDIENCES,
   NEWSLETTER_ATTACHMENT_FOLDER,
@@ -438,6 +439,7 @@ app.use("/admin/backup", createBackupRouter({
 }));
 app.use(cookieParser());
 app.use(createGoogleSearchConsoleRouter({ pool, verifyAdmin, allowedOrigins: allowedCorsOrigins }));
+app.use(createGoogleAnalyticsRouter({ pool, verifyAdmin, allowedOrigins: allowedCorsOrigins }));
 app.use((req, res, next) => {
   let connections;
   try {
@@ -5195,6 +5197,15 @@ const getCollectionsList = async () => {
 // Ensure credits_history and image metadata columns exist
 if (process.env.DISABLE_SERVER_SCHEMA_INITIALIZATION !== 'true') (async () => {
   try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS google_analytics_settings (
+        id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        measurement_id TEXT NOT NULL DEFAULT '',
+        tag_manager_id TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await pool.query(`ALTER TABLE google_analytics_settings ADD COLUMN IF NOT EXISTS tag_manager_id TEXT NOT NULL DEFAULT ''`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS credit_price_settings (
         id SERIAL PRIMARY KEY,
@@ -16995,6 +17006,11 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(googleSearchConsolePropertyMigration);
+      const googleAnalyticsConnectionMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "036_google_analytics_connections.sql"),
+        "utf8"
+      );
+      await pool.query(googleAnalyticsConnectionMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);

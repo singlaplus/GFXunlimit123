@@ -38,6 +38,7 @@ import {
 } from "./utils/backendRequestLoading";
 import { getEffectiveAuthToken } from "./utils/authSession";
 import { API_BASE_URL } from "./utils/apiBaseUrl";
+import { installGoogleAnalyticsTags } from "./utils/googleAnalyticsTag";
 import { useStartupReadiness } from "./startup/StartupReadinessProvider";
 
 const BACKEND_LOADING_OVERLAY_DELAY_MS = 800;
@@ -242,6 +243,38 @@ const [showNotifications, setShowNotifications] = useState(false);
   useEffect(() => {
     const timer = setInterval(() => setLiveTime(new Date()), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let tagWasUpdated = false;
+
+    const installTags = (tagSettings) => {
+      try {
+        installGoogleAnalyticsTags(tagSettings);
+      } catch (error) {
+        console.error("Unable to install Google Analytics tags", error);
+      }
+    };
+
+    const handleTagUpdated = (event) => {
+      tagWasUpdated = true;
+      installTags(event.detail);
+    };
+    window.addEventListener("google-analytics-tag-updated", handleTagUpdated);
+
+    axios.get(`${API_BASE_URL}/google-analytics/tag`)
+      .then(({ data }) => {
+        if (active && !tagWasUpdated) installTags(data);
+      })
+      .catch((error) => {
+        if (active) console.error("Unable to load Google Analytics tag settings", error);
+      });
+
+    return () => {
+      active = false;
+      window.removeEventListener("google-analytics-tag-updated", handleTagUpdated);
+    };
   }, []);
 
 
@@ -822,7 +855,7 @@ const popupProps = {
   isLoggedIn={Boolean(token)}
       />
 
-        {!isBlankSeoPage && <div
+        {(!isBlankSeoPage || location.pathname === `${adminBasePath}/google_analytics`) && <div
         style={{
           marginTop: "24px",
           padding: "20px",
