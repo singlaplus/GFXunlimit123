@@ -195,6 +195,102 @@ describe("AppRoutes", () => {
     expect(within(dialog).getByText("Google Analytics account disconnected.")).toBeInTheDocument();
   });
 
+  it("loads GA4 properties and switches the analytics report navigation to realtime data", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/google-analytics/connection")) {
+        return Promise.resolve({ data: { configured: true, connected: true, accountEmail: "analytics@example.test" } });
+      }
+      if (url.includes("/admin/google-analytics/properties")) {
+        return Promise.resolve({
+          data: { properties: [{ id: "properties/123456", displayName: "Main website", accountName: "Example" }] },
+        });
+      }
+      if (url.includes("/admin/google-analytics/tag")) {
+        return Promise.resolve({ data: { measurementId: "G-ABC1234567", tagManagerId: "" } });
+      }
+      return Promise.resolve({ data: { available: true, path: mockLocation.pathname, disabledLinks: [] } });
+    });
+    axios.post.mockImplementation((_url, body) => Promise.resolve({
+      data: body.reportId === "acquisition-overview" && body.dateRange === "last30min"
+        ? {
+          reportId: body.reportId,
+          unavailableReason: "GA4 Realtime does not provide channel-group breakdowns. Use a longer range after historical data has been processed.",
+        }
+        : body.reportId === "acquisition-overview"
+          ? {
+            reportId: body.reportId,
+            dimensionHeaders: [{ name: "sessionDefaultChannelGroup" }],
+            metricHeaders: [{ name: "sessions" }],
+            rows: [],
+          }
+        : body.reportId === "realtime"
+          ? {
+          reportId: "realtime",
+          generatedAt: "2026-11-13T16:00:00.000Z",
+          reports: {
+            summary: {
+              metricHeaders: [
+                { name: "activeUsers" },
+                { name: "screenPageViews" },
+                { name: "eventCount" },
+              ],
+              rows: [{ metricValues: [{ value: "4" }, { value: "9" }, { value: "12" }] }],
+            },
+            countries: {
+              dimensionHeaders: [{ name: "country" }],
+              metricHeaders: [{ name: "activeUsers" }],
+              rows: [{ dimensionValues: [{ value: "India" }], metricValues: [{ value: "4" }] }],
+            },
+            pages: { dimensionHeaders: [], metricHeaders: [], rows: [] },
+            events: { dimensionHeaders: [], metricHeaders: [], rows: [] },
+          },
+          }
+          : {
+            reportId: "overview",
+            dimensionHeaders: [{ name: "date" }],
+            metricHeaders: [{ name: "activeUsers" }, { name: "sessions" }],
+            totals: [{ metricValues: [{ value: "12" }, { value: "18" }] }],
+            rows: [{
+              dimensionValues: [{ value: "20261113" }],
+              metricValues: [{ value: "12" }, { value: "18" }],
+            }],
+          },
+    }));
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+    expect(await screen.findAllByRole("heading", { name: "Reports snapshot" })).toHaveLength(2);
+    expect(await screen.findByText("12", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "GA4 property" })).toHaveValue("properties/123456");
+    expect(screen.getByRole("button", { name: "Tech details" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Realtime" }));
+    expect(await screen.findByRole("heading", { name: "Realtime" })).toBeInTheDocument();
+    const dateRange = screen.getByRole("combobox", { name: "Date range" });
+    expect(dateRange).toHaveValue("last30min");
+    expect(await screen.findByText("Top countries")).toBeInTheDocument();
+    expect(await screen.findByText("India")).toBeInTheDocument();
+    expect(await screen.findByText(/Realtime does not provide traffic-source dimensions/i)).toBeInTheDocument();
+    fireEvent.change(dateRange, { target: { value: "last1hour" } });
+    expect(axios.post).toHaveBeenLastCalledWith(
+      expect.stringContaining("/admin/google-analytics/reports"),
+      expect.objectContaining({
+        propertyId: "properties/123456",
+        reportId: "realtime",
+        dateRange: "last1hour",
+      }),
+      expect.objectContaining({ headers: expect.any(Object) })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Acquisition overview" }));
+    expect(await screen.findByText(/GA4 has no processed channel-group data for this range yet/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View live activity" }));
+    expect(await screen.findByRole("heading", { name: "Realtime" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Date range" })).toHaveValue("last30min");
+    fireEvent.click(screen.getByRole("button", { name: "Acquisition overview" }));
+    fireEvent.change(dateRange, { target: { value: "last30min" } });
+    expect(await screen.findByText(/Realtime does not provide channel-group breakdowns/i)).toBeInTheDocument();
+  });
+
   it("reuses Search Console OAuth credentials and saves Analytics-specific settings manually", async () => {
     mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/google_analytics";
     axios.get.mockImplementation((url) => {

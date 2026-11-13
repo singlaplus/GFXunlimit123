@@ -11,7 +11,7 @@ const {
   normalizeGoogleAnalyticsMeasurementId,
   normalizeGoogleTagManagerId,
 } = require("../routes/google-analytics");
-const { verifyOAuthState } = require("../routes/google-search-console");
+const { encryptTokens, verifyOAuthState } = require("../routes/google-search-console");
 
 test("Google Analytics OAuth config validates its callback and persistent encryption key", () => {
   const key = Buffer.alloc(32, 9);
@@ -327,5 +327,287 @@ test("separate Google tag IDs are validated, saved, and publicly readable", asyn
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
+  }
+});
+
+test("Google Analytics report API lists authorized properties and returns protected GA4 reports", async () => {
+  const key = Buffer.alloc(32, 7);
+  const environment = {
+    GOOGLE_ANALYTICS_CLIENT_ID: "analytics-client",
+    GOOGLE_ANALYTICS_CLIENT_SECRET: "analytics-secret",
+    GOOGLE_ANALYTICS_REDIRECT_URI: "https://api.example.test/google-analytics/oauth/callback",
+    GOOGLE_ANALYTICS_TOKEN_KEY: key.toString("hex"),
+  };
+  const previousEnvironment = Object.fromEntries(
+    Object.keys(environment).map((name) => [name, process.env[name]])
+  );
+  Object.entries(environment).forEach(([name, value]) => { process.env[name] = value; });
+
+  const originalAxiosGet = axios.get;
+  const originalAxiosPost = axios.post;
+  const encryptedTokens = encryptTokens({
+    access_token: "valid-access-token",
+    refresh_token: "valid-refresh-token",
+    expires_at: Date.now() + 60 * 60 * 1000,
+  }, key);
+  const apiCalls = [];
+  const propertyTimeZoneLookups = [];
+  let nextApiError = null;
+  axios.get = async (url, options) => {
+    assert.equal(options.headers.Authorization, "Bearer valid-access-token");
+    if (url === "https://analyticsadmin.googleapis.com/v1beta/accountSummaries") {
+      return {
+        data: {
+          accountSummaries: [{
+            displayName: "Example account",
+            propertySummaries: [
+              { property: "properties/123456", displayName: "Main website" },
+              { property: "properties/987654", displayName: "Shop" },
+            ],
+          }],
+        },
+      };
+    }
+    if (url === "https://analyticsadmin.googleapis.com/v1beta/properties/123456") {
+      propertyTimeZoneLookups.push(url);
+      return { data: { timeZone: "Asia/Kolkata" } };
+    }
+    assert.fail(`Unexpected Google Analytics GET: ${url}`);
+  };
+  axios.post = async (url, body, options) => {
+    apiCalls.push({ url, body });
+    assert.equal(options.headers.Authorization, "Bearer valid-access-token");
+    if (nextApiError) {
+      const error = nextApiError;
+      nextApiError = null;
+      throw error;
+    }
+    if (url.endsWith(":runReport")) {
+      return {
+        data: {
+          dimensionHeaders: [{ name: "date" }],
+          metricHeaders: [{ name: "activeUsers", type: "TYPE_INTEGER" }],
+          totals: [{ metricValues: [{ value: "12" }] }],
+          rows: [{
+            dimensionValues: [{ value: "20261113" }],
+            metricValues: [{ value: "12" }],
+          }],
+        },
+      };
+    }
+    return {
+      data: {
+        dimensionHeaders: (body.dimensions || []).map(({ name }) => ({ name })),
+        metricHeaders: body.metrics.map(({ name }) => ({ name, type: "TYPE_INTEGER" })),
+        rows: [{
+          dimensionValues: (body.dimensions || []).map(() => ({ value: "Example" })),
+          metricValues: body.metrics.map(() => ({ value: "3" })),
+        }],
+      },
+    };
+  };
+
+  const app = express();
+  app.use(express.json());
+  app.use(createGoogleAnalyticsRouter({
+    pool: {
+      query: async (sql) => {
+        if (/SELECT encrypted_tokens FROM google_analytics_connections/.test(sql)) {
+          return { rows: [{ encrypted_tokens: encryptedTokens }] };
+        }
+        throw new Error(`Unexpected query: ${sql}`);
+      },
+    },
+    verifyAdmin: (_req, _res, next) => next(),
+  }));
+  const server = await new Promise((resolve) => {
+    const listeningServer = app.listen(0, () => resolve(listeningServer));
+  });
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}/admin/google-analytics`;
+    const propertiesResponse = await fetch(`${baseUrl}/properties`);
+    assert.equal(propertiesResponse.status, 200);
+    assert.deepEqual((await propertiesResponse.json()).properties, [
+      { id: "properties/123456", displayName: "Main website", accountName: "Example account" },
+      { id: "properties/987654", displayName: "Shop", accountName: "Example account" },
+    ]);
+
+    const invalidReportResponse = await fetch(`${baseUrl}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ propertyId: "123456", reportId: "overview" }),
+    });
+    assert.equal(invalidReportResponse.status, 400);
+    assert.equal(apiCalls.length, 0);
+
+    const reportResponse = await fetch(`${baseUrl}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        propertyId: "properties/123456",
+        reportId: "overview",
+        dateRange: "7daysAgo",
+      }),
+    });
+    assert.equal(reportResponse.status, 200);
+    const report = await reportResponse.json();
+    assert.equal(report.reportId, "overview");
+    assert.equal(report.totals[0].metricValues[0].value, "12");
+    assert.equal(apiCalls[0].body.dateRanges[0].startDate, "7daysAgo");
+    assert.deepEqual(apiCalls[0].body.metricAggregations, ["TOTAL"]);
+
+    const realtimeResponse = await fetch(`${baseUrl}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ propertyId: "properties/123456", reportId: "realtime", dateRange: "last30min" }),
+    });
+    assert.equal(realtimeResponse.status, 200);
+    const realtime = await realtimeResponse.json();
+    assert.ok(realtime.reports.summary);
+    assert.deepEqual(Object.keys(realtime.reports).sort(), ["countries", "events", "pages", "summary"]);
+    assert.equal(apiCalls.some(({ body }) => (
+      body.dimensions?.some(({ name }) => name === "sessionSourceMedium")
+    )), false);
+
+    const liveOverviewResponse = await fetch(`${baseUrl}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        propertyId: "properties/123456",
+        reportId: "overview",
+        dateRange: "last30min",
+      }),
+    });
+    assert.equal(liveOverviewResponse.status, 200);
+    const liveOverview = await liveOverviewResponse.json();
+    assert.equal(liveOverview.isRealtime, true);
+    assert.deepEqual(liveOverview.metricHeaders.map(({ name }) => name), [
+      "activeUsers",
+      "screenPageViews",
+      "eventCount",
+    ]);
+    assert.deepEqual(liveOverview.totals[0].metricValues.map(({ value }) => value), ["3", "3", "3"]);
+    assert.ok(apiCalls.at(-1).url.endsWith(":runRealtimeReport"));
+
+    const unsupportedLiveReportResponse = await fetch(`${baseUrl}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        propertyId: "properties/123456",
+        reportId: "acquisition-overview",
+        dateRange: "last30min",
+      }),
+    });
+    assert.equal(unsupportedLiveReportResponse.status, 200);
+    assert.match((await unsupportedLiveReportResponse.json()).unavailableReason, /channel-group breakdowns/);
+
+    const lastFourHoursResponse = await fetch(`${baseUrl}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        propertyId: "properties/123456",
+        reportId: "overview",
+        dateRange: "last4hours",
+      }),
+    });
+    assert.equal(lastFourHoursResponse.status, 200);
+    const lastFourHoursCall = apiCalls.at(-1);
+    assert.deepEqual(lastFourHoursCall.body.dateRanges, [
+      { startDate: "yesterday", endDate: "today" },
+    ]);
+    assert.equal(lastFourHoursCall.body.dimensionFilter.filter.fieldName, "dateHourMinute");
+    assert.ok(lastFourHoursCall.body.dimensionFilter.filter.inListFilter.values.length >= 240);
+    assert.ok(lastFourHoursCall.body.dimensionFilter.filter.inListFilter.values
+      .every((value) => /^\d{12}$/.test(value)));
+    assert.equal(propertyTimeZoneLookups.length, 1);
+
+    const historicalRealtimeCallStart = apiCalls.length;
+    const historicalRealtimeResponse = await fetch(`${baseUrl}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        propertyId: "properties/123456",
+        reportId: "realtime",
+        dateRange: "last1hour",
+      }),
+    });
+    assert.equal(historicalRealtimeResponse.status, 200);
+    const historicalRealtime = await historicalRealtimeResponse.json();
+    assert.deepEqual(Object.keys(historicalRealtime.reports).sort(), [
+      "countries",
+      "events",
+      "pages",
+      "sources",
+      "summary",
+    ]);
+    const historicalRealtimeCalls = apiCalls.slice(historicalRealtimeCallStart);
+    assert.equal(historicalRealtimeCalls.length, 5);
+    assert.ok(historicalRealtimeCalls.every(({ url }) => url.endsWith(":runReport")));
+    assert.deepEqual(
+      historicalRealtimeCalls.find(({ body }) => body.dimensions?.[0]?.name === "sessionSourceMedium")
+        ?.body.metrics,
+      [{ name: "activeUsers" }]
+    );
+    assert.equal(propertyTimeZoneLookups.length, 2);
+
+    for (const [dateRange, expectedDate] of [["today", "today"], ["yesterday", "yesterday"]]) {
+      const dateResponse = await fetch(`${baseUrl}/reports`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyId: "properties/123456",
+          reportId: "overview",
+          dateRange,
+        }),
+      });
+      assert.equal(dateResponse.status, 200);
+      assert.deepEqual(apiCalls.at(-1).body.dateRanges, [
+        { startDate: expectedDate, endDate: expectedDate },
+      ]);
+    }
+
+    const retentionResponse = await fetch(`${baseUrl}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        propertyId: "properties/123456",
+        reportId: "retention",
+        dateRange: "7daysAgo",
+      }),
+    });
+    assert.equal(retentionResponse.status, 200);
+    assert.deepEqual(apiCalls.at(-1).body.metrics, [
+      { name: "activeUsers" },
+      { name: "newUsers" },
+      { name: "totalUsers" },
+    ]);
+
+    nextApiError = Object.assign(new Error("Request failed with status code 400"), {
+      status: 400,
+      response: {
+        status: 400,
+        data: { error: { message: "Invalid Google Analytics dimension." } },
+      },
+    });
+    const invalidGoogleQueryResponse = await fetch(`${baseUrl}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ propertyId: "properties/123456", reportId: "overview" }),
+    });
+    assert.equal(invalidGoogleQueryResponse.status, 400);
+    assert.deepEqual(await invalidGoogleQueryResponse.json(), {
+      error: "Invalid Google Analytics dimension.",
+    });
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+    axios.get = originalAxiosGet;
+    axios.post = originalAxiosPost;
+    for (const [name, value] of Object.entries(previousEnvironment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });
