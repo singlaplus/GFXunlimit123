@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { API_BASE_URL } from "../utils/apiBaseUrl";
 import "./Footer.css";
 
 const FOOTER_LINKS = {
@@ -16,7 +17,8 @@ const FOOTER_LINKS = {
   resources: [
     { label: "Blog", href: "/blog" },
     { label: "Developers", href: "/developers" },
-    { label: "Partners", href: "/partners" }
+    { label: "Partners", href: "/partners" },
+    { label: "Sitemap", href: `${API_BASE_URL}/sitemap` }
   ]
 };
 
@@ -227,6 +229,7 @@ function Footer({ onOpenLogin, onOpenJoin, isLoggedIn = false }) {
             <li><a href="/blog" style={{ color: "#cfe8ff" }}>Blog</a></li>
             <li><a href="/developers" style={{ color: "#cfe8ff" }}>Developers</a></li>
             <li><a href="/partners" style={{ color: "#cfe8ff" }}>Partners</a></li>
+            <li><a href={`${API_BASE_URL}/sitemap`} style={{ color: "#cfe8ff" }}>Sitemap</a></li>
           </ul>
         </div>
       </div>

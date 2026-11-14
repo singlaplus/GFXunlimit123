@@ -125,12 +125,17 @@ test("protects generation, status, and download routes while serving published s
   assert.equal(siteMapPageResponse.status, 200);
   assert.match(siteMapPageResponse.headers.get("content-type"), /text\/html/);
   assert.match(siteMapPage, /<title>Site Map \| GFXunlimit<\/title>/);
+  assert.match(siteMapPage, /<nav class="header-nav" aria-label="Main navigation">/);
+  assert.match(siteMapPage, /<a href="\/explore">Explore<\/a>/);
   assert.match(siteMapPage, /Main pages/);
   assert.match(siteMapPage, /Explore and browse/);
   assert.match(siteMapPage, /Creative assets/);
   assert.match(siteMapPage, /Asset 42/);
   assert.match(siteMapPage, /https:\/\/www\.example\.test\/blog\/a&amp;b/);
   assert.match(siteMapPage, /View XML sitemap/);
+  assert.match(siteMapPage, /<footer class="site-footer">/);
+  assert.match(siteMapPage, /We provide high-quality stock images for creators, designers and teams\./);
+  assert.match(siteMapPage, /<a href="\/sitemap">Sitemap<\/a>/);
 
   const stylesheetResponse = await request(baseUrl, "/sitemap.xsl");
   assert.equal(stylesheetResponse.status, 200);
