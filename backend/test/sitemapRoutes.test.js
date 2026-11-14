@@ -29,7 +29,7 @@ test("protects generation, status, and download routes while serving published s
   const archivePath = path.join(directory, "sitemap1.xml");
   fs.writeFileSync(
     primaryPath,
-    `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://www.example.test/</loc></url><url><loc>https://www.example.test/photos</loc></url><url><loc>https://www.example.test/blog/a&amp;b</loc><lastmod>2026-11-12</lastmod></url><url><loc>https://www.example.test/asset/42</loc></url></urlset>`
+    `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://www.example.test/</loc></url><url><loc>https://www.example.test/photos</loc></url><url><loc>https://www.example.test/blog/a&amp;b</loc><lastmod>2026-11-12</lastmod></url><url><loc>https://www.example.test/blog/creative/bright-ideas_42</loc></url><url><loc>https://www.example.test/asset/42</loc></url><url><loc>https://www.example.test/c/artist</loc></url></urlset>`
   );
   fs.writeFileSync(archivePath, "<urlset />");
   const archiveId = "11111111-1111-4111-8111-111111111111";
@@ -59,9 +59,20 @@ test("protects generation, status, and download routes while serving published s
       ? next()
       : res.status(401).json({ error: "Unauthorized" })
   );
+  const pool = {
+    async query(sql, values) {
+      assert.deepEqual(values, [["42"]]);
+      return {
+        rows: [{
+          id: "42",
+          title: sql.includes("blog_drafts") ? "A Better & Brighter Idea" : "Golden Hour Sunset",
+        }],
+      };
+    },
+  };
   const app = express();
   app.use(express.json());
-  app.use(createSitemapRouter({ generator, schedule, verifyAdmin }));
+  app.use(createSitemapRouter({ generator, schedule, verifyAdmin, pool }));
   const server = http.createServer(app);
   const baseUrl = await listen(server);
   context.after(() => new Promise((resolve) => {
@@ -118,7 +129,19 @@ test("protects generation, status, and download routes while serving published s
 
   const publicResponse = await request(baseUrl, "/sitemap.xml");
   assert.equal(publicResponse.status, 200);
-  assert.match(await publicResponse.text(), /<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9">/);
+  const publicSitemap = await publicResponse.text();
+  assert.match(publicSitemap, /<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9">/);
+  assert.match(publicSitemap, /https:\/\/www\.example\.test\/c\/artist/);
+
+  const sitemapDataResponse = await request(baseUrl, "/sitemap-page-data");
+  assert.equal(sitemapDataResponse.status, 200);
+  const sitemapData = await sitemapDataResponse.json();
+  assert.equal(sitemapData.totalUrls, 6);
+  assert.deepEqual(sitemapData.groups.map(({ id }) => id), ["main", "browse", "blog", "assets"]);
+  assert.equal(sitemapData.groups.some(({ id }) => id === "contributors"), false);
+  assert.equal(sitemapData.groups.find(({ id }) => id === "blog").entries
+    .find(({ href }) => href.endsWith("/bright-ideas_42")).label, "A Better & Brighter Idea");
+  assert.equal(sitemapData.groups.find(({ id }) => id === "assets").entries[0].label, "Golden Hour Sunset");
 
   const siteMapPageResponse = await request(baseUrl, "/sitemap/");
   const siteMapPage = await siteMapPageResponse.text();
@@ -130,8 +153,10 @@ test("protects generation, status, and download routes while serving published s
   assert.match(siteMapPage, /Main pages/);
   assert.match(siteMapPage, /Explore and browse/);
   assert.match(siteMapPage, /Creative assets/);
-  assert.match(siteMapPage, /Asset 42/);
+  assert.match(siteMapPage, /Golden Hour Sunset/);
+  assert.match(siteMapPage, /A Better &amp; Brighter Idea/);
   assert.match(siteMapPage, /https:\/\/www\.example\.test\/blog\/a&amp;b/);
+  assert.doesNotMatch(siteMapPage, /https:\/\/www\.example\.test\/c\/artist/);
   assert.match(siteMapPage, /View XML sitemap/);
   assert.match(siteMapPage, /<footer class="site-footer">/);
   assert.match(siteMapPage, /We provide high-quality stock images for creators, designers and teams\./);
@@ -164,4 +189,37 @@ test("returns a clear not-found page when no published sitemap is available", as
   const response = await request(baseUrl, "/sitemap/");
   assert.equal(response.status, 404);
   assert.equal(await response.text(), "A sitemap has not been generated yet.");
+
+  const dataResponse = await request(baseUrl, "/sitemap-page-data");
+  assert.equal(dataResponse.status, 404);
+  assert.deepEqual(await dataResponse.json(), { error: "A sitemap has not been generated yet." });
+});
+
+test("passes the production sitemap page request through to the frontend app", async (context) => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  context.after(() => {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  });
+
+  const app = express();
+  app.use(createSitemapRouter({
+    generator: { getPublished: async () => null },
+    schedule: {},
+    verifyAdmin: (_req, _res, next) => next(),
+  }));
+  app.get("/sitemap", (_req, res) => res.status(200).send("frontend app"));
+  const server = http.createServer(app);
+  const baseUrl = await listen(server);
+  context.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }));
+
+  const response = await request(baseUrl, "/sitemap", {
+    headers: { accept: "text/html" },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "frontend app");
 });

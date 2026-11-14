@@ -13,6 +13,13 @@ const SITEMAP_PAGE_GROUPS = [
   { id: "contributors", title: "Contributors" },
   { id: "other", title: "Other pages" },
 ];
+const READABLE_SITEMAP_GROUPS = SITEMAP_PAGE_GROUPS.filter(({ id }) => id !== "contributors");
+
+function acceptsHtmlDocument(req) {
+  return (req.get("accept") || "")
+    .split(",")
+    .some((mediaType) => mediaType.split(";")[0].trim().toLowerCase() === "text/html");
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -121,7 +128,12 @@ function categorizeSitemapEntry(entry, siteOrigin) {
     blog: "Blog",
   };
   let label = knownLabels[topLevel];
-  if (topLevel === "asset") {
+  if (topLevel === "blog") {
+    const blogSlug = pathname.split("/").filter(Boolean).at(-1);
+    if (blogSlug && blogSlug !== "blog") {
+      label = blogSlug.replace(/_\d+$/, "").replace(/[-_]+/g, " ");
+    }
+  } else if (topLevel === "asset") {
     label = `Asset ${pathname.split("/")[2] || ""}`.trim();
   } else if (topLevel === "c") {
     label = `Contributor ${pathname.split("/")[2] || ""}`.trim();
@@ -143,8 +155,32 @@ function categorizeSitemapEntry(entry, siteOrigin) {
   };
 }
 
+function getSitemapEntityId(entry, groupId) {
+  const pathname = new URL(entry.href).pathname;
+  return groupId === "blog"
+    ? pathname.match(/_(\d+)$/)?.[1]
+    : pathname.match(/\/(\d+)$/)?.[1];
+}
+
+async function applyDatabaseTitles(entries, groupId, pool, query) {
+  const matchingEntries = entries
+    .filter((entry) => entry.groupId === groupId)
+    .map((entry) => ({ entry, id: getSitemapEntityId(entry, groupId) }))
+    .filter(({ id }) => id);
+  const ids = [...new Set(matchingEntries.map(({ id }) => id))];
+  if (!ids.length) return;
+  if (!pool) throw new Error(`Titles cannot be loaded for ${groupId} sitemap entries without a database connection.`);
+
+  const result = await pool.query(query, [ids]);
+  const titlesById = new Map(result.rows.map((row) => [String(row.id), String(row.title || "").trim()]));
+  matchingEntries.forEach(({ entry, id }) => {
+    const title = titlesById.get(id);
+    if (title) entry.label = title;
+  });
+}
+
 function renderSitemapPage(groups, totalUrls, generatedAt) {
-  const groupMarkup = SITEMAP_PAGE_GROUPS
+  const groupMarkup = READABLE_SITEMAP_GROUPS
     .map((group) => {
       const entries = groups.get(group.id) || [];
       if (!entries.length) return "";
@@ -277,7 +313,58 @@ function renderSitemapPage(groups, totalUrls, generatedAt) {
 </html>`;
 }
 
-function createSitemapRouter({ generator, schedule, verifyAdmin }) {
+async function getSitemapPageData(generator, pool) {
+  const published = await generator.getPublished();
+  if (!published) return null;
+
+  const sitemapFiles = [published.primaryPath];
+  if (published.rootElement === "sitemapindex") {
+    for (const filename of published.childFilenames || []) {
+      const filePath = await generator.getArchiveFile(published.archiveId, filename);
+      if (!filePath) throw new Error("A published sitemap child file is unavailable.");
+      sitemapFiles.push(filePath);
+    }
+  }
+
+  const entries = [];
+  for (const filePath of sitemapFiles) {
+    const parsed = await readSitemapEntries(filePath);
+    if (parsed.rootName !== "urlset") throw new Error("Published sitemap index did not resolve to URL entries.");
+    entries.push(...parsed.entries.map((entry) => categorizeSitemapEntry(entry, published.siteOrigin)));
+  }
+  await Promise.all([
+    applyDatabaseTitles(
+      entries,
+      "blog",
+      pool,
+      "SELECT id, title FROM blog_drafts WHERE status = 'published' AND id = ANY($1::bigint[])"
+    ),
+    applyDatabaseTitles(
+      entries,
+      "assets",
+      pool,
+      "SELECT id, title FROM images WHERE LOWER(COALESCE(status, '')) = 'approved' AND id = ANY($1::bigint[])"
+    ),
+  ]);
+  entries.sort((a, b) => a.label.localeCompare(b.label));
+  const groups = new Map(SITEMAP_PAGE_GROUPS.map(({ id }) => [id, []]));
+  entries.forEach((entry) => groups.get(entry.groupId).push(entry));
+
+  return {
+    published,
+    entries,
+    groups,
+    data: {
+      groups: READABLE_SITEMAP_GROUPS
+        .map((group) => ({ ...group, entries: groups.get(group.id) }))
+        .filter((group) => group.entries.length > 0),
+      totalUrls: entries.length,
+      generatedAt: published.generatedAt,
+    },
+  };
+}
+
+function createSitemapRouter({ generator, schedule, verifyAdmin, pool }) {
   const router = express.Router();
 
   router.get("/admin/sitemap-schedule", verifyAdmin, (req, res) => {
@@ -374,33 +461,28 @@ function createSitemapRouter({ generator, schedule, verifyAdmin }) {
     }
   });
 
-  router.get(["/sitemap", "/sitemap/"], async (_req, res) => {
+  router.get("/sitemap-page-data", async (_req, res) => {
     try {
-      const published = await generator.getPublished();
-      if (!published) return res.status(404).type("text/plain").send("A sitemap has not been generated yet.");
+      const sitemap = await getSitemapPageData(generator, pool);
+      if (!sitemap) return res.status(404).json({ error: "A sitemap has not been generated yet." });
+      return res.set("Cache-Control", "public, max-age=300").json(sitemap.data);
+    } catch (error) {
+      console.error("Unable to load public sitemap data", error);
+      return res.status(500).json({ error: "Unable to load the public sitemap." });
+    }
+  });
 
-      const sitemapFiles = [published.primaryPath];
-      if (published.rootElement === "sitemapindex") {
-        for (const filename of published.childFilenames || []) {
-          const filePath = await generator.getArchiveFile(published.archiveId, filename);
-          if (!filePath) throw new Error("A published sitemap child file is unavailable.");
-          sitemapFiles.push(filePath);
-        }
-      }
-
-      const entries = [];
-      for (const filePath of sitemapFiles) {
-        const parsed = await readSitemapEntries(filePath);
-        if (parsed.rootName !== "urlset") throw new Error("Published sitemap index did not resolve to URL entries.");
-        entries.push(...parsed.entries.map((entry) => categorizeSitemapEntry(entry, published.siteOrigin)));
-      }
-      entries.sort((a, b) => a.label.localeCompare(b.label));
-      const groups = new Map(SITEMAP_PAGE_GROUPS.map(({ id }) => [id, []]));
-      entries.forEach((entry) => groups.get(entry.groupId).push(entry));
+  router.get(["/sitemap", "/sitemap/"], async (req, res, next) => {
+    if (process.env.NODE_ENV === "production" && acceptsHtmlDocument(req)) {
+      return next();
+    }
+    try {
+      const sitemap = await getSitemapPageData(generator, pool);
+      if (!sitemap) return res.status(404).type("text/plain").send("A sitemap has not been generated yet.");
 
       res.type("html");
       res.set("Cache-Control", "public, max-age=300");
-      return res.send(renderSitemapPage(groups, entries.length, published.generatedAt));
+      return res.send(renderSitemapPage(sitemap.groups, sitemap.entries.length, sitemap.published.generatedAt));
     } catch (error) {
       console.error("Unable to render the public sitemap page", error);
       return res.status(500).type("text/plain").send("Unable to display the site map.");

@@ -3543,6 +3543,7 @@ app.use(createSitemapRouter({
   generator: sitemapGenerator,
   schedule: sitemapScheduler,
   verifyAdmin,
+  pool,
 }));
 app.use(createLinksScanRouter({
   scanner: linksScanner,

@@ -1,6 +1,5 @@
 import { render, screen } from "@testing-library/react";
 import Footer from "./Footer";
-import { API_BASE_URL } from "../utils/apiBaseUrl";
 
 test("renders a sitemap link in the Resources footer section", () => {
   render(<Footer />);
@@ -10,5 +9,5 @@ test("renders a sitemap link in the Resources footer section", () => {
   const sitemapLink = screen.getByRole("link", { name: "Sitemap" });
 
   expect(resources).toContainElement(sitemapLink);
-  expect(sitemapLink).toHaveAttribute("href", `${API_BASE_URL}/sitemap`);
+  expect(sitemapLink).toHaveAttribute("href", "/sitemap");
 });

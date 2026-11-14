@@ -48,6 +48,7 @@ import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import PromotionalBannerPage from "./PromotionalBannerExperience";
 import SearchConsolePage from "../pages/SearchConsolePage";
 import GoogleAnalyticsPage from "../pages/GoogleAnalyticsPage";
+import SitemapPage from "../pages/SitemapPage";
 
 const BLOG_DRAFTS_STORAGE_KEY = "gfx-blog-drafts";
 const blogDraftHeaders = () => ({ Authorization: `Bearer ${getEffectiveAuthToken()}` });
@@ -1453,6 +1454,7 @@ export default function AppRoutes(props) {
   const isAdmin = isAdminRole(normalizedUserRole);
   const promotionBannerMatch = pathname.match(/^\/promotionbanners\/([^/]+)\/?$/);
   const isPromotionBannerRoute = Boolean(promotionBannerMatch);
+  const isSitemapRoute = pathname === "/sitemap" || pathname === "/sitemap/";
   let promotionBannerSlug = "";
   if (promotionBannerMatch) {
     try {
@@ -1471,7 +1473,7 @@ export default function AppRoutes(props) {
     let active = true;
     setPageAvailability(null);
     reportAvailability("loading", "", routeId);
-    if (isPromotionBannerRoute) {
+    if (isPromotionBannerRoute || isSitemapRoute) {
       setPageAvailability({ pathname, available: true, sourcePath: "", disabledLinks: [] });
       reportAvailability("ready", "", routeId);
       return () => { active = false; };
@@ -1504,7 +1506,7 @@ export default function AppRoutes(props) {
       });
 
     return () => { active = false; };
-  }, [availabilityRetryKey, isAdmin, isPromotionBannerRoute, pathname, reportAvailability, routeId, search]);
+  }, [availabilityRetryKey, isAdmin, isPromotionBannerRoute, isSitemapRoute, pathname, reportAvailability, routeId, search]);
 
   useEffect(() => {
     if (pageAvailability?.pathname !== pathname || !pageAvailability.sourcePath) return undefined;
@@ -1600,6 +1602,7 @@ export default function AppRoutes(props) {
   if (isPromotionBannerRoute) {
     return <PromotionalBannerPage slug={promotionBannerSlug} userRole={normalizedUserRole} />;
   }
+  if (isSitemapRoute) return <SitemapPage />;
 
   if (!isAdmin && pageAvailability?.pathname !== pathname) {
     return <main aria-live="polite" aria-busy="true" style={{ minHeight: "60vh" }} />;

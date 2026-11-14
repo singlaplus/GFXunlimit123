@@ -7,6 +7,8 @@ function Pagination(props) {
     totalImages,
     setCurrentPage,
     darkMode,
+    totalLabel = "Total Assets",
+    scrollToTop = true,
   } = props;
   const location = useLocation();
   const navigate = useNavigate();
@@ -14,7 +16,7 @@ function Pagination(props) {
   const goToPage = (page) => {
     setCurrentPage(page);
 
-    if (typeof window !== "undefined") {
+    if (scrollToTop && typeof window !== "undefined") {
       window.scrollTo(0, 0);
     }
 
@@ -212,7 +214,7 @@ function Pagination(props) {
           fontSize: "0.8rem",
         }}
       >
-        Total Assets: {totalImages}
+        {totalLabel}: {totalImages}
       </p>
     </div>
   );
