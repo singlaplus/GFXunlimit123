@@ -1471,6 +1471,23 @@ export default function AppRoutes(props) {
 
   useEffect(() => {
     let active = true;
+    const currentUrl = `${pathname}${search}`;
+    axios.get(`${API_BASE_URL}/redirect-rules/resolve`, { params: { path: currentUrl } })
+      .then(({ data }) => {
+        if (!active || !data?.target || data.target === currentUrl) return;
+        window.location.replace(data.target);
+      })
+      .catch((error) => {
+        console.error("Unable to resolve redirect rules", error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [pathname, search]);
+
+  useEffect(() => {
+    let active = true;
     setPageAvailability(null);
     reportAvailability("loading", "", routeId);
     if (isPromotionBannerRoute || isSitemapRoute) {

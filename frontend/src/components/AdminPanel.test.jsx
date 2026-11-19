@@ -79,6 +79,58 @@ describe("AdminPanel collection controls", () => {
     axios.delete.mockResolvedValue({ data: { id: 1, name: "Nature" } });
   });
 
+  it("renders the Redirection card in Controls", () => {
+    render(<AdminPanel />);
+
+    expect(screen.getByRole("heading", { name: "Redirection" })).toBeInTheDocument();
+  });
+
+  it("opens the Redirection Links page from the Redirection card", () => {
+    render(<AdminPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Link", exact: true }));
+
+    expect(window.location.href).toContain("?tab=controls/redirection_links");
+  });
+
+  it("renders the Redirection Links page at its Controls tab URL", () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/redirection_links" });
+
+    render(<AdminPanel />);
+
+    expect(screen.getByRole("heading", { name: "Redirection Links", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to Controls" })).toBeInTheDocument();
+    expect(screen.queryByText(/total assets:/i)).not.toBeInTheDocument();
+  });
+
+  it("saves a Redirection From and Redirect To pair", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/redirection_links" });
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/redirect-rules")
+        ? Promise.resolve({ data: [] })
+        : Promise.resolve({ data: [] })
+    ));
+    axios.post.mockResolvedValue({
+      data: { id: 1, redirect_from: "/old-page", redirect_to: "/new-page" }
+    });
+
+    render(<AdminPanel />);
+
+    fireEvent.change(screen.getByLabelText("Redirect From"), { target: { value: "/old-page" } });
+    fireEvent.change(screen.getByLabelText("Redirect To"), { target: { value: "/new-page" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Redirect" }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/redirect-rules"),
+        { redirect_from: "/old-page", redirect_to: "/new-page" },
+        expect.anything()
+      );
+    });
+    expect(await screen.findByText("/old-page")).toBeInTheDocument();
+    expect(screen.getByText("→ /new-page")).toBeInTheDocument();
+  });
+
   it("reports selected users readiness from one validated request and retries GET-only", async () => {
     window.history.pushState({}, "", "/admin");
     localStorage.setItem("userRole", "admin");

@@ -505,6 +505,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [sitemapSettingsMessage, setSitemapSettingsMessage] = useState("");
   const [sitemapSettingsError, setSitemapSettingsError] = useState("");
   const [sitemapSettingsRetry, setSitemapSettingsRetry] = useState(0);
+  const [redirectRules, setRedirectRules] = useState([]);
+  const [redirectFrom, setRedirectFrom] = useState("");
+  const [redirectTo, setRedirectTo] = useState("");
+  const [redirectRulesLoading, setRedirectRulesLoading] = useState(false);
+  const [redirectRulesSaving, setRedirectRulesSaving] = useState(false);
+  const [redirectRulesError, setRedirectRulesError] = useState("");
 
   useEffect(() => {
     if (!isAddStorageMenuOpen) return undefined;
@@ -784,6 +790,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const isControlsTaxFormsTab = tabParam === "controls_taxforms";
   const isControlsDatabaseTab = tabParam === "controls_database";
   const isControlsAssetsTab = tabParam === "controls_assets";
+  const isRedirectionLinksTab = tabParam === "controls/redirection_links";
   const isLinksTab = tabParam === "links";
   const isSitemapTab = tabParam === "sitemap";
   const isCustomerDetailsTab = tabParam === "customerdetails";
@@ -816,6 +823,73 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       active = false;
     };
   }, [isSitemapTab, sitemapSettingsRetry]);
+
+  useEffect(() => {
+    if (!isRedirectionLinksTab) return undefined;
+    let active = true;
+    setRedirectRulesLoading(true);
+    setRedirectRulesError("");
+    axios.get(`${API_BASE_URL}/admin/redirect-rules`, { headers: buildAuthHeaders() })
+      .then((response) => {
+        if (!Array.isArray(response.data)) throw new Error("Redirect rules response was invalid.");
+        if (active) setRedirectRules(response.data);
+      })
+      .catch((error) => {
+        console.error("Failed to load redirect rules", error);
+        if (active) setRedirectRulesError(error.response?.data?.error || "Unable to load redirect rules.");
+      })
+      .finally(() => {
+        if (active) setRedirectRulesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isRedirectionLinksTab, authStateVersion]);
+
+  const saveRedirectRule = async (event) => {
+    event.preventDefault();
+    setRedirectRulesSaving(true);
+    setRedirectRulesError("");
+    const rawRedirectFrom = String(redirectFrom || "").trim();
+    let normalizedRedirectFrom = rawRedirectFrom;
+    if (/^https?:\/\//i.test(rawRedirectFrom)) {
+      try {
+        const parsedRedirectFrom = new URL(rawRedirectFrom);
+        if (typeof window !== "undefined" && parsedRedirectFrom.origin === window.location.origin && !parsedRedirectFrom.hash) {
+          normalizedRedirectFrom = `${parsedRedirectFrom.pathname || "/"}${parsedRedirectFrom.search}`;
+        }
+      } catch (_error) {
+        // Let the backend return the standard validation message for malformed URLs.
+      }
+    }
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/admin/redirect-rules`,
+        { redirect_from: normalizedRedirectFrom, redirect_to: redirectTo },
+        { headers: buildAuthHeaders() }
+      );
+      setRedirectRules((current) => [...current, response.data]);
+      setRedirectFrom("");
+      setRedirectTo("");
+      toast.success("Redirect rule saved.");
+    } catch (error) {
+      console.error("Failed to save redirect rule", error);
+      setRedirectRulesError(error.response?.data?.error || "Unable to save redirect rule.");
+    } finally {
+      setRedirectRulesSaving(false);
+    }
+  };
+
+  const deleteRedirectRule = async (id) => {
+    try {
+      await axios.delete(`${API_BASE_URL}/admin/redirect-rules/${id}`, { headers: buildAuthHeaders() });
+      setRedirectRules((current) => current.filter((rule) => rule.id !== id));
+      toast.success("Redirect rule deleted.");
+    } catch (error) {
+      console.error("Failed to delete redirect rule", error);
+      setRedirectRulesError(error.response?.data?.error || "Unable to delete redirect rule.");
+    }
+  };
 
   useEffect(() => {
     setSelectedLiveAssetIds(new Set());
@@ -1385,8 +1459,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   }, [isControlsDatabaseTab, currentAuthToken, authStateVersion]);
 
   const isPromotionsTab = tabParam === "promotions";
-  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab && !isControlsDatabaseTab && !isControlsAssetsTab && !isLinksTab && !isSitemapTab;
-  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "controls_database" ? "Database Connection" : tabParam === "controls_assets" ? "Assets Connection" : tabParam === "links" ? "Links" : tabParam === "sitemap" ? "Sitemap" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : statusFilter === "reviewed" ? "Reviewed Panel" : statusFilter === "pending" ? "Pending Panel" : statusFilter === "approved" ? "Approved Panel" : statusFilter === "rejected" ? "Rejected Panel" : "All Assets";
+  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab && !isControlsDatabaseTab && !isControlsAssetsTab && !isRedirectionLinksTab && !isLinksTab && !isSitemapTab;
+  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "controls_database" ? "Database Connection" : tabParam === "controls_assets" ? "Assets Connection" : tabParam === "controls/redirection_links" ? "Redirection Links" : tabParam === "links" ? "Links" : tabParam === "sitemap" ? "Sitemap" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : statusFilter === "reviewed" ? "Reviewed Panel" : statusFilter === "pending" ? "Pending Panel" : statusFilter === "approved" ? "Approved Panel" : statusFilter === "rejected" ? "Rejected Panel" : "All Assets";
 
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
@@ -1706,7 +1780,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     "credit-price-control",
     "contributor-details",
     "customer-details",
-    "links-and-sitemap"
+    "links-and-sitemap",
+    "redirection"
   ];
 
   const normalizeCardOrder = (order) => {
@@ -5909,7 +5984,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               {bulkSelectionCount}
             </div>
           </div>
-        ) : isLinksTab || isSitemapTab ? (
+        ) : isLinksTab || isSitemapTab || isRedirectionLinksTab ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
             <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
             <button
@@ -6022,6 +6097,109 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         </div>
       ) : isDailyReportSettingsRouteOpen ? (
         renderDailyReportSettingsContent()
+      ) : isRedirectionLinksTab ? (
+        <section className={`redirection-page ${isDarkMode ? "redirection-page--dark" : ""}`} aria-label="Redirection Links page">
+          <div className="redirection-hero">
+            <div className="redirection-hero__icon" aria-hidden="true">↗</div>
+            <div>
+              <span className="redirection-eyebrow">Navigation control</span>
+              <h3>Route visitors with confidence</h3>
+              <p>Keep old links useful and send visitors to the right destination without touching your code.</p>
+            </div>
+            <div className="redirection-hero__stat">
+              <strong>{redirectRules.length}</strong>
+              <span>Active rules</span>
+            </div>
+          </div>
+          <div className="redirection-grid">
+            <div className="redirection-form-card">
+              <div className="redirection-card-heading">
+                <div>
+                  <span className="redirection-eyebrow">Create a rule</span>
+                  <h3>New redirect</h3>
+                </div>
+                <span className="redirection-status"><span aria-hidden="true" /> Live</span>
+              </div>
+              <p className="redirection-muted">Map an internal path to another page or a secure external URL.</p>
+              <form onSubmit={saveRedirectRule} className="redirection-form">
+                <label htmlFor="redirect-from">
+                  <span>Redirect From</span>
+                  <input
+                    id="redirect-from"
+                    aria-label="Redirect From"
+                    type="text"
+                    value={redirectFrom}
+                    onChange={(event) => setRedirectFrom(event.target.value)}
+                    placeholder="/old-page"
+                    required
+                  />
+                  <small>Example: /summer-sale</small>
+                </label>
+                <div className="redirection-flow-arrow" aria-hidden="true">↓</div>
+                <label htmlFor="redirect-to">
+                  <span>Redirect To</span>
+                  <input
+                    id="redirect-to"
+                    aria-label="Redirect To"
+                    type="text"
+                    value={redirectTo}
+                    onChange={(event) => setRedirectTo(event.target.value)}
+                    placeholder="/new-page or https://example.com"
+                    required
+                  />
+                  <small>Use a page path or an https:// URL</small>
+                </label>
+                <button type="submit" disabled={redirectRulesSaving} className="redirection-submit">
+                  {redirectRulesSaving ? "Saving..." : "Save Redirect"} <span aria-hidden="true">→</span>
+                </button>
+              </form>
+              {redirectRulesError ? <p role="alert" className="redirection-error">{redirectRulesError}</p> : null}
+            </div>
+            <div className="redirection-rules-card">
+              <div className="redirection-card-heading">
+                <div>
+                  <span className="redirection-eyebrow">Your configuration</span>
+                  <h3>Saved redirects</h3>
+                </div>
+                <span className="redirection-count">{redirectRules.length}</span>
+              </div>
+              {redirectRulesLoading ? <p role="status" className="redirection-empty">Loading redirect rules...</p> : null}
+              {!redirectRulesLoading && redirectRules.length === 0 ? (
+                <div className="redirection-empty">
+                  <div className="redirection-empty__icon" aria-hidden="true">⌁</div>
+                  <strong>No redirect rules yet</strong>
+                  <span>Your saved routes will appear here.</span>
+                </div>
+              ) : null}
+              {redirectRules.length > 0 && (
+                <div className="redirection-table-wrap">
+                  <table className="redirection-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Redirect From</th>
+                        <th scope="col">Redirect To</th>
+                        <th scope="col">Status</th>
+                        <th scope="col"><span className="sr-only">Actions</span></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {redirectRules.map((rule) => (
+                        <tr key={rule.id}>
+                          <td><strong>{rule.redirect_from}</strong></td>
+                          <td>→ {rule.redirect_to}</td>
+                          <td><span className="redirection-table-status"><span aria-hidden="true" /> Active</span></td>
+                          <td>
+                            <button type="button" onClick={() => deleteRedirectRule(rule.id)} className="redirection-delete">Delete</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
       ) : isLinksTab || isSitemapTab ? (
         <section
           aria-label={`${adminPageHeading} page`}
@@ -7534,6 +7712,16 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=links`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%" }}>Links</button>
               <button type="button" onClick={() => { window.location.href = `${adminBasePath}?tab=sitemap`; }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%" }}>Sitemap</button>
             </div>
+          </CardWrapper>
+
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="redirection">
+            <h3>Redirection</h3>
+            <button type="button" onClick={() => {
+              const nextUrl = `${adminBasePath}?tab=controls/redirection_links`;
+              window.history.pushState({}, "", nextUrl);
+              setCurrentWindowPath(adminBasePath);
+              window.dispatchEvent(new PopStateEvent("popstate"));
+            }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%" }}>Link</button>
           </CardWrapper>
 
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="database-connection">
