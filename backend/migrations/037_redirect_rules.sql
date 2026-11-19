@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS redirect_rules (
+  id SERIAL PRIMARY KEY,
+  redirect_from TEXT NOT NULL UNIQUE,
+  redirect_to TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

@@ -75,6 +75,7 @@ const assetStorageConnections = require("./services/assetStorageConnections");
 const assetStorageCardConnections = require("./services/assetStorageCardConnections");
 const assetStorageCardCounts = require("./services/assetStorageCardCounts");
 const sitemapSettings = require("./services/sitemapSettings");
+const { createRedirectRulesService } = require("./services/redirectRules");
 const { createSitemapGenerator } = require("./services/sitemapGenerator");
 const { createSitemapScheduleSettings, createSitemapScheduler } = require("./services/sitemapSchedule");
 const { createSitemapRouter } = require("./routes/sitemap-routes");
@@ -220,6 +221,7 @@ const linksScanner = createLinksScanner({
   allowedOrigins: allowedCorsOrigins,
   chromePath: process.env.LINK_SCAN_CHROME_PATH,
 });
+const redirectRules = createRedirectRulesService(pool);
 
 /* ---------------- FILE UPLOAD CONFIG ---------------- */
 
@@ -460,6 +462,23 @@ app.use((req, res, next) => {
   }
   if (disconnectedStorage === "assets") {
       return res.status(503).json({ error: "ASSET_STORAGE_DISCONNECTED" });
+  }
+
+  return next();
+});
+
+app.use(async (req, res, next) => {
+  if (req.method !== "GET" || !acceptsHtmlDocument(req) || req.path.startsWith("/api/") || req.path.startsWith("/admin/")) {
+    return next();
+  }
+
+  try {
+    const rule = await redirectRules.find(req.originalUrl);
+    if (rule && rule.redirect_to !== req.originalUrl) {
+      return res.redirect(302, rule.redirect_to);
+    }
+  } catch (error) {
+    console.error("Failed to resolve redirect rule", error);
   }
 
   return next();
@@ -3536,6 +3555,52 @@ app.put("/admin/sitemap-settings", verifyAdmin, (req, res) => {
     }
     console.error("Failed to save sitemap settings", error);
     return res.status(500).json({ error: "Failed to save sitemap settings." });
+  }
+});
+
+app.get("/redirect-rules/resolve", async (req, res) => {
+  try {
+    const rule = await redirectRules.find(req.query.path || "/");
+    return res.json({ target: rule?.redirect_to || null });
+  } catch (error) {
+    console.error("Failed to resolve redirect rule", error);
+    return res.status(500).json({ error: "Failed to resolve redirect rule." });
+  }
+});
+
+app.get("/admin/redirect-rules", verifyAdmin, async (_req, res) => {
+  try {
+    return res.json(await redirectRules.list());
+  } catch (error) {
+    console.error("Failed to load redirect rules", error);
+    return res.status(500).json({ error: "Failed to load redirect rules." });
+  }
+});
+
+app.post("/admin/redirect-rules", verifyAdmin, async (req, res) => {
+  try {
+    const rule = await redirectRules.create(req.body?.redirect_from, req.body?.redirect_to);
+    return res.status(201).json(rule);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.code === "23505") {
+      return res.status(409).json({ error: "A redirect rule already exists for this source URL." });
+    }
+    console.error("Failed to create redirect rule", error);
+    return res.status(500).json({ error: "Failed to create redirect rule." });
+  }
+});
+
+app.delete("/admin/redirect-rules/:id", verifyAdmin, async (req, res) => {
+  try {
+    const removed = await redirectRules.remove(req.params.id);
+    if (!removed) return res.status(404).json({ error: "Redirect rule not found." });
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("Failed to delete redirect rule", error);
+    return res.status(500).json({ error: "Failed to delete redirect rule." });
   }
 });
 
@@ -17012,6 +17077,11 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(googleAnalyticsConnectionMigration);
+      const redirectRulesMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "037_redirect_rules.sql"),
+        "utf8"
+      );
+      await pool.query(redirectRulesMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);
