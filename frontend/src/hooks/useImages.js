@@ -64,6 +64,21 @@ export default function useImages({
   const loadingMoreRef = useRef(false);
   const skipPageFetchRef = useRef(null);
   const previousExplorePageRef = useRef(false);
+  const readinessAttemptRef = useRef({
+    routeId: readinessRouteId,
+    retryKey,
+    settled: false,
+  });
+  if (
+    readinessAttemptRef.current.routeId !== readinessRouteId ||
+    readinessAttemptRef.current.retryKey !== retryKey
+  ) {
+    readinessAttemptRef.current = {
+      routeId: readinessRouteId,
+      retryKey,
+      settled: false,
+    };
+  }
   const queryKey = JSON.stringify([
     imagesPerPage,
     selectedCategory,
@@ -74,6 +89,19 @@ export default function useImages({
   const currentQueryKeyRef = useRef(queryKey);
   currentQueryKeyRef.current = queryKey;
   const previousQueryKeyRef = useRef(queryKey);
+
+  const reportCatalogLoading = useCallback(() => {
+    if (readinessEnabled && !readinessAttemptRef.current.settled) {
+      reportResource("catalog", "loading", "", readinessRouteId);
+    }
+  }, [readinessEnabled, readinessRouteId, reportResource]);
+
+  const reportCatalogSettled = useCallback((status, error = "") => {
+    if (readinessEnabled) {
+      readinessAttemptRef.current.settled = true;
+      reportResource("catalog", status, error, readinessRouteId);
+    }
+  }, [readinessEnabled, readinessRouteId, reportResource]);
 
   useEffect(() => () => {
     requestControllerRef.current?.abort();
@@ -197,7 +225,7 @@ export default function useImages({
     setLoadedPage(page);
     loadedPageQueryKeyRef.current = isExplorePage ? requestedQueryKey : null;
     setLoadMoreError(false);
-    if (readinessEnabled) reportResource("catalog", "ready", "", readinessRouteId);
+    reportCatalogSettled("ready");
 
     if (append) {
       skipPageFetchRef.current = { page, queryKey: requestedQueryKey };
@@ -219,9 +247,7 @@ export default function useImages({
     setTotalPages,
     setCurrentPage,
     isExplorePage,
-    readinessEnabled,
-    readinessRouteId,
-    reportResource,
+    reportCatalogSettled,
   ]);
 
   const fetchImages = useCallback(async () => {
@@ -234,7 +260,7 @@ export default function useImages({
     requestControllerRef.current = controller;
     const requestId = ++requestSequenceRef.current;
     setLoading(true);
-    if (readinessEnabled) reportResource("catalog", "loading", "", readinessRouteId);
+    reportCatalogLoading();
     setLoadingMore(false);
     loadingMoreRef.current = false;
 
@@ -243,16 +269,14 @@ export default function useImages({
     } catch (error) {
       if (!controller.signal.aborted) {
         console.error("Failed to load images", error);
-        if (readinessEnabled) {
-          reportResource("catalog", "error", "Unable to load the images for this page.", readinessRouteId);
-        }
+        reportCatalogSettled("error", "Unable to load the images for this page.");
       }
     } finally {
       if (!controller.signal.aborted && requestId === requestSequenceRef.current) {
         setLoading(false);
       }
     }
-  }, [currentPage, isExplorePage, queryKey, requestPage, setLoading, readinessEnabled, readinessRouteId, reportResource]);
+  }, [currentPage, isExplorePage, queryKey, requestPage, setLoading, reportCatalogLoading, reportCatalogSettled]);
 
   useEffect(() => {
     const enteredExplorePage = isExplorePage && !previousExplorePageRef.current;
@@ -319,7 +343,7 @@ export default function useImages({
       setLoadMoreError(false);
     }
     setLoading(true);
-    if (readinessEnabled) reportResource("catalog", "loading", "", readinessRouteId);
+    reportCatalogLoading();
 
     const debounceDelay = search.trim() ? 250 : 0;
     const fetchTimeout = window.setTimeout(async () => {
@@ -328,9 +352,7 @@ export default function useImages({
       } catch (error) {
         if (!controller.signal.aborted) {
           console.error("Failed to load images", error);
-          if (readinessEnabled) {
-            reportResource("catalog", "error", "Unable to load the images for this page.", readinessRouteId);
-          }
+          reportCatalogSettled("error", "Unable to load the images for this page.");
         }
       } finally {
         if (!controller.signal.aborted && requestId === requestSequenceRef.current) {
@@ -378,9 +400,8 @@ export default function useImages({
     setTotalImages,
     setTotalPages,
     setCurrentPage,
-    readinessEnabled,
-    readinessRouteId,
-    reportResource,
+    reportCatalogLoading,
+    reportCatalogSettled,
     retryKey,
   ]);
 

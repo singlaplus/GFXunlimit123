@@ -67,6 +67,9 @@ describe("AdminPanel collection controls", () => {
     });
     useLocation.mockReturnValue({ search: "?tab=controls" });
     axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/redirect-rules")) {
+        return Promise.resolve({ data: [] });
+      }
       if (url.includes("/admin/categories")) {
         return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
       }
@@ -83,6 +86,30 @@ describe("AdminPanel collection controls", () => {
     render(<AdminPanel />);
 
     expect(screen.getByRole("heading", { name: "Redirection" })).toBeInTheDocument();
+  });
+
+  it("shows total, active, and disabled redirect counts in the Controls card", async () => {
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/redirect-rules")
+        ? Promise.resolve({
+            data: [
+              { id: 1, redirect_from: "/active-one", redirect_to: "/target", enabled: true },
+              { id: 2, redirect_from: "/disabled", redirect_to: "/target", enabled: false },
+              { id: 3, redirect_from: "/active-default", redirect_to: "/target" }
+            ]
+          })
+        : Promise.resolve({ data: [] })
+    ));
+
+    render(<AdminPanel />);
+
+    const counts = await screen.findByRole("group", { name: "Redirection link counts" });
+    expect(within(counts).getByText("3")).toBeInTheDocument();
+    expect(within(counts).getByText("Total links")).toBeInTheDocument();
+    expect(within(counts).getByText("2")).toBeInTheDocument();
+    expect(within(counts).getByText("Active")).toBeInTheDocument();
+    expect(within(counts).getByText("1")).toBeInTheDocument();
+    expect(within(counts).getByText("Disabled")).toBeInTheDocument();
   });
 
   it("opens the Redirection Links page from the Redirection card", () => {
@@ -111,7 +138,12 @@ describe("AdminPanel collection controls", () => {
         : Promise.resolve({ data: [] })
     ));
     axios.post.mockResolvedValue({
-      data: { id: 1, redirect_from: "/old-page", redirect_to: "/new-page" }
+      data: {
+        id: 1,
+        redirect_from: "/old-page",
+        redirect_to: "/new-page",
+        created_at: "2026-11-20T12:00:00.000Z"
+      }
     });
 
     render(<AdminPanel />);
@@ -129,6 +161,198 @@ describe("AdminPanel collection controls", () => {
     });
     expect(await screen.findByText("/old-page")).toBeInTheDocument();
     expect(screen.getByText("→ /new-page")).toBeInTheDocument();
+    expect(screen.getByTestId("pagination")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Date" })).toBeInTheDocument();
+    const savedRedirectRow = screen.getByRole("row", { name: /\/old-page/ });
+    const savedDate = within(savedRedirectRow).getByText(/2026/);
+    expect(savedDate.tagName).toBe("TIME");
+    expect(savedDate).toHaveAttribute("dateTime", "2026-11-20T12:00:00.000Z");
+  });
+
+  it("searches saved redirects across both fields or a selected field", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/redirection_links" });
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/redirect-rules")
+        ? Promise.resolve({
+            data: [
+              { id: 1, redirect_from: "/summer-sale", redirect_to: "/shop/summer" },
+              { id: 2, redirect_from: "/winter-sale", redirect_to: "/shop/winter" }
+            ]
+          })
+        : Promise.resolve({ data: [] })
+    ));
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText("/summer-sale")).toBeInTheDocument();
+    expect(screen.getByText("/winter-sale")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "S.No." })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /1 \/summer-sale/ })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /2 \/winter-sale/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("Search saved redirects")).toHaveAttribute("placeholder", "Search paths or destination URLs");
+
+    fireEvent.change(screen.getByLabelText("Search saved redirects"), { target: { value: "summer" } });
+    expect(screen.getByText("/summer-sale")).toBeInTheDocument();
+    expect(screen.queryByText("/winter-sale")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Search redirects in"), { target: { value: "to" } });
+    expect(screen.getByLabelText("Search saved redirects")).toHaveAttribute("placeholder", "Search destination URLs");
+    fireEvent.change(screen.getByLabelText("Search saved redirects"), { target: { value: "shop/winter" } });
+    expect(screen.getByText("/winter-sale")).toBeInTheDocument();
+    expect(screen.getByText("→ /shop/winter")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Search redirects in"), { target: { value: "from" } });
+    expect(screen.getByLabelText("Search saved redirects")).toHaveAttribute("placeholder", "Search source paths");
+    expect(screen.getByText("No matching redirects")).toBeInTheDocument();
+  });
+
+  it("sorts saved redirects by date in ascending and descending order", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/redirection_links" });
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/redirect-rules")
+        ? Promise.resolve({
+            data: [
+              { id: 2, redirect_from: "/newer", redirect_to: "/target", created_at: "2026-11-20T12:00:00.000Z" },
+              { id: 1, redirect_from: "/older", redirect_to: "/target", created_at: "2026-11-18T12:00:00.000Z" },
+              { id: 3, redirect_from: "/undated", redirect_to: "/target" }
+            ]
+          })
+        : Promise.resolve({ data: [] })
+    ));
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText("/newer")).toBeInTheDocument();
+    const dateSortButton = screen.getByRole("button", { name: "Sort by date ascending" });
+    fireEvent.click(dateSortButton);
+    let rows = screen.getAllByRole("row").slice(1);
+    expect(rows[0]).toHaveTextContent("/older");
+    expect(rows[1]).toHaveTextContent("/newer");
+    expect(rows[2]).toHaveTextContent("/undated");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by date descending" }));
+    rows = screen.getAllByRole("row").slice(1);
+    expect(rows[0]).toHaveTextContent("/newer");
+    expect(rows[1]).toHaveTextContent("/older");
+    expect(rows[2]).toHaveTextContent("/undated");
+  });
+
+  it("shows 20 redirect rows per page and continues serial numbers on the next page", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/redirection_links" });
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/redirect-rules")
+        ? Promise.resolve({
+            data: Array.from({ length: 21 }, (_, index) => ({
+              id: index + 1,
+              redirect_from: `/redirect-${index + 1}`,
+              redirect_to: "/destination",
+              created_at: `2026-11-${String(index + 1).padStart(2, "0")}T12:00:00.000Z`
+            }))
+          })
+        : Promise.resolve({ data: [] })
+    ));
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText("/redirect-1")).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(21);
+    expect(screen.getByTestId("pagination")).toBeInTheDocument();
+    expect(within(screen.getAllByRole("row")[20]).getByText("20")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    const pageRows = screen.getAllByRole("row");
+    expect(pageRows).toHaveLength(2);
+    expect(pageRows[1]).toHaveTextContent("/redirect-21");
+    expect(within(pageRows[1]).getByText("21")).toBeInTheDocument();
+  });
+
+  it("exports the currently filtered redirect rows as CSV", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/redirection_links" });
+    const originalCreateObjectURL = window.URL.createObjectURL;
+    const originalRevokeObjectURL = window.URL.revokeObjectURL;
+    const originalBlob = global.Blob;
+    const createObjectURLMock = jest.fn(() => "blob:redirects.csv");
+    window.URL.createObjectURL = createObjectURLMock;
+    window.URL.revokeObjectURL = jest.fn();
+    global.Blob = jest.fn((parts, options) => ({
+      text: jest.fn().mockResolvedValue(Array.isArray(parts) ? parts.join("") : String(parts)),
+      type: options.type
+    }));
+    const clickSpy = jest.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/redirect-rules")
+        ? Promise.resolve({
+            data: [
+              { id: 1, redirect_from: "/keep-me", redirect_to: "/destination", created_at: "2026-11-20T12:00:00.000Z" },
+              { id: 2, redirect_from: "/exclude-me", redirect_to: "/destination", created_at: "2026-11-19T12:00:00.000Z", enabled: false }
+            ]
+          })
+        : Promise.resolve({ data: [] })
+    ));
+
+    try {
+      render(<AdminPanel />);
+
+      expect(await screen.findByText("/keep-me")).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText("Search saved redirects"), { target: { value: "keep" } });
+      const exportButton = screen.getByRole("button", { name: "Export 1 redirect as CSV" });
+      expect(screen.getByLabelText("Search saved redirects").closest(".redirection-search-toolbar")).toContainElement(exportButton);
+      fireEvent.click(exportButton);
+
+      await waitFor(() => {
+        expect(createObjectURLMock).toHaveBeenCalled();
+        expect(clickSpy).toHaveBeenCalled();
+      });
+
+      const csvText = await createObjectURLMock.mock.calls[0][0].text();
+      expect(csvText).toContain("S.No.,Redirect From,Redirect To,Date,Status");
+      expect(csvText).toContain('"1","/keep-me"');
+      expect(csvText).toContain("Active");
+      expect(csvText).not.toContain("/exclude-me");
+    } finally {
+      window.URL.createObjectURL = originalCreateObjectURL;
+      window.URL.revokeObjectURL = originalRevokeObjectURL;
+      global.Blob = originalBlob;
+      clickSpy.mockRestore();
+    }
+  });
+
+  it("disables and re-enables a saved redirect", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/redirection_links" });
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/redirect-rules")
+        ? Promise.resolve({
+            data: [{ id: 7, redirect_from: "/legacy", redirect_to: "/new", enabled: true }]
+          })
+        : Promise.resolve({ data: [] })
+    ));
+    axios.put.mockResolvedValue({
+      data: { id: 7, redirect_from: "/legacy", redirect_to: "/new", enabled: false }
+    });
+
+    render(<AdminPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disable redirect /legacy" }));
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/redirect-rules/7/enabled"),
+        { enabled: false },
+        expect.anything()
+      );
+    });
+    expect(await screen.findByText("Disabled")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enable redirect /legacy" })).toBeInTheDocument();
+
+    axios.put.mockResolvedValueOnce({
+      data: { id: 7, redirect_from: "/legacy", redirect_to: "/new", enabled: true }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Enable redirect /legacy" }));
+    await waitFor(() => expect(axios.put).toHaveBeenLastCalledWith(
+      expect.stringContaining("/admin/redirect-rules/7/enabled"),
+      { enabled: true },
+      expect.anything()
+    ));
+    expect(await screen.findByText("Active")).toBeInTheDocument();
   });
 
   it("reports selected users readiness from one validated request and retries GET-only", async () => {

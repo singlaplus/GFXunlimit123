@@ -50,7 +50,7 @@ const normalizeRedirectTo = (value) => {
 const createRedirectRulesService = (pool) => ({
   async list() {
     const result = await pool.query(`
-      SELECT id, redirect_from, redirect_to, created_at, updated_at
+      SELECT id, redirect_from, redirect_to, enabled, created_at, updated_at
       FROM redirect_rules
       ORDER BY id ASC
     `);
@@ -67,9 +67,19 @@ const createRedirectRulesService = (pool) => ({
     const result = await pool.query(`
       INSERT INTO redirect_rules (redirect_from, redirect_to)
       VALUES ($1, $2)
-      RETURNING id, redirect_from, redirect_to, created_at, updated_at
+      RETURNING id, redirect_from, redirect_to, enabled, created_at, updated_at
     `, [normalizedFrom, normalizedTo]);
     return result.rows[0];
+  },
+
+  async setEnabled(id, enabled) {
+    const result = await pool.query(`
+      UPDATE redirect_rules
+      SET enabled = $2, updated_at = NOW()
+      WHERE id = $1
+      RETURNING id, redirect_from, redirect_to, enabled, created_at, updated_at
+    `, [id, enabled]);
+    return result.rows[0] || null;
   },
 
   async remove(id) {
@@ -83,7 +93,7 @@ const createRedirectRulesService = (pool) => ({
     const result = await pool.query(`
       SELECT id, redirect_from, redirect_to
       FROM redirect_rules
-      WHERE redirect_from = $1 OR redirect_from = $2
+      WHERE enabled IS TRUE AND (redirect_from = $1 OR redirect_from = $2)
       ORDER BY CASE WHEN redirect_from = $1 THEN 0 ELSE 1 END, id ASC
       LIMIT 1
     `, [normalized, pathname]);

@@ -508,6 +508,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [redirectRules, setRedirectRules] = useState([]);
   const [redirectFrom, setRedirectFrom] = useState("");
   const [redirectTo, setRedirectTo] = useState("");
+  const [redirectSearch, setRedirectSearch] = useState("");
+  const [redirectSearchField, setRedirectSearchField] = useState("both");
+  const [redirectDateSortOrder, setRedirectDateSortOrder] = useState(null);
+  const [redirectCurrentPage, setRedirectCurrentPage] = useState(1);
+  const [redirectRulesUpdatingIds, setRedirectRulesUpdatingIds] = useState(new Set());
   const [redirectRulesLoading, setRedirectRulesLoading] = useState(false);
   const [redirectRulesSaving, setRedirectRulesSaving] = useState(false);
   const [redirectRulesError, setRedirectRulesError] = useState("");
@@ -825,7 +830,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   }, [isSitemapTab, sitemapSettingsRetry]);
 
   useEffect(() => {
-    if (!isRedirectionLinksTab) return undefined;
+    if (!isRedirectionLinksTab && !isControlsTab) return undefined;
     let active = true;
     setRedirectRulesLoading(true);
     setRedirectRulesError("");
@@ -844,7 +849,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     return () => {
       active = false;
     };
-  }, [isRedirectionLinksTab, authStateVersion]);
+  }, [isRedirectionLinksTab, isControlsTab, authStateVersion]);
 
   const saveRedirectRule = async (event) => {
     event.preventDefault();
@@ -890,6 +895,70 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       setRedirectRulesError(error.response?.data?.error || "Unable to delete redirect rule.");
     }
   };
+
+  const toggleRedirectRule = async (rule) => {
+    const enabled = rule.enabled === false;
+    setRedirectRulesUpdatingIds((current) => new Set(current).add(rule.id));
+    setRedirectRulesError("");
+    try {
+      await axios.put(
+        `${API_BASE_URL}/admin/redirect-rules/${rule.id}/enabled`,
+        { enabled },
+        { headers: buildAuthHeaders() }
+      );
+      setRedirectRules((current) => current.map((item) => (
+        item.id === rule.id ? { ...item, enabled } : item
+      )));
+      toast.success(`Redirect ${enabled ? "enabled" : "disabled"}.`);
+    } catch (error) {
+      console.error("Failed to update redirect rule status", error);
+      setRedirectRulesError(error.response?.data?.error || "Unable to update redirect rule status.");
+    } finally {
+      setRedirectRulesUpdatingIds((current) => {
+        const next = new Set(current);
+        next.delete(rule.id);
+        return next;
+      });
+    }
+  };
+
+  const normalizedRedirectSearch = String(redirectSearch || "").trim().toLowerCase();
+  const activeRedirectRulesCount = redirectRules.filter((rule) => rule.enabled !== false).length;
+  const disabledRedirectRulesCount = redirectRules.filter((rule) => rule.enabled === false).length;
+  const filteredRedirectRules = redirectRules.filter((rule) => {
+    if (!normalizedRedirectSearch) return true;
+    const matchesFrom = String(rule.redirect_from || "").toLowerCase().includes(normalizedRedirectSearch);
+    const matchesTo = String(rule.redirect_to || "").toLowerCase().includes(normalizedRedirectSearch);
+    if (redirectSearchField === "from") return matchesFrom;
+    if (redirectSearchField === "to") return matchesTo;
+    return matchesFrom || matchesTo;
+  });
+  const sortedRedirectRules = redirectDateSortOrder
+    ? [...filteredRedirectRules].sort((first, second) => {
+        const firstDate = new Date(first.created_at || "").getTime();
+        const secondDate = new Date(second.created_at || "").getTime();
+        const firstValid = Number.isFinite(firstDate);
+        const secondValid = Number.isFinite(secondDate);
+        if (!firstValid && !secondValid) return 0;
+        if (!firstValid) return 1;
+        if (!secondValid) return -1;
+        return redirectDateSortOrder === "ascending"
+          ? firstDate - secondDate
+          : secondDate - firstDate;
+      })
+    : filteredRedirectRules;
+  const redirectPageSize = 20;
+  const redirectTotalPages = Math.max(1, Math.ceil(sortedRedirectRules.length / redirectPageSize));
+  const paginatedRedirectRules = sortedRedirectRules.slice(
+    (redirectCurrentPage - 1) * redirectPageSize,
+    redirectCurrentPage * redirectPageSize
+  );
+
+  useEffect(() => {
+    if (redirectCurrentPage > redirectTotalPages) {
+      setRedirectCurrentPage(redirectTotalPages);
+    }
+  }, [redirectCurrentPage, redirectTotalPages]);
 
   useEffect(() => {
     setSelectedLiveAssetIds(new Set());
@@ -5302,6 +5371,29 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     window.URL.revokeObjectURL(url);
   };
 
+  const exportRedirectRulesCsv = () => {
+    try {
+      const rows = sortedRedirectRules.map((rule, index) => ({
+        "S.No.": index + 1,
+        "Redirect From": rule.redirect_from || "",
+        "Redirect To": rule.redirect_to || "",
+        Date: rule.created_at
+          ? formatIndiaDate(rule.created_at, { day: "2-digit", month: "short", year: "numeric" })
+          : "",
+        Status: rule.enabled === false ? "Disabled" : "Active"
+      }));
+      const headers = ["S.No.", "Redirect From", "Redirect To", "Date", "Status"];
+      downloadCsvFile(
+        buildCsvContent(rows, headers),
+        `redirects-${new Date().toISOString().slice(0, 10)}.csv`
+      );
+      toast.success(`Exported ${rows.length} redirect${rows.length === 1 ? "" : "s"} to CSV.`);
+    } catch (error) {
+      console.error("Failed to export redirect rules CSV", error);
+      setRedirectRulesError("Unable to export redirect rules as CSV.");
+    }
+  };
+
   const exportLiveAssetsCsv = async () => {
     try {
       setLiveAssetsExportStatus("Preparing CSV...");
@@ -6107,7 +6199,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               <p>Keep old links useful and send visitors to the right destination without touching your code.</p>
             </div>
             <div className="redirection-hero__stat">
-              <strong>{redirectRules.length}</strong>
+              <strong>{redirectRules.filter((rule) => rule.enabled !== false).length}</strong>
               <span>Active rules</span>
             </div>
           </div>
@@ -6161,8 +6253,80 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   <span className="redirection-eyebrow">Your configuration</span>
                   <h3>Saved redirects</h3>
                 </div>
-                <span className="redirection-count">{redirectRules.length}</span>
+                <span className="redirection-count">{filteredRedirectRules.length}</span>
               </div>
+              {redirectRules.length > 0 && (
+                <div className="redirection-search-toolbar">
+                  <div className="redirection-search-filters" aria-label="Saved redirect filters">
+                    <div className="redirection-search-control">
+                      <label className="redirection-search-scope" htmlFor="redirect-search-field">
+                        <span className="sr-only">Search in</span>
+                        <select
+                          id="redirect-search-field"
+                          value={redirectSearchField}
+                          onChange={(event) => {
+                            setRedirectSearchField(event.target.value);
+                            setRedirectCurrentPage(1);
+                          }}
+                          aria-label="Search redirects in"
+                        >
+                          <option value="both">Both fields</option>
+                          <option value="from">Redirect From</option>
+                          <option value="to">Redirect To</option>
+                        </select>
+                      </label>
+                      <span className="redirection-search-divider" aria-hidden="true" />
+                      <svg className="redirection-search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="10.8" cy="10.8" r="6.8" />
+                        <path d="m16 16 4.2 4.2" />
+                      </svg>
+                      <label className="redirection-search-input" htmlFor="redirect-search">
+                        <span className="sr-only">Search saved redirects</span>
+                        <input
+                          id="redirect-search"
+                          type="search"
+                          value={redirectSearch}
+                          onChange={(event) => {
+                            setRedirectSearch(event.target.value);
+                            setRedirectCurrentPage(1);
+                          }}
+                          placeholder={
+                            redirectSearchField === "from"
+                              ? "Search source paths"
+                              : redirectSearchField === "to"
+                                ? "Search destination URLs"
+                                : "Search paths or destination URLs"
+                          }
+                          aria-label="Search saved redirects"
+                        />
+                      </label>
+                      {redirectSearch && (
+                        <button
+                          type="button"
+                          className="redirection-clear-filters"
+                          onClick={() => setRedirectSearch("")}
+                          aria-label="Clear redirect search"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="redirection-export"
+                    onClick={exportRedirectRulesCsv}
+                    disabled={sortedRedirectRules.length === 0}
+                    aria-label={`Export ${sortedRedirectRules.length} redirect${sortedRedirectRules.length === 1 ? "" : "s"} as CSV`}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M12 3v11m0 0 4-4m-4 4-4-4" />
+                      <path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />
+                    </svg>
+                    Export CSV
+                  </button>
+                </div>
+              )}
               {redirectRulesLoading ? <p role="status" className="redirection-empty">Loading redirect rules...</p> : null}
               {!redirectRulesLoading && redirectRules.length === 0 ? (
                 <div className="redirection-empty">
@@ -6171,31 +6335,93 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   <span>Your saved routes will appear here.</span>
                 </div>
               ) : null}
-              {redirectRules.length > 0 && (
+              {!redirectRulesLoading && redirectRules.length > 0 && filteredRedirectRules.length === 0 ? (
+                <div className="redirection-empty">
+                  <div className="redirection-empty__icon" aria-hidden="true">⌁</div>
+                  <strong>No matching redirects</strong>
+                  <span>Try a different search or field option.</span>
+                </div>
+              ) : null}
+              {filteredRedirectRules.length > 0 && (
                 <div className="redirection-table-wrap">
                   <table className="redirection-table">
                     <thead>
                       <tr>
+                        <th scope="col">S.No.</th>
                         <th scope="col">Redirect From</th>
                         <th scope="col">Redirect To</th>
+                        <th scope="col" aria-sort={redirectDateSortOrder || "none"}>
+                          <button
+                            type="button"
+                            className="redirection-date-sort"
+                            onClick={() => {
+                              setRedirectCurrentPage(1);
+                              setRedirectDateSortOrder((current) => (
+                                current === "ascending" ? "descending" : "ascending"
+                              ));
+                            }}
+                            aria-label={`Sort by date ${redirectDateSortOrder === "ascending" ? "descending" : "ascending"}`}
+                          >
+                            Date <span aria-hidden="true">
+                              {redirectDateSortOrder === "ascending"
+                                ? "↑"
+                                : redirectDateSortOrder === "descending" ? "↓" : "↕"}
+                            </span>
+                          </button>
+                        </th>
                         <th scope="col">Status</th>
                         <th scope="col"><span className="sr-only">Actions</span></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {redirectRules.map((rule) => (
+                      {paginatedRedirectRules.map((rule, index) => (
                         <tr key={rule.id}>
+                          <td>{(redirectCurrentPage - 1) * redirectPageSize + index + 1}</td>
                           <td><strong>{rule.redirect_from}</strong></td>
                           <td>→ {rule.redirect_to}</td>
-                          <td><span className="redirection-table-status"><span aria-hidden="true" /> Active</span></td>
                           <td>
-                            <button type="button" onClick={() => deleteRedirectRule(rule.id)} className="redirection-delete">Delete</button>
+                            {rule.created_at ? (
+                              <time dateTime={rule.created_at}>
+                                {formatIndiaDate(rule.created_at, { day: "2-digit", month: "short", year: "numeric" })}
+                              </time>
+                            ) : "—"}
+                          </td>
+                          <td>
+                            <span className={`redirection-table-status ${rule.enabled === false ? "redirection-table-status--disabled" : ""}`}>
+                              <span aria-hidden="true" /> {rule.enabled === false ? "Disabled" : "Active"}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="redirection-actions">
+                              <button
+                                type="button"
+                                onClick={() => toggleRedirectRule(rule)}
+                                disabled={redirectRulesUpdatingIds.has(rule.id)}
+                                aria-label={`${rule.enabled === false ? "Enable" : "Disable"} redirect ${rule.redirect_from}`}
+                                className={`redirection-toggle ${rule.enabled === false ? "redirection-toggle--enable" : ""}`}
+                              >
+                                {redirectRulesUpdatingIds.has(rule.id)
+                                  ? "Saving..."
+                                  : rule.enabled === false ? "Enable" : "Disable"}
+                              </button>
+                              <button type="button" onClick={() => deleteRedirectRule(rule.id)} className="redirection-delete">Delete</button>
+                            </div>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
+              )}
+              {sortedRedirectRules.length > 0 && (
+                <Pagination
+                  currentPage={redirectCurrentPage}
+                  totalPages={redirectTotalPages}
+                  totalImages={sortedRedirectRules.length}
+                  setCurrentPage={setRedirectCurrentPage}
+                  darkMode={isDarkMode}
+                  totalLabel="Total redirects"
+                />
               )}
             </div>
           </div>
@@ -7716,6 +7942,28 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="redirection">
             <h3>Redirection</h3>
+            {redirectRulesLoading ? (
+              <p role="status" className="redirection-card-summary-message">Loading redirect counts...</p>
+            ) : redirectRulesError ? (
+              <p role="alert" className="redirection-card-summary-message redirection-card-summary-message--error">
+                Unable to load redirect counts.
+              </p>
+            ) : (
+              <div className={`redirection-card-summary ${isDarkMode ? "redirection-card-summary--dark" : ""}`} role="group" aria-label="Redirection link counts">
+                <div className="redirection-card-summary__item">
+                  <strong>{redirectRules.length}</strong>
+                  <span>Total links</span>
+                </div>
+                <div className="redirection-card-summary__item redirection-card-summary__item--active">
+                  <strong>{activeRedirectRulesCount}</strong>
+                  <span>Active</span>
+                </div>
+                <div className="redirection-card-summary__item redirection-card-summary__item--disabled">
+                  <strong>{disabledRedirectRulesCount}</strong>
+                  <span>Disabled</span>
+                </div>
+              </div>
+            )}
             <button type="button" onClick={() => {
               const nextUrl = `${adminBasePath}?tab=controls/redirection_links`;
               window.history.pushState({}, "", nextUrl);

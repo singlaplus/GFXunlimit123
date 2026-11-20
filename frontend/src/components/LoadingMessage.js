@@ -1,9 +1,9 @@
-function LoadingMessage({ loading, darkMode }) {
+function LoadingMessage({ loading, darkMode, search = "" }) {
   if (!loading) return null;
 
   return (
-    <h2 style={{ color: darkMode ? "#f5f5f5" : "#111" }}>
-      Loading images...
+    <h2 role="status" style={{ color: darkMode ? "#f5f5f5" : "#111" }}>
+      {search.trim() ? "Searching images..." : "Loading images..."}
     </h2>
   );
 }

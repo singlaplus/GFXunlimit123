@@ -136,6 +136,7 @@ export default function MarketplaceContainer(props) {
           <LoadingMessage
             loading={props.loading}
             darkMode={props.darkMode}
+            search={search}
           />
 
           <EmptyMessage

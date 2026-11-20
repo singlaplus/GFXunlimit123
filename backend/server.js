@@ -3593,6 +3593,20 @@ app.post("/admin/redirect-rules", verifyAdmin, async (req, res) => {
   }
 });
 
+app.put("/admin/redirect-rules/:id/enabled", verifyAdmin, async (req, res) => {
+  if (typeof req.body?.enabled !== "boolean") {
+    return res.status(400).json({ error: "Enabled must be a boolean." });
+  }
+  try {
+    const rule = await redirectRules.setEnabled(req.params.id, req.body.enabled);
+    if (!rule) return res.status(404).json({ error: "Redirect rule not found." });
+    return res.json(rule);
+  } catch (error) {
+    console.error("Failed to update redirect rule status", error);
+    return res.status(500).json({ error: "Failed to update redirect rule status." });
+  }
+});
+
 app.delete("/admin/redirect-rules/:id", verifyAdmin, async (req, res) => {
   try {
     const removed = await redirectRules.remove(req.params.id);
@@ -17082,6 +17096,11 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(redirectRulesMigration);
+      const redirectRuleEnabledMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "038_redirect_rule_enabled.sql"),
+        "utf8"
+      );
+      await pool.query(redirectRuleEnabledMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);

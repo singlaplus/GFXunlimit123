@@ -324,6 +324,60 @@ describe("useImages Explore pagination", () => {
     expect(screen.getByTestId("asset-ids")).toBeEmptyDOMElement();
   });
 
+  it("does not trigger the page readiness screen for an in-page search after the catalog loads", async () => {
+    const reportResource = jest.fn();
+    const firstResponse = {
+      data: {
+        images: [{ id: 1 }],
+        totalImages: 1,
+        totalLikes: 0,
+        totalDownloads: 0,
+        totalViews: 0,
+      },
+    };
+    let resolveSearch;
+    getImages
+      .mockResolvedValueOnce(firstResponse)
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveSearch = resolve;
+      }));
+
+    render(
+      <ExploreImagesHarness
+        pageSize={50}
+        initialExplorePage={false}
+        reportResource={reportResource}
+        readinessEnabled
+      />
+    );
+
+    await waitFor(() => expect(getImages).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      expect(reportResource).toHaveBeenCalledWith("catalog", "ready", "", "test-route");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Change search" }));
+
+    await waitFor(() => expect(getImages).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("asset-ids")).toHaveTextContent("1");
+    expect(screen.getByTestId("loading-state")).toHaveTextContent("true");
+    expect(
+      reportResource.mock.calls.filter(([, status]) => status === "loading")
+    ).toHaveLength(1);
+
+    await act(async () => {
+      resolveSearch(firstResponse);
+    });
+    await waitFor(() => {
+      expect(
+        reportResource.mock.calls.filter(([, status]) => status === "ready")
+      ).toHaveLength(2);
+    });
+    expect(
+      reportResource.mock.calls.filter(([, status]) => status === "loading")
+    ).toHaveLength(1);
+  });
+
   it("does not report malformed catalogue data as a successful empty result", async () => {
     const reportResource = jest.fn();
     getImages.mockResolvedValue({ data: { images: [] } });
