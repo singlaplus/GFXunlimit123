@@ -621,7 +621,8 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
       const sampleIdsToClean = stateResponse.data.sessionIds || [];
       const activeSessionId = stateResponse.data.sample?.id || null;
       let remainingRetainedIds = sampleIdsToClean.filter((id) => id !== activeSessionId);
-      for (const sampleId of sampleIdsToClean) {
+      // Remove the newest sessions first so older hashes cannot block cleanup of overwritten paths.
+      for (const sampleId of [...sampleIdsToClean].reverse()) {
         await axios.delete(`${endpoint}/preview-samples/${encodeURIComponent(sampleId)}`, authConfig());
         remainingRetainedIds = remainingRetainedIds.filter((id) => id !== sampleId);
         setRetainedSampleSessionIds(remainingRetainedIds);

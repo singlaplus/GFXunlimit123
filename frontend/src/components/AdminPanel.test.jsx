@@ -906,12 +906,12 @@ describe("AdminPanel collection controls", () => {
     });
     expect(axios.delete).toHaveBeenNthCalledWith(
       1,
-      expect.stringContaining("/preview-samples/sample-session-1"),
+      expect.stringContaining("/preview-samples/sample-session-2"),
       expect.any(Object)
     );
     expect(axios.delete).toHaveBeenNthCalledWith(
       2,
-      expect.stringContaining("/preview-samples/sample-session-2"),
+      expect.stringContaining("/preview-samples/sample-session-1"),
       expect.any(Object)
     );
     expect(axios.delete).toHaveBeenNthCalledWith(
