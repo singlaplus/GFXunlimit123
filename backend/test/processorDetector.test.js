@@ -1,7 +1,30 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 require('./helpers/blockPostgres');
 const ProcessorDetector = require('../thumbnail-engine/processor-detector');
+
+test('detectFfmpeg honors the configured executable path', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ffmpeg-detector-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const executablePath = path.join(directory, 'ffmpeg');
+  fs.writeFileSync(executablePath, '#!/bin/sh\nprintf "ffmpeg version 7.1.1\\n"\n');
+  fs.chmodSync(executablePath, 0o755);
+  const previousPath = process.env.FFMPEG_PATH;
+  process.env.FFMPEG_PATH = executablePath;
+
+  try {
+    const result = await new ProcessorDetector().detectFfmpeg();
+    assert.equal(result.status, 'READY');
+    assert.equal(result.executablePath, executablePath);
+    assert.equal(result.version, '7.1.1');
+  } finally {
+    if (previousPath === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = previousPath;
+  }
+});
 
 test('reports current tool detections instead of stale macOS database statuses', async () => {
   const detector = new ProcessorDetector();

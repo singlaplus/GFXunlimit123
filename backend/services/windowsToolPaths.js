@@ -15,6 +15,7 @@ const KNOWN_PATHS = {
     'C:\\Program Files (x86)\\ImageMagick-7.1.1-Q16-HDRI\\magick.exe',
     'C:\\Program Files (x86)\\ImageMagick-7.1.0-Q16-HDRI\\magick.exe',
   ],
+  ffmpeg: [],
   redis: [
     'C:\\Program Files\\Redis\\redis-cli.exe',
     'C:\\Program Files\\Memurai\\bin\\redis-cli.exe',
@@ -51,6 +52,28 @@ function getWindowsToolPaths(toolName, environment = process.env, fileSystem = f
         for (const installDirectory of fileSystem.readdirSync(programDirectory)) {
           if (/^ImageMagick/i.test(installDirectory)) {
             candidates.push(path.join(programDirectory, installDirectory, 'magick.exe'));
+          }
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+      }
+    }
+    return candidates;
+  }
+
+  if (toolName === 'ffmpeg') {
+    const candidates = [...KNOWN_PATHS.ffmpeg];
+    if (environment.LOCALAPPDATA) {
+      const localAppData = environment.LOCALAPPDATA;
+      candidates.push(path.join(localAppData, 'Microsoft', 'WinGet', 'Links', 'ffmpeg.exe'));
+
+      const packageRoot = path.join(localAppData, 'Microsoft', 'WinGet', 'Packages');
+      try {
+        for (const packageDirectory of fileSystem.readdirSync(packageRoot)) {
+          if (!/^Gyan\.FFmpeg\.Shared_/i.test(packageDirectory)) continue;
+          const packagePath = path.join(packageRoot, packageDirectory);
+          for (const versionDirectory of fileSystem.readdirSync(packagePath)) {
+            candidates.push(path.join(packagePath, versionDirectory, 'bin', 'ffmpeg.exe'));
           }
         }
       } catch (error) {

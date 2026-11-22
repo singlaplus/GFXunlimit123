@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {
   getToolCandidates,
   probeTool,
@@ -62,6 +65,34 @@ test('configured executable paths are checked instead of silently ignored', () =
   }), ['/custom/ffmpeg']);
   assert.equal(result.available, false);
   assert.match(result.error, /configured executable failed/);
+});
+
+test('discovers FFmpeg installed by WinGet when its PATH entry is not loaded yet', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winget-ffmpeg-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const executable = path.join(
+    root,
+    'Microsoft', 'WinGet', 'Packages',
+    'Gyan.FFmpeg.Shared_Microsoft.Winget.Source_8wekyb3d8bbwe',
+    'ffmpeg-7.1.1-full_build',
+    'bin', 'ffmpeg.exe'
+  );
+  fs.mkdirSync(path.dirname(executable), { recursive: true });
+  fs.writeFileSync(executable, '');
+
+  const options = { platform: 'win32', env: { LOCALAPPDATA: root } };
+  assert.ok(getToolCandidates('ffmpeg', options).includes(executable));
+
+  const result = probeTool('ffmpeg', {
+    ...options,
+    run(command, args) {
+      if (command !== executable) throw new Error('not on PATH');
+      return args[0] === '-version' ? 'ffmpeg version 7.1.1' : Buffer.from('png');
+    },
+  });
+  assert.equal(result.available, true);
+  assert.equal(result.command, executable);
+  assert.equal(result.version, '7.1.1');
 });
 
 test('ImageMagick runtime resolution falls back from magick to ImageMagick 6 convert', () => {

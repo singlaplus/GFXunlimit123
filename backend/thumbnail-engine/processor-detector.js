@@ -9,6 +9,7 @@ const path = require('path');
 const { execFileSync, execSync, spawn } = require('child_process');
 const pool = require('../db');
 const { getWindowsToolPaths } = require('../services/windowsToolPaths');
+const { getToolCandidates } = require('../services/thumbnailToolchain');
 const { resolveImageMagickExecutable } = require('./imagemagick-path');
 
 // Windows-specific paths for common tool installations
@@ -263,25 +264,41 @@ class ProcessorDetector {
   }
 
   async detectFfmpeg() {
-    const executablePath = process.env.FFMPEG_PATH || 'ffmpeg';
-    try {
-      const output = execFileSync(executablePath, ['-version'], {
-        encoding: 'utf8',
-        windowsHide: true,
-      });
-      const version = output.match(/ffmpeg version ([^\s]+)/i)?.[1] || 'unknown';
-      return {
-        status: 'READY',
-        executablePath,
-        version,
-        message: `Found at ${executablePath}`,
-      };
-    } catch (err) {
-      return {
-        status: 'NOT_AVAILABLE',
-        message: `FFmpeg could not run (${executablePath}): ${err.message}`,
-      };
+    const candidates = getToolCandidates('ffmpeg');
+    let lastError = null;
+    for (const executablePath of candidates) {
+      try {
+        const output = execFileSync(executablePath, ['-version'], {
+          encoding: 'utf8',
+          windowsHide: true,
+        });
+        const version = output.match(/ffmpeg version ([^\s]+)/i)?.[1] || 'unknown';
+        if (path.isAbsolute(executablePath)) {
+          process.env.FFMPEG_PATH = executablePath;
+          if (process.platform === 'win32') {
+            const executableDirectory = path.dirname(executablePath);
+            const currentPath = process.env.PATH || '';
+            if (!currentPath.split(path.delimiter).some((entry) => entry.toLowerCase() === executableDirectory.toLowerCase())) {
+              process.env.PATH = `${executableDirectory}${path.delimiter}${currentPath}`;
+            }
+            const ffprobePath = path.join(executableDirectory, 'ffprobe.exe');
+            if (fs.existsSync(ffprobePath)) process.env.FFPROBE_PATH = ffprobePath;
+          }
+        }
+        return {
+          status: 'READY',
+          executablePath,
+          version,
+          message: `Found at ${executablePath}`,
+        };
+      } catch (err) {
+        lastError = err;
+      }
     }
+    return {
+      status: 'NOT_AVAILABLE',
+      message: `FFmpeg could not run (${candidates.join(', ')}): ${lastError?.message || 'executable not found'}`,
+    };
   }
 
   /**

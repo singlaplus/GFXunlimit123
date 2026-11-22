@@ -52,6 +52,9 @@ function getToolCandidates(toolName, { platform = process.platform, env = proces
   if (platform === 'win32' && toolName === 'imagemagick') {
     return [...new Set(['magick', ...getWindowsToolPaths('imagemagick', env)])];
   }
+  if (platform === 'win32' && toolName === 'ffmpeg') {
+    return [...new Set(['ffmpeg', ...getWindowsToolPaths('ffmpeg', env)])];
+  }
   return definition.commands;
 }
 
