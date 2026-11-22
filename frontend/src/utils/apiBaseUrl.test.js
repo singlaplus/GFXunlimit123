@@ -2,15 +2,15 @@ import { getApiBaseUrl } from "./apiBaseUrl";
 
 describe("API base URL configuration", () => {
   test("keeps localhost as the explicit development and test fallback", () => {
-    expect(getApiBaseUrl({ NODE_ENV: "development" })).toBe("http://localhost:5000");
+    expect(getApiBaseUrl({ NODE_ENV: "development" }, null)).toBe("http://localhost:5000");
     expect(getApiBaseUrl({ NODE_ENV: "test" })).toBe("http://localhost:5000");
   });
 
-  test("uses the current server hostname for remote development browsers", () => {
+  test("uses the frontend origin so the development proxy can reach the backend", () => {
     expect(getApiBaseUrl(
       { NODE_ENV: "development" },
-      { hostname: "192.168.1.25" }
-    )).toBe("http://192.168.1.25:5000");
+      { origin: "http://192.168.1.25:3000", hostname: "192.168.1.25" }
+    )).toBe("http://192.168.1.25:3000");
   });
 
   test("uses a configured URL and normalizes trailing slashes", () => {

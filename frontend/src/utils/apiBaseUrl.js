@@ -6,6 +6,9 @@ function getApiBaseUrl(environment = process.env, browserLocation = typeof windo
     if (environment.NODE_ENV === 'production') {
       throw new Error('REACT_APP_API_BASE_URL must be configured for production builds.');
     }
+    if (environment.NODE_ENV === 'development' && browserLocation?.origin) {
+      return browserLocation.origin;
+    }
     const hostname = String(browserLocation?.hostname || '').trim();
     if (hostname && hostname !== '0.0.0.0' && hostname !== '::') {
       const formattedHostname = hostname.includes(':') && !hostname.startsWith('[')

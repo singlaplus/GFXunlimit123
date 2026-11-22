@@ -1,5 +1,3 @@
-const os = require('node:os');
-
 const DEFAULT_CORS_ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
@@ -72,21 +70,7 @@ function getCorsAllowedOrigins(environment = process.env) {
       throw new Error('CORS_ALLOWED_ORIGINS must contain comma-separated HTTP(S) origins');
     }
   }
-  const allowedOrigins = configuredOrigins.length ? configuredOrigins : [...DEFAULT_CORS_ALLOWED_ORIGINS];
-  if (String(environment.NODE_ENV || '').toLowerCase() !== 'production') {
-    for (const interfaceAddresses of Object.values(os.networkInterfaces())) {
-      for (const interfaceAddress of interfaceAddresses || []) {
-        if (interfaceAddress.family !== 'IPv4' || interfaceAddress.internal) continue;
-        const hostname = interfaceAddress.address.includes(':')
-          ? `[${interfaceAddress.address}]`
-          : interfaceAddress.address;
-        for (const port of ['3000', '3001', '3002']) {
-          allowedOrigins.push(`http://${hostname}:${port}`);
-        }
-      }
-    }
-  }
-  return new Set(allowedOrigins);
+  return new Set(configuredOrigins.length ? configuredOrigins : DEFAULT_CORS_ALLOWED_ORIGINS);
 }
 
 module.exports = {
