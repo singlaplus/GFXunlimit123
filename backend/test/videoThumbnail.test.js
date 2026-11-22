@@ -12,6 +12,8 @@ const {
   generateOptimizedVideoPreview,
   generateProductionVideoPreviews,
   generateAssetThumbnail,
+  getVideoDuration,
+  getVideoDimensions,
   getVideoPreviewFrameCount,
 } = require('../utils/assetThumbnails');
 const assetStorageConnections = require('../services/assetStorageConnections');
@@ -30,6 +32,35 @@ test('chooses 3 frames up to 10 seconds, 4 up to 20, and caps long videos at 6',
   assert.equal(getVideoPreviewFrameCount(10), 3);
   assert.equal(getVideoPreviewFrameCount(20), 4);
   assert.equal(getVideoPreviewFrameCount(40), 6);
+});
+
+test('reads duration and dimensions with FFmpeg when FFprobe cannot launch', {
+  skip: !ffmpegAvailable && 'FFmpeg is required for video metadata fallback',
+}, async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-video-metadata-fallback-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const sourcePath = path.join(directory, 'sample.mp4');
+  const createVideo = spawnSync(ffmpeg, [
+    '-v', 'error',
+    '-f', 'lavfi',
+    '-i', 'color=c=red:s=64x48:d=1',
+    '-c:v', 'mpeg4',
+    '-threads', '1',
+    '-y', sourcePath,
+  ], { encoding: 'utf8', timeout: 30000 });
+  assert.equal(createVideo.status, 0, createVideo.stderr);
+
+  const previousFfprobePath = process.env.FFPROBE_PATH;
+  process.env.FFPROBE_PATH = path.join(directory, 'blocked-ffprobe.exe');
+  try {
+    const duration = await getVideoDuration(sourcePath);
+    const dimensions = await getVideoDimensions(sourcePath);
+    assert.ok(duration > 0 && duration < 2);
+    assert.deepEqual(dimensions, { width: 64, height: 48 });
+  } finally {
+    if (previousFfprobePath === undefined) delete process.env.FFPROBE_PATH;
+    else process.env.FFPROBE_PATH = previousFfprobePath;
+  }
 });
 
 test('extracts a frame from a video shorter than one second', {
@@ -103,6 +134,7 @@ test('generates multiple WebP frames and enables original video playback when se
   ], { encoding: 'utf8', timeout: 30000 });
   assert.equal(createVideo.status, 0, createVideo.stderr);
 
+  const progressValues = [];
   const result = await generateThumbnailPreview(sourcePath, {
     quality: 65,
     maxFileSizeKb: 50,
@@ -110,11 +142,13 @@ test('generates multiple WebP frames and enables original video playback when se
     formats: ['video'],
     multipleVideoThumbnails: true,
     includeVideoPreview: true,
-  });
+  }, (percent) => progressValues.push(percent));
 
   assert.equal(result.previews.length, 3);
   assert.equal(result.videoPreview, true);
   assert.ok(result.previews.every((preview) => preview.format === 'webp'));
+  assert.equal(progressValues.at(-1), 100);
+  assert.ok(progressValues.some((percent) => percent > 20 && percent < 100));
 });
 
 test('generates a smaller MP4 preview within the configured size and resolution limits', {
@@ -147,7 +181,13 @@ test('generates a smaller MP4 preview within the configured size and resolution 
     videoMaxHeight: 480,
     videoMaxFileSizeMb: 1,
   };
-  const result = await generateOptimizedVideoPreview(sourcePath, settings, outputPath);
+  const progressValues = [];
+  const result = await generateOptimizedVideoPreview(
+    sourcePath,
+    settings,
+    outputPath,
+    (percent) => progressValues.push(percent)
+  );
   const probe = spawnSync(ffprobe, [
     '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name,width,height',
     '-of', 'json', outputPath,
@@ -159,6 +199,8 @@ test('generates a smaller MP4 preview within the configured size and resolution 
   assert.ok(result.sizeBytes <= 1024 * 1024);
   assert.equal(result.format, 'mp4');
   assert.notEqual((await fs.stat(sourcePath)).size, result.sizeBytes);
+  assert.equal(progressValues.at(-1), 100);
+  assert.ok(progressValues.some((percent) => percent > 0 && percent < 95));
 });
 
 test('persists production video frame and MP4 derivatives with metadata paths', {

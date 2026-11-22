@@ -162,6 +162,10 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
   const [maxFileSizeUnit, setMaxFileSizeUnit] = useState("KB");
   const [maxFileSizeInput, setMaxFileSizeInput] = useState("50");
   const [selectedFile, setSelectedFile] = useState(null);
+  const [sampleUploadProgress, setSampleUploadProgress] = useState(null);
+  const [previewGenerationInProgress, setPreviewGenerationInProgress] = useState(false);
+  const [previewGenerationPercent, setPreviewGenerationPercent] = useState(0);
+  const [previewProgressError, setPreviewProgressError] = useState("");
   const [pendingSampleRename, setPendingSampleRename] = useState(null);
   const [sampleFileInputVersion, setSampleFileInputVersion] = useState(0);
   const [preview, setPreview] = useState(null);
@@ -503,13 +507,23 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
       return;
     }
     setBusy(true);
+    setSampleUploadProgress({ percent: null });
     setErrorMessage("");
     try {
       const data = new FormData();
       data.append("destinationPath", previewDestinationPath);
       if (filenameOverride) data.append("filename", filenameOverride);
       data.append("file", selectedFile);
-      const response = await axios.post(`${endpoint}/preview-samples`, data, authConfig());
+      const response = await axios.post(`${endpoint}/preview-samples`, data, {
+        ...authConfig(),
+        skipGlobalLoading: true,
+        onUploadProgress: ({ loaded, total }) => {
+          const percent = Number.isFinite(total) && total > 0
+            ? Math.min(100, Math.round((loaded / total) * 100))
+            : null;
+          setSampleUploadProgress({ percent });
+        },
+      });
       setSampleSession(response.data);
       setRetainedSampleSessionIds((response.data.sessionIds || []).filter((id) => id !== response.data.id));
       setPreview(null);
@@ -525,6 +539,7 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
         setErrorMessage(conflict?.error || "Unable to upload the sample file.");
       }
     } finally {
+      setSampleUploadProgress(null);
       setBusy(false);
     }
   };
@@ -549,18 +564,52 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
       return;
     }
     setBusy(true);
+    setPreviewGenerationInProgress(true);
+    setPreviewGenerationPercent(0);
+    setPreviewProgressError("");
     setErrorMessage("");
     setPreview(null);
+    let polling = true;
+    let progressTimer;
+    const pollProgress = async () => {
+      try {
+        const response = await axios.get(
+          `${endpoint}/preview-samples/${sampleSession.id}/progress`,
+          { ...authConfig(), skipGlobalLoading: true }
+        );
+        if (!polling) return;
+        const percent = response.data?.percent;
+        if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+          throw new Error("The server returned an invalid preview progress value.");
+        }
+        setPreviewGenerationPercent(percent);
+        if (response.data.status !== "complete") {
+          progressTimer = setTimeout(pollProgress, 500);
+        }
+      } catch (error) {
+        if (!polling) return;
+        setPreviewProgressError(
+          error.response?.data?.error || error.message || "Unable to read preview generation progress."
+        );
+      }
+    };
+    void pollProgress();
     try {
       const response = await axios.post(
         `${endpoint}/preview-samples/${sampleSession.id}/generate`,
         { settings: numericForm },
-        authConfig()
+        { ...authConfig(), skipGlobalLoading: true }
       );
+      setPreviewGenerationPercent(100);
       setPreview(response.data);
     } catch (error) {
       setErrorMessage(error.response?.data?.error || "Unable to generate the preview.");
     } finally {
+      polling = false;
+      clearTimeout(progressTimer);
+      setPreviewGenerationInProgress(false);
+      setPreviewGenerationPercent(0);
+      setPreviewProgressError("");
       setBusy(false);
     }
   };
@@ -987,8 +1036,21 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
                 </p>
               )}
               <button type="button" className="thumbnail-button thumbnail-button--primary thumbnail-step-action" disabled={busy || !previewDestinationValidated || !selectedFile || !isSelectedFileFormatEnabled || Boolean(sampleSession)} onClick={() => uploadSampleFile()}>
-                {busy ? "Working…" : "Upload sample file"}
+                {sampleUploadProgress ? "Uploading…" : "Upload sample file"}
               </button>
+              {sampleUploadProgress && (
+                <div className="thumbnail-operation-progress" role="status" aria-live="polite">
+                  <div className="thumbnail-operation-progress__label">
+                    <span>Uploading sample file</span>
+                    {sampleUploadProgress.percent !== null && <strong>{sampleUploadProgress.percent}%</strong>}
+                  </div>
+                  <progress
+                    aria-label="Sample file upload progress"
+                    max="100"
+                    {...(sampleUploadProgress.percent !== null ? { value: sampleUploadProgress.percent } : {})}
+                  />
+                </div>
+              )}
               {sampleSession && (
                 <p role="status" className="thumbnail-file-path">
                   Original: {sampleSession.sourcePath}<br />
@@ -999,14 +1061,32 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
           )}
 
           {sampleSession && (
-            <section aria-label="Step 3: Generate preview" className="thumbnail-preview-step">
+            <section aria-label="Step 3: Generate preview" className="thumbnail-preview-step" aria-busy={previewGenerationInProgress}>
               <h4 className="thumbnail-preview-step__title"><span>03</span>Generate the preview file</h4>
               <p className="thumbnail-preview-step__description">
                 WebP thumbnails will be saved beside the original sample. If enabled for a video, the original video will also be available as a playable preview.
               </p>
               <button type="button" className="thumbnail-button thumbnail-button--primary thumbnail-step-action" disabled={busy || Boolean(preview) || !isValid || !isSelectedFileFormatEnabled} onClick={handlePreview}>
-                {busy ? "Working…" : "Generate preview file"}
+                {previewGenerationInProgress ? "Generating preview…" : "Generate preview file"}
               </button>
+              {previewGenerationInProgress && (
+                <div className="thumbnail-operation-progress" role="status" aria-live="polite">
+                  <div className="thumbnail-operation-progress__label">
+                    <span>
+                      {previewProgressError
+                        ? "Live progress is unavailable; generation is still running."
+                        : "Generating preview on the server. Larger videos may take longer."}
+                    </span>
+                    {!previewProgressError && <strong>{previewGenerationPercent}%</strong>}
+                  </div>
+                  {previewProgressError && <span>{previewProgressError}</span>}
+                  <progress
+                    aria-label="Preview generation progress"
+                    max="100"
+                    {...(!previewProgressError ? { value: previewGenerationPercent } : {})}
+                  />
+                </div>
+              )}
             </section>
           )}
 

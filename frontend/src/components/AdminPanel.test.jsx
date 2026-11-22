@@ -383,6 +383,116 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByRole("button", { name: "Manual clean and start again" })).toBeInTheDocument();
   });
 
+  it("shows upload byte progress while a sample file is being sent", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    let reportProgress;
+    let completeUpload;
+    axios.post.mockImplementation((url, _data, config = {}) => (
+      url.endsWith("/preview-samples")
+        ? new Promise((resolve) => {
+            reportProgress = config.onUploadProgress;
+            completeUpload = () => resolve({
+              data: {
+                id: "progress-session",
+                sourcePath: "/srv/sample-previews/sample.jpg",
+                outputPath: "/srv/sample-previews/sample-preview.webp",
+                sessionIds: ["progress-session"],
+              },
+            });
+          })
+        : Promise.resolve({ data: {} })
+    ));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Sample and preview destination path"), {
+      target: { value: "/srv/sample-previews" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+    await screen.findByText("Destination folder is ready.");
+    fireEvent.change(screen.getByLabelText(/Select a JPG, PNG, EPS, PSD, or video file/), {
+      target: { files: [new File(["sample"], "sample.jpg", { type: "image/jpeg" })] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload sample file" }));
+
+    reportProgress({ loaded: 25, total: 100 });
+    const progress = await screen.findByLabelText("Sample file upload progress");
+    await waitFor(() => expect(progress).toHaveValue(25));
+    const uploadCall = axios.post.mock.calls.find(([url]) => url.endsWith("/preview-samples"));
+    expect(uploadCall[2]).toEqual(expect.objectContaining({ skipGlobalLoading: true }));
+
+    completeUpload();
+    expect(await screen.findByText(/Original: \/srv\/sample-previews\/sample\.jpg/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Sample file upload progress")).not.toBeInTheDocument();
+  });
+
+  it("shows the server-reported percentage while generating a sample preview", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    let finishGeneration;
+    const defaultGet = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, ...args) => (
+      url.endsWith("/progress")
+        ? Promise.resolve({ data: { percent: 42, status: "processing" } })
+        : defaultGet(url, ...args)
+    ));
+    axios.post.mockImplementation((url) => {
+      if (url.endsWith("/preview-samples")) {
+        return Promise.resolve({
+          data: {
+            id: "generation-session",
+            sourcePath: "/srv/sample-previews/sample.jpg",
+            outputPath: "/srv/sample-previews/sample-preview.webp",
+            sessionIds: ["generation-session"],
+          },
+        });
+      }
+      if (url.endsWith("/generate")) {
+        return new Promise((resolve) => {
+          finishGeneration = () => resolve({
+            data: {
+              outputPath: "/srv/sample-previews/sample-preview.webp",
+              preview: "data:image/webp;base64,sample",
+              width: 100,
+              height: 50,
+              sizeBytes: 1000,
+              quality: 37,
+            },
+          });
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Sample and preview destination path"), {
+      target: { value: "/srv/sample-previews" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+    await screen.findByText("Destination folder is ready.");
+    fireEvent.change(screen.getByLabelText(/Select a JPG, PNG, EPS, PSD, or video file/), {
+      target: { files: [new File(["sample"], "sample.jpg", { type: "image/jpeg" })] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload sample file" }));
+    await screen.findByText(/Original: \/srv\/sample-previews\/sample\.jpg/);
+    fireEvent.click(screen.getByRole("button", { name: "Generate preview file" }));
+
+    const progress = await screen.findByLabelText("Preview generation progress");
+    expect(await screen.findByText("42%")).toBeInTheDocument();
+    expect(progress).toHaveValue(42);
+    expect(screen.getByText("Generating preview on the server. Larger videos may take longer.")).toBeInTheDocument();
+    const generateCall = axios.post.mock.calls.find(([url]) => url.endsWith("/generate"));
+    expect(generateCall[2]).toEqual(expect.objectContaining({ skipGlobalLoading: true }));
+    const progressCall = axios.get.mock.calls.find(([url]) => url.endsWith("/progress"));
+    expect(progressCall[1]).toEqual(expect.objectContaining({ skipGlobalLoading: true }));
+
+    finishGeneration();
+    expect(await screen.findByText(/Generated files: \/srv\/sample-previews\/sample-preview\.webp/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Preview generation progress")).not.toBeInTheDocument();
+  });
+
   it("asks before renaming a duplicate sample filename and uploads the confirmed name", async () => {
     useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
     let uploadCount = 0;

@@ -179,6 +179,8 @@ test('stores the uploaded sample and generated preview in the selected folder an
   const destinationDirectory = path.join(temporaryDirectory, 'selected-folder');
   const outsideDirectory = path.join(temporaryDirectory, 'outside-folder');
   const previewTempRoot = path.join(temporaryDirectory, 'preview-staging');
+  let finishPreviewGeneration;
+  let reportPreviewProgress;
   await fs.mkdir(destinationDirectory);
   await fs.mkdir(outsideDirectory);
   const allowedStorageRoot = await fs.realpath(destinationDirectory);
@@ -191,10 +193,14 @@ test('stores the uploaded sample and generated preview in the selected folder an
     settings: { get: () => ({ active: {}, draft: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 } }) },
     allowedStorageRoots: [allowedStorageRoot],
     previewTempRoot,
-    generatePreview: async (sourcePath, suppliedSettings) => {
+    generatePreview: async (sourcePath, suppliedSettings, onProgress) => {
+      reportPreviewProgress = onProgress;
       assert.equal(path.dirname(sourcePath), allowedStorageRoot);
       assert.deepEqual(await fs.readFile(sourcePath), Buffer.from('sample-image'));
       assert.equal(suppliedSettings.quality, 65);
+      await new Promise((resolve) => {
+        finishPreviewGeneration = resolve;
+      });
       return {
         format: 'webp',
         width: 100,
@@ -275,7 +281,7 @@ test('stores the uploaded sample and generated preview in the selected folder an
   );
   assert.equal(otherUserDeleteResponse.status, 404);
 
-  const generationResponse = await fetch(
+  const generationResponsePromise = fetch(
     `http://127.0.0.1:${server.address().port}/admin/thumbnail-generation-settings/preview-samples/${sample.id}/generate`,
     {
       method: 'POST',
@@ -290,11 +296,40 @@ test('stores the uploaded sample and generated preview in the selected folder an
       }),
     }
   );
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Preview generation did not start.')), 1000);
+    const waitForGenerator = () => {
+      if (typeof reportPreviewProgress === 'function') {
+        clearTimeout(timeout);
+        resolve();
+        return;
+      }
+      setImmediate(waitForGenerator);
+    };
+    waitForGenerator();
+  });
+  reportPreviewProgress(50);
+  const progressResponse = await fetch(
+    `http://127.0.0.1:${server.address().port}/admin/thumbnail-generation-settings/preview-samples/${sample.id}/progress`
+  );
+  assert.equal(progressResponse.status, 200);
+  assert.deepEqual(await progressResponse.json(), { percent: 40, status: 'processing' });
+  const unauthorizedProgressResponse = await fetch(
+    `http://127.0.0.1:${server.address().port}/admin/thumbnail-generation-settings/preview-samples/${sample.id}/progress`,
+    { headers: { 'x-user-id': '2' } }
+  );
+  assert.equal(unauthorizedProgressResponse.status, 404);
+  finishPreviewGeneration();
+  const generationResponse = await generationResponsePromise;
   const generated = await generationResponse.json();
   assert.equal(generationResponse.status, 200);
   assert.equal(generated.filename, 'sample-preview.webp');
   assert.equal(generated.outputPath, sample.outputPath);
   assert.deepEqual(await fs.readFile(sample.outputPath), Buffer.from('generated-webp'));
+  const completedProgressResponse = await fetch(
+    `http://127.0.0.1:${server.address().port}/admin/thumbnail-generation-settings/preview-samples/${sample.id}/progress`
+  );
+  assert.deepEqual(await completedProgressResponse.json(), { percent: 100, status: 'complete' });
 
   const restartedRouter = createThumbnailGenerationSettingsRouter({
     verifyAdmin: (req, res, next) => {

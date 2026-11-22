@@ -70,6 +70,16 @@ function createThumbnailGenerationSettingsRouter({
   }).single('file');
   const basePath = '/admin/thumbnail-generation-settings';
   const sampleSessions = new Map();
+  const sampleGenerationProgress = new Map();
+
+  function updateSampleGenerationProgress(id, userId, percent) {
+    const current = sampleGenerationProgress.get(id);
+    if (!current || current.userId !== userId || !Number.isFinite(percent)) return;
+    sampleGenerationProgress.set(id, {
+      userId,
+      percent: Math.min(99, Math.max(current.percent, Math.round(percent))),
+    });
+  }
 
   function resolveSampleDirectory(requestedPath) {
     const roots = typeof allowedStorageRoots === 'function'
@@ -788,6 +798,26 @@ function createThumbnailGenerationSettingsRouter({
     }
   });
 
+  router.get(`${basePath}/preview-samples/:id/progress`, verifyAdmin, async (req, res, next) => {
+    try {
+      const userId = getAuthenticatedUserId(req);
+      const userState = await readUserPreviewState(userId);
+      if (!userState.sessionIds.includes(req.params.id) || userState.currentSessionId !== req.params.id) {
+        return res.status(404).json({ error: 'The sample is not the active test for this admin user.' });
+      }
+      const sample = await getSampleSession(req.params.id, userId);
+      if (!sample) return res.status(404).json({ error: 'The uploaded sample is no longer available. Start again from Step 1.' });
+      const progress = sampleGenerationProgress.get(req.params.id);
+      if (progress?.userId === userId) {
+        return res.json({ percent: progress.percent, status: 'processing' });
+      }
+      if (sample.previewHash) return res.json({ percent: 100, status: 'complete' });
+      return res.json({ percent: 0, status: 'pending' });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
   router.post(`${basePath}/preview-samples/:id/generate`, verifyAdmin, async (req, res, next) => {
     let sample;
     let userId;
@@ -803,17 +833,31 @@ function createThumbnailGenerationSettingsRouter({
     }
     if (!sample) return res.status(404).json({ error: 'The uploaded sample is no longer available. Start again from Step 1.' });
     if (sample.previewHash) return res.status(409).json({ error: 'This sample preview has already been generated.' });
+    if (sampleGenerationProgress.has(req.params.id)) {
+      return res.status(409).json({ error: 'Preview generation is already in progress for this sample.' });
+    }
 
     let result;
     let previewResults;
     let previewSettings;
     let optimizedVideoWarning = null;
     const outputCreated = [];
+    sampleGenerationProgress.set(req.params.id, { userId, percent: 0 });
+    const reportProgress = (percent) => updateSampleGenerationProgress(
+      req.params.id,
+      userId,
+      percent
+    );
     try {
       previewSettings = req.body?.settings
         ? normalizeSettings(req.body.settings)
         : settings.get().draft;
-      result = await generatePreview(sample.sourcePath, previewSettings);
+      result = await generatePreview(
+        sample.sourcePath,
+        previewSettings,
+        (percent) => reportProgress(5 + (Math.max(0, Math.min(100, percent)) * 0.7))
+      );
+      reportProgress(75);
       const videoSettings = thumbnailGenerationSettings.getSettingsForFormat(previewSettings, 'video');
       previewResults = Array.isArray(result.previews) && result.previews.length
         ? result.previews
@@ -829,6 +873,7 @@ function createThumbnailGenerationSettingsRouter({
         const filename = path.basename(outputPath);
         await fs.writeFile(outputPath, previewResult.buffer, { flag: 'wx', mode: 0o600 });
         outputCreated.push(outputPath);
+        reportProgress(75 + ((index + 1) / previewResults.length) * 12);
         const bufferHash = crypto.createHash('sha256').update(previewResult.buffer).digest('hex');
         const metadata = {
           format: previewResult.format,
@@ -856,11 +901,13 @@ function createThumbnailGenerationSettingsRouter({
       sample.optimizedVideoMetadata = null;
       sample.optimizedVideoWarning = null;
       if (sample.previewMetadata.videoPreview && videoSettings.generateOptimizedVideoPreview) {
+        reportProgress(88);
         try {
           const optimizedVideo = await generateOptimizedVideo(
             sample.sourcePath,
             videoSettings,
-            sample.optimizedVideoPath
+            sample.optimizedVideoPath,
+            (percent) => reportProgress(88 + (Math.max(0, Math.min(100, percent)) * 0.09))
           );
           outputCreated.push(sample.optimizedVideoPath);
           sample.optimizedVideoHash = await hashFile(sample.optimizedVideoPath);
@@ -881,6 +928,7 @@ function createThumbnailGenerationSettingsRouter({
       }
       if (!sample.previewMetadata.videoPreview) sample.previewAccessToken = null;
       await persistSampleSession(req.params.id, sample);
+      reportProgress(100);
     } catch (error) {
       sample.previewHash = null;
       sample.previewMetadata = null;
@@ -916,6 +964,8 @@ function createThumbnailGenerationSettingsRouter({
         return res.status(400).json({ error: error.message });
       }
       return next(error);
+    } finally {
+      sampleGenerationProgress.delete(req.params.id);
     }
 
     return res.json({

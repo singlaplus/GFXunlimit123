@@ -777,12 +777,58 @@ function runCommand(command, args, timeoutMs = 120000) {
   });
 }
 
-function runCommandToFile(command, args, timeoutMs = 180000) {
+function runFfmpegMetadata(command, sourcePath, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(command, [
+      '-hide_banner', '-i', sourcePath, '-t', '0', '-f', 'null', '-',
+    ], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     const stderr = [];
     let stderrSize = 0;
     const timeout = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.stderr.on('data', (chunk) => {
+      if (stderrSize < 1024 * 1024) {
+        stderr.push(chunk);
+        stderrSize += chunk.length;
+      }
+    });
+    child.on('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timeout);
+      const output = Buffer.concat(stderr);
+      if (code === 0 || output.toString().includes('Input #0')) {
+        resolve(output);
+      } else {
+        reject(new Error(`${command} metadata read failed (${signal || code}): ${output.toString().trim() || 'no diagnostic output'}`));
+      }
+    });
+  });
+}
+
+function runCommandToFile(command, args, timeoutMs = 180000, onProgress = null) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      windowsHide: true,
+      stdio: ['ignore', typeof onProgress === 'function' ? 'pipe' : 'ignore', 'pipe'],
+    });
+    const stderr = [];
+    let stderrSize = 0;
+    let progressOutput = '';
+    const timeout = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    if (typeof onProgress === 'function') {
+      child.stdout.on('data', (chunk) => {
+        progressOutput += chunk.toString();
+        const lines = progressOutput.split(/\r?\n/);
+        progressOutput = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('out_time_us=')) continue;
+          const outTimeUs = Number(line.slice('out_time_us='.length));
+          if (Number.isFinite(outTimeUs)) onProgress(outTimeUs);
+        }
+      });
+    }
     child.stderr.on('data', (chunk) => {
       if (stderrSize < 1024 * 1024) {
         stderr.push(chunk);
@@ -835,23 +881,36 @@ async function extractVideoPreview(sourcePath, run = runCommand) {
   }
 }
 
-async function getVideoDimensions(sourcePath, run = runCommand) {
+function parseFfmpegVideoDimensions(metadata) {
+  const match = metadata.match(/Video:.*?\b(\d{1,5})x(\d{1,5})\b/);
+  if (!match) throw new Error('FFmpeg could not determine video dimensions.');
+  return { width: Number(match[1]), height: Number(match[2]) };
+}
+
+async function getVideoDimensions(sourcePath, run = runCommand, metadataRunner = runFfmpegMetadata) {
   const ffprobe = process.env.FFPROBE_PATH || 'ffprobe';
-  const output = await run(ffprobe, [
-    '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json',
-    sourcePath,
-  ], 30000);
-  let probeResult;
   try {
-    probeResult = JSON.parse(output.toString());
-  } catch (error) {
-    throw new Error(`FFprobe returned invalid video dimensions: ${error.message}`, { cause: error });
-  }
-  const stream = probeResult?.streams?.[0];
-  if (!Number.isInteger(stream?.width) || !Number.isInteger(stream?.height)) {
+    const output = await run(ffprobe, [
+      '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json',
+      sourcePath,
+    ], 30000);
+    const probeResult = JSON.parse(output.toString());
+    const stream = probeResult?.streams?.[0];
+    if (Number.isInteger(stream?.width) && Number.isInteger(stream?.height)) {
+      return { width: stream.width, height: stream.height };
+    }
     throw new Error('FFprobe could not determine valid video dimensions.');
+  } catch (probeError) {
+    try {
+      const output = await metadataRunner(process.env.FFMPEG_PATH || 'ffmpeg', sourcePath, 30000);
+      return parseFfmpegVideoDimensions(output.toString());
+    } catch (ffmpegError) {
+      throw new Error(
+        `Could not read video dimensions with FFprobe (${probeError.message}) or FFmpeg (${ffmpegError.message}).`,
+        { cause: probeError }
+      );
+    }
   }
-  return { width: stream.width, height: stream.height };
 }
 
 function createVideoSizeLimitError(message) {
@@ -860,7 +919,7 @@ function createVideoSizeLimitError(message) {
   return error;
 }
 
-async function generateOptimizedVideoPreview(sourcePath, settings, outputPath) {
+async function generateOptimizedVideoPreview(sourcePath, settings, outputPath, onProgress = null) {
   const previewSettings = thumbnailGenerationSettings.normalizeThumbnailGenerationSettings(settings);
   if (!previewSettings.generateOptimizedVideoPreview) {
     throw new Error('Enable optimized video preview generation before encoding.');
@@ -882,6 +941,8 @@ async function generateOptimizedVideoPreview(sourcePath, settings, outputPath) {
   const maxHeight = previewSettings.videoMaxHeight;
   const scaleFilter = `scale=-2:min(ih\\,${maxHeight})`;
   const startingCrf = Math.round(35 - ((previewSettings.videoQuality - 1) * 17) / 99);
+  let encodeAttempt = 0;
+  let reportedProgress = 0;
   const encode = async ({ crf, videoBitrate }) => {
     await fsp.unlink(temporaryPath).catch((error) => {
       if (error.code !== 'ENOENT') throw error;
@@ -895,9 +956,25 @@ async function generateOptimizedVideoPreview(sourcePath, settings, outputPath) {
         ? ['-b:v', String(videoBitrate), '-maxrate', String(videoBitrate), '-bufsize', String(videoBitrate * 2)]
         : ['-crf', String(crf)]),
       '-c:a', 'aac', '-ac', '1', '-b:a', '32k',
-      '-movflags', '+faststart', '-f', 'mp4', '-y', temporaryPath,
+      '-movflags', '+faststart', '-f', 'mp4',
+      ...(typeof onProgress === 'function' ? ['-progress', 'pipe:1', '-nostats'] : []),
+      '-y', temporaryPath,
     ];
-    await runCommandToFile(process.env.FFMPEG_PATH || 'ffmpeg', args, 30 * 60 * 1000);
+    const attemptBase = encodeAttempt === 0 ? 0 : 75 + ((encodeAttempt - 1) * 5);
+    await runCommandToFile(
+      process.env.FFMPEG_PATH || 'ffmpeg',
+      args,
+      30 * 60 * 1000,
+      typeof onProgress === 'function'
+        ? (outTimeUs) => {
+            const attemptRange = encodeAttempt === 0 ? 75 : 5;
+            const progress = attemptBase + Math.min(1, outTimeUs / (duration * 1_000_000)) * attemptRange;
+            reportedProgress = Math.max(reportedProgress, Math.min(95, progress));
+            onProgress(reportedProgress);
+          }
+        : null
+    );
+    encodeAttempt += 1;
     return (await fsp.stat(temporaryPath)).size;
   };
 
@@ -924,6 +1001,7 @@ async function generateOptimizedVideoPreview(sourcePath, settings, outputPath) {
       );
     }
     await finalizeThumbnailFile(temporaryPath, outputPath);
+    if (typeof onProgress === 'function') onProgress(100);
     return {
       path: outputPath,
       width: Math.min(sourceDimensions.width, Math.round((sourceDimensions.width * maxHeight) / sourceDimensions.height)),
@@ -941,17 +1019,39 @@ async function generateOptimizedVideoPreview(sourcePath, settings, outputPath) {
   }
 }
 
-async function getVideoDuration(sourcePath, run = runCommand) {
-  const ffprobe = process.env.FFPROBE_PATH || 'ffprobe';
-  const output = await run(ffprobe, [
-    '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1',
-    sourcePath,
-  ], 30000);
-  const duration = Number(output.toString().trim());
+function parseFfmpegVideoDuration(metadata) {
+  const match = metadata.match(/\bDuration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/);
+  if (!match) throw new Error('FFmpeg could not determine video duration.');
+  const duration = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
   if (!Number.isFinite(duration) || duration <= 0) {
-    throw new Error('FFprobe could not determine a valid video duration.');
+    throw new Error('FFmpeg could not determine a valid video duration.');
   }
   return duration;
+}
+
+async function getVideoDuration(sourcePath, run = runCommand, metadataRunner = runFfmpegMetadata) {
+  const ffprobe = process.env.FFPROBE_PATH || 'ffprobe';
+  try {
+    const output = await run(ffprobe, [
+      '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1',
+      sourcePath,
+    ], 30000);
+    const duration = Number(output.toString().trim());
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new Error('FFprobe could not determine a valid video duration.');
+    }
+    return duration;
+  } catch (probeError) {
+    try {
+      const output = await metadataRunner(process.env.FFMPEG_PATH || 'ffmpeg', sourcePath, 30000);
+      return parseFfmpegVideoDuration(output.toString());
+    } catch (ffmpegError) {
+      throw new Error(
+        `Could not read video duration with FFprobe (${probeError.message}) or FFmpeg (${ffmpegError.message}).`,
+        { cause: probeError }
+      );
+    }
+  }
 }
 
 function getVideoPreviewFrameCount(duration) {
@@ -963,7 +1063,7 @@ function getVideoPreviewFrameCount(duration) {
   return Math.min(6, Math.ceil(duration / 5));
 }
 
-async function extractVideoPreviewFrames(sourcePath, run = runCommand) {
+async function extractVideoPreviewFrames(sourcePath, run = runCommand, onProgress = null) {
   const duration = await getVideoDuration(sourcePath, run);
   const count = getVideoPreviewFrameCount(duration);
   const frames = [];
@@ -977,6 +1077,7 @@ async function extractVideoPreviewFrames(sourcePath, run = runCommand) {
       throw new Error(`FFmpeg produced no preview frame at ${timestamp.toFixed(3)} seconds.`);
     }
     frames.push({ timestamp, buffer: frame });
+    if (typeof onProgress === 'function') onProgress(((index + 1) / count) * 100);
   }
   return frames;
 }
@@ -1052,7 +1153,11 @@ async function extractPreview(sourcePath, extension) {
   throw error;
 }
 
-async function generateThumbnailPreview(sourcePath, settings) {
+async function generateThumbnailPreview(sourcePath, settings, onProgress = null) {
+  const reportProgress = (percent) => {
+    if (typeof onProgress === 'function') onProgress(Math.max(0, Math.min(100, Math.round(percent))));
+  };
+  reportProgress(0);
   const extension = path.extname(sourcePath).toLowerCase();
   const format = SETTINGS_FORMAT_BY_EXTENSION[extension];
   if (!format) {
@@ -1071,16 +1176,29 @@ async function generateThumbnailPreview(sourcePath, settings) {
       throw new Error('The preview upload is not a valid supported file.');
     }
   }
+  reportProgress(10);
   const sourceDimensions = await getAssetSourceDimensions(sourcePath, extension);
+  reportProgress(20);
   if (VIDEO_EXTENSIONS.has(extension) && previewSettings.multipleVideoThumbnails) {
-    const frames = await extractVideoPreviewFrames(sourcePath);
+    const frames = await extractVideoPreviewFrames(
+      sourcePath,
+      runCommand,
+      (percent) => reportProgress(20 + (percent * 0.3))
+    );
+    reportProgress(50);
     const previews = [];
     for (const frame of frames) {
+      const frameIndex = previews.length;
       previews.push({
-        ...await encodeThumbnail(frame.buffer, { sourceDimensions, settings: previewSettings }),
+        ...await encodeThumbnail(frame.buffer, {
+          sourceDimensions,
+          settings: previewSettings,
+          onProgress: (percent) => reportProgress(50 + (((frameIndex + percent / 100) / frames.length) * 45)),
+        }),
         timestamp: frame.timestamp,
       });
     }
+    reportProgress(100);
     return {
       ...previews[0],
       previews,
@@ -1089,7 +1207,13 @@ async function generateThumbnailPreview(sourcePath, settings) {
   }
 
   const previewBuffer = await extractPreview(sourcePath, extension);
-  const thumbnail = await encodeThumbnail(previewBuffer, { sourceDimensions, settings: previewSettings });
+  reportProgress(45);
+  const thumbnail = await encodeThumbnail(previewBuffer, {
+    sourceDimensions,
+    settings: previewSettings,
+    onProgress: (percent) => reportProgress(45 + (percent * 0.5)),
+  });
+  reportProgress(100);
   return {
     ...thumbnail,
     previews: [{ ...thumbnail, timestamp: null }],
@@ -1097,7 +1221,11 @@ async function generateThumbnailPreview(sourcePath, settings) {
   };
 }
 
-async function encodeThumbnail(previewBuffer, { sourceDimensions = null, settings = null } = {}) {
+async function encodeThumbnail(previewBuffer, {
+  sourceDimensions = null,
+  settings = null,
+  onProgress = null,
+} = {}) {
   const activeSettings = thumbnailGenerationSettings.normalizeThumbnailGenerationSettings(
     settings || thumbnailGenerationSettings.getActiveSettings()
   );
@@ -1125,6 +1253,7 @@ async function encodeThumbnail(previewBuffer, { sourceDimensions = null, setting
   let targetHeight = scaledWidth < 2 || scaledHeight < 2
     ? Math.max(1, Math.round(sourceHeight))
     : scaledHeight;
+  let encodeAttempts = 0;
   const encodeAt = async (width, height, quality) => {
     const thumbnail = await sharp(previewBuffer, { failOn: 'none' })
       .rotate()
@@ -1137,6 +1266,10 @@ async function encodeThumbnail(previewBuffer, { sourceDimensions = null, setting
       })
       .webp({ quality, effort: 6, smartSubsample: true })
       .toBuffer({ resolveWithObject: true });
+    encodeAttempts += 1;
+    if (typeof onProgress === 'function') {
+      onProgress(Math.min(95, encodeAttempts * 20));
+    }
     return {
       buffer: thumbnail.data,
       width: thumbnail.info.width,
@@ -1903,6 +2036,7 @@ module.exports = {
   generateProductionVideoPreviews,
   generateThumbnailPreview,
   getProcessorVersion,
+  getVideoDimensions,
   getVideoPreviewPathsFromMetadata,
   getThumbnailAssetIdFromRelativePath,
   getDateDirectory,
