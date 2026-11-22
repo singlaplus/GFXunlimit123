@@ -126,13 +126,19 @@ function commandExists(command, platform = process.platform) {
 function runInstaller(command, args) {
   const result = spawnSync(command, args, { stdio: 'inherit', windowsHide: true });
   if (result.error || result.status !== 0) {
-    throw new Error(
+    const error = new Error(
       `${command} ${args.join(' ')} failed${result.error ? `: ${result.error.message}` : ` with exit code ${result.status}`}`
     );
+    error.exitCode = result.status;
+    throw error;
   }
 }
 
-function installMissingTools(toolNames, platform = process.platform, { reinstall = [] } = {}) {
+function installMissingTools(toolNames, platform = process.platform, {
+  reinstall = [],
+  runInstallerFn = runInstaller,
+  commandExistsFn = commandExists,
+} = {}) {
   if (toolNames.length === 0 && reinstall.length === 0) return;
 
   if (platform === 'darwin') {
@@ -140,26 +146,26 @@ function installMissingTools(toolNames, platform = process.platform, { reinstall
       throw new Error('Homebrew is required to install missing thumbnail tools. Install Homebrew, then rerun npm install.');
     }
     if (toolNames.length) {
-      runInstaller('brew', ['install', ...toolNames.map((name) => TOOL_DEFINITIONS[name].packages.darwin)]);
+      runInstallerFn('brew', ['install', ...toolNames.map((name) => TOOL_DEFINITIONS[name].packages.darwin)]);
     }
     if (reinstall.length) {
-      runInstaller('brew', ['reinstall', ...reinstall.map((name) => TOOL_DEFINITIONS[name].packages.darwin)]);
+      runInstallerFn('brew', ['reinstall', ...reinstall.map((name) => TOOL_DEFINITIONS[name].packages.darwin)]);
     }
     return;
   }
 
   if (platform === 'linux') {
     const packageManagers = ['apt-get', 'dnf', 'yum'];
-    const manager = packageManagers.find((candidate) => commandExists(candidate, platform));
+    const manager = packageManagers.find((candidate) => commandExistsFn(candidate, platform));
     if (!manager) {
       throw new Error('No supported Linux package manager (apt-get, dnf, or yum) was found.');
     }
     const needsSudo = typeof process.getuid === 'function' && process.getuid() !== 0;
     const command = needsSudo ? 'sudo' : manager;
     const prefix = needsSudo ? ['-A', manager] : [];
-    if (manager === 'apt-get') runInstaller(command, [...prefix, 'update']);
+    if (manager === 'apt-get') runInstallerFn(command, [...prefix, 'update']);
     if (toolNames.length) {
-      runInstaller(command, [
+      runInstallerFn(command, [
         ...prefix,
         'install',
         '-y',
@@ -167,7 +173,7 @@ function installMissingTools(toolNames, platform = process.platform, { reinstall
       ]);
     }
     if (reinstall.length) {
-      runInstaller(command, [
+      runInstallerFn(command, [
         ...prefix,
         manager === 'apt-get' ? 'install' : 'reinstall',
         ...(manager === 'apt-get' ? ['--reinstall'] : []),
@@ -179,9 +185,9 @@ function installMissingTools(toolNames, platform = process.platform, { reinstall
   }
 
   if (platform === 'win32') {
-    const manager = commandExists('winget', platform)
+    const manager = commandExistsFn('winget', platform)
       ? 'winget'
-      : commandExists('choco', platform)
+      : commandExistsFn('choco', platform)
         ? 'choco'
         : null;
     if (!manager) {
@@ -190,16 +196,31 @@ function installMissingTools(toolNames, platform = process.platform, { reinstall
     const installWithManager = (toolName, repair) => {
       const definition = TOOL_DEFINITIONS[toolName];
       if (manager === 'winget') {
-        runInstaller('winget', [
-          repair ? 'repair' : 'install',
+        const installArgs = [
+          'install',
           '--id', definition.wingetId,
           '--exact',
           '--accept-source-agreements',
           '--accept-package-agreements',
           '--silent',
-        ]);
+        ];
+        const reinstallWithWinget = () => {
+          runInstallerFn('winget', ['uninstall', '--id', definition.wingetId, '--exact', '--silent']);
+          runInstallerFn('winget', [...installArgs, '--force']);
+        };
+        if (toolName === 'ffmpeg' && repair) {
+          reinstallWithWinget();
+          return;
+        }
+        try {
+          runInstallerFn('winget', installArgs);
+        } catch (error) {
+          const noUpgradeAvailable = (Number(error.exitCode) >>> 0) === 2316632107;
+          if (toolName !== 'ffmpeg' || !noUpgradeAvailable) throw error;
+          reinstallWithWinget();
+        }
       } else {
-        runInstaller('choco', [
+        runInstallerFn('choco', [
           repair ? 'upgrade' : 'install',
           definition.chocoId,
           '-y',
@@ -291,4 +312,5 @@ module.exports = {
   probeTool,
   verifyNodeProcessors,
   verifyThumbnailToolchain,
+  installMissingTools,
 };

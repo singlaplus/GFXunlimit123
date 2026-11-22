@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   getToolCandidates,
+  installMissingTools,
   probeTool,
   verifyThumbnailToolchain,
 } = require('../services/thumbnailToolchain');
@@ -93,6 +94,25 @@ test('discovers FFmpeg installed by WinGet when its PATH entry is not loaded yet
   assert.equal(result.available, true);
   assert.equal(result.command, executable);
   assert.equal(result.version, '7.1.1');
+});
+
+test('uninstalls and force-reinstalls FFmpeg when WinGet reports no upgrade', () => {
+  const calls = [];
+  installMissingTools(['ffmpeg'], 'win32', {
+    commandExistsFn: (command) => command === 'winget',
+    runInstallerFn(command, args) {
+      calls.push({ command, args });
+      if (calls.length === 1) {
+        const error = new Error('No available upgrade found');
+        error.exitCode = 2316632107;
+        throw error;
+      }
+    },
+  });
+
+  assert.deepEqual(calls.map(({ args }) => args[0]), ['install', 'uninstall', 'install']);
+  assert.ok(calls[1].args.includes('Gyan.FFmpeg.Shared'));
+  assert.ok(calls[2].args.includes('--force'));
 });
 
 test('ImageMagick runtime resolution falls back from magick to ImageMagick 6 convert', () => {
