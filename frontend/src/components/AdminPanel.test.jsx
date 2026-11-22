@@ -55,6 +55,8 @@ describe("AdminPanel collection controls", () => {
 
   beforeEach(() => {
     window.history.pushState({}, "", "/");
+    sessionStorage.removeItem("admin-thumbnail-preview-sample-session");
+    sessionStorage.removeItem("admin-thumbnail-preview-sample-history");
     localStorage.removeItem("admin-assets-connection-card-count");
     localStorage.removeItem("admin-thumbnails-connection-card-count");
     localStorage.removeItem("adminPromotionsActiveSection");
@@ -67,6 +69,18 @@ describe("AdminPanel collection controls", () => {
     });
     useLocation.mockReturnValue({ search: "?tab=controls" });
     axios.get.mockImplementation((url) => {
+      if (url.endsWith("/preview-samples/state")) {
+        return Promise.resolve({ data: { destinationPath: "", sessionIds: [], sample: null, preview: null } });
+      }
+      if (url.includes("/admin/thumbnail-generation-settings")) {
+        return Promise.resolve({
+          data: {
+            active: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "psd"] },
+            draft: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "psd"] },
+            pendingActivationAt: null,
+          },
+        });
+      }
       if (url.includes("/admin/redirect-rules")) {
         return Promise.resolve({ data: [] });
       }
@@ -79,6 +93,24 @@ describe("AdminPanel collection controls", () => {
       return Promise.resolve({ data: [{ id: 1, title: "Live asset", status: "approved", filename: "asset.jpg", category: "Images", keywords: "", description: "", type: "image" }] });
     });
     axios.post.mockResolvedValue({ data: { id: 2, name: "Travel" } });
+    axios.put.mockImplementation((url, value) => (
+      url.endsWith("/preview-samples/state")
+        ? Promise.resolve({
+            data: {
+              destinationPath: value.destinationPath,
+              sessionIds: [],
+              sample: null,
+              preview: null,
+            },
+          })
+        : Promise.resolve({
+            data: {
+              active: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "psd"] },
+              draft: { quality: 60, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "psd"] },
+              pendingActivationAt: null,
+            },
+          })
+    ));
     axios.delete.mockResolvedValue({ data: { id: 1, name: "Nature" } });
   });
 
@@ -86,6 +118,1339 @@ describe("AdminPanel collection controls", () => {
     render(<AdminPanel />);
 
     expect(screen.getByRole("heading", { name: "Redirection" })).toBeInTheDocument();
+  });
+
+  it("renders and counts up the thumbnail generation quality settings in Controls", async () => {
+    render(<AdminPanel />);
+
+    expect(screen.getByRole("heading", { name: "Thumbnail Generation Quality Settings" })).toBeInTheDocument();
+    const settings = screen.getByRole("group", { name: "Current thumbnail generation settings" });
+    expect(within(settings).getByText("WebP quality")).toBeInTheDocument();
+    expect(within(settings).getByText("Maximum size")).toBeInTheDocument();
+    expect(within(settings).getByText("Dimensions")).toBeInTheDocument();
+    expect(within(settings).getAllByRole("tooltip")).toHaveLength(3);
+
+    await waitFor(() => {
+      expect(within(settings).getByText("37")).toBeInTheDocument();
+      expect(within(settings).getByText("50")).toBeInTheDocument();
+      expect(within(settings).getByText("20")).toBeInTheDocument();
+    }, { timeout: 3000 });
+  });
+
+  it("opens the new and existing upload settings URLs from the thumbnail card", () => {
+    render(<AdminPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New Upload Setting" }));
+    expect(window.location.href).toContain("?tab=controls/thumbnailgeneration_newsettings");
+
+    fireEvent.click(screen.getByRole("button", { name: "Existing Upload Setting" }));
+    expect(window.location.href).toContain("?tab=controls/thumbnailgeneration_existingsettings");
+  });
+
+  it("renders the new upload settings page for its Controls tab URL", () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+
+    render(<AdminPanel />);
+
+    expect(screen.getByRole("heading", { name: "New Upload Thumbnail Settings", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to Controls" })).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "WebP quality" })).toHaveAttribute("min", "10");
+    expect(screen.getByRole("slider", { name: "WebP quality" })).toHaveAttribute("max", "100");
+    expect(screen.getByLabelText("Maximum file size unit")).toHaveValue("KB");
+    expect(screen.queryByText(/total assets:/i)).not.toBeInTheDocument();
+  });
+
+  it("shows effective live thumbnail settings separately for each format", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    const previousGet = axios.get.getMockImplementation();
+    const videoSettings = {
+      quality: 78,
+      maxFileSizeKb: 300,
+      dimensionPercent: 55,
+      multipleVideoThumbnails: true,
+      includeVideoPreview: true,
+      generateOptimizedVideoPreview: true,
+      videoQuality: 84,
+      videoMaxHeight: 480,
+      videoMaxFileSizeMb: 3,
+    };
+    const formatSettings = {
+      jpg: { quality: 61, maxFileSizeKb: 120, dimensionPercent: 40 },
+      eps: { quality: 61, maxFileSizeKb: 120, dimensionPercent: 40 },
+      video: videoSettings,
+    };
+    axios.get.mockImplementation((url, ...args) => (
+      url.includes("/admin/thumbnail-generation-settings")
+        ? Promise.resolve({
+            data: {
+              active: {
+                quality: 61,
+                maxFileSizeKb: 120,
+                dimensionPercent: 40,
+                formats: ["jpg", "eps", "video"],
+                formatSettings,
+              },
+              draft: {
+                quality: 61,
+                maxFileSizeKb: 120,
+                dimensionPercent: 40,
+                formats: ["jpg", "eps", "video"],
+                formatSettings,
+              },
+              pendingActivationAt: null,
+            },
+          })
+        : previousGet(url, ...args)
+    ));
+
+    render(<AdminPanel />);
+
+    const currentSettings = screen.getByRole("region", { name: "Current active thumbnail settings" });
+    const jpgSettings = within(currentSettings).getByRole("group", { name: "JPG / JPEG live settings" });
+    const pngSettings = within(currentSettings).getByRole("group", { name: "PNG live settings" });
+    const epsSettings = within(currentSettings).getByRole("group", { name: "EPS live settings" });
+    const psdSettings = within(currentSettings).getByRole("group", { name: "PSD live settings" });
+    const videoLiveSettings = within(currentSettings).getByRole("group", { name: "Video live settings" });
+    const readRows = (card, selector) => Array.from(card.querySelectorAll(selector), (row) => row.textContent);
+
+    await waitFor(() => {
+      expect(readRows(jpgSettings, ".thumbnail-live-card__settings-rows > p")).toEqual([
+        "Quality: 61",
+        "Maximum size: 120 KB",
+        "Dimensions: 40%",
+      ]);
+    });
+    expect(readRows(jpgSettings, ".thumbnail-live-card__settings-rows > p")).toEqual([
+      "Quality: 61",
+      "Maximum size: 120 KB",
+      "Dimensions: 40%",
+    ]);
+    expect(within(jpgSettings).queryByText("Custom settings applied")).not.toBeInTheDocument();
+    expect(readRows(epsSettings, ".thumbnail-live-card__settings-rows > p")).toEqual([
+      "Quality: 61",
+      "Maximum size: 120 KB",
+      "Dimensions: 40%",
+    ]);
+    expect(readRows(videoLiveSettings, ".thumbnail-live-card__video-details > p")).toEqual([
+      "Thumbnail settings",
+      "Image quality: 78",
+      "Maximum thumbnail size: 300 KB",
+      "Thumbnail dimensions: 55%",
+      "Multiple thumbnails: On",
+      "Video settings",
+      "Playable preview: On",
+      "Optimized MP4: On",
+      "Video quality: 84",
+      "Maximum resolution: 480p",
+      "Maximum video size: 3 MB",
+    ]);
+    expect(readRows(pngSettings, ".thumbnail-live-card__settings-rows > p")).toEqual([
+      "Quality: 37",
+      "Maximum size: 50 KB",
+      "Dimensions: 20%",
+    ]);
+    expect(within(pngSettings).getByText("Default settings in use")).toBeInTheDocument();
+    expect(readRows(psdSettings, ".thumbnail-live-card__settings-rows > p")).toEqual([
+      "Quality: 37",
+      "Maximum size: 50 KB",
+      "Dimensions: 20%",
+    ]);
+  });
+
+  it("refreshes the current live settings when a scheduled activation completes", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    const previousGet = axios.get.getMockImplementation();
+    const pendingSettings = {
+      active: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "video"] },
+      draft: {
+        quality: 90,
+        maxFileSizeKb: 50,
+        dimensionPercent: 30,
+        formats: ["psd"],
+        formatSettings: { psd: { quality: 90, maxFileSizeKb: 50, dimensionPercent: 30 } },
+      },
+      pendingActivationAt: new Date(Date.now() - 1000).toISOString(),
+    };
+    const activatedSettings = {
+      ...pendingSettings,
+      active: pendingSettings.draft,
+      pendingActivationAt: null,
+    };
+    let settingsRequestCount = 0;
+    axios.get.mockImplementation((url, ...args) => (
+      url.includes("/admin/thumbnail-generation-settings")
+        ? Promise.resolve({
+            data: settingsRequestCount++ === 0 ? pendingSettings : activatedSettings,
+          })
+        : previousGet(url, ...args)
+    ));
+
+    render(<AdminPanel />);
+
+    const currentSettings = screen.getByRole("region", { name: "Current active thumbnail settings" });
+    const psdSettings = within(currentSettings).getByRole("group", { name: "PSD live settings" });
+    expect(await within(psdSettings).findByText("Quality 90 · Maximum 50 KB · Dimensions 30%")).toBeInTheDocument();
+    expect(settingsRequestCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("selects one default format for legacy settings responses", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    const previousGet = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, ...args) => (
+      url.includes("/admin/thumbnail-generation-settings")
+        ? Promise.resolve({
+            data: {
+              active: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 },
+              draft: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 },
+              pendingActivationAt: null,
+            },
+          })
+        : previousGet(url, ...args)
+    ));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    expect(screen.getByLabelText("JPG / JPEG")).toBeChecked();
+    expect(screen.getByLabelText("PNG")).not.toBeChecked();
+    expect(screen.getByLabelText("EPS")).not.toBeChecked();
+    expect(screen.getByLabelText("PSD")).not.toBeChecked();
+    expect(screen.getByLabelText("Video")).not.toBeChecked();
+  });
+
+  it("opens a modal to choose a server folder and applies the selected path", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    const previousGet = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, config = {}) => (
+      url.includes("/admin/thumbnail-generation-settings/preview-folders")
+        ? Promise.resolve({
+            data: config.params?.path
+              ? { path: config.params.path, parentPath: null, directories: [] }
+              : { path: null, roots: [{ name: "Sample previews", path: "/srv/sample-previews" }] },
+          })
+        : previousGet(url, config)
+    ));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Browse folders" }));
+
+    const folderDialog = await screen.findByRole("dialog", { name: "Choose a server folder" });
+    expect(folderDialog).toHaveAttribute("aria-modal", "true");
+    fireEvent.click(within(folderDialog).getByRole("button", { name: "Sample previews — /srv/sample-previews" }));
+
+    expect(await within(folderDialog).findByText("Current folder: /srv/sample-previews")).toBeInTheDocument();
+    fireEvent.click(within(folderDialog).getByRole("button", { name: "Use current folder" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Sample and preview destination path")).toHaveValue("/srv/sample-previews");
+    expect(screen.getByRole("region", { name: "Step 2: Upload sample file" })).toBeInTheDocument();
+  });
+
+  it("applies the existing sample state returned when saving its destination", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    const previousPut = axios.put.getMockImplementation();
+    axios.put.mockImplementation((url, value, ...args) => (
+      url.endsWith("/preview-samples/state")
+        ? Promise.resolve({
+            data: {
+              destinationPath: value.destinationPath,
+              sessionIds: ["existing-session"],
+              sample: {
+                id: "existing-session",
+                sourcePath: "/srv/sample-previews/sample.png",
+                outputPath: "/srv/sample-previews/sample-preview.webp",
+                format: "png",
+              },
+              preview: null,
+            },
+          })
+        : previousPut(url, value, ...args)
+    ));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Sample and preview destination path"), {
+      target: { value: "/srv/sample-previews" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+
+    expect(await screen.findByText(/Original: \/srv\/sample-previews\/sample\.png/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Step 3: Generate preview" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Sample and preview destination path")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Manual clean and start again" })).toBeInTheDocument();
+  });
+
+  it("asks before renaming a duplicate sample filename and uploads the confirmed name", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    let uploadCount = 0;
+    axios.post.mockImplementation((url) => {
+      if (!url.endsWith("/preview-samples")) return Promise.resolve({ data: {} });
+      uploadCount += 1;
+      if (uploadCount <= 2) {
+        return Promise.reject({
+          response: {
+            data: {
+              code: "SAMPLE_FILENAME_EXISTS",
+              existingFilename: "ankit.jpg",
+              suggestedFilename: "ankit1.jpg",
+              error: "A file named ankit.jpg already exists in the selected folder.",
+            },
+          },
+        });
+      }
+      return Promise.resolve({
+        data: {
+          id: "renamed-session",
+          originalFilename: "ankit1.jpg",
+          sourcePath: "/srv/sample-previews/ankit1.jpg",
+          outputPath: "/srv/sample-previews/ankit1-preview.webp",
+          sessionIds: ["renamed-session"],
+        },
+      });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Sample and preview destination path"), {
+      target: { value: "/srv/sample-previews" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+    await screen.findByText("Destination folder is ready.");
+    fireEvent.change(screen.getByLabelText(/Select a JPG, PNG, EPS, PSD, or video file/), {
+      target: { files: [new File(["sample"], "ankit.jpg", { type: "image/jpeg" })] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload sample file" }));
+
+    const renameDialog = await screen.findByRole("dialog", { name: "This filename already exists" });
+    expect(renameDialog).toHaveTextContent("Rename the new file to “ankit1.jpg” and upload it?");
+    expect(uploadCount).toBe(1);
+    const initialUpload = axios.post.mock.calls.filter(([url]) => url.endsWith("/preview-samples"))[0][1];
+    expect(initialUpload.get("filename")).toBeNull();
+    fireEvent.click(within(renameDialog).getByRole("button", { name: "Cancel upload" }));
+    expect(screen.queryByRole("dialog", { name: "This filename already exists" })).not.toBeInTheDocument();
+    expect(uploadCount).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Upload sample file" }));
+    const confirmDialog = await screen.findByRole("dialog", { name: "This filename already exists" });
+    fireEvent.click(within(confirmDialog).getByRole("button", { name: "Rename and upload" }));
+
+    expect(await screen.findByText(/Original: \/srv\/sample-previews\/ankit1\.jpg/)).toBeInTheDocument();
+    const confirmedUpload = axios.post.mock.calls.filter(([url]) => url.endsWith("/preview-samples"))[2];
+    expect(confirmedUpload[1].get("filename")).toBe("ankit1.jpg");
+  });
+
+  it("applies video settings to video sample uploads", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    axios.post.mockImplementation((url) => {
+      if (url.endsWith("/preview-samples")) {
+        return Promise.resolve({
+          data: {
+            id: "video-session",
+            originalFilename: "clip.mp4",
+            sourcePath: "/srv/sample-previews/clip.mp4",
+            outputPath: "/srv/sample-previews/clip-preview.webp",
+            format: "video",
+            sessionIds: ["video-session"],
+          },
+        });
+      }
+      if (url.endsWith("/generate")) {
+        const previews = [0, 3.3, 6.7].map((timestamp, index) => ({
+          filename: `clip-preview-${index + 1}.webp`,
+          outputPath: `/srv/sample-previews/clip-preview-${index + 1}.webp`,
+          preview: `data:image/webp;base64,${index}`,
+          width: 100,
+          height: 50,
+          sizeBytes: 1000,
+          quality: 37,
+          timestamp,
+        }));
+        return Promise.resolve({
+          data: {
+            ...previews[0],
+            previews,
+            videoPreview: true,
+            videoPreviewUrl: "/admin/thumbnail-generation-settings/preview-samples/video-session/original?token=sample-token",
+            optimizedVideo: {
+              outputPath: "/srv/sample-previews/clip-preview.mp4",
+              width: 640,
+              height: 360,
+              sizeBytes: 1500000,
+            },
+            optimizedVideoUrl: "/admin/thumbnail-generation-settings/preview-samples/video-session/optimized?token=sample-token",
+          },
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    expect(screen.getByLabelText("Video")).not.toBeChecked();
+    fireEvent.click(screen.getByLabelText("Video"));
+    fireEvent.click(screen.getByLabelText("Generate multiple video thumbnails"));
+    fireEvent.click(screen.getByLabelText("Include playable video preview"));
+    fireEvent.click(screen.getByLabelText("Generate optimized video preview"));
+    expect(screen.getByLabelText("Maximum video file size (MB)")).toHaveValue(2);
+    fireEvent.change(screen.getByLabelText("Sample and preview destination path"), {
+      target: { value: "/srv/sample-previews" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+    await screen.findByText("Destination folder is ready.");
+    fireEvent.change(screen.getByLabelText(/Select a JPG, PNG, EPS, PSD, or video file/), {
+      target: { files: [new File(["video"], "clip.mp4", { type: "video/mp4" })] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload sample file" }));
+
+    expect(await screen.findByText(/Original: \/srv\/sample-previews\/clip\.mp4/)).toBeInTheDocument();
+    const upload = axios.post.mock.calls.find(([url]) => url.endsWith("/preview-samples"))[1];
+    expect(upload.get("file").name).toBe("clip.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Generate preview file" }));
+    expect(await screen.findByAltText("Generated thumbnail preview 3")).toBeInTheDocument();
+    expect(screen.getByLabelText("Optimized video preview")).toHaveAttribute(
+      "src",
+      expect.stringContaining("/preview-samples/video-session/optimized?token=sample-token")
+    );
+    expect(screen.getByText("Optimized video file: /srv/sample-previews/clip-preview.mp4")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Download optimized MP4" })).toHaveAttribute(
+      "href",
+      expect.stringContaining("/preview-samples/video-session/optimized?token=sample-token&download=true")
+    );
+  });
+
+  it("shows generated frames when the optimized video exceeds its size limit", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    const previews = [0, 3.3, 6.7].map((timestamp, index) => ({
+      filename: `clip-preview-${index + 1}.webp`,
+      outputPath: `/srv/sample-previews/clip-preview-${index + 1}.webp`,
+      preview: `data:image/webp;base64,${index}`,
+      width: 100,
+      height: 50,
+      sizeBytes: 1000,
+      quality: 37,
+      timestamp,
+    }));
+    axios.post.mockImplementation((url) => {
+      if (url.endsWith("/preview-samples")) {
+        return Promise.resolve({
+          data: {
+            id: "video-size-limit-session",
+            originalFilename: "clip.mp4",
+            sourcePath: "/srv/sample-previews/clip.mp4",
+            outputPath: "/srv/sample-previews/clip-preview.webp",
+            format: "video",
+            sessionIds: ["video-size-limit-session"],
+          },
+        });
+      }
+      if (url.endsWith("/generate")) {
+        return Promise.resolve({
+          data: {
+            ...previews[0],
+            previews,
+            videoPreview: true,
+            videoPreviewUrl: "/admin/thumbnail-generation-settings/preview-samples/video-size-limit-session/original?token=sample-token",
+            optimizedVideo: null,
+            optimizedVideoWarning: "The 1 MB limit is too small for this video's duration.",
+          },
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.click(screen.getByLabelText("Video"));
+    fireEvent.change(screen.getByLabelText("Sample and preview destination path"), {
+      target: { value: "/srv/sample-previews" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+    await screen.findByText("Destination folder is ready.");
+    fireEvent.change(screen.getByLabelText(/Select a JPG, PNG, EPS, PSD, or video file/), {
+      target: { files: [new File(["video"], "clip.mp4", { type: "video/mp4" })] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload sample file" }));
+    await screen.findByText(/Original: \/srv\/sample-previews\/clip\.mp4/);
+    fireEvent.click(screen.getByRole("button", { name: "Generate preview file" }));
+
+    expect(await screen.findByAltText("Generated thumbnail preview 3")).toBeInTheDocument();
+    expect(screen.getByText(/Thumbnail frames were generated, but no optimized MP4 was created/)).toBeInTheDocument();
+  });
+
+  it("runs the sample preview flow in order and cleans both saved files", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    let previewState = { destinationPath: "", sessionIds: [], sample: null, preview: null };
+    const previousGet = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, config = {}) => (
+      url.endsWith("/preview-samples/state")
+        ? Promise.resolve({ data: previewState })
+        : url.includes("/admin/thumbnail-generation-settings/preview-folders")
+          ? Promise.resolve({ data: { path: config.params?.path || "/srv/sample-previews", parentPath: null, directories: [] } })
+          : previousGet(url, config)
+    ));
+    axios.post.mockImplementation((url) => {
+      if (url.endsWith("/preview-samples")) {
+        previewState = {
+          destinationPath: "/srv/sample-previews",
+          sessionIds: ["sample-session"],
+          sample: { id: "sample-session" },
+          preview: null,
+        };
+        return Promise.resolve({
+            data: {
+              id: "sample-session",
+                sessionIds: ["sample-session"],
+              sourcePath: "/srv/sample-previews/sample.png",
+              outputPath: "/srv/sample-previews/sample-preview.webp",
+            },
+          });
+      }
+      if (url.endsWith("/generate")) {
+        return Promise.resolve({
+              data: {
+                format: "webp",
+                width: 100,
+                height: 50,
+                quality: 60,
+                sizeBytes: 1200,
+                preview: "data:image/webp;base64,",
+                filename: "sample-preview.webp",
+                outputPath: "/srv/sample-previews/sample-preview.webp",
+              },
+            });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    axios.delete.mockResolvedValue({ data: { cleaned: true } });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.click(screen.getByLabelText("PNG"));
+    expect(screen.getByRole("region", { name: "Step 1: Set sample destination" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 2: Upload sample file" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 3: Generate preview" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 4: Download generated preview" })).not.toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText("WebP quality"), { target: { value: "60" } });
+    fireEvent.change(screen.getByLabelText("Sample and preview destination path"), {
+      target: { value: "/srv/sample-previews" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+    await screen.findByText("Destination folder is ready.");
+    expect(screen.getByRole("region", { name: "Step 2: Upload sample file" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 3: Generate preview" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Select a JPG, PNG, EPS, PSD, or video file/), {
+      target: { files: [new File(["sample"], "sample.png", { type: "image/png" })] },
+    });
+    expect(screen.queryByRole("region", { name: "Step 3: Generate preview" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Upload sample file" }));
+
+    await screen.findByText(/Original: \/srv\/sample-previews\/sample\.png/);
+    expect(screen.getByRole("region", { name: "Step 3: Generate preview" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 4: Download generated preview" })).not.toBeInTheDocument();
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/thumbnail-generation-settings/preview-samples"),
+      expect.any(FormData),
+      expect.any(Object)
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate preview file" }));
+
+    expect(await screen.findByAltText("Generated thumbnail preview")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Step 4: Download generated preview" })).toBeInTheDocument();
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/thumbnail-generation-settings/preview-samples/sample-session/generate"),
+      {
+        settings: expect.objectContaining({
+          quality: 60,
+          maxFileSizeKb: 50,
+          dimensionPercent: 20,
+          formats: ["png"],
+          formatSettings: expect.objectContaining({
+            png: expect.objectContaining({ quality: 60, maxFileSizeKb: 50, dimensionPercent: 20 }),
+          }),
+        }),
+      },
+      expect.any(Object)
+    );
+    expect(screen.getByRole("link", { name: "Download generated preview" })).toHaveAttribute("download", "sample-preview.webp");
+
+    fireEvent.click(screen.getByRole("button", { name: "Manual clean and start again" }));
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/thumbnail-generation-settings/preview-samples/sample-session"),
+        expect.any(Object)
+      );
+      expect(screen.getByLabelText("Sample and preview destination path")).toHaveValue("");
+    });
+    expect(screen.queryByRole("region", { name: "Step 2: Upload sample file" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 3: Generate preview" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 4: Download generated preview" })).not.toBeInTheDocument();
+  });
+
+  it("starts a new test in the same folder and keeps old files until manual clean", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    let uploadCount = 0;
+    let previewState = { destinationPath: "", sessionIds: [], sample: null, preview: null };
+    const previousGet = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, config = {}) => (
+      url.endsWith("/preview-samples/state")
+        ? Promise.resolve({ data: previewState })
+        : url.includes("/preview-folders")
+          ? Promise.resolve({ data: { path: config.params?.path || "/srv/sample-previews", parentPath: null, directories: [] } })
+          : previousGet(url, config)
+    ));
+    axios.post.mockImplementation((url) => {
+      if (url.endsWith("/preview-samples")) {
+        uploadCount += 1;
+        const id = `sample-session-${uploadCount}`;
+        previewState = {
+          destinationPath: "/srv/sample-previews",
+          sessionIds: [...previewState.sessionIds, id],
+          sample: { id },
+          preview: null,
+        };
+        return Promise.resolve({
+          data: {
+            id,
+            sessionIds: previewState.sessionIds,
+            sourcePath: `/srv/sample-previews/sample-${uploadCount}.png`,
+            outputPath: `/srv/sample-previews/sample-${uploadCount}-preview.webp`,
+          },
+        });
+      }
+      if (url.endsWith("/generate")) {
+        const sampleNumber = url.includes("sample-session-1") ? 1 : 2;
+        return Promise.resolve({
+          data: {
+            format: "webp",
+            width: 100,
+            height: 50,
+            quality: 60,
+            sizeBytes: 1200,
+            preview: "data:image/webp;base64,",
+            filename: `sample-${sampleNumber}-preview.webp`,
+            outputPath: `/srv/sample-previews/sample-${sampleNumber}-preview.webp`,
+          },
+        });
+      }
+      if (url.endsWith("/preview-samples/new-test")) {
+        previewState = {
+          ...previewState,
+          sample: null,
+          preview: null,
+        };
+        return Promise.resolve({ data: previewState });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.click(screen.getByLabelText("PNG"));
+    const destinationInput = screen.getByLabelText("Sample and preview destination path");
+    fireEvent.change(destinationInput, { target: { value: "/srv/sample-previews" } });
+    fireEvent.click(screen.getByRole("button", { name: "Use this path" }));
+    await screen.findByText("Destination folder is ready.");
+
+    const uploadSample = async (filename) => {
+      fireEvent.change(screen.getByLabelText(/Select a JPG, PNG, EPS, PSD, or video file/), {
+        target: { files: [new File(["sample"], filename, { type: "image/png" })] },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Upload sample file" }));
+      await screen.findByText(new RegExp(`Original: \\/srv\\/sample-previews\\/${filename}`));
+      fireEvent.click(screen.getByRole("button", { name: "Generate preview file" }));
+      await screen.findByAltText("Generated thumbnail preview");
+    };
+
+    await uploadSample("sample-1.png");
+    await waitFor(() => expect(screen.getByRole("button", { name: "New test" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "New test" }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "New test" })).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Sample and preview destination path")).toHaveValue("/srv/sample-previews");
+    expect(screen.getByLabelText("Sample and preview destination path")).toBeDisabled();
+    expect(screen.getByRole("region", { name: "Step 2: Upload sample file" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 3: Generate preview" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 4: Download generated preview" })).not.toBeInTheDocument();
+    expect(axios.delete).not.toHaveBeenCalled();
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining("/preview-samples/new-test"),
+      {},
+      expect.any(Object)
+    );
+
+    await uploadSample("sample-2.png");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Manual clean and start again" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Manual clean and start again" }));
+
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledTimes(3);
+      expect(screen.getByLabelText("Sample and preview destination path")).toHaveValue("");
+    });
+    expect(axios.delete).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("/preview-samples/sample-session-1"),
+      expect.any(Object)
+    );
+    expect(axios.delete).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("/preview-samples/sample-session-2"),
+      expect.any(Object)
+    );
+    expect(axios.delete).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining("/preview-samples/state"),
+      expect.any(Object)
+    );
+  });
+
+  it("restores the selected folder and manual-clean history after a new test", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    sessionStorage.setItem("admin-thumbnail-preview-sample-history", JSON.stringify(["retained-session"]));
+    let previewState = { destinationPath: "", sessionIds: [], sample: null, preview: null };
+    const previousGet = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, config) => (
+      url.endsWith("/preview-samples/state")
+        ? Promise.resolve({ data: previewState })
+        : previousGet(url, config)
+    ));
+    axios.post.mockImplementation((url) => {
+      if (url.endsWith("/preview-samples/import")) {
+        previewState = {
+          destinationPath: "/srv/sample-previews",
+          sessionIds: ["retained-session"],
+          sample: null,
+          preview: null,
+        };
+        return Promise.resolve({ data: previewState });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByLabelText("Sample and preview destination path")).toHaveValue("/srv/sample-previews");
+    expect(screen.getByRole("region", { name: "Step 2: Upload sample file" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Step 3: Generate preview" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Sample and preview destination path")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Manual clean and start again" })).toBeInTheDocument();
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining("/preview-samples/import"),
+      { sessionIds: ["retained-session"], currentSessionId: null },
+      expect.any(Object)
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Manual clean and start again" }));
+
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledWith(
+        expect.stringContaining("/preview-samples/retained-session"),
+        expect.any(Object)
+      );
+      expect(screen.getByLabelText("Sample and preview destination path")).toHaveValue("");
+    });
+  });
+
+  it("restores the user preview session from server state without browser storage", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    const previousGet = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, config) => (
+      url.endsWith("/preview-samples/state")
+        ? Promise.resolve({
+            data: {
+              destinationPath: "/srv/sample-previews",
+              sessionIds: ["restored-session"],
+              sample: {
+                id: "restored-session",
+                originalFilename: "sample.png",
+                previewFilename: "sample-preview.webp",
+                destinationPath: "/srv/sample-previews",
+                sourcePath: "/srv/sample-previews/sample.png",
+                outputPath: "/srv/sample-previews/sample-preview.webp",
+                format: "png",
+              },
+              preview: {
+                format: "webp",
+                width: 100,
+                height: 50,
+                quality: 37,
+                sizeBytes: 1200,
+                filename: "sample-preview.webp",
+                outputPath: "/srv/sample-previews/sample-preview.webp",
+                preview: "data:image/webp;base64,",
+              },
+            },
+          })
+        : previousGet(url, config)
+    ));
+
+    render(<AdminPanel />);
+
+    expect(await screen.findByText(/Original: \/srv\/sample-previews\/sample\.png/)).toBeInTheDocument();
+    expect(await screen.findByAltText("Generated thumbnail preview")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Download generated preview" })).toHaveAttribute("download", "sample-preview.webp");
+    expect(axios.post).not.toHaveBeenCalledWith(
+      expect.stringContaining("/preview-samples/import"),
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it("selects one format at a time while preserving enabled formats", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    axios.put.mockImplementation((url, draft) => Promise.resolve({
+      data: {
+        active: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "psd"] },
+        draft,
+        pendingActivationAt: null,
+      },
+    }));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    const formatGroup = screen.getByRole("radiogroup", { name: "Apply settings to one file format" });
+    expect(within(formatGroup).getAllByRole("radio").filter((radio) => radio.checked)).toHaveLength(1);
+    fireEvent.click(screen.getByLabelText("EPS"));
+    expect(screen.getByLabelText("JPG / JPEG")).not.toBeChecked();
+    expect(screen.getByLabelText("EPS")).toBeChecked();
+    expect(within(formatGroup).getAllByRole("radio").filter((radio) => radio.checked)).toHaveLength(1);
+    fireEvent.change(screen.getByRole("slider", { name: "WebP quality" }), { target: { value: "42" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/thumbnail-generation-settings/draft"),
+        expect.objectContaining({
+          quality: 42,
+          maxFileSizeKb: 50,
+          dimensionPercent: 20,
+          formats: ["jpg", "png", "eps", "psd"],
+          formatSettings: expect.objectContaining({
+            jpg: expect.objectContaining({ quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 }),
+            eps: expect.objectContaining({ quality: 42, maxFileSizeKb: 50, dimensionPercent: 20 }),
+          }),
+        }),
+        expect.any(Object)
+      );
+    });
+  });
+
+  it("selects the matching format when a sample file is chosen", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    const previousGet = axios.get.getMockImplementation();
+    const draft = {
+      quality: 73,
+      maxFileSizeKb: 140,
+      dimensionPercent: 60,
+      formats: ["png"],
+      formatSettings: {
+        jpg: { quality: 55, maxFileSizeKb: 90, dimensionPercent: 35 },
+        png: { quality: 73, maxFileSizeKb: 140, dimensionPercent: 60 },
+      },
+    };
+    axios.get.mockImplementation((url, ...args) => (
+      url.endsWith("/preview-samples/state")
+        ? Promise.resolve({
+            data: { destinationPath: "/srv/sample-previews", sessionIds: [], sample: null, preview: null },
+          })
+        : url.endsWith("/admin/thumbnail-generation-settings")
+          ? Promise.resolve({
+              data: {
+                active: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg"] },
+                draft,
+                pendingActivationAt: null,
+              },
+            })
+          : previousGet(url, ...args)
+    ));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("PNG")).toBeChecked();
+      expect(screen.getByRole("slider", { name: "WebP quality" })).toHaveValue("73");
+    });
+    fireEvent.change(screen.getByLabelText(/Select a JPG, PNG, EPS, PSD, or video file/), {
+      target: { files: [new File(["sample"], "sample.jpg", { type: "image/jpeg" })] },
+    });
+
+    expect(screen.getByLabelText("JPG / JPEG")).toBeChecked();
+    expect(screen.getByLabelText("PNG")).not.toBeChecked();
+    expect(screen.getByRole("slider", { name: "WebP quality" })).toHaveValue("55");
+  });
+
+  it("loads and saves draft values independently for each format", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    const formatSettings = {
+      jpg: { quality: 55, maxFileSizeKb: 90, dimensionPercent: 35 },
+      png: { quality: 73, maxFileSizeKb: 140, dimensionPercent: 60 },
+      eps: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 },
+      psd: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 },
+      video: {
+        quality: 66,
+        maxFileSizeKb: 100,
+        dimensionPercent: 45,
+        multipleVideoThumbnails: true,
+        includeVideoPreview: true,
+        generateOptimizedVideoPreview: true,
+        videoQuality: 84,
+        videoMaxHeight: 480,
+        videoMaxFileSizeMb: 3,
+      },
+    };
+    const draft = {
+      quality: 55,
+      maxFileSizeKb: 90,
+      dimensionPercent: 35,
+      formats: ["jpg", "png"],
+      formatSettings,
+    };
+    const active = {
+      quality: 37,
+      maxFileSizeKb: 50,
+      dimensionPercent: 20,
+      formats: ["jpg", "png", "eps", "psd"],
+    };
+    axios.get.mockImplementation((url) => {
+      if (url.endsWith("/preview-samples/state")) {
+        return Promise.resolve({ data: { destinationPath: "", sessionIds: [], sample: null, preview: null } });
+      }
+      if (url.includes("/admin/thumbnail-generation-settings")) {
+        return Promise.resolve({ data: { active, draft, pendingActivationAt: null } });
+      }
+      if (url.includes("/admin/redirect-rules")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/categories")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [{ id: 1, title: "Live asset", status: "approved", filename: "asset.jpg" }] });
+    });
+    axios.put.mockImplementation((url, value) => Promise.resolve({
+      data: { active, draft: value, pendingActivationAt: null },
+    }));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("slider", { name: "WebP quality" })).toHaveValue("55");
+    });
+    fireEvent.click(screen.getByLabelText("PNG"));
+    expect(screen.getByRole("slider", { name: "WebP quality" })).toHaveValue("73");
+    expect(screen.getByLabelText("Maximum file size")).toHaveValue(140);
+    expect(screen.getByLabelText("Dimensions (% of source)")).toHaveValue(60);
+    fireEvent.change(screen.getByRole("slider", { name: "WebP quality" }), { target: { value: "74" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/thumbnail-generation-settings/draft"),
+        expect.objectContaining({
+          formats: ["jpg", "png"],
+          formatSettings: expect.objectContaining({
+            jpg: formatSettings.jpg,
+            png: expect.objectContaining({ ...formatSettings.png, quality: 74 }),
+          }),
+        }),
+        expect.any(Object)
+      );
+    });
+    axios.put.mockClear();
+
+    fireEvent.click(screen.getByLabelText("Video"));
+    expect(screen.getByLabelText("PNG")).not.toBeChecked();
+    expect(screen.getByLabelText("Video")).toBeChecked();
+    expect(screen.getByLabelText("Generate multiple video thumbnails")).toBeChecked();
+    expect(screen.getByLabelText("Video quality")).toHaveValue("84");
+    expect(screen.getByLabelText("Maximum video resolution")).toHaveValue("480");
+    expect(screen.getByLabelText("Maximum video file size (MB)")).toHaveValue(3);
+    fireEvent.change(screen.getByLabelText("Video quality"), { target: { value: "86" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/thumbnail-generation-settings/draft"),
+        expect.objectContaining({
+          formatSettings: expect.objectContaining({
+            jpg: formatSettings.jpg,
+            png: expect.objectContaining({ ...formatSettings.png, quality: 74 }),
+            video: expect.objectContaining({ ...formatSettings.video, videoQuality: 86 }),
+          }),
+          formats: ["jpg", "png", "video"],
+        }),
+        expect.any(Object)
+      );
+    });
+    expect(screen.getByLabelText("Video quality")).toHaveValue("86");
+    fireEvent.click(screen.getByLabelText("PNG"));
+    expect(screen.getByRole("slider", { name: "WebP quality" })).toHaveValue("74");
+    fireEvent.click(screen.getByLabelText("JPG / JPEG"));
+    expect(screen.getByRole("slider", { name: "WebP quality" })).toHaveValue("55");
+    expect(screen.getByLabelText("Maximum file size")).toHaveValue(90);
+    fireEvent.click(screen.getByLabelText("Video"));
+    expect(screen.getByLabelText("Video quality")).toHaveValue("86");
+  });
+
+  it("shows optional video outputs only when Video is selected and saves both toggles", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    axios.put.mockImplementation((url, draft) => Promise.resolve({
+      data: {
+        active: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "psd"] },
+        draft,
+        pendingActivationAt: null,
+      },
+    }));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    expect(screen.queryByRole("group", { name: "Video output options" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Video"));
+    expect(screen.getByRole("group", { name: "Video output options" })).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Generate multiple video thumbnails"));
+    fireEvent.click(screen.getByLabelText("Include playable video preview"));
+    fireEvent.click(screen.getByLabelText("Generate optimized video preview"));
+    fireEvent.change(screen.getByLabelText("Video quality"), { target: { value: "72" } });
+    fireEvent.change(screen.getByLabelText("Maximum video resolution"), { target: { value: "480" } });
+    fireEvent.change(screen.getByLabelText("Maximum video file size (MB)"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/thumbnail-generation-settings/draft"),
+        expect.objectContaining({
+          quality: 37,
+          maxFileSizeKb: 50,
+          dimensionPercent: 20,
+          formats: ["jpg", "png", "eps", "psd", "video"],
+          multipleVideoThumbnails: true,
+          includeVideoPreview: true,
+          generateOptimizedVideoPreview: true,
+          videoQuality: 72,
+          videoMaxHeight: 480,
+          videoMaxFileSizeMb: 1,
+          formatSettings: expect.objectContaining({
+            video: expect.objectContaining({
+              quality: 37,
+              multipleVideoThumbnails: true,
+              includeVideoPreview: true,
+              generateOptimizedVideoPreview: true,
+              videoQuality: 72,
+              videoMaxHeight: 480,
+              videoMaxFileSizeMb: 1,
+            }),
+          }),
+        }),
+        expect.any(Object)
+      );
+    });
+    expect(screen.getByLabelText("Generate multiple video thumbnails")).toBeChecked();
+    expect(screen.getByLabelText("Include playable video preview")).toBeChecked();
+    expect(screen.getByLabelText("Generate optimized video preview")).toBeChecked();
+    expect(screen.getByLabelText("Video quality")).toHaveValue("72");
+    expect(screen.getByLabelText("Maximum video resolution")).toHaveValue("480");
+    expect(screen.getByLabelText("Maximum video file size (MB)")).toHaveValue(1);
+  });
+
+  it("converts MB file-size input to KB when saving settings", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    axios.put.mockImplementation((url, draft) => Promise.resolve({
+      data: {
+        active: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "psd"] },
+        draft,
+        pendingActivationAt: null,
+      },
+    }));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Maximum file size unit"), { target: { value: "MB" } });
+    expect(screen.getByLabelText("Maximum file size")).toHaveValue(0.04883);
+    fireEvent.change(screen.getByLabelText("Maximum file size"), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/thumbnail-generation-settings/draft"),
+        expect.objectContaining({
+          quality: 37,
+          maxFileSizeKb: 1536,
+          dimensionPercent: 20,
+          formats: ["jpg", "png", "eps", "psd"],
+          formatSettings: expect.objectContaining({
+            jpg: expect.objectContaining({ quality: 37, maxFileSizeKb: 1536, dimensionPercent: 20 }),
+          }),
+        }),
+        expect.any(Object)
+      );
+    });
+  });
+
+  it("does not allow the selected format to be unchecked", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    const formatGroup = screen.getByRole("radiogroup", { name: "Apply settings to one file format" });
+    fireEvent.click(screen.getByLabelText("JPG / JPEG"));
+    expect(screen.getByLabelText("JPG / JPEG")).toBeChecked();
+    fireEvent.click(screen.getByLabelText("Video"));
+    expect(screen.getByLabelText("JPG / JPEG")).not.toBeChecked();
+    expect(screen.getByLabelText("Video")).toBeChecked();
+    expect(within(formatGroup).getAllByRole("radio").filter((radio) => radio.checked)).toHaveLength(1);
+    fireEvent.click(screen.getByLabelText("Video"));
+    expect(screen.getByLabelText("Video")).toBeChecked();
+  });
+
+  it("saves dirty settings and activates them immediately", async () => {
+    const successToast = jest.spyOn(toast, "success").mockImplementation(() => {});
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_newsettings" });
+    axios.post.mockImplementation((url) => (
+      url.endsWith("/activation")
+        ? Promise.resolve({
+            data: {
+              active: { quality: 60, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "psd"] },
+              draft: { quality: 60, maxFileSizeKb: 50, dimensionPercent: 20, formats: ["jpg", "png", "eps", "psd"] },
+              pendingActivationAt: null,
+            },
+          })
+        : Promise.resolve({ data: {} })
+    ));
+
+    render(<AdminPanel />);
+
+    await waitFor(() => expect(screen.getByRole("slider", { name: "WebP quality" })).toBeEnabled());
+    fireEvent.change(screen.getByRole("slider", { name: "WebP quality" }), { target: { value: "42" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save and activate now" }));
+    expect(axios.put).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/thumbnail-generation-settings/draft"),
+      expect.objectContaining({
+        quality: 42,
+        maxFileSizeKb: 50,
+        dimensionPercent: 20,
+        formats: ["jpg", "png", "eps", "psd"],
+        formatSettings: expect.objectContaining({
+          jpg: expect.objectContaining({ quality: 42, maxFileSizeKb: 50, dimensionPercent: 20 }),
+        }),
+      }),
+      expect.any(Object)
+    );
+    const activeJpgSettings = screen.getByRole("group", { name: "JPG / JPEG live settings" });
+    expect(await within(activeJpgSettings).findByText("Quality 60 · Maximum 50 KB · Dimensions 20%")).toBeInTheDocument();
+    expect(screen.queryByText(/Settings go live in/)).not.toBeInTheDocument();
+    expect(successToast).toHaveBeenCalledWith("JPG / JPEG settings saved and activated successfully.");
+    successToast.mockRestore();
+  });
+
+  it("shows active live thumbnail settings for every format on the existing upload settings tab", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_existingsettings" });
+    const assets = Array.from({ length: 26 }, (_, index) => ({
+      id: index + 1,
+      title: index === 0 ? "Aurora artwork" : `Asset ${index + 1}`,
+      collection: index === 0 ? "Nature" : `Collection ${index + 1}`,
+      filename: index === 0 ? "aurora.psd" : "asset.jpeg",
+      created_at: index === 25 ? null : index === 0 ? "2026-11-20T12:00:00.000Z" : "2026-11-19T12:00:00.000Z",
+      thumbnail_quality: index === 25 ? null : 80 + (index % 10),
+      status: index === 0 || index === 25 ? "approved" : "pending",
+    }));
+    axios.get.mockImplementation((url) => (
+      url.includes("/admin/thumbnail-generation-settings")
+        ? Promise.resolve({
+            data: {
+              active: {
+                formats: ["jpg", "png", "eps", "psd", "video"],
+                formatSettings: {
+                  jpg: { quality: 71, maxFileSizeKb: 101, dimensionPercent: 41 },
+                  png: { quality: 72, maxFileSizeKb: 102, dimensionPercent: 42 },
+                  eps: { quality: 73, maxFileSizeKb: 103, dimensionPercent: 43 },
+                  psd: { quality: 74, maxFileSizeKb: 104, dimensionPercent: 44 },
+                  video: {
+                    quality: 75,
+                    maxFileSizeKb: 105,
+                    dimensionPercent: 45,
+                    multipleVideoThumbnails: true,
+                    includeVideoPreview: true,
+                    generateOptimizedVideoPreview: true,
+                    videoQuality: 83,
+                    videoMaxHeight: 1080,
+                    videoMaxFileSizeMb: 6,
+                  },
+                },
+              },
+            },
+          })
+        : url.endsWith("/admin/images")
+          ? Promise.resolve({ data: assets })
+          : url.includes("/images?limit=1000&page=1")
+            ? Promise.resolve({ data: { images: [assets[0]] } })
+          : Promise.resolve({ data: { destinationPath: "", sessionIds: [], sample: null, preview: null } })
+    ));
+
+    render(<AdminPanel />);
+
+    expect(screen.getByRole("heading", { name: "Existing Upload Setting", level: 2 })).toBeInTheDocument();
+    const liveSettings = screen.getByRole("region", { name: "Current live thumbnail settings" });
+    expect(await within(liveSettings).findByRole("group", { name: "JPG / JPEG live settings" })).toHaveTextContent("Quality: 71");
+    expect(within(liveSettings).getByRole("group", { name: "PNG live settings" })).toHaveTextContent("Quality: 72");
+    expect(within(liveSettings).getByRole("group", { name: "EPS live settings" })).toHaveTextContent("Quality: 73");
+    expect(within(liveSettings).getByRole("group", { name: "PSD live settings" })).toHaveTextContent("Quality: 74");
+    expect(within(liveSettings).getByRole("group", { name: "Video live settings" })).toHaveTextContent("Video quality: 83");
+    expect(within(liveSettings).getByRole("group", { name: "Video live settings" })).toHaveTextContent("Maximum resolution: 1080p");
+    expect(screen.queryByRole("region", { name: "Previous shared thumbnail settings" })).not.toBeInTheDocument();
+
+    const assetsTable = screen.getByRole("table", { name: "All assets" });
+    expect(await within(assetsTable).findByRole("row", { name: /^1 Aurora artwork Nature PSD Nov 20, 2026 80% Live/ })).toBeInTheDocument();
+    expect(within(assetsTable).queryByRole("row", { name: /Asset 21/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await within(assetsTable).findByRole("row", { name: /^21 Asset 21 Collection 21 JPG \/ JPEG Nov 19, 2026 80% Not live/ })).toBeInTheDocument();
+    expect(await within(assetsTable).findByRole("row", { name: /^26 Asset 26 Collection 26 JPG \/ JPEG — Not recorded Not live/ })).toBeInTheDocument();
+    expect(screen.queryByText(/total assets:/i)).not.toBeInTheDocument();
+
+    fireEvent.change(within(assetsTable).getByRole("searchbox", { name: "Search title" }), {
+      target: { value: "Aurora" },
+    });
+    expect(await within(assetsTable).findByRole("row", { name: /^1 Aurora artwork Nature PSD Nov 20, 2026 80% Live/ })).toBeInTheDocument();
+    expect(within(assetsTable).queryByRole("row", { name: /Asset 2/ })).not.toBeInTheDocument();
+    fireEvent.change(within(assetsTable).getByRole("searchbox", { name: "Search title" }), {
+      target: { value: "" },
+    });
+
+    fireEvent.change(within(assetsTable).getByRole("searchbox", { name: "Search collection" }), {
+      target: { value: "Collection 26" },
+    });
+    expect(await within(assetsTable).findByRole("row", { name: /^1 Asset 26 Collection 26 JPG \/ JPEG — Not recorded Not live/ })).toBeInTheDocument();
+    fireEvent.change(within(assetsTable).getByRole("searchbox", { name: "Search collection" }), {
+      target: { value: "" },
+    });
+
+    fireEvent.change(within(assetsTable).getByRole("searchbox", { name: "Search file type" }), {
+      target: { value: "PSD" },
+    });
+    expect(await within(assetsTable).findByRole("row", { name: /^1 Aurora artwork Nature PSD Nov 20, 2026 80% Live/ })).toBeInTheDocument();
+    fireEvent.change(within(assetsTable).getByRole("searchbox", { name: "Search file type" }), {
+      target: { value: "" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by title ascending" }));
+    expect(assetsTable.querySelector('th[aria-sort="ascending"]')).toHaveTextContent("Title");
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Asset 2");
+    fireEvent.click(screen.getByRole("button", { name: "Sort by title descending" }));
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Aurora artwork");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by collection ascending" }));
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Collection 2");
+    fireEvent.click(screen.getByRole("button", { name: "Sort by collection descending" }));
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Aurora artwork");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by file type ascending" }));
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("JPG / JPEG");
+    fireEvent.click(screen.getByRole("button", { name: "Sort by file type descending" }));
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Aurora artwork");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by uploaded date ascending" }));
+    expect(assetsTable.querySelector('th[aria-sort="ascending"]')).toHaveTextContent("Uploaded date");
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Asset 2");
+    fireEvent.click(screen.getByRole("button", { name: "Sort by uploaded date descending" }));
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Aurora artwork");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by thumbnail quality ascending" }));
+    expect(assetsTable.querySelector('th[aria-sort="ascending"]')).toHaveTextContent("Thumbnail quality");
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await within(assetsTable).findByRole("row", { name: /^26 Asset 26 Collection 26 JPG \/ JPEG — Not recorded Not live/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Sort by thumbnail quality descending" }));
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Asset 10");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by live status ascending" }));
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Asset 2");
+    fireEvent.click(screen.getByRole("button", { name: "Sort by live status descending" }));
+    expect(within(assetsTable).getAllByRole("row")[1]).toHaveTextContent("Aurora artwork");
+
+    axios.post.mockResolvedValue({ status: 202, data: { id: 1, thumbnail_status: "PROCESSING" } });
+    const firstAssetRow = within(assetsTable).getByRole("row", { name: /Aurora artwork/ });
+    const regenerateButton = within(firstAssetRow).getByRole("button", {
+      name: "Regenerate thumbnail for Aurora artwork",
+    });
+    fireEvent.click(regenerateButton);
+    expect(await within(firstAssetRow).findByText("Regeneration queued.")).toBeInTheDocument();
+    expect(regenerateButton).toBeDisabled();
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining("/images/1/thumbnail/retry"),
+      {},
+      expect.objectContaining({ headers: expect.any(Object) })
+    );
+  });
+
+  it("opens an asset thumbnail when its title is clicked", async () => {
+    useLocation.mockReturnValue({ search: "?tab=controls/thumbnailgeneration_existingsettings" });
+    const asset = {
+      id: 1,
+      title: "Previewable asset",
+      filename: "preview.jpg",
+      status: "approved",
+    };
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/thumbnail-generation-settings")) {
+        return Promise.resolve({ data: { active: { formats: [], formatSettings: {} } } });
+      }
+      if (url.endsWith("/admin/images")) return Promise.resolve({ data: [asset] });
+      if (url.includes("/images?limit=1000&page=1")) {
+        return Promise.resolve({ data: { images: [asset] } });
+      }
+      if (url.includes("/api/assets/1/thumbnail")) {
+        return Promise.resolve({ data: new Blob(["thumbnail"], { type: "image/webp" }) });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    const createObjectURLDescriptor = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const revokeObjectURLDescriptor = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: jest.fn(() => "blob:asset-thumbnail-preview"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: jest.fn(),
+    });
+    let unmount;
+    try {
+      ({ unmount } = render(<AdminPanel />));
+      fireEvent.click(await screen.findByRole("button", { name: "Previewable asset" }));
+
+      const dialog = await screen.findByRole("dialog", { name: "Previewable asset" });
+      expect(await within(dialog).findByRole("img", { name: "Previewable asset" })).toHaveAttribute(
+        "src",
+        "blob:asset-thumbnail-preview"
+      );
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringContaining("/api/assets/1/thumbnail"),
+        expect.objectContaining({
+          responseType: "blob",
+        })
+      );
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close thumbnail preview" }));
+      expect(screen.queryByRole("dialog", { name: "Previewable asset" })).not.toBeInTheDocument();
+    } finally {
+      unmount?.();
+      if (createObjectURLDescriptor) {
+        Object.defineProperty(URL, "createObjectURL", createObjectURLDescriptor);
+      } else {
+        delete URL.createObjectURL;
+      }
+      if (revokeObjectURLDescriptor) {
+        Object.defineProperty(URL, "revokeObjectURL", revokeObjectURLDescriptor);
+      } else {
+        delete URL.revokeObjectURL;
+      }
+    }
   });
 
   it("shows total, active, and disabled redirect counts in the Controls card", async () => {
@@ -1883,7 +3248,7 @@ describe("AdminPanel collection controls", () => {
     expect(details).toHaveTextContent("Approved4");
     expect(details).toHaveTextContent("Pending0");
     expect(details).toHaveTextContent("Rejected1");
-    expect(details).toHaveTextContent("PermissionsBulk upload: No Upload limit: 20 GB");
+    expect(details).toHaveTextContent("PermissionsBulk upload: No Upload limit: 20 MB");
 
     fireEvent.click(screen.getByText("Orders").closest("article"));
     const ordersDialog = await screen.findByRole("dialog", { name: "Orders" });

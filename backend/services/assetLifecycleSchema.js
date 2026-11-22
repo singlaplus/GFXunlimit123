@@ -82,6 +82,11 @@ const REQUIRED_COLUMNS = {
       is_nullable: 'NO',
       default_matches: (value) => normalizeDefault(value) === 'now()',
     },
+    video_preview_metadata: {
+      data_type: 'jsonb',
+      is_nullable: 'NO',
+      default_matches: (value) => normalizeDefault(value) === "'{}'::jsonb",
+    },
   },
   asset_thumbnail_orphans: {
     id: {

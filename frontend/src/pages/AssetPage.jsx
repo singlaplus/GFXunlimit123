@@ -5,6 +5,7 @@ import axios from "axios";
 import { getRelatedImages, likeImageRequest, viewImageRequest, addFavoriteRequest } from "../services/imageService";
 import { saveCartItems } from "../utils/cartPersistence";
 import {
+  getAssetThumbnailUrl,
   getAssetPreviewUrl,
   getAssetSourceUrl,
 } from "../utils/assetPreview";
@@ -14,10 +15,11 @@ import AssetWatermark from "../components/AssetWatermark";
 import "./AssetPage.css";
 
 const MAX_PREVIEW_HEIGHT = 432;
+const VIDEO_FILE_EXTENSION_PATTERN = /\.(?:mp4|m4v|mov|avi|mkv|webm|mpeg|mpg|mpe|m2v|m2ts|mts|ts|3gp|3g2|wmv|asf|flv|f4v|ogv|vob|mxf|y4m)$/i;
 
 export default function AssetPage(props) {
   const { imageId, darkMode } = props;
-  const { reportResource, retryKey, routeId } = useStartupReadiness();
+  const { auth, reportResource, retryKey, routeId } = useStartupReadiness();
   const [image, setImage] = useState(null);
   const [previewDimensions, setPreviewDimensions] = useState(null);
   const [zoomPreviewDimensions, setZoomPreviewDimensions] = useState(null);
@@ -36,8 +38,19 @@ export default function AssetPage(props) {
   const [subscriptionActive, setSubscriptionActive] = useState(false);
   const [relatedImages, setRelatedImages] = useState([]);
   const [privatePreview, setPrivatePreview] = useState({ url: "", loading: false, error: "" });
+  const [videoPreviews, setVideoPreviews] = useState({ frames: [], optimizedVideo: null, originalVideoUrl: "" });
+  const [selectedVideoPreview, setSelectedVideoPreview] = useState("video");
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [videoPreviewRefresh, setVideoPreviewRefresh] = useState(0);
+  const [deletingVideoPreview, setDeletingVideoPreview] = useState("");
+  const [videoPreviewNotice, setVideoPreviewNotice] = useState(null);
   const relatedSliderRef = useRef(null);
+  const videoPlayerRef = useRef(null);
   const viewedAssetIdsRef = useRef(new Set());
+
+  useEffect(() => {
+    setIsVideoPlaying(false);
+  }, [imageId, selectedVideoPreview, videoPreviews.optimizedVideo?.url, videoPreviews.originalVideoUrl]);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -101,7 +114,100 @@ export default function AssetPage(props) {
     getRelatedImages(image.id)
       .then((response) => setRelatedImages(Array.isArray(response.data) ? response.data : []))
       .catch(() => setRelatedImages([]));
-  }, [image]);
+  }, [image?.id, image?.filename, image?.status]);
+
+  useEffect(() => {
+    setVideoPreviewNotice(null);
+  }, [image?.id]);
+
+  useEffect(() => {
+    const isVideo = VIDEO_FILE_EXTENSION_PATTERN.test(String(image?.filename || ""));
+    const isPublicVideo = ["approved", "published", "live"].includes(
+      String(image?.status || "").trim().toLowerCase()
+    );
+    const token = localStorage.getItem("token");
+    if (!image?.id || !isVideo || (!isPublicVideo && !token)) {
+      setVideoPreviews({ frames: [], optimizedVideo: null, originalVideoUrl: "" });
+      setSelectedVideoPreview("video");
+      return undefined;
+    }
+
+    let active = true;
+    const privatePreviewUrls = [];
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const loadPrivatePreview = async (url) => {
+      const response = await axios.get(`${API_BASE_URL.replace(/\/+$/, "")}${url}`, {
+        headers,
+        responseType: "blob",
+      });
+      const objectUrl = URL.createObjectURL(response.data);
+      if (!active) {
+        URL.revokeObjectURL(objectUrl);
+        return "";
+      }
+      privatePreviewUrls.push(objectUrl);
+      return objectUrl;
+    };
+
+    const loadVideoPreviews = async () => {
+      try {
+        const response = await axios.get(
+          `${API_BASE_URL}/api/assets/${encodeURIComponent(String(image.id))}/video-previews`,
+          { headers }
+        );
+        const savedFrames = Array.isArray(response.data?.frames) ? response.data.frames : [];
+        const savedOptimizedVideo = response.data?.optimizedVideo || null;
+        let frames = savedFrames;
+        let optimizedVideo = savedOptimizedVideo;
+        let originalVideoUrl = typeof response.data?.originalVideoUrl === "string"
+          ? response.data.originalVideoUrl
+          : "";
+
+        if (!isPublicVideo) {
+          frames = (await Promise.all(savedFrames.map(async (frame) => {
+            try {
+              const url = await loadPrivatePreview(frame.url);
+              return url ? { ...frame, url } : null;
+            } catch (previewError) {
+              console.error(`Failed to load video frame ${frame.index}`, previewError);
+              return null;
+            }
+          }))).filter(Boolean);
+          if (savedOptimizedVideo?.url) {
+            try {
+              const url = await loadPrivatePreview(savedOptimizedVideo.url);
+              optimizedVideo = url ? { ...savedOptimizedVideo, url } : null;
+            } catch (previewError) {
+              console.error("Failed to load optimized video preview", previewError);
+              optimizedVideo = null;
+            }
+          }
+          originalVideoUrl = "";
+        }
+
+        if (!active) return;
+        setVideoPreviews({ frames, optimizedVideo, originalVideoUrl });
+        setSelectedVideoPreview(
+          isPublicVideo || optimizedVideo ? "video" : frames[0]?.index ?? "video"
+        );
+      } catch (previewError) {
+        console.error("Failed to load video previews", previewError);
+        if (active) {
+          setVideoPreviews({ frames: [], optimizedVideo: null, originalVideoUrl: "" });
+          setSelectedVideoPreview("video");
+        }
+      }
+    };
+
+    setVideoPreviews({ frames: [], optimizedVideo: null, originalVideoUrl: "" });
+    setSelectedVideoPreview("video");
+    loadVideoPreviews();
+
+    return () => {
+      active = false;
+      privatePreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [image?.id, image?.filename, image?.status, videoPreviewRefresh]);
 
   useEffect(() => {
     if (!image?.id) return undefined;
@@ -216,6 +322,41 @@ export default function AssetPage(props) {
     };
     checkFavorited();
   }, [image]);
+
+  const isAdmin = auth.status === "authenticated" && auth.role === "admin";
+
+  const deleteGeneratedVideoPreview = async (variant, frameIndex = null) => {
+    if (!image?.id || deletingVideoPreview) return;
+    const key = variant === "frame" ? `frame-${frameIndex}` : "optimized";
+    setDeletingVideoPreview(key);
+    setVideoPreviewNotice(null);
+    const token = localStorage.getItem("token");
+    const previewPath = variant === "frame"
+      ? `frame/${frameIndex}`
+      : "optimized";
+
+    try {
+      const response = await axios.delete(
+        `${API_BASE_URL}/api/assets/${encodeURIComponent(String(image.id))}/video-previews/${previewPath}`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      );
+      setVideoPreviewNotice({
+        type: response.data?.cleanupPending ? "warning" : "success",
+        message: response.data?.cleanupPending
+          ? "Preview removed; storage cleanup is still pending."
+          : "Generated preview removed.",
+      });
+      setVideoPreviewRefresh((refresh) => refresh + 1);
+    } catch (deleteError) {
+      console.error("Failed to delete generated video preview", deleteError);
+      setVideoPreviewNotice({
+        type: "error",
+        message: deleteError.response?.data?.error || "Unable to remove the generated preview.",
+      });
+    } finally {
+      setDeletingVideoPreview("");
+    }
+  };
 
   useEffect(() => {
     // Fetch pricing settings
@@ -359,6 +500,40 @@ export default function AssetPage(props) {
   const isPublicAsset = ["approved", "published", "live"].includes(
     String(image.status || "").trim().toLowerCase()
   );
+  const isVideoAsset = VIDEO_FILE_EXTENSION_PATTERN.test(String(image.filename || ""));
+  const selectedVideoFrame = videoPreviews.frames.find((frame) => frame.index === selectedVideoPreview)
+    || videoPreviews.frames[0]
+    || null;
+  const resolveVideoPreviewUrl = (url) => (
+    /^(?:blob:|https?:\/\/)/i.test(url)
+      ? url
+      : `${API_BASE_URL.replace(/\/+$/, "")}${url}`
+  );
+  const selectedVideoFrameUrl = selectedVideoFrame
+    ? resolveVideoPreviewUrl(selectedVideoFrame.url)
+    : "";
+  const videoSourceUrl = videoPreviews.optimizedVideo?.url || (
+    isPublicAsset
+      ? videoPreviews.originalVideoUrl || `${getAssetSourceUrl(image)}?original=true`
+      : ""
+  );
+  const shouldShowVideoWatermark = isPublicAsset && isVideoAsset;
+  const shouldRenderVideoPlayer = isVideoAsset && selectedVideoPreview === "video" && Boolean(videoSourceUrl);
+  const shouldRenderVideoFrame = isVideoAsset && !shouldRenderVideoPlayer && Boolean(selectedVideoFrame);
+  const absoluteVideoSourceUrl = /^(?:blob:|https?:\/\/)/i.test(videoSourceUrl)
+    ? videoSourceUrl
+    : `${API_BASE_URL.replace(/\/+$/, "")}${videoSourceUrl}`;
+
+  const playVideoFromSurface = () => {
+    if (!videoPlayerRef.current?.paused) return;
+    videoPlayerRef.current.play().catch((playError) => {
+      console.error("Failed to play video preview", playError);
+    });
+  };
+
+  const hasVideoPreviewOptions = isVideoAsset && (
+    videoPreviews.frames.length > 0 || Boolean(videoPreviews.optimizedVideo?.url)
+  );
   const supportsCatalogPreview = /\.(?:jpe?g|png|webp|gif|tif|tiff|ai|eps|psd|psb)$/i.test(
     String(image.filename || "")
   );
@@ -382,9 +557,19 @@ export default function AssetPage(props) {
   };
   const usesGeneratedThumbnail = !isPublicAsset &&
     /\.(?:ai|eps|psd|psb)$/i.test(String(image.filename || ""));
-  const usesBackendWatermark = supportsCatalogPreview || usesGeneratedThumbnail;
-  const previewUrl = usesGeneratedThumbnail ? privatePreview.url : getDetailPreview(image);
-  const fullSizeUrl = usesGeneratedThumbnail ? privatePreview.url : getDetailPreview(image);
+  const usesBackendWatermark = supportsCatalogPreview || usesGeneratedThumbnail || shouldRenderVideoFrame;
+  const previewUrl = shouldRenderVideoFrame
+    ? selectedVideoFrameUrl
+    : usesGeneratedThumbnail
+      ? privatePreview.url
+      : shouldRenderVideoPlayer
+        ? selectedVideoFrameUrl || (isPublicAsset ? getAssetThumbnailUrl(image) : "")
+        : getDetailPreview(image);
+  const fullSizeUrl = shouldRenderVideoFrame
+    ? selectedVideoFrameUrl
+    : usesGeneratedThumbnail
+      ? privatePreview.url
+      : getDetailPreview(image);
   const displayDimensions = sourceDimensions || previewDimensions;
   const previewAspectRatio = displayDimensions
     ? displayDimensions.width / displayDimensions.height
@@ -445,33 +630,80 @@ export default function AssetPage(props) {
             }}
           >
             {previewUrl ? (
-              <>
-                <img
-                  src={previewUrl}
-                  alt={image.title}
-                  onLoad={(event) => {
-                    const { naturalWidth, naturalHeight } = event.currentTarget;
-                    if (naturalWidth > 0 && naturalHeight > 0) {
-                      setPreviewDimensions({ width: naturalWidth, height: naturalHeight });
-                    }
-                  }}
-                  onClick={() => setIsZoomOpen(true)}
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    objectFit: "contain",
-                    display: "block",
-                    cursor: "zoom-in",
-                    borderRadius: 18,
-                  }}
-                />
-                {!usesBackendWatermark && (
-                  <AssetWatermark
-                    width={displayDimensions?.width || 640}
-                    height={displayDimensions?.height || 360}
+              shouldRenderVideoPlayer ? (
+                <div className="asset-video-player-shell">
+                  <video
+                    ref={videoPlayerRef}
+                    className="asset-video-player"
+                    src={absoluteVideoSourceUrl}
+                    poster={previewUrl}
+                    controls
+                    controlsList="nodownload nofullscreen noremoteplayback noplaybackrate"
+                    disablePictureInPicture
+                    disableRemotePlayback
+                    preload="metadata"
+                    aria-label={`${image.title || "Asset"} video preview`}
+                    onPlay={() => setIsVideoPlaying(true)}
+                    onPause={() => setIsVideoPlaying(false)}
+                    onEnded={() => setIsVideoPlaying(false)}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "contain",
+                      display: "block",
+                      background: "#000",
+                    }}
                   />
-                )}
-              </>
+                  {shouldShowVideoWatermark && (
+                    <AssetWatermark
+                      width={displayDimensions?.width || 1280}
+                      height={displayDimensions?.height || 720}
+                    />
+                  )}
+                  {!isVideoPlaying && (
+                    <button
+                      type="button"
+                      className="asset-video-play-overlay"
+                      aria-label="Play video preview"
+                      onClick={playVideoFromSurface}
+                    >
+                      <span className="asset-video-play-affordance" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                          <path d="M9 6.5v11l9-5.5-9-5.5Z" />
+                        </svg>
+                      </span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <img
+                    src={previewUrl}
+                    alt={image.title}
+                    onLoad={(event) => {
+                      const { naturalWidth, naturalHeight } = event.currentTarget;
+                      if (naturalWidth > 0 && naturalHeight > 0) {
+                        setPreviewDimensions({ width: naturalWidth, height: naturalHeight });
+                      }
+                    }}
+                    onClick={() => setIsZoomOpen(true)}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "contain",
+                      display: "block",
+                      cursor: "zoom-in",
+                      borderRadius: 18,
+                    }}
+                  />
+                  {(!usesBackendWatermark || (shouldRenderVideoFrame && shouldShowVideoWatermark)) && (
+                    <AssetWatermark
+                      width={displayDimensions?.width || 640}
+                      height={displayDimensions?.height || 360}
+                    />
+                  )}
+                </>
+              )
             ) : usesGeneratedThumbnail ? (
               <div role="status" style={{ padding: 20, textAlign: "center" }}>
                 {privatePreview.loading ? "Loading asset preview..." : privatePreview.error || "Preview unavailable."}
@@ -537,7 +769,7 @@ export default function AssetPage(props) {
                       }}
                     />
                   ) : null}
-                  {fullSizeUrl && !usesBackendWatermark && (
+                  {fullSizeUrl && (!usesBackendWatermark || (shouldRenderVideoFrame && shouldShowVideoWatermark)) && (
                     <AssetWatermark
                       width={zoomPreviewDimensions?.width || displayDimensions?.width || 640}
                       height={zoomPreviewDimensions?.height || displayDimensions?.height || 360}
@@ -564,6 +796,151 @@ export default function AssetPage(props) {
               Premium asset
             </div>
           </div>
+          {hasVideoPreviewOptions && (
+            <div
+              role="group"
+              aria-label="Video preview options"
+              style={{
+                display: "flex",
+                alignItems: "stretch",
+                gap: 10,
+                overflowX: "auto",
+                marginTop: 16,
+                paddingBottom: 4,
+              }}
+            >
+              {videoSourceUrl && (
+                <div className="video-preview-card" style={{ position: "relative", flex: "0 0 140px" }}>
+                  <button
+                    type="button"
+                    aria-label={videoPreviews.optimizedVideo ? "Generated video preview" : "Original video preview"}
+                    aria-pressed={selectedVideoPreview === "video"}
+                    onClick={() => setSelectedVideoPreview("video")}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      padding: 6,
+                      border: `2px solid ${selectedVideoPreview === "video" ? "#2563eb" : darkMode ? "#334155" : "#cbd5e1"}`,
+                      borderRadius: 12,
+                      background: darkMode ? "#0f172a" : "#fff",
+                      cursor: "pointer",
+                      position: "relative",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <video
+                      src={absoluteVideoSourceUrl}
+                      poster={selectedVideoFrameUrl || (isPublicAsset ? getAssetThumbnailUrl(image) : undefined)}
+                      muted
+                      loop
+                      autoPlay
+                      playsInline
+                      preload="metadata"
+                      aria-hidden="true"
+                      tabIndex={-1}
+                      style={{
+                        width: "100%",
+                        aspectRatio: "16 / 9",
+                        objectFit: "cover",
+                        borderRadius: 8,
+                        background: "#000",
+                      }}
+                    />
+                  </button>
+                  {isAdmin && videoPreviews.optimizedVideo?.url && (
+                    <button
+                      type="button"
+                      className="video-preview-remove-button"
+                      aria-label="Remove generated video preview"
+                      title="Remove generated video preview"
+                      disabled={Boolean(deletingVideoPreview)}
+                      onClick={() => deleteGeneratedVideoPreview("optimized")}
+                      style={{ cursor: deletingVideoPreview === "optimized" ? "wait" : "pointer" }}
+                    >
+                      <svg aria-hidden="true" viewBox="0 0 16 16" focusable="false">
+                        <path d="m4 4 8 8M12 4l-8 8" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              )}
+              {videoPreviews.frames.map((frame) => (
+                <div
+                  key={frame.index}
+                  className="video-preview-card"
+                  style={{ position: "relative", flex: "0 0 140px" }}
+                >
+                  <button
+                    type="button"
+                    aria-label={`Preview thumbnail at ${Number(frame.timestamp).toFixed(1)} seconds`}
+                    aria-pressed={selectedVideoPreview === frame.index}
+                    onClick={() => setSelectedVideoPreview(frame.index)}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      padding: 6,
+                      border: `2px solid ${selectedVideoPreview === frame.index ? "#2563eb" : darkMode ? "#334155" : "#cbd5e1"}`,
+                      borderRadius: 12,
+                      color: darkMode ? "#e2e8f0" : "#1e293b",
+                      background: darkMode ? "#0f172a" : "#fff",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      position: "relative",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <img
+                      src={resolveVideoPreviewUrl(frame.url)}
+                      alt={`Video frame at ${Number(frame.timestamp).toFixed(1)} seconds`}
+                      loading="lazy"
+                      decoding="async"
+                      style={{
+                        width: "100%",
+                        aspectRatio: "16 / 9",
+                        objectFit: "cover",
+                        borderRadius: 12,
+                      }}
+                    />
+                  </button>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      className="video-preview-remove-button"
+                      aria-label={`Remove thumbnail at ${Number(frame.timestamp).toFixed(1)} seconds`}
+                      title="Remove generated thumbnail"
+                      disabled={Boolean(deletingVideoPreview)}
+                      onClick={() => deleteGeneratedVideoPreview("frame", frame.index)}
+                      style={{
+                        cursor: deletingVideoPreview === `frame-${frame.index}` ? "wait" : "pointer",
+                      }}
+                    >
+                      <svg aria-hidden="true" viewBox="0 0 16 16" focusable="false">
+                        <path d="m4 4 8 8M12 4l-8 8" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {videoPreviewNotice && (
+            <div
+              role={videoPreviewNotice.type === "error" ? "alert" : "status"}
+              style={{
+                marginTop: 10,
+                color: videoPreviewNotice.type === "error"
+                  ? "#b91c1c"
+                  : videoPreviewNotice.type === "warning"
+                    ? "#92400e"
+                    : darkMode ? "#86efac" : "#166534",
+                fontSize: "0.9rem",
+              }}
+            >
+              {videoPreviewNotice.message}
+            </div>
+          )}
         </div>
 
         <div

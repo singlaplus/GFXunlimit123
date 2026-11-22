@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { getThumbnailAssetIdFromRelativePath } = require('../utils/assetThumbnails');
 
 async function assertSchemaReady() {
   const result = await pool.query(`
@@ -13,13 +14,17 @@ async function assertSchemaReady() {
 
 function planOrphanThumbnailFiles(entries, assetIds, recordIds) {
   return entries
-    .filter((entry) => entry.isFile() && /^\d{4}\/\d{2}\/\d{2}\/.+_[1-9]\d*\.webp$/.test(entry.relativePath || ''))
+    .filter((entry) => entry.isFile())
     .map((entry) => {
-      const assetId = Number(entry.relativePath.match(/_([1-9]\d*)\.webp$/)?.[1]);
-      if (!Number.isSafeInteger(assetId)) return null;
+      const assetId = getThumbnailAssetIdFromRelativePath(entry.relativePath);
+      if (assetId === null) return null;
       const hasAsset = assetIds.has(assetId);
       const recordPath = recordIds instanceof Map ? recordIds.get(assetId) : null;
-      const hasRecord = recordIds instanceof Map ? recordPath === entry.relativePath : recordIds.has(assetId);
+      const hasRecord = recordIds instanceof Map
+        ? recordPath instanceof Set
+          ? recordPath.has(entry.relativePath)
+          : recordPath === entry.relativePath
+        : recordIds.has(assetId);
       if (hasAsset && hasRecord) return null;
       return {
         relativePath: entry.relativePath,

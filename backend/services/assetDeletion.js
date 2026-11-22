@@ -91,7 +91,7 @@ async function deleteAssetCompletely(assetId, requesterId, dependencies, options
     }
 
     const thumbnailResult = await client.query(
-      'SELECT thumbnail_path FROM asset_thumbnail_metadata WHERE asset_id = $1',
+      'SELECT thumbnail_path, video_preview_metadata FROM asset_thumbnail_metadata WHERE asset_id = $1',
       [id]
     );
     const orphanResult = await client.query(
@@ -100,6 +100,9 @@ async function deleteAssetCompletely(assetId, requesterId, dependencies, options
     );
     const thumbnailPaths = [
       thumbnailResult.rows[0]?.thumbnail_path,
+      ...assetThumbnails.getVideoPreviewPathsFromMetadata(
+        thumbnailResult.rows[0]?.video_preview_metadata
+      ),
       ...orphanResult.rows.map((row) => row.thumbnail_path),
     ].filter((thumbnailPath, index, paths) => thumbnailPath && paths.indexOf(thumbnailPath) === index);
     for (const thumbnailPath of thumbnailPaths) {

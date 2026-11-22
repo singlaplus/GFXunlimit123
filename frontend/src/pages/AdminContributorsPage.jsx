@@ -63,7 +63,7 @@ const formatPermissionValue = (contributor, key) => {
   const hasConfiguredLimit = permissions.upload_limit_value != null || permissions.upload_limit_unit;
   return hasConfiguredLimit
     ? `${permissions.upload_limit_value ?? 20} ${String(permissions.upload_limit_unit || "MB").toUpperCase()}`
-    : "20 GB";
+    : "20 MB";
 };
 
 const getSortableValue = (contributor, key) => {

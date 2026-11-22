@@ -57,6 +57,7 @@ const { getAssetSourceDimensions } = require("./utils/assetDimensions");
 const thumbnailQueue = require("./thumbnail-queue-worker");
 const assetThumbnails = require("./utils/assetThumbnails");
 const { deleteAssetCompletely } = require("./services/assetDeletion");
+const { deleteAssetVideoPreview } = require("./services/assetVideoPreviewDeletion");
 const { moveAssetFileAndUpdate } = require("./services/assetFileMove");
 const { resolveUploadLimitBytes } = require("./uploadLimits");
 const {
@@ -81,6 +82,7 @@ const { createSitemapScheduleSettings, createSitemapScheduler } = require("./ser
 const { createSitemapRouter } = require("./routes/sitemap-routes");
 const { createLinksScanner } = require("./services/linksScanner");
 const { createLinksScanRouter } = require("./routes/links-scan-routes");
+const { createThumbnailGenerationSettingsRouter } = require("./routes/thumbnail-generation-settings-routes");
 const { updateStorageRootInEnv, updateStorageRootsInEnv } = require("./services/assetStorageEnvironment");
 const { getDisconnectedStorageForRequest } = assetStorageConnections;
 const {
@@ -94,7 +96,13 @@ const {
   createRemoteAssetUploadProxy,
   shouldProxyRemoteAssetUpload,
 } = require("./services/remoteAssetUploadProxy");
-const { isAllowedAssetUploadFile } = require("./services/assetUploadValidation");
+const {
+  getAutomaticAssetCollection,
+  isThumbnailRequiredForCollection,
+  isAllowedAssetUploadFile,
+  resolveAssetCollection,
+} = require("./services/assetUploadValidation");
+const { SUPPORTED_VIDEO_EXTENSIONS } = require("./services/videoFormats");
 const { prepareRemoteAssetFileAuthorization } = require("./services/remoteAssetFileAuthorization");
 const { releaseUploadLocks } = require("./services/uploadLockCleanup");
 const ProcessorDetector = require("./thumbnail-engine/processor-detector");
@@ -116,6 +124,7 @@ const {
 } = require("./services/storageLocationBrowser");
 const processorFactory = require("./thumbnail-engine/processor-factory");
 const {
+  proxyRemoteVideoPreviewDelete,
   proxyRemoteThumbnail,
   shouldProxyRemoteThumbnail,
 } = require("./utils/thumbnailRemoteProxy");
@@ -246,7 +255,7 @@ const upload = multer({
   storage: storage,
 
   limits: {
-    fileSize: 200 * 1024 * 1024
+    fileSize: assetThumbnails.MAX_SOURCE_BYTES
   },
 
   fileFilter: (req, file, cb) => {
@@ -553,7 +562,7 @@ const cacheUnsupportedPreviewSource = (sourcePath) => {
 /* Thumbnail processing support */
 const THUMBNAIL_SUPPORTED_EXTENSIONS = [
   ".ai", ".eps", ".psd", ".psb", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".tif", ".tiff",
-  ".pdf", ".zip", ".mp4", ".avi", ".mkv", ".mov", ".webm", ".aep", ".prproj",
+  ".pdf", ".zip", ...SUPPORTED_VIDEO_EXTENSIONS, ".aep", ".prproj",
 ];
 const THUMBNAIL_SUPPORTED_MIMES = [
   "application/x-illustrator",
@@ -9347,6 +9356,236 @@ app.get("/api/assets/:id/thumbnail", async (req, res) => {
   }
 });
 
+app.get("/api/assets/:id/video-previews", async (req, res) => {
+  const assetId = assetThumbnails.parseThumbnailAssetId(req.params.id);
+  if (assetId === null) return res.status(400).json({ error: "Invalid asset ID" });
+  res.setHeader("Cache-Control", "private, no-store");
+
+  try {
+    const result = await pool.query(
+      `SELECT i.id, i.filename, i.status, i.uploaded_by,
+              t.status AS thumbnail_status, t.video_preview_metadata
+       FROM images i
+       LEFT JOIN asset_thumbnail_metadata t ON t.asset_id = i.id
+       WHERE i.id = $1`,
+      [assetId]
+    );
+    const asset = result.rows[0];
+    if (!asset || !assetThumbnails.VIDEO_EXTENSIONS.has(path.extname(asset.filename || "").toLowerCase())) {
+      return res.status(404).json({ error: "Video previews not found" });
+    }
+    if (!(await authorizeAssetOwnerOrAdmin(req, res, asset))) {
+      if (!res.headersSent) return res.status(404).json({ error: "Video previews not found" });
+      return undefined;
+    }
+
+    const metadata = asset.thumbnail_status === "READY" && asset.video_preview_metadata &&
+      typeof asset.video_preview_metadata === "object" && !Array.isArray(asset.video_preview_metadata)
+      ? asset.video_preview_metadata
+      : {};
+    const proxyRemotePreviews = shouldProxyRemoteThumbnail();
+    const baseUrl = `/api/assets/${assetId}/video-previews`;
+    const frames = [];
+    for (const [index, frame] of (Array.isArray(metadata.frames) ? metadata.frames : []).entries()) {
+      try {
+        const relativePath = assetThumbnails.normalizeThumbnailRelativePath(frame?.path, assetId);
+        if (!proxyRemotePreviews) {
+          const root = assetThumbnails.getThumbnailStorageRoot(relativePath);
+          const filePath = assetThumbnails.getThumbnailFilePath(assetId, root, relativePath);
+          const stats = await fs.promises.lstat(filePath);
+          if (
+            !stats.isFile() ||
+            stats.isSymbolicLink() ||
+            !(await assetThumbnails.isThumbnailPathInsideRoot(filePath, root))
+          ) continue;
+        }
+        frames.push({
+          index: index + 1,
+          timestamp: Number(frame.timestamp) || 0,
+          width: Number(frame.width) || null,
+          height: Number(frame.height) || null,
+          url: `${baseUrl}/frame/${index + 1}`,
+        });
+      } catch (error) {
+        if (!["ENOENT", "ENOTDIR"].includes(error.code)) {
+          console.error(`Invalid video preview frame metadata for asset ${assetId}: ${error.message}`);
+        }
+      }
+    }
+
+    let optimizedVideo = null;
+    try {
+      const relativePath = assetThumbnails.normalizeThumbnailRelativePath(
+        metadata.optimizedVideo?.path,
+        assetId
+      );
+      let optimizedVideoExists = proxyRemotePreviews;
+      if (!proxyRemotePreviews) {
+        const root = assetThumbnails.getThumbnailStorageRoot(relativePath);
+        const filePath = assetThumbnails.getThumbnailFilePath(assetId, root, relativePath);
+        const stats = await fs.promises.lstat(filePath);
+        optimizedVideoExists = stats.isFile() &&
+          !stats.isSymbolicLink() &&
+          await assetThumbnails.isThumbnailPathInsideRoot(filePath, root);
+      }
+      if (optimizedVideoExists) {
+        optimizedVideo = {
+          width: Number(metadata.optimizedVideo.width) || null,
+          height: Number(metadata.optimizedVideo.height) || null,
+          sizeBytes: Number(metadata.optimizedVideo.sizeBytes) || null,
+          url: `${baseUrl}/optimized`,
+        };
+      }
+    } catch (error) {
+      if (!["ENOENT", "ENOTDIR"].includes(error.code) && metadata.optimizedVideo?.path) {
+        console.error(`Invalid optimized video metadata for asset ${assetId}: ${error.message}`);
+      }
+    }
+
+    return res.json({
+      frames,
+      optimizedVideo,
+      originalVideoUrl: `/api/images/${assetId}?original=true`,
+    });
+  } catch (error) {
+    console.error(`Failed to load video previews for asset ${assetId}:`, error.message || error);
+    return res.status(503).json({ error: "Video previews are temporarily unavailable" });
+  }
+});
+
+async function serveAssetVideoPreview(req, res, variant) {
+  const assetId = assetThumbnails.parseThumbnailAssetId(req.params.id);
+  if (assetId === null) return res.status(400).json({ error: "Invalid asset ID" });
+  try {
+    const result = await pool.query(
+      `SELECT i.id, i.filename, i.status, i.uploaded_by,
+              t.status AS thumbnail_status, t.video_preview_metadata
+       FROM images i
+       LEFT JOIN asset_thumbnail_metadata t ON t.asset_id = i.id
+       WHERE i.id = $1`,
+      [assetId]
+    );
+    const asset = result.rows[0];
+    if (!asset || !assetThumbnails.VIDEO_EXTENSIONS.has(path.extname(asset.filename || "").toLowerCase())) {
+      return res.status(404).json({ error: "Video preview not found" });
+    }
+    if (!(await authorizeAssetOwnerOrAdmin(req, res, asset))) {
+      if (!res.headersSent) return res.status(404).json({ error: "Video preview not found" });
+      return undefined;
+    }
+    if (asset.thumbnail_status !== "READY") {
+      return res.status(404).json({ error: "Video preview not found" });
+    }
+
+    const metadata = asset.video_preview_metadata || {};
+    const relativePath = variant === "optimized"
+      ? metadata.optimizedVideo?.path
+      : metadata.frames?.[Number(req.params.index) - 1]?.path;
+    if (typeof relativePath !== "string" || !relativePath.trim()) {
+      return res.status(404).json({ error: "Video preview not found" });
+    }
+    const safeRelativePath = assetThumbnails.normalizeThumbnailRelativePath(relativePath, assetId);
+    if (shouldProxyRemoteThumbnail()) {
+      const remoteAuthorization = req.headers.authorization ||
+        (req.cookies?.authToken ? `Bearer ${req.cookies.authToken}` : null);
+      return proxyRemoteThumbnail({
+        req,
+        res,
+        assetId,
+        authorization: ["approved", "published", "live"].includes(String(asset.status || "").toLowerCase())
+          ? null
+          : remoteAuthorization,
+        cacheControl: ["approved", "published", "live"].includes(String(asset.status || "").toLowerCase())
+          ? "public, max-age=300, must-revalidate"
+          : "private, no-store",
+        remotePath: variant === "optimized"
+          ? "/video-previews/optimized"
+          : `/video-previews/frame/${Number(req.params.index)}`,
+      });
+    }
+
+    const root = assetThumbnails.getThumbnailStorageRoot(safeRelativePath);
+    const filePath = assetThumbnails.getThumbnailFilePath(assetId, root, safeRelativePath);
+    const stats = await fs.promises.lstat(filePath).catch((error) => {
+      if (["ENOENT", "ENOTDIR"].includes(error.code)) return null;
+      throw error;
+    });
+    if (
+      !stats?.isFile() ||
+      stats.isSymbolicLink() ||
+      !(await assetThumbnails.isThumbnailPathInsideRoot(filePath, root))
+    ) {
+      return res.status(404).json({ error: "Video preview not found" });
+    }
+    const isPublicAsset = ["approved", "published", "live"].includes(String(asset.status || "").toLowerCase());
+    res.setHeader("Content-Type", variant === "optimized" ? "video/mp4" : "image/webp");
+    res.setHeader("Cache-Control", assetThumbnails.getThumbnailCacheControl(isPublicAsset, false));
+    res.setHeader("Last-Modified", stats.mtime.toUTCString());
+    res.setHeader("ETag", `W/"${stats.size.toString(16)}-${Math.trunc(stats.mtimeMs).toString(16)}"`);
+    return res.sendFile(filePath, { lastModified: true, etag: true, cacheControl: false });
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") {
+      return res.status(404).json({ error: "Video preview not found" });
+    }
+    console.error(`Failed to serve video preview for asset ${assetId}:`, error.message || error);
+    return res.status(503).json({ error: "Video preview is temporarily unavailable" });
+  }
+}
+
+app.get("/api/assets/:id/video-previews/frame/:index", (req, res) => {
+  const index = Number(req.params.index);
+  if (!Number.isInteger(index) || index < 1 || index > 6) {
+    return res.status(400).json({ error: "Invalid video frame index" });
+  }
+  return serveAssetVideoPreview(req, res, "frame");
+});
+
+app.get("/api/assets/:id/video-previews/optimized", (req, res) => (
+  serveAssetVideoPreview(req, res, "optimized")
+));
+
+async function handleDeleteAssetVideoPreview(req, res, variant, frameIndex) {
+  const assetId = assetThumbnails.parseThumbnailAssetId(req.params.id);
+  if (assetId === null) return res.status(400).json({ error: "Invalid asset ID" });
+
+  if (shouldProxyRemoteThumbnail()) {
+    return proxyRemoteVideoPreviewDelete({
+      req,
+      res,
+      assetId,
+      remotePath: variant === "optimized"
+        ? "/video-previews/optimized"
+        : `/video-previews/frame/${frameIndex}`,
+    });
+  }
+
+  try {
+    const result = await deleteAssetVideoPreview(assetId, variant, frameIndex, {
+      pool,
+      assetThumbnails,
+    });
+    return res.json(result);
+  } catch (error) {
+    const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
+    if (statusCode >= 500) {
+      console.error(`Failed to delete ${variant} preview for asset ${assetId}:`, error);
+    }
+    return res.status(statusCode).json({ error: error.message || "Video preview deletion failed" });
+  }
+}
+
+app.delete("/api/assets/:id/video-previews/frame/:index", verifyAdmin, (req, res) => {
+  const index = Number(req.params.index);
+  if (!Number.isInteger(index) || index < 1 || index > 6) {
+    return res.status(400).json({ error: "Invalid video frame index" });
+  }
+  return handleDeleteAssetVideoPreview(req, res, "frame", index);
+});
+
+app.delete("/api/assets/:id/video-previews/optimized", verifyAdmin, (req, res) => (
+  handleDeleteAssetVideoPreview(req, res, "optimized", null)
+));
+
 /* ---------------- UPLOAD IMAGE ---------------- */
 
 const lockContributorUpload = async (req, res, next) => {
@@ -9588,7 +9827,16 @@ app.post(
         return await respondAfterStagingCleanup(400, "No image uploaded");
       }
 
-      if (!isPreSubmissionUpload && (!title || !category || !collection || !keywords)) {
+      if (!isPreSubmissionUpload && isThumbnailRequiredForCollection(collection) && !optionalThumbnailFile) {
+        return await respondAfterStagingCleanup(400, {
+          error: "A thumbnail is required for the Templates collection.",
+        });
+      }
+
+      const automaticCollection = getAutomaticAssetCollection(originalFile.originalname);
+      const requiredMetadataPresent = [title, description, category, keywords, type]
+        .every((value) => String(value || "").trim());
+      if (!isPreSubmissionUpload && (!requiredMetadataPresent || (!collection && !automaticCollection))) {
         return await respondAfterStagingCleanup(400, "All fields are required");
       }
 
@@ -9659,7 +9907,7 @@ app.post(
       }
       const assetTitle = String(title || path.basename(originalFilename, path.extname(originalFilename))).trim();
       const assetCategory = String(category || "").trim();
-      const assetCollection = String(collection || "").trim();
+      const assetCollection = resolveAssetCollection(originalFilename, collection);
       const assetKeywords = String(keywords || "").trim();
       const assetDescription = String(description || "").trim();
       const assetType = String(type || "").trim();
@@ -10126,7 +10374,7 @@ app.post(
       }
 
       const assetResult = await pool.query(
-        `SELECT id, uploaded_by, status, title, category, collection, keywords
+        `SELECT id, uploaded_by, status, title, description, category, collection, keywords, type, filename, original_filename
          FROM images WHERE id = $1`,
         [assetId]
       );
@@ -10137,13 +10385,24 @@ app.post(
       if (!["not_submitted", "draft"].includes(String(asset.status || "").toLowerCase())) {
         return res.status(409).json({ error: "Only not-submitted assets can be submitted." });
       }
-      if (!asset.title?.trim() || !asset.category?.trim() || !asset.collection?.trim() || !asset.keywords?.trim()) {
+      const submittedCollection = resolveAssetCollection(
+        asset.original_filename || asset.filename,
+        asset.collection
+      );
+      if (
+        !asset.title?.trim() ||
+        !asset.description?.trim() ||
+        !asset.category?.trim() ||
+        !submittedCollection ||
+        !asset.keywords?.trim() ||
+        !asset.type?.trim()
+      ) {
         return res.status(400).json({ error: "Complete the required metadata before submitting this asset." });
       }
 
       const submitted = await pool.query(
         `UPDATE images
-         SET status = 'pending'
+         SET status = 'pending', collection = $3
          WHERE id = $1 AND uploaded_by = $2
            AND LOWER(COALESCE(status, '')) IN ('not_submitted', 'draft')
            AND EXISTS (
@@ -10151,7 +10410,7 @@ app.post(
              WHERE asset_id = $1 AND status = 'READY' AND thumbnail_path IS NOT NULL
            )
          RETURNING *`,
-        [assetId, req.user.id]
+        [assetId, req.user.id, submittedCollection]
       );
       if (submitted.rows.length === 0) {
         return res.status(409).json({ error: "This asset cannot be submitted until its thumbnail is ready." });
@@ -14134,10 +14393,13 @@ app.get(
           `
           SELECT
             images.*,
-            users.username AS contributor_username
+            users.username AS contributor_username,
+            thumbnail_metadata.quality AS thumbnail_quality
           FROM images
           LEFT JOIN users
             ON users.id = images.uploaded_by
+          LEFT JOIN asset_thumbnail_metadata AS thumbnail_metadata
+            ON thumbnail_metadata.asset_id = images.id
           ORDER BY images.created_at DESC
           `
 
@@ -16133,8 +16395,16 @@ app.get(
       const authHeader =
         req.headers["authorization"];
 
+      if (!authHeader) {
+        return res.status(401).json("Access denied");
+      }
+
       const token =
         authHeader.split(" ")[1];
+
+      if (!token) {
+        return res.status(401).json("Access denied");
+      }
 
       const decoded = verifyJwtToken(token);
 
@@ -17101,6 +17371,11 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(redirectRuleEnabledMigration);
+      const productionVideoPreviewsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "039_production_video_previews.sql"),
+        "utf8"
+      );
+      await pool.query(productionVideoPreviewsMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);
@@ -17217,6 +17492,7 @@ async function initializeThumbnailSystem() {
 
 /* Mount admin thumbnail routes */
 app.use("/", adminThumbnailRoutes);
+app.use("/", createThumbnailGenerationSettingsRouter({ verifyAdmin }));
 
 /* Central messaging, notifications, activity, and automation APIs */
 app.use("/api/messages", createMessagingRouter(pool, authenticateToken, verifyAdmin));

@@ -33,6 +33,44 @@ const COLLECTION_STORAGE_KEY = "asset-collections";
 const ASSET_STORAGE_CARD_COUNT_KEY = "admin-assets-connection-card-count";
 const THUMBNAIL_STORAGE_CARD_COUNT_KEY = "admin-thumbnails-connection-card-count";
 const USER_DELETE_COOLING_PERIOD_MINUTES = 60;
+const DEFAULT_THUMBNAIL_FORMATS = ["jpg", "png", "eps", "psd", "video"];
+const THUMBNAIL_FORMAT_OPTIONS = [
+  ["jpg", "JPG / JPEG"],
+  ["png", "PNG"],
+  ["eps", "EPS"],
+  ["psd", "PSD"],
+  ["video", "Video"],
+];
+const DEFAULT_VIDEO_PREVIEW_SETTINGS = {
+  multipleVideoThumbnails: false,
+  includeVideoPreview: false,
+  generateOptimizedVideoPreview: false,
+  videoQuality: 60,
+  videoMaxHeight: 720,
+  videoMaxFileSizeMb: 2,
+};
+const SUPPORTED_VIDEO_FILE_EXTENSIONS = [
+  ".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg", ".mpe",
+  ".m2v", ".m2ts", ".mts", ".ts", ".3gp", ".3g2", ".wmv", ".asf", ".flv",
+  ".f4v", ".ogv", ".vob", ".mxf", ".y4m",
+];
+const VIDEO_FILE_EXTENSION_SET = new Set(SUPPORTED_VIDEO_FILE_EXTENSIONS);
+const DEFAULT_THUMBNAIL_SETTINGS = { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 };
+const getThumbnailSettingsFormat = (filename) => {
+  const extension = String(filename || "").split(".").pop()?.toLowerCase();
+  if (extension === "jpeg") return "jpg";
+  return VIDEO_FILE_EXTENSION_SET.has(`.${extension}`) ? "video" : extension;
+};
+const DEFAULT_FORMAT_SETTINGS = Object.fromEntries(
+  DEFAULT_THUMBNAIL_FORMATS.map((format) => [
+    format,
+    format === "video"
+      ? { ...DEFAULT_THUMBNAIL_SETTINGS, ...DEFAULT_VIDEO_PREVIEW_SETTINGS }
+      : { ...DEFAULT_THUMBNAIL_SETTINGS },
+  ])
+);
+const PREVIEW_SAMPLE_SESSION_KEY = "admin-thumbnail-preview-sample-session";
+const PREVIEW_SAMPLE_HISTORY_KEY = "admin-thumbnail-preview-sample-history";
 
 const readStorageCardCount = (key, maximum) => {
   if (typeof window === "undefined") return 1;
@@ -108,6 +146,1011 @@ function AnimatedAssetCount({ value }) {
   }, [value]);
 
   return <span className="admin-asset-count" aria-label={Number(value).toLocaleString()}>{displayedValue.toLocaleString()}</span>;
+}
+
+function ThumbnailGenerationSettingsPage({ onBack }) {
+  const [settings, setSettings] = useState(null);
+  const [editingFormat, setEditingFormat] = useState("jpg");
+  const [form, setForm] = useState({
+    quality: 37,
+    maxFileSizeKb: 50,
+    dimensionPercent: 20,
+    formats: [...DEFAULT_THUMBNAIL_FORMATS],
+    ...DEFAULT_VIDEO_PREVIEW_SETTINGS,
+    formatSettings: DEFAULT_FORMAT_SETTINGS,
+  });
+  const [maxFileSizeUnit, setMaxFileSizeUnit] = useState("KB");
+  const [maxFileSizeInput, setMaxFileSizeInput] = useState("50");
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [pendingSampleRename, setPendingSampleRename] = useState(null);
+  const [sampleFileInputVersion, setSampleFileInputVersion] = useState(0);
+  const [preview, setPreview] = useState(null);
+  const [sampleSession, setSampleSession] = useState(null);
+  const [retainedSampleSessionIds, setRetainedSampleSessionIds] = useState([]);
+  const [previewDestinationPath, setPreviewDestinationPath] = useState("");
+  const [previewDestinationValidated, setPreviewDestinationValidated] = useState(false);
+  const [destinationBrowser, setDestinationBrowser] = useState(null);
+  const [destinationBrowserLoading, setDestinationBrowserLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [now, setNow] = useState(Date.now());
+  const activationRefreshRef = useRef(false);
+  const applySettingsResponseRef = useRef(null);
+  const readSettingsRef = useRef(null);
+  const endpoint = `${API_BASE_URL}/admin/thumbnail-generation-settings`;
+  const authConfig = () => ({ headers: getAuthHeaders() });
+  const normalizeSettingsRecord = (value) => {
+    const formats = Array.isArray(value?.formats) ? value.formats : DEFAULT_THUMBNAIL_FORMATS;
+    const selectedFormats = new Set(formats);
+    const legacySettings = {
+      quality: Number(value?.quality ?? DEFAULT_THUMBNAIL_SETTINGS.quality),
+      maxFileSizeKb: Number(value?.maxFileSizeKb ?? DEFAULT_THUMBNAIL_SETTINGS.maxFileSizeKb),
+      dimensionPercent: Number(value?.dimensionPercent ?? DEFAULT_THUMBNAIL_SETTINGS.dimensionPercent),
+      ...DEFAULT_VIDEO_PREVIEW_SETTINGS,
+      multipleVideoThumbnails: value?.multipleVideoThumbnails === true,
+      includeVideoPreview: value?.includeVideoPreview === true,
+      generateOptimizedVideoPreview: value?.generateOptimizedVideoPreview === true,
+      videoQuality: Number(value?.videoQuality ?? DEFAULT_VIDEO_PREVIEW_SETTINGS.videoQuality),
+      videoMaxHeight: Number(value?.videoMaxHeight ?? DEFAULT_VIDEO_PREVIEW_SETTINGS.videoMaxHeight),
+      videoMaxFileSizeMb: Number(value?.videoMaxFileSizeMb ?? DEFAULT_VIDEO_PREVIEW_SETTINGS.videoMaxFileSizeMb),
+    };
+    const formatSettings = Object.fromEntries(DEFAULT_THUMBNAIL_FORMATS.map((format) => {
+      const saved = value?.formatSettings?.[format];
+      const fallback = saved === undefined && value?.formatSettings === undefined && selectedFormats.has(format)
+        ? legacySettings
+        : DEFAULT_FORMAT_SETTINGS[format];
+      const merged = { ...fallback, ...saved };
+      return [format, format === "video"
+        ? {
+            ...merged,
+            quality: Number(merged.quality),
+            maxFileSizeKb: Number(merged.maxFileSizeKb),
+            dimensionPercent: Number(merged.dimensionPercent),
+            videoQuality: Number(merged.videoQuality),
+            videoMaxHeight: Number(merged.videoMaxHeight),
+            videoMaxFileSizeMb: Number(merged.videoMaxFileSizeMb),
+          }
+        : {
+            quality: Number(merged.quality),
+            maxFileSizeKb: Number(merged.maxFileSizeKb),
+            dimensionPercent: Number(merged.dimensionPercent),
+          }];
+    }));
+    return {
+      ...value,
+      quality: Number(value?.quality ?? DEFAULT_THUMBNAIL_SETTINGS.quality),
+      maxFileSizeKb: Number(value?.maxFileSizeKb ?? DEFAULT_THUMBNAIL_SETTINGS.maxFileSizeKb),
+      dimensionPercent: Number(value?.dimensionPercent ?? DEFAULT_THUMBNAIL_SETTINGS.dimensionPercent),
+      formats: DEFAULT_THUMBNAIL_FORMATS.filter((format) => selectedFormats.has(format)),
+      ...legacySettings,
+      formatSettings,
+    };
+  };
+  const normalizeSettingsResponse = (value) => ({
+    ...value,
+    active: normalizeSettingsRecord(value?.active),
+    draft: normalizeSettingsRecord(value?.draft),
+  });
+  const applySettingsResponse = (value) => {
+    const normalized = normalizeSettingsResponse(value);
+    const nextFormat = normalized.draft.formats.includes(editingFormat)
+      ? editingFormat
+      : normalized.draft.formats[0] || editingFormat || "jpg";
+    const nextFormatSettings = normalized.draft.formatSettings[nextFormat] || DEFAULT_FORMAT_SETTINGS[nextFormat];
+    setSettings(normalized);
+    setEditingFormat(nextFormat);
+    setForm({ ...normalized.draft, ...nextFormatSettings, formats: [...normalized.draft.formats] });
+    const sizeInKb = Number(nextFormatSettings.maxFileSizeKb);
+    setMaxFileSizeInput(maxFileSizeUnit === "MB" ? (sizeInKb / 1024).toFixed(5) : String(sizeInKb));
+    return normalized;
+  };
+  const readSettings = async () => {
+    const response = await axios.get(endpoint, authConfig());
+    return applySettingsResponse(response.data);
+  };
+  applySettingsResponseRef.current = applySettingsResponse;
+  readSettingsRef.current = readSettings;
+
+  useEffect(() => {
+    let active = true;
+    axios.get(endpoint, authConfig())
+      .then((response) => {
+        if (!active) return;
+        applySettingsResponseRef.current(response.data);
+      })
+      .catch((error) => {
+        if (active) setErrorMessage(error.response?.data?.error || "Unable to load thumbnail settings.");
+      });
+    return () => { active = false; };
+  }, [endpoint]);
+
+  useEffect(() => {
+    let active = true;
+    const restorePreviewState = async () => {
+      try {
+        const response = await axios.get(`${endpoint}/preview-samples/state`, authConfig());
+        let previewState = response.data;
+        const savedSessionId = window.sessionStorage.getItem(PREVIEW_SAMPLE_SESSION_KEY);
+        const savedHistory = window.sessionStorage.getItem(PREVIEW_SAMPLE_HISTORY_KEY);
+        let legacyHistory = [];
+        let historyError = "";
+        if (savedHistory) {
+          try {
+            const parsedHistory = JSON.parse(savedHistory);
+            if (!Array.isArray(parsedHistory) || parsedHistory.some((id) => typeof id !== "string" || !id)) {
+              throw new TypeError("Saved sample test history is invalid.");
+            }
+            legacyHistory = parsedHistory;
+          } catch {
+            historyError = "Saved browser preview history could not be read; those files were left untouched.";
+          }
+        }
+        const legacyIds = [...new Set([...legacyHistory, ...(savedSessionId ? [savedSessionId] : [])])];
+        if (legacyIds.length) {
+          const importResponse = await axios.post(`${endpoint}/preview-samples/import`, {
+            sessionIds: legacyIds,
+            currentSessionId: savedSessionId || null,
+          }, authConfig());
+          previewState = importResponse.data;
+        }
+        if (!active) return;
+        setPreviewDestinationPath(previewState.destinationPath || "");
+        setPreviewDestinationValidated(Boolean(previewState.destinationPath));
+        setSampleSession(previewState.sample || null);
+        setPreview(previewState.preview || null);
+        const sessionIds = Array.isArray(previewState.sessionIds) ? previewState.sessionIds : [];
+        setRetainedSampleSessionIds(sessionIds.filter((id) => id !== previewState.sample?.id));
+        window.sessionStorage.removeItem(PREVIEW_SAMPLE_SESSION_KEY);
+        window.sessionStorage.removeItem(PREVIEW_SAMPLE_HISTORY_KEY);
+        if (historyError) setErrorMessage(historyError);
+      } catch (error) {
+        if (active) {
+          setErrorMessage(error.response?.data?.error || "Unable to restore the user's sample preview.");
+        }
+      }
+    };
+    restorePreviewState();
+    return () => { active = false; };
+  }, [endpoint]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!settings?.pendingActivationAt || Date.parse(settings.pendingActivationAt) > now || activationRefreshRef.current) return;
+    activationRefreshRef.current = true;
+    readSettingsRef.current()
+      .catch((error) => setErrorMessage(error.response?.data?.error || "Unable to confirm scheduled activation."))
+      .finally(() => { activationRefreshRef.current = false; });
+  }, [settings?.pendingActivationAt, now]);
+
+  const savedFormatSettings = form.formatSettings || settings?.draft.formatSettings || DEFAULT_FORMAT_SETTINGS;
+  const editingSettings = {
+    quality: Number(form.quality),
+    maxFileSizeKb: Number(form.maxFileSizeKb),
+    dimensionPercent: Number(form.dimensionPercent),
+    ...(editingFormat === "video" ? {
+      multipleVideoThumbnails: form.multipleVideoThumbnails === true,
+      includeVideoPreview: form.includeVideoPreview === true,
+      generateOptimizedVideoPreview: form.generateOptimizedVideoPreview === true,
+      videoQuality: Number(form.videoQuality),
+      videoMaxHeight: Number(form.videoMaxHeight),
+      videoMaxFileSizeMb: Number(form.videoMaxFileSizeMb),
+    } : {}),
+  };
+  const formatSettings = {
+    ...savedFormatSettings,
+    [editingFormat]: {
+      ...savedFormatSettings[editingFormat],
+      ...editingSettings,
+    },
+  };
+  const videoSettings = formatSettings.video;
+  const numericForm = {
+    ...editingSettings,
+    multipleVideoThumbnails: videoSettings.multipleVideoThumbnails,
+    includeVideoPreview: videoSettings.includeVideoPreview,
+    generateOptimizedVideoPreview: videoSettings.generateOptimizedVideoPreview,
+    videoQuality: videoSettings.videoQuality,
+    videoMaxHeight: videoSettings.videoMaxHeight,
+    videoMaxFileSizeMb: videoSettings.videoMaxFileSizeMb,
+    formats: DEFAULT_THUMBNAIL_FORMATS.filter((format) => (
+      format === editingFormat || (Array.isArray(form.formats) && form.formats.includes(format))
+    )),
+    formatSettings,
+  };
+  const isValid = Number.isInteger(numericForm.quality) && numericForm.quality >= 1 && numericForm.quality <= 100
+    && Number.isInteger(numericForm.maxFileSizeKb) && numericForm.maxFileSizeKb >= 10 && numericForm.maxFileSizeKb <= 2048
+    && Number.isInteger(numericForm.dimensionPercent) && numericForm.dimensionPercent >= 1 && numericForm.dimensionPercent <= 100
+    && (editingFormat !== "video" || (
+      Number.isInteger(numericForm.videoQuality) && numericForm.videoQuality >= 1 && numericForm.videoQuality <= 100
+      && [360, 480, 720, 1080].includes(numericForm.videoMaxHeight)
+      && Number.isInteger(numericForm.videoMaxFileSizeMb) && numericForm.videoMaxFileSizeMb >= 1 && numericForm.videoMaxFileSizeMb <= 2048
+    ))
+    && Array.isArray(numericForm.formats) && numericForm.formats.length > 0;
+  const editingFormatKeys = editingFormat === "video"
+    ? ["quality", "maxFileSizeKb", "dimensionPercent", "multipleVideoThumbnails", "includeVideoPreview", "generateOptimizedVideoPreview", "videoQuality", "videoMaxHeight", "videoMaxFileSizeMb"]
+    : ["quality", "maxFileSizeKb", "dimensionPercent"];
+  const isDirty = !settings ||
+    JSON.stringify(numericForm.formats) !== JSON.stringify(settings.draft.formats || DEFAULT_THUMBNAIL_FORMATS) ||
+    editingFormatKeys.some((key) => (
+      numericForm.formatSettings[editingFormat][key] !== settings.draft.formatSettings[editingFormat][key]
+    ));
+  const selectedFileFormat = selectedFile
+    ? getThumbnailSettingsFormat(selectedFile.name)
+    : sampleSession?.format;
+  const selectedFileFormatLabel = selectedFileFormat === "video"
+    ? "Video"
+    : selectedFileFormat?.toUpperCase();
+  const isSelectedFileFormatEnabled = !selectedFileFormat || numericForm.formats.includes(selectedFileFormat);
+  const hasSampleHistory = retainedSampleSessionIds.length > 0;
+  const hasSampleSessions = hasSampleHistory || Boolean(sampleSession);
+  const pendingMs = settings?.pendingActivationAt
+    ? Math.max(0, Date.parse(settings.pendingActivationAt) - now)
+    : 0;
+  const countdown = `${String(Math.floor(pendingMs / 60000)).padStart(2, "0")}:${String(Math.floor((pendingMs % 60000) / 1000)).padStart(2, "0")}`;
+  const liveSettingsByFormat = [
+    ...THUMBNAIL_FORMAT_OPTIONS.map(([format, label]) => ({ format, label })),
+  ].map(({ format, label }) => {
+    const usesCustomSettings = Boolean(settings?.active?.formats?.includes(format));
+    return {
+      format,
+      label,
+      usesCustomSettings,
+      values: settings
+        ? (usesCustomSettings
+          ? settings.active.formatSettings?.[format] || settings.active
+          : DEFAULT_FORMAT_SETTINGS[format])
+        : null,
+    };
+  });
+  const liveToggleLabel = (enabled) => (settings ? (enabled ? "On" : "Off") : "…");
+
+  const updateForm = (key, value) => {
+    setForm((current) => {
+      const currentFormatSettings = current.formatSettings || DEFAULT_FORMAT_SETTINGS;
+      const formatSettings = {
+        ...currentFormatSettings,
+        [editingFormat]: {
+          ...currentFormatSettings[editingFormat],
+          [key]: value,
+        },
+      };
+      return { ...current, [key]: value, formatSettings };
+    });
+    setErrorMessage("");
+  };
+  const updateMaxFileSize = (value) => {
+    setMaxFileSizeInput(value);
+    const size = Number(value);
+    const sizeInKb = maxFileSizeUnit === "MB" ? Math.round(size * 1024) : Math.round(size);
+    updateForm("maxFileSizeKb", value === "" ? "" : sizeInKb);
+  };
+  const updateMaxFileSizeUnit = (unit) => {
+    setMaxFileSizeUnit(unit);
+    const sizeInKb = Number(form.maxFileSizeKb);
+    if (Number.isFinite(sizeInKb)) {
+      setMaxFileSizeInput(unit === "MB" ? (sizeInKb / 1024).toFixed(5) : String(sizeInKb));
+    }
+  };
+  const selectEditingFormat = (format) => {
+    const formatSettings = form.formatSettings?.[format]
+      || settings?.draft.formatSettings?.[format]
+      || DEFAULT_FORMAT_SETTINGS[format];
+    setEditingFormat(format);
+    setForm((current) => ({ ...current, ...formatSettings }));
+    const sizeInKb = Number(formatSettings.maxFileSizeKb);
+    setMaxFileSizeInput(maxFileSizeUnit === "MB" ? (sizeInKb / 1024).toFixed(5) : String(sizeInKb));
+    setErrorMessage("");
+  };
+  const openDestinationBrowser = async (directoryPath = "") => {
+    setDestinationBrowserLoading(true);
+    setErrorMessage("");
+    try {
+      const params = directoryPath ? { path: directoryPath } : {};
+      const response = await axios.get(`${endpoint}/preview-folders`, {
+        ...authConfig(),
+        params,
+      });
+      setDestinationBrowser(response.data);
+    } catch (error) {
+      setErrorMessage(error.response?.data?.error || "Unable to browse server folders.");
+    } finally {
+      setDestinationBrowserLoading(false);
+    }
+  };
+  const savePreviewDestination = async (requestedPath) => {
+    const trimmedPath = requestedPath.trim();
+    if (!trimmedPath) {
+      setErrorMessage("Enter or browse to an existing server folder first.");
+      return;
+    }
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      const response = await axios.put(`${endpoint}/preview-samples/state`, {
+        destinationPath: trimmedPath,
+      }, authConfig());
+      setPreviewDestinationPath(response.data.destinationPath);
+      setPreviewDestinationValidated(true);
+      setSampleSession(response.data.sample || null);
+      setRetainedSampleSessionIds(
+        (response.data.sessionIds || []).filter((id) => id !== response.data.sample?.id)
+      );
+      setPreview(response.data.preview || null);
+      setDestinationBrowser(null);
+    } catch (error) {
+      setPreviewDestinationValidated(false);
+      setErrorMessage(error.response?.data?.error || "The selected server folder is unavailable.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const usePreviewDestination = () => savePreviewDestination(previewDestinationPath);
+  const uploadSampleFile = async (filenameOverride = null) => {
+    if (!selectedFile || !previewDestinationValidated) {
+      setErrorMessage("Choose a sample file and set its destination folder first.");
+      return;
+    }
+    if (!isSelectedFileFormatEnabled) {
+      setErrorMessage(`Select ${selectedFileFormatLabel} in Apply to before uploading this sample.`);
+      return;
+    }
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      const data = new FormData();
+      data.append("destinationPath", previewDestinationPath);
+      if (filenameOverride) data.append("filename", filenameOverride);
+      data.append("file", selectedFile);
+      const response = await axios.post(`${endpoint}/preview-samples`, data, authConfig());
+      setSampleSession(response.data);
+      setRetainedSampleSessionIds((response.data.sessionIds || []).filter((id) => id !== response.data.id));
+      setPreview(null);
+      setPendingSampleRename(null);
+    } catch (error) {
+      const conflict = error.response?.data;
+      if (conflict?.code === "SAMPLE_FILENAME_EXISTS" && conflict.suggestedFilename) {
+        setPendingSampleRename({
+          existingFilename: conflict.existingFilename,
+          suggestedFilename: conflict.suggestedFilename,
+        });
+      } else {
+        setErrorMessage(conflict?.error || "Unable to upload the sample file.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveDraft = async () => {
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      const response = await axios.put(`${endpoint}/draft`, numericForm, authConfig());
+      return applySettingsResponse(response.data);
+    } catch (error) {
+      setErrorMessage(error.response?.data?.error || "Unable to save thumbnail settings.");
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePreview = async () => {
+    if (!sampleSession) {
+      setErrorMessage("Upload the sample file before generating its preview.");
+      return;
+    }
+    setBusy(true);
+    setErrorMessage("");
+    setPreview(null);
+    try {
+      const response = await axios.post(
+        `${endpoint}/preview-samples/${sampleSession.id}/generate`,
+        { settings: numericForm },
+        authConfig()
+      );
+      setPreview(response.data);
+    } catch (error) {
+      setErrorMessage(error.response?.data?.error || "Unable to generate the preview.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const cleanSampleFiles = async () => {
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      const stateResponse = await axios.get(`${endpoint}/preview-samples/state`, authConfig());
+      const sampleIdsToClean = stateResponse.data.sessionIds || [];
+      const activeSessionId = stateResponse.data.sample?.id || null;
+      let remainingRetainedIds = sampleIdsToClean.filter((id) => id !== activeSessionId);
+      for (const sampleId of sampleIdsToClean) {
+        await axios.delete(`${endpoint}/preview-samples/${encodeURIComponent(sampleId)}`, authConfig());
+        remainingRetainedIds = remainingRetainedIds.filter((id) => id !== sampleId);
+        setRetainedSampleSessionIds(remainingRetainedIds);
+        if (sampleId === activeSessionId) {
+          setSampleSession(null);
+          setPreview(null);
+          setSelectedFile(null);
+          setSampleFileInputVersion((version) => version + 1);
+        }
+      }
+      await axios.delete(`${endpoint}/preview-samples/state`, authConfig());
+      setSelectedFile(null);
+      setPreview(null);
+      setSampleSession(null);
+      setRetainedSampleSessionIds([]);
+      setSampleFileInputVersion((version) => version + 1);
+      window.sessionStorage.removeItem(PREVIEW_SAMPLE_SESSION_KEY);
+      window.sessionStorage.removeItem(PREVIEW_SAMPLE_HISTORY_KEY);
+      setPreviewDestinationPath("");
+      setPreviewDestinationValidated(false);
+      setDestinationBrowser(null);
+    } catch (error) {
+      setErrorMessage(error.response?.data?.error || "Unable to clean the sample files.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const startNewSampleTest = async () => {
+    if (!sampleSession) return;
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      const response = await axios.post(`${endpoint}/preview-samples/new-test`, {}, authConfig());
+      setPreviewDestinationPath(response.data.destinationPath || "");
+      setPreviewDestinationValidated(Boolean(response.data.destinationPath));
+      setSampleSession(response.data.sample || null);
+      setRetainedSampleSessionIds((response.data.sessionIds || []).filter((id) => id !== response.data.sample?.id));
+      setSelectedFile(null);
+      setSampleFileInputVersion((version) => version + 1);
+      setPreview(response.data.preview || null);
+    } catch (error) {
+      setErrorMessage(error.response?.data?.error || "Unable to start a new sample test.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleActivate = async () => {
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      if (isDirty) {
+        const draftResponse = await axios.put(`${endpoint}/draft`, numericForm, authConfig());
+        applySettingsResponse(draftResponse.data);
+      }
+      const response = await axios.post(`${endpoint}/activation`, {}, authConfig());
+      applySettingsResponse(response.data);
+      const formatLabel = THUMBNAIL_FORMAT_OPTIONS.find(([format]) => format === editingFormat)?.[1]
+        || editingFormat.toUpperCase();
+      toast.success(`${formatLabel} settings saved and activated successfully.`);
+    } catch (error) {
+      setErrorMessage(error.response?.data?.error || "Unable to activate settings.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      const response = await axios.delete(`${endpoint}/activation`, authConfig());
+      applySettingsResponse(response.data);
+    } catch (error) {
+      setErrorMessage(error.response?.data?.error || "Unable to stop activation.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="thumbnail-settings-page">
+      <header className="thumbnail-settings-hero">
+        <div className="thumbnail-settings-hero__copy">
+          <span className="thumbnail-settings-eyebrow">Admin control center · Thumbnail studio</span>
+          <h2>New Upload Thumbnail Settings</h2>
+          <p>Fine-tune, preview, and activate thumbnail output for future uploads.</p>
+        </div>
+        <button type="button" className="thumbnail-settings-back" onClick={onBack}>
+          Back to Controls
+        </button>
+      </header>
+
+      {errorMessage && <p role="alert" className="thumbnail-settings-error">{errorMessage}</p>}
+
+      <section className="thumbnail-settings-panel" aria-label="Current active thumbnail settings">
+        <div className="thumbnail-panel-heading">
+          <div>
+            <span className="thumbnail-settings-eyebrow">Now in production</span>
+            <h3>Current live settings</h3>
+          </div>
+          <span className="thumbnail-live-indicator"><span aria-hidden="true" />Live</span>
+        </div>
+        <div className="thumbnail-live-grid">
+          {liveSettingsByFormat.map(({ format, label, usesCustomSettings, values }) => (
+            <div key={format} className="thumbnail-live-item">
+              <h4 className="thumbnail-live-item__label">{label}</h4>
+              <div
+                role="group"
+                aria-label={`${label} live settings`}
+                className={`thumbnail-live-card${format === "video" ? " thumbnail-live-card--video" : ""}`}
+              >
+                {format === "video" ? (
+                  <div
+                    className="thumbnail-live-card__video-details"
+                    tabIndex={0}
+                    aria-label="Video thumbnail and video preview settings"
+                  >
+                    <p className="thumbnail-live-card__section-label">Thumbnail settings</p>
+                    <p>Image quality: {values?.quality ?? "…"}</p>
+                    <p>Maximum thumbnail size: {values?.maxFileSizeKb ?? "…"} KB</p>
+                    <p>Thumbnail dimensions: {values?.dimensionPercent ?? "…"}%</p>
+                    <p>Multiple thumbnails: {liveToggleLabel(values?.multipleVideoThumbnails)}</p>
+                    <p className="thumbnail-live-card__section-label">Video settings</p>
+                    <p>Playable preview: {liveToggleLabel(values?.includeVideoPreview)}</p>
+                    <p>Optimized MP4: {liveToggleLabel(values?.generateOptimizedVideoPreview)}</p>
+                    <p>Video quality: {values?.videoQuality ?? "…"}</p>
+                    <p>Maximum resolution: {values?.videoMaxHeight ?? "…"}p</p>
+                    <p>Maximum video size: {values?.videoMaxFileSizeMb ?? "…"} MB</p>
+                  </div>
+                ) : (
+                  <div className="thumbnail-live-card__settings-rows">
+                    <p>Quality: {values?.quality ?? "…"}</p>
+                    <p>Maximum size: {values?.maxFileSizeKb ?? "…"} KB</p>
+                    <p>Dimensions: {values?.dimensionPercent ?? "…"}%</p>
+                  </div>
+                )}
+                {(!settings || !usesCustomSettings) && (
+                  <span className="thumbnail-live-card__status thumbnail-live-card__status--default">
+                    {!settings ? "Loading live settings…" : "Default settings in use"}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="thumbnail-settings-panel thumbnail-draft-panel" aria-label="Draft thumbnail generation settings">
+        <div className="thumbnail-draft-header">
+          <div>
+            <span className="thumbnail-settings-eyebrow">Configure output</span>
+            <h3>Draft settings for future uploads</h3>
+          </div>
+          <div role="radiogroup" aria-label="Apply settings to one file format" className="thumbnail-format-toggles">
+            <span className="thumbnail-format-toggles__label">Apply to</span>
+            {THUMBNAIL_FORMAT_OPTIONS.map(([format, label]) => (
+              <label key={format} className="thumbnail-format-toggle">
+                <input
+                  type="radio"
+                  name="thumbnail-output-format"
+                  checked={editingFormat === format}
+                  disabled={busy || !settings || Boolean(settings?.pendingActivationAt)}
+                  onChange={() => selectEditingFormat(format)}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="thumbnail-setting-fields">
+          {[
+            ["quality", "WebP quality", 10, 100],
+            ["maxFileSizeKb", "Maximum file size", 10, 2048],
+            ["dimensionPercent", "Dimensions (% of source)", 1, 100],
+          ].map(([key, label, min, max]) => (
+            <label key={key} className={`thumbnail-setting-field ${key === "quality" ? "thumbnail-setting-field--quality" : ""}`}>
+              <span className="thumbnail-setting-field__label">{key === "quality" ? `${label}: ${form[key]}` : label}</span>
+              {key === "maxFileSizeKb" ? (
+                <div className="thumbnail-size-controls">
+                  <input
+                    type="number"
+                    aria-label="Maximum file size"
+                    min={maxFileSizeUnit === "MB" ? 10 / 1024 : min}
+                    max={maxFileSizeUnit === "MB" ? 2 : max}
+                    step={maxFileSizeUnit === "MB" ? "any" : "1"}
+                    value={maxFileSizeInput}
+                    disabled={busy || !settings || Boolean(settings?.pendingActivationAt)}
+                    onChange={(event) => updateMaxFileSize(event.target.value)}
+                    className="thumbnail-setting-control"
+                  />
+                  <select
+                    aria-label="Maximum file size unit"
+                    value={maxFileSizeUnit}
+                    disabled={busy || !settings || Boolean(settings?.pendingActivationAt)}
+                    onChange={(event) => updateMaxFileSizeUnit(event.target.value)}
+                    className="thumbnail-setting-control thumbnail-size-unit"
+                  >
+                    <option value="KB">KB</option>
+                    <option value="MB">MB</option>
+                  </select>
+                </div>
+              ) : (
+                <input
+                  type={key === "quality" ? "range" : "number"}
+                  aria-label={label}
+                  min={min}
+                  max={max}
+                  step="1"
+                  value={form[key]}
+                  disabled={busy || !settings || Boolean(settings?.pendingActivationAt)}
+                  onChange={(event) => updateForm(key, event.target.value)}
+                  className={key === "quality" ? "thumbnail-quality-slider" : "thumbnail-setting-control"}
+                />
+              )}
+            </label>
+          ))}
+        </div>
+        {editingFormat === "video" && (
+          <fieldset className="thumbnail-video-output-options" disabled={busy || !settings || Boolean(settings?.pendingActivationAt)}>
+            <legend>Video output options</legend>
+            <label>
+              <input
+                type="checkbox"
+                aria-label="Generate multiple video thumbnails"
+                checked={numericForm.multipleVideoThumbnails}
+                onChange={(event) => updateForm("multipleVideoThumbnails", event.target.checked)}
+              />
+              Generate multiple WebP thumbnails (automatic: 3 up to 10 seconds, 4 up to 20 seconds, and up to 6 for longer videos)
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                aria-label="Include playable video preview"
+                checked={numericForm.includeVideoPreview}
+                onChange={(event) => updateForm("includeVideoPreview", event.target.checked)}
+              />
+              Include a playable video preview (uses the original unless an optimized copy is enabled)
+            </label>
+            {numericForm.includeVideoPreview && (
+              <div className="thumbnail-video-optimized-options">
+                <label>
+                  <input
+                    type="checkbox"
+                    aria-label="Generate optimized video preview"
+                    checked={numericForm.generateOptimizedVideoPreview}
+                    onChange={(event) => updateForm("generateOptimizedVideoPreview", event.target.checked)}
+                  />
+                  Generate an optimized MP4 preview from the original video
+                </label>
+                {numericForm.generateOptimizedVideoPreview && (
+                  <div className="thumbnail-video-encoding-fields">
+                    <label className="thumbnail-setting-field thumbnail-setting-field--quality">
+                      <span className="thumbnail-setting-field__label">Video quality: {numericForm.videoQuality}</span>
+                      <input
+                        type="range"
+                        aria-label="Video quality"
+                        min="1"
+                        max="100"
+                        step="1"
+                        value={form.videoQuality}
+                        onChange={(event) => updateForm("videoQuality", event.target.value)}
+                        className="thumbnail-quality-slider"
+                      />
+                    </label>
+                    <label className="thumbnail-setting-field">
+                      <span className="thumbnail-setting-field__label">Maximum video resolution</span>
+                      <select
+                        aria-label="Maximum video resolution"
+                        value={numericForm.videoMaxHeight}
+                        onChange={(event) => updateForm("videoMaxHeight", event.target.value)}
+                        className="thumbnail-setting-control"
+                      >
+                        {[360, 480, 720, 1080].map((height) => (
+                          <option key={height} value={height}>{height}p</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="thumbnail-setting-field">
+                      <span className="thumbnail-setting-field__label">Maximum video file size (MB)</span>
+                      <input
+                        type="number"
+                        aria-label="Maximum video file size (MB)"
+                        min="1"
+                        max="2048"
+                        step="1"
+                        value={form.videoMaxFileSizeMb}
+                        onChange={(event) => updateForm("videoMaxFileSizeMb", event.target.value)}
+                        className="thumbnail-setting-control"
+                      />
+                    </label>
+                    <p className="thumbnail-video-encoding-help">Quality 1 is lowest and 100 is highest; the size cap takes priority if needed. Lower resolution or smaller size can reduce sharpness. The original video is never replaced.</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </fieldset>
+        )}
+        <div className="thumbnail-draft-actions">
+          <p>Save draft stores settings only; upload a sample below to generate previews, then activate to use them for new uploads.</p>
+          <button type="button" className="thumbnail-button thumbnail-button--secondary" disabled={busy || !settings || !isValid || !isDirty || Boolean(settings?.pendingActivationAt)} onClick={saveDraft}>
+          Save draft
+          </button>
+        </div>
+      </section>
+
+      <section className="thumbnail-settings-panel thumbnail-preview-panel" aria-label="Preview thumbnail generation">
+        <div className="thumbnail-panel-heading">
+          <div>
+            <span className="thumbnail-settings-eyebrow">Test before going live</span>
+            <h3>Preview with a sample file</h3>
+            <p>Follow each step in order. Your original and generated preview stay together in the selected server folder.</p>
+          </div>
+        </div>
+        <div className="thumbnail-preview-steps">
+          <section aria-label="Step 1: Set sample destination" className="thumbnail-preview-step">
+            <h4 className="thumbnail-preview-step__title"><span>01</span>Set the shared destination path</h4>
+            <p className="thumbnail-preview-step__description">Choose any server folder the backend can access. The original sample and generated preview will use this same folder.</p>
+            <div className="thumbnail-destination-controls">
+              <input
+                type="text"
+                aria-label="Sample and preview destination path"
+                value={previewDestinationPath}
+                disabled={busy || hasSampleSessions}
+                onChange={(event) => {
+                  setPreviewDestinationPath(event.target.value);
+                  setPreviewDestinationValidated(false);
+                }}
+                placeholder="Enter an existing server folder path"
+                className="thumbnail-setting-control"
+              />
+              <button type="button" className="thumbnail-button thumbnail-button--secondary" disabled={busy || hasSampleSessions} onClick={usePreviewDestination}>
+                Use this path
+              </button>
+              <button type="button" className="thumbnail-button thumbnail-button--secondary" disabled={busy || hasSampleSessions} onClick={() => openDestinationBrowser()}>
+                Browse folders
+              </button>
+            </div>
+            {previewDestinationValidated && <p role="status" className="thumbnail-preview-status">Destination folder is ready.</p>}
+            {destinationBrowser && (
+              <div className="thumbnail-folder-browser-backdrop">
+                <div role="dialog" aria-modal="true" aria-labelledby="thumbnail-folder-browser-title" className="thumbnail-folder-browser">
+                  <h5 id="thumbnail-folder-browser-title">Choose a server folder</h5>
+                  {destinationBrowserLoading ? <p>Loading folders…</p> : (
+                    <>
+                      {destinationBrowser.path && (
+                        <>
+                          <p className="thumbnail-file-path">Current folder: {destinationBrowser.path}</p>
+                          <div className="thumbnail-folder-browser__actions">
+                            <button
+                              type="button"
+                              className="thumbnail-button thumbnail-button--secondary"
+                              disabled={busy}
+                              onClick={() => savePreviewDestination(destinationBrowser.path)}
+                            >
+                              Use current folder
+                            </button>
+                            {destinationBrowser.parentPath && (
+                              <button type="button" className="thumbnail-button thumbnail-button--secondary" onClick={() => openDestinationBrowser(destinationBrowser.parentPath)}>
+                                Parent folder
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                      {(destinationBrowser.roots || destinationBrowser.directories || []).map((directory) => (
+                        <button
+                          key={directory.path}
+                          type="button"
+                          className="thumbnail-folder-entry"
+                          onClick={() => openDestinationBrowser(directory.path)}
+                        >
+                          {directory.name} — {directory.path}
+                        </button>
+                      ))}
+                      {destinationBrowser.path && !destinationBrowser.directories?.length && <p>No subfolders in this location.</p>}
+                    </>
+                  )}
+                  <button type="button" className="thumbnail-button thumbnail-button--secondary" onClick={() => setDestinationBrowser(null)}>Close folder browser</button>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {previewDestinationValidated && (
+            <section aria-label="Step 2: Upload sample file" className="thumbnail-preview-step">
+              <h4 className="thumbnail-preview-step__title"><span>02</span>Upload the sample file</h4>
+              <label className="thumbnail-sample-file-field">
+                <span>Select a JPG, PNG, EPS, PSD, or video file (including MP4, MOV, AVI, MKV, and WebM, up to 2 GB). If its filename is already taken in the Step 1 folder, you can confirm a numbered rename before upload.</span>
+                <input
+                  key={sampleFileInputVersion}
+                  type="file"
+                  accept={`.jpg,.jpeg,.png,.eps,.psd,${SUPPORTED_VIDEO_FILE_EXTENSIONS.join(",")}`}
+                  disabled={busy || !previewDestinationValidated || Boolean(sampleSession)}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] || null;
+                    setSelectedFile(file);
+                    const fileFormat = getThumbnailSettingsFormat(file?.name);
+                    if (DEFAULT_THUMBNAIL_FORMATS.includes(fileFormat) && !settings?.pendingActivationAt) {
+                      selectEditingFormat(fileFormat);
+                    }
+                    setPendingSampleRename(null);
+                    setPreview(null);
+                  }}
+                  className="thumbnail-file-input"
+                />
+              </label>
+              {(selectedFile || sampleSession) && !isSelectedFileFormatEnabled && (
+                <p role="status" className="thumbnail-preview-warning">
+                  Check {selectedFileFormatLabel} above before generating this sample's preview.
+                </p>
+              )}
+              <button type="button" className="thumbnail-button thumbnail-button--primary thumbnail-step-action" disabled={busy || !previewDestinationValidated || !selectedFile || !isSelectedFileFormatEnabled || Boolean(sampleSession)} onClick={() => uploadSampleFile()}>
+                {busy ? "Working…" : "Upload sample file"}
+              </button>
+              {sampleSession && (
+                <p role="status" className="thumbnail-file-path">
+                  Original: {sampleSession.sourcePath}<br />
+                  Preview will be: {sampleSession.outputPath}
+                </p>
+              )}
+            </section>
+          )}
+
+          {sampleSession && (
+            <section aria-label="Step 3: Generate preview" className="thumbnail-preview-step">
+              <h4 className="thumbnail-preview-step__title"><span>03</span>Generate the preview file</h4>
+              <p className="thumbnail-preview-step__description">
+                WebP thumbnails will be saved beside the original sample. If enabled for a video, the original video will also be available as a playable preview.
+              </p>
+              <button type="button" className="thumbnail-button thumbnail-button--primary thumbnail-step-action" disabled={busy || Boolean(preview) || !isValid || !isSelectedFileFormatEnabled} onClick={handlePreview}>
+                {busy ? "Working…" : "Generate preview file"}
+              </button>
+            </section>
+          )}
+
+          {preview && (
+            <section aria-label="Step 4: Download generated preview" className="thumbnail-preview-step thumbnail-preview-step--result">
+              <h4 className="thumbnail-preview-step__title"><span>04</span>Download generated preview</h4>
+              <div className="thumbnail-preview-result">
+                <div className="thumbnail-preview-result__details">
+                  <p className="thumbnail-file-path">
+                    Generated files: {(preview.previews || [preview]).map((item) => item.outputPath).join(", ")}
+                  </p>
+                  <p className="thumbnail-preview-metadata">{preview.width} × {preview.height} px · WebP · {preview.sizeBytes} bytes · quality {preview.quality}</p>
+                  {preview.optimizedVideoWarning && (
+                    <p role="status" className="thumbnail-preview-warning">
+                      Thumbnail frames were generated, but no optimized MP4 was created: {preview.optimizedVideoWarning}
+                    </p>
+                  )}
+                  {preview.optimizedVideo && (
+                    <>
+                      {preview.optimizedVideo.outputPath && (
+                        <p className="thumbnail-file-path">Optimized video file: {preview.optimizedVideo.outputPath}</p>
+                      )}
+                      <p className="thumbnail-preview-metadata">
+                        Optimized MP4 · {preview.optimizedVideo.width} × {preview.optimizedVideo.height} px · {(preview.optimizedVideo.sizeBytes / (1024 * 1024)).toFixed(2)} MB
+                      </p>
+                      <a
+                        className="thumbnail-button thumbnail-button--secondary"
+                        href={`${API_BASE_URL.replace(/\/+$/, "")}${preview.optimizedVideoUrl}&download=true`}
+                      >
+                        Download optimized MP4
+                      </a>
+                    </>
+                  )}
+                  {(preview.previews || [preview]).map((item) => (
+                    <a key={item.filename} className="thumbnail-button thumbnail-button--primary" href={item.preview} download={item.filename}>
+                      {(preview.previews || [preview]).length === 1
+                        ? "Download generated preview"
+                        : `Download ${item.filename}`}
+                    </a>
+                  ))}
+                </div>
+                <div className="thumbnail-preview-image-wrap">
+                  {(preview.previews || [preview]).map((item, index) => (
+                    <figure key={item.filename} className="thumbnail-video-frame">
+                      <img
+                        src={item.preview}
+                        alt={index === 0 && (preview.previews || [preview]).length === 1
+                          ? "Generated thumbnail preview"
+                          : `Generated thumbnail preview ${index + 1}`}
+                      />
+                      {Number.isFinite(item.timestamp) && <figcaption>{item.timestamp.toFixed(2)} sec</figcaption>}
+                    </figure>
+                  ))}
+                  {preview.videoPreview && preview.videoPreviewUrl && (
+                    <video
+                      controls
+                      preload="metadata"
+                      src={`${API_BASE_URL.replace(/\/+$/, "")}${preview.optimizedVideoUrl || preview.videoPreviewUrl}`}
+                      aria-label={preview.optimizedVideo ? "Optimized video preview" : "Original video preview"}
+                    />
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+        </div>
+        {pendingSampleRename && (
+          <div className="thumbnail-folder-browser-backdrop">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="thumbnail-sample-rename-title"
+              className="thumbnail-folder-browser thumbnail-sample-rename-dialog"
+            >
+              <h5 id="thumbnail-sample-rename-title">This filename already exists</h5>
+              <p>
+                “{pendingSampleRename.existingFilename}” is already in this folder.
+                Rename the new file to “{pendingSampleRename.suggestedFilename}” and upload it?
+              </p>
+              <div className="thumbnail-folder-browser__actions">
+                <button
+                  type="button"
+                  className="thumbnail-button thumbnail-button--primary"
+                  disabled={busy}
+                  onClick={() => uploadSampleFile(pendingSampleRename.suggestedFilename)}
+                >
+                  {busy ? "Uploading…" : "Rename and upload"}
+                </button>
+                <button
+                  type="button"
+                  className="thumbnail-button thumbnail-button--secondary"
+                  disabled={busy}
+                  onClick={() => setPendingSampleRename(null)}
+                >
+                  Cancel upload
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+        {hasSampleSessions && (
+          <div className="thumbnail-preview-session-actions">
+            {sampleSession && (
+              <button
+                type="button"
+                className="thumbnail-button thumbnail-button--secondary"
+                disabled={busy}
+                onClick={startNewSampleTest}
+              >
+                New test
+              </button>
+            )}
+            <div className="thumbnail-preview-session-actions__copy">
+              <strong>Keep testing in this folder</strong>
+              <p>New test keeps all previous sample and preview files. Only manual clean deletes these test files.</p>
+            </div>
+            <button
+              type="button"
+              className="thumbnail-button thumbnail-button--danger"
+              disabled={busy}
+              onClick={cleanSampleFiles}
+            >
+              Manual clean and start again
+            </button>
+          </div>
+        )}
+      </section>
+
+      <section className="thumbnail-settings-panel thumbnail-activation-panel" aria-label="Activate thumbnail settings">
+        <div>
+          <span className="thumbnail-settings-eyebrow">Final step</span>
+          <h3>Apply to new uploads</h3>
+          <p>After activation, new thumbnail jobs use these settings. Existing thumbnails are not changed.</p>
+        </div>
+        {settings?.pendingActivationAt ? (
+          <div className="thumbnail-activation-pending">
+            <p role="status">Settings go live in <strong>{countdown}</strong>.</p>
+            <button type="button" className="thumbnail-button thumbnail-button--danger" disabled={busy} onClick={handleCancel}>
+              Stop timer
+            </button>
+          </div>
+        ) : (
+          <button type="button" className="thumbnail-button thumbnail-button--primary thumbnail-activate-button" disabled={busy || !settings || !isValid} onClick={handleActivate}>
+           Save and activate now
+          </button>
+        )}
+      </section>
+    </section>
+  );
 }
 
 function AdminAssetThumbnail({ image, isDarkMode }) {
@@ -410,6 +1453,594 @@ function AdminDashboardContent({ images, users, collections, isDarkMode }) {
   );
 }
 
+function ExistingUploadSettingsPage({ isDarkMode }) {
+  const [settings, setSettings] = useState(null);
+  const [errorMessage, setErrorMessage] = useState("");
+  const endpoint = `${API_BASE_URL}/admin/thumbnail-generation-settings`;
+
+  useEffect(() => {
+    let active = true;
+    axios.get(endpoint, { headers: getAuthHeaders() })
+      .then((response) => {
+        if (!response.data?.active) throw new Error("Thumbnail settings response was invalid.");
+        if (active) setSettings(response.data.active);
+      })
+      .catch((error) => {
+        if (active) setErrorMessage(error.response?.data?.error || error.message || "Unable to load thumbnail settings.");
+      });
+    return () => { active = false; };
+  }, [endpoint]);
+
+  const liveSettingsByFormat = THUMBNAIL_FORMAT_OPTIONS.map(([format, label]) => {
+    const usesCustomSettings = Boolean(settings?.formats?.includes(format));
+    return {
+      format,
+      label,
+      usesCustomSettings,
+      values: settings
+        ? (usesCustomSettings
+          ? settings.formatSettings?.[format] || settings
+          : DEFAULT_FORMAT_SETTINGS[format])
+        : null,
+    };
+  });
+  const liveToggleLabel = (enabled) => (settings ? (enabled ? "On" : "Off") : "…");
+
+  return (
+    <section className="thumbnail-settings-page">
+      <header className="thumbnail-settings-hero">
+        <div className="thumbnail-settings-hero__copy">
+          <span className="thumbnail-settings-eyebrow">Admin control center · Thumbnail studio</span>
+          <h2>Existing Upload Setting</h2>
+          <p>Current live thumbnail settings for each format.</p>
+        </div>
+      </header>
+
+      {errorMessage && <p role="alert" className="thumbnail-settings-error">{errorMessage}</p>}
+
+      <section className="thumbnail-settings-panel" aria-label="Current live thumbnail settings">
+        <div className="thumbnail-panel-heading">
+          <div>
+            <span className="thumbnail-settings-eyebrow">Now in production</span>
+            <h3>Current live settings</h3>
+          </div>
+          <span className="thumbnail-live-indicator"><span aria-hidden="true" />Live</span>
+        </div>
+        <div className="thumbnail-live-grid">
+          {liveSettingsByFormat.map(({ format, label, usesCustomSettings, values }) => (
+            <div key={format} className="thumbnail-live-item">
+              <h4 className="thumbnail-live-item__label">{label}</h4>
+              <div
+                role="group"
+                aria-label={`${label} live settings`}
+                className={`thumbnail-live-card${format === "video" ? " thumbnail-live-card--video" : ""}`}
+              >
+                {format === "video" ? (
+                  <div
+                    className="thumbnail-live-card__video-details"
+                    tabIndex={0}
+                    aria-label="Video thumbnail and video preview settings"
+                  >
+                    <p className="thumbnail-live-card__section-label">Thumbnail settings</p>
+                    <p>Image quality: {values?.quality ?? "…"}</p>
+                    <p>Maximum thumbnail size: {values?.maxFileSizeKb ?? "…"} KB</p>
+                    <p>Thumbnail dimensions: {values?.dimensionPercent ?? "…"}%</p>
+                    <p>Multiple thumbnails: {liveToggleLabel(values?.multipleVideoThumbnails)}</p>
+                    <p className="thumbnail-live-card__section-label">Video settings</p>
+                    <p>Playable preview: {liveToggleLabel(values?.includeVideoPreview)}</p>
+                    <p>Optimized MP4: {liveToggleLabel(values?.generateOptimizedVideoPreview)}</p>
+                    <p>Video quality: {values?.videoQuality ?? "…"}</p>
+                    <p>Maximum resolution: {values?.videoMaxHeight ?? "…"}p</p>
+                    <p>Maximum video size: {values?.videoMaxFileSizeMb ?? "…"} MB</p>
+                  </div>
+                ) : (
+                  <div className="thumbnail-live-card__settings-rows">
+                    <p>Quality: {values?.quality ?? "…"}</p>
+                    <p>Maximum size: {values?.maxFileSizeKb ?? "…"} KB</p>
+                    <p>Dimensions: {values?.dimensionPercent ?? "…"}%</p>
+                  </div>
+                )}
+                {(!settings || !usesCustomSettings) && (
+                  <span className="thumbnail-live-card__status thumbnail-live-card__status--default">
+                    {!settings ? "Loading live settings…" : "Default settings in use"}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      <ExistingUploadAssetsTable darkMode={isDarkMode} />
+    </section>
+  );
+}
+
+function ExistingUploadAssetsTable({ darkMode }) {
+  const [assets, setAssets] = useState([]);
+  const [liveAssetIds, setLiveAssetIds] = useState(() => new Set());
+  const [previewAsset, setPreviewAsset] = useState(null);
+  const [regenerationRequestIds, setRegenerationRequestIds] = useState(() => new Set());
+  const [pendingRegenerationIds, setPendingRegenerationIds] = useState(() => new Set());
+  const [regenerationMessages, setRegenerationMessages] = useState({});
+  const [titleSearch, setTitleSearch] = useState("");
+  const [collectionSearch, setCollectionSearch] = useState("");
+  const [fileTypeSearch, setFileTypeSearch] = useState("");
+  const [sortConfig, setSortConfig] = useState({ key: "", direction: "ascending" });
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const adminAssetsEndpoint = `${API_BASE_URL}/admin/images`;
+  const liveAssetsEndpoint = `${API_BASE_URL}/images?limit=1000&page=1`;
+  const pageSize = 20;
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      axios.get(adminAssetsEndpoint, { headers: getAuthHeaders() }),
+      axios.get(liveAssetsEndpoint),
+    ])
+      .then(([assetsResponse, liveAssetsResponse]) => {
+        if (!Array.isArray(assetsResponse.data)) throw new TypeError("Admin asset response was invalid.");
+        if (!Array.isArray(liveAssetsResponse.data?.images)) throw new TypeError("Live asset response was invalid.");
+        if (!active) return;
+        setAssets(assetsResponse.data);
+        setLiveAssetIds(new Set(
+          liveAssetsResponse.data.images
+            .map((asset) => Number(asset.id))
+            .filter(Number.isSafeInteger)
+        ));
+      })
+      .catch((error) => {
+        if (active) setErrorMessage(error.response?.data?.error || error.message || "Unable to load assets.");
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
+    return () => { active = false; };
+  }, [adminAssetsEndpoint, liveAssetsEndpoint]);
+
+  const formatLabel = (asset) => {
+    const filename = String(asset.original_filename || asset.filename || "");
+    const extension = filename.match(/\.([^.\\/]+)$/)?.[1]?.toUpperCase();
+    return extension === "JPEG" ? "JPG / JPEG" : extension || String(asset.type || "—").toUpperCase();
+  };
+  const isAssetLive = (asset) => (
+    String(asset.status || "").toLowerCase() === "approved" &&
+    liveAssetIds.has(Number(asset.id))
+  );
+  const getThumbnailQuality = (asset) => {
+    if (asset.thumbnail_quality === null || asset.thumbnail_quality === undefined || asset.thumbnail_quality === "") {
+      return null;
+    }
+    const quality = Number(asset.thumbnail_quality);
+    return Number.isFinite(quality) ? quality : null;
+  };
+  const thumbnailQualityLabel = (value) => (
+    value === null || value === undefined || value === ""
+      ? "Not recorded"
+      : `${value}%`
+  );
+  const uploadedDateLabel = (value) => (value ? formatIndiaDate(value) || "—" : "—");
+  const normalizeSearch = (value) => String(value || "").trim().toLowerCase();
+  const matchesSearch = (value, search) => (
+    String(value || "").toLowerCase().includes(normalizeSearch(search))
+  );
+  const filteredAssets = assets.filter((asset) => (
+    matchesSearch(asset.title || "Untitled asset", titleSearch) &&
+    matchesSearch(asset.collection || "", collectionSearch) &&
+    matchesSearch(formatLabel(asset), fileTypeSearch)
+  ));
+  const sortedAssets = [...filteredAssets];
+  if (sortConfig.key) {
+    sortedAssets.sort((left, right) => {
+      let comparison = 0;
+      if (sortConfig.key === "title") {
+        comparison = String(left.title || "Untitled asset").localeCompare(
+          String(right.title || "Untitled asset"),
+          undefined,
+          { sensitivity: "base", numeric: true }
+        );
+      } else if (sortConfig.key === "collection") {
+        comparison = String(left.collection || "").localeCompare(
+          String(right.collection || ""),
+          undefined,
+          { sensitivity: "base", numeric: true }
+        );
+      } else if (sortConfig.key === "fileType") {
+        comparison = formatLabel(left).localeCompare(
+          formatLabel(right),
+          undefined,
+          { sensitivity: "base", numeric: true }
+        );
+      } else if (sortConfig.key === "uploadedDate") {
+        const leftDate = left.created_at ? new Date(left.created_at).getTime() : Number.NaN;
+        const rightDate = right.created_at ? new Date(right.created_at).getTime() : Number.NaN;
+        if (!Number.isFinite(leftDate)) return Number.isFinite(rightDate) ? 1 : 0;
+        if (!Number.isFinite(rightDate)) return -1;
+        comparison = leftDate - rightDate;
+      } else if (sortConfig.key === "quality") {
+        const leftQuality = getThumbnailQuality(left);
+        const rightQuality = getThumbnailQuality(right);
+        if (leftQuality === null) return rightQuality === null ? 0 : 1;
+        if (rightQuality === null) return -1;
+        comparison = leftQuality - rightQuality;
+      } else if (sortConfig.key === "live") {
+        comparison = Number(isAssetLive(left)) - Number(isAssetLive(right));
+      }
+      return sortConfig.direction === "ascending" ? comparison : -comparison;
+    });
+  }
+  const totalPages = Math.max(1, Math.ceil(sortedAssets.length / pageSize));
+  const firstAssetIndex = (currentPage - 1) * pageSize;
+  const visibleAssets = sortedAssets.slice(firstAssetIndex, firstAssetIndex + pageSize);
+  const handleSearchChange = (setter) => (event) => {
+    setter(event.target.value);
+    setCurrentPage(1);
+  };
+  const toggleSort = (key) => {
+    setSortConfig((previous) => ({
+      key,
+      direction: previous.key === key && previous.direction === "ascending"
+        ? "descending"
+        : "ascending",
+    }));
+    setCurrentPage(1);
+  };
+  const sortButtonLabel = (key, label) => {
+    const direction = sortConfig.key === key && sortConfig.direction === "ascending"
+      ? "descending"
+      : "ascending";
+    return `Sort by ${label} ${direction}`;
+  };
+  const isRegenerationError = (message) => /failed|unable|could not|error/i.test(String(message || ""));
+
+  useEffect(() => {
+    if (!previewAsset) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setPreviewAsset(null);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [previewAsset]);
+
+  useEffect(() => {
+    if (pendingRegenerationIds.size === 0) return undefined;
+    let active = true;
+    let timeoutId;
+    const pollRegenerationStatus = async () => {
+      try {
+        const response = await axios.get(adminAssetsEndpoint, { headers: getAuthHeaders() });
+        if (!Array.isArray(response.data)) throw new TypeError("Admin asset response was invalid.");
+        if (!active) return;
+        setAssets(response.data);
+        const assetsById = new Map(response.data.map((asset) => [Number(asset.id), asset]));
+        const completedIds = [];
+        for (const assetId of pendingRegenerationIds) {
+          const asset = assetsById.get(assetId);
+          const status = String(asset?.thumbnail_status || "").toUpperCase();
+          if (!["COMPLETED", "READY", "FAILED"].includes(status)) continue;
+          completedIds.push(assetId);
+          const failed = status === "FAILED";
+          const message = failed
+            ? asset.thumbnail_error || "Thumbnail regeneration failed."
+            : "Thumbnail regenerated.";
+          setRegenerationMessages((previous) => ({ ...previous, [assetId]: message }));
+          if (failed) toast.error(message);
+          else toast.success(message);
+        }
+        if (completedIds.length > 0) {
+          setPendingRegenerationIds((previous) => {
+            const next = new Set(previous);
+            completedIds.forEach((assetId) => next.delete(assetId));
+            return next;
+          });
+        }
+        if (active) timeoutId = window.setTimeout(pollRegenerationStatus, 3000);
+      } catch (error) {
+        if (!active) return;
+        console.error("Failed to refresh thumbnail regeneration status", error);
+        const message = error.response?.data?.error || error.message || "Unable to check thumbnail regeneration status.";
+        setRegenerationMessages((previous) => {
+          const next = { ...previous };
+          pendingRegenerationIds.forEach((assetId) => { next[assetId] = message; });
+          return next;
+        });
+        setPendingRegenerationIds(new Set());
+        toast.error(message);
+      }
+    };
+    timeoutId = window.setTimeout(pollRegenerationStatus, 1500);
+    return () => {
+      active = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, [adminAssetsEndpoint, pendingRegenerationIds]);
+
+  const regenerateAssetThumbnail = async (asset) => {
+    const assetId = Number(asset.id);
+    setRegenerationRequestIds((previous) => new Set(previous).add(assetId));
+    setRegenerationMessages((previous) => ({ ...previous, [assetId]: "" }));
+    try {
+      await axios.post(
+        `${API_BASE_URL}/images/${encodeURIComponent(String(assetId))}/thumbnail/retry`,
+        {},
+        { headers: getAuthHeaders() }
+      );
+      setAssets((previous) => previous.map((item) => (
+        Number(item.id) === assetId ? { ...item, thumbnail_status: "PROCESSING" } : item
+      )));
+      setPendingRegenerationIds((previous) => new Set(previous).add(assetId));
+      setRegenerationMessages((previous) => ({ ...previous, [assetId]: "Regeneration queued." }));
+    } catch (error) {
+      console.error(`Failed to queue thumbnail regeneration for asset ${assetId}`, error);
+      const message = error.response?.data?.error || error.message || "Unable to queue thumbnail regeneration.";
+      setRegenerationMessages((previous) => ({ ...previous, [assetId]: message }));
+      toast.error(message);
+    } finally {
+      setRegenerationRequestIds((previous) => {
+        const next = new Set(previous);
+        next.delete(assetId);
+        return next;
+      });
+    }
+  };
+
+  return (
+    <section className="thumbnail-settings-panel" aria-label="All asset thumbnail quality">
+      <div className="thumbnail-panel-heading">
+        <div>
+          <span className="thumbnail-settings-eyebrow">Asset library</span>
+          <h3>All assets</h3>
+        </div>
+        {!isLoading && !errorMessage && (
+          <span className="thumbnail-live-indicator">{assets.length.toLocaleString()} assets</span>
+        )}
+      </div>
+
+      {isLoading ? (
+        <p role="status">Loading assets…</p>
+      ) : errorMessage ? (
+        <p role="alert" className="thumbnail-settings-error">{errorMessage}</p>
+      ) : assets.length === 0 ? (
+        <p role="status">No assets found.</p>
+      ) : (
+        <>
+          <div className="existing-assets-table-wrap">
+            <table className="existing-assets-table" aria-label="All assets">
+              <thead>
+                <tr>
+                  <th scope="col" className="existing-assets-table__serial">S.No.</th>
+                  <th
+                    scope="col"
+                    aria-sort={sortConfig.key === "title" ? sortConfig.direction : "none"}
+                  >
+                    <button
+                      type="button"
+                      className="existing-assets-table__sort-button"
+                      aria-label={sortButtonLabel("title", "title")}
+                      onClick={() => toggleSort("title")}
+                    >
+                      <span>Title</span>
+                      <span aria-hidden="true">
+                        {sortConfig.key === "title" ? (sortConfig.direction === "ascending" ? "↑" : "↓") : "↕"}
+                      </span>
+                    </button>
+                    <input
+                      type="search"
+                      className="existing-assets-table__search"
+                      aria-label="Search title"
+                      placeholder="Search title"
+                      value={titleSearch}
+                      onChange={handleSearchChange(setTitleSearch)}
+                    />
+                  </th>
+                  <th
+                    scope="col"
+                    aria-sort={sortConfig.key === "collection" ? sortConfig.direction : "none"}
+                  >
+                    <button
+                      type="button"
+                      className="existing-assets-table__sort-button"
+                      aria-label={sortButtonLabel("collection", "collection")}
+                      onClick={() => toggleSort("collection")}
+                    >
+                      <span>Collection</span>
+                      <span aria-hidden="true">
+                        {sortConfig.key === "collection" ? (sortConfig.direction === "ascending" ? "↑" : "↓") : "↕"}
+                      </span>
+                    </button>
+                    <input
+                      type="search"
+                      className="existing-assets-table__search"
+                      aria-label="Search collection"
+                      placeholder="Search collection"
+                      value={collectionSearch}
+                      onChange={handleSearchChange(setCollectionSearch)}
+                    />
+                  </th>
+                  <th
+                    scope="col"
+                    aria-sort={sortConfig.key === "fileType" ? sortConfig.direction : "none"}
+                  >
+                    <button
+                      type="button"
+                      className="existing-assets-table__sort-button"
+                      aria-label={sortButtonLabel("fileType", "file type")}
+                      onClick={() => toggleSort("fileType")}
+                    >
+                      <span>File type</span>
+                      <span aria-hidden="true">
+                        {sortConfig.key === "fileType" ? (sortConfig.direction === "ascending" ? "↑" : "↓") : "↕"}
+                      </span>
+                    </button>
+                    <input
+                      type="search"
+                      className="existing-assets-table__search"
+                      aria-label="Search file type"
+                      placeholder="Search file type"
+                      value={fileTypeSearch}
+                      onChange={handleSearchChange(setFileTypeSearch)}
+                    />
+                  </th>
+                  <th
+                    scope="col"
+                    aria-sort={sortConfig.key === "uploadedDate" ? sortConfig.direction : "none"}
+                  >
+                    <button
+                      type="button"
+                      className="existing-assets-table__sort-button"
+                      aria-label={sortButtonLabel("uploadedDate", "uploaded date")}
+                      onClick={() => toggleSort("uploadedDate")}
+                    >
+                      <span>Uploaded date</span>
+                      <span aria-hidden="true">
+                        {sortConfig.key === "uploadedDate" ? (sortConfig.direction === "ascending" ? "↑" : "↓") : "↕"}
+                      </span>
+                    </button>
+                  </th>
+                  <th
+                    scope="col"
+                    aria-sort={sortConfig.key === "quality" ? sortConfig.direction : "none"}
+                  >
+                    <button
+                      type="button"
+                      className="existing-assets-table__sort-button"
+                      aria-label={sortButtonLabel("quality", "thumbnail quality")}
+                      onClick={() => toggleSort("quality")}
+                    >
+                      <span>Thumbnail quality</span>
+                      <span aria-hidden="true">
+                        {sortConfig.key === "quality" ? (sortConfig.direction === "ascending" ? "↑" : "↓") : "↕"}
+                      </span>
+                    </button>
+                  </th>
+                  <th
+                    scope="col"
+                    aria-sort={sortConfig.key === "live" ? sortConfig.direction : "none"}
+                  >
+                    <button
+                      type="button"
+                      className="existing-assets-table__sort-button"
+                      aria-label={sortButtonLabel("live", "live status")}
+                      onClick={() => toggleSort("live")}
+                    >
+                      <span>Live status</span>
+                      <span aria-hidden="true">
+                        {sortConfig.key === "live" ? (sortConfig.direction === "ascending" ? "↑" : "↓") : "↕"}
+                      </span>
+                    </button>
+                  </th>
+                  <th scope="col">Regenerate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedAssets.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="existing-assets-table__empty">
+                      No assets match these filters.
+                    </td>
+                  </tr>
+                ) : visibleAssets.map((asset, index) => (
+                  <tr key={asset.id}>
+                    <td className="existing-assets-table__serial">{firstAssetIndex + index + 1}</td>
+                    <th scope="row">
+                      <button
+                        type="button"
+                        className="existing-assets-table__title-button"
+                        title="View thumbnail"
+                        onClick={() => setPreviewAsset(asset)}
+                      >
+                        {asset.title || "Untitled asset"}
+                      </button>
+                    </th>
+                    <td>{asset.collection || "—"}</td>
+                    <td>{formatLabel(asset)}</td>
+                    <td>{uploadedDateLabel(asset.created_at)}</td>
+                    <td>{thumbnailQualityLabel(asset.thumbnail_quality)}</td>
+                    <td>
+                      <span className={`existing-assets-table__live-status${isAssetLive(asset) ? " is-live" : ""}`}>
+                        {isAssetLive(asset) ? "Live" : "Not live"}
+                      </span>
+                    </td>
+                    <td className="existing-assets-table__action">
+                      <button
+                        type="button"
+                        className="existing-assets-table__regenerate-button"
+                        aria-label={`Regenerate thumbnail for ${asset.title || "Untitled asset"}`}
+                        disabled={regenerationRequestIds.has(Number(asset.id)) || pendingRegenerationIds.has(Number(asset.id))}
+                        onClick={() => regenerateAssetThumbnail(asset)}
+                      >
+                        {regenerationRequestIds.has(Number(asset.id))
+                          ? "Queueing…"
+                          : pendingRegenerationIds.has(Number(asset.id))
+                            ? "Regenerating…"
+                            : "Regenerate"}
+                      </button>
+                      {regenerationMessages[Number(asset.id)] && (
+                        <span
+                          className={`existing-assets-table__action-message${isRegenerationError(regenerationMessages[Number(asset.id)]) ? " is-error" : ""}`}
+                          role={isRegenerationError(regenerationMessages[Number(asset.id)]) ? "alert" : "status"}
+                        >
+                          {regenerationMessages[Number(asset.id)]}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {totalPages > 1 && (
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              totalImages={sortedAssets.length}
+              setCurrentPage={setCurrentPage}
+              darkMode={darkMode}
+              totalLabel="Total Assets"
+            />
+          )}
+        </>
+      )}
+      {previewAsset && (
+        <div
+          className="existing-assets-preview-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setPreviewAsset(null);
+          }}
+        >
+          <section
+            className="existing-assets-preview"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="existing-assets-preview-title"
+          >
+            <div className="existing-assets-preview__header">
+              <h3 id="existing-assets-preview-title">{previewAsset.title || "Untitled asset"}</h3>
+              <button
+                type="button"
+                aria-label="Close thumbnail preview"
+                onClick={() => setPreviewAsset(null)}
+              >
+                ×
+              </button>
+            </div>
+            <AssetThumbnail
+              image={previewAsset}
+              darkMode={darkMode}
+              style={{
+                width: "100%",
+                height: "min(70vh, 720px)",
+                objectFit: "contain",
+              }}
+            />
+          </section>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReportPreviewPage = false }) {
   const location = useLocation();
   const { reportResource, retryKey, routeId } = useStartupReadiness();
@@ -443,6 +2074,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   }, [isDailyReportSettingsPage]);
 
   const [images, setImages] = useState([]);
+  const [thumbnailGenerationSettings, setThumbnailGenerationSettings] = useState({
+    quality: 37,
+    maxFileSizeKb: 50,
+    dimensionPercent: 20,
+  });
   const [categories, setCategories] = useState([]);
   const [collections, setCollections] = useState([]);
   const [uploadFolderPath, setUploadFolderPath] = useState("");
@@ -795,10 +2431,27 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const isControlsTaxFormsTab = tabParam === "controls_taxforms";
   const isControlsDatabaseTab = tabParam === "controls_database";
   const isControlsAssetsTab = tabParam === "controls_assets";
+  const isThumbnailGenerationNewSettingsTab = tabParam === "controls/thumbnailgeneration_newsettings";
+  const isThumbnailGenerationExistingSettingsTab = tabParam === "controls/thumbnailgeneration_existingsettings";
+  const isThumbnailGenerationSettingsTab = isThumbnailGenerationNewSettingsTab || isThumbnailGenerationExistingSettingsTab;
   const isRedirectionLinksTab = tabParam === "controls/redirection_links";
   const isLinksTab = tabParam === "links";
   const isSitemapTab = tabParam === "sitemap";
   const isCustomerDetailsTab = tabParam === "customerdetails";
+  useEffect(() => {
+    if (!isControlsTab) return undefined;
+    let active = true;
+    axios.get(`${API_BASE_URL}/admin/thumbnail-generation-settings`, {
+      headers: currentAuthToken ? { Authorization: `Bearer ${currentAuthToken}` } : {},
+    })
+      .then((response) => {
+        if (active && response.data?.active) setThumbnailGenerationSettings(response.data.active);
+      })
+      .catch((error) => {
+        console.error("Failed to load active thumbnail generation settings", error);
+      });
+    return () => { active = false; };
+  }, [isControlsTab, currentAuthToken, authStateVersion]);
   const normalizeSitemapDirectoryPath = (value) => {
     const sitemapPath = String(value || "").trim().replace(/[\\/]+$/, "");
     return sitemapPath.replace(/([\\/])sitemap\.xml$/i, "") || (sitemapPath ? "/" : "");
@@ -1528,8 +3181,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   }, [isControlsDatabaseTab, currentAuthToken, authStateVersion]);
 
   const isPromotionsTab = tabParam === "promotions";
-  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab && !isControlsDatabaseTab && !isControlsAssetsTab && !isRedirectionLinksTab && !isLinksTab && !isSitemapTab;
-  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "controls_database" ? "Database Connection" : tabParam === "controls_assets" ? "Assets Connection" : tabParam === "controls/redirection_links" ? "Redirection Links" : tabParam === "links" ? "Links" : tabParam === "sitemap" ? "Sitemap" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : statusFilter === "reviewed" ? "Reviewed Panel" : statusFilter === "pending" ? "Pending Panel" : statusFilter === "approved" ? "Approved Panel" : statusFilter === "rejected" ? "Rejected Panel" : "All Assets";
+  const shouldShowImageGrid = !isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isUsersTab && !isContributorDetailsTab && !isTaxFormsTab && !isControlsTaxFormsTab && !isCustomerDetailsTab && !isPromotionsTab && !isControlsDatabaseTab && !isControlsAssetsTab && !isThumbnailGenerationSettingsTab && !isRedirectionLinksTab && !isLinksTab && !isSitemapTab;
+  const adminPageHeading = tabParam === "backup" ? "GFX Backup" : tabParam === "restore" ? "Restore" : tabParam === "controls" ? "Controls" : tabParam === "controls_taxforms" ? "Tax Forms" : tabParam === "controls_database" ? "Database Connection" : tabParam === "controls_assets" ? "Assets Connection" : isThumbnailGenerationNewSettingsTab ? "New Upload Setting" : isThumbnailGenerationExistingSettingsTab ? "Existing Upload Setting" : tabParam === "controls/redirection_links" ? "Redirection Links" : tabParam === "links" ? "Links" : tabParam === "sitemap" ? "Sitemap" : tabParam === "live-assets" ? "Live Assets" : tabParam === "users" ? "Users" : tabParam === "contributordetails" ? "Contributor Details" : tabParam === "taxforms" ? "Tax Forms" : tabParam === "customerdetails" ? "Customer Details" : tabParam === "promotions" ? "Promotions" : tabParam === "myaccount" ? "My Account" : statusFilter === "reviewed" ? "Reviewed Panel" : statusFilter === "pending" ? "Pending Panel" : statusFilter === "approved" ? "Approved Panel" : statusFilter === "rejected" ? "Rejected Panel" : "All Assets";
 
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
@@ -1828,6 +3481,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     "manage-categories",
     "website-branding",
     "profile-icons",
+    "thumbnail-generation-quality-settings",
     "backup-restore",
     "active-collections",
     "company",
@@ -6005,7 +7659,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
   return (
     <div style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}>
-      {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && !isControlsAssetsTab && (
+      {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && !isControlsAssetsTab && !isThumbnailGenerationSettingsTab && (
         isUsersTab ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
             <h2 aria-label={adminPageHeading} style={{ display: "flex", alignItems: "baseline", gap: "8px", margin: 0 }}>
@@ -6589,7 +8243,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     const permissions = normalizeCustomPermissions(rawPermissions || {});
                     const hasConfiguredLimit = rawPermissions && typeof rawPermissions === "object"
                       && (rawPermissions.upload_limit_value != null || rawPermissions.upload_limit_unit);
-                    const uploadLimit = hasConfiguredLimit ? getUploadLimitDisplay(permissions) : "20 GB";
+                    const uploadLimit = hasConfiguredLimit ? getUploadLimitDisplay(permissions) : "20 MB";
                     return `Bulk upload: ${permissions.bulk_upload ? "Yes" : "No"}\nUpload limit: ${uploadLimit}`;
                   })() },
                   { label: "Joining date", value: selectedContributor.created_at ? formatIndiaDate(selectedContributor.created_at) : "-" },
@@ -7244,7 +8898,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         <label style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                           <span style={{ fontSize: "0.85rem", color: isDarkMode ? "#e2e8f0" : "#333" }}>Upload limit</span>
                           <div style={{ fontSize: "0.75rem", color: isDarkMode ? "#cbd5e1" : "#666", marginTop: "2px" }}>
-                            Default: {getUploadLimitDisplay({ upload_limit_value: 20, upload_limit_unit: "MB" })}
+                            Default: {getUploadLimitDisplay({ upload_limit_value: 20, upload_limit_unit: "MB" })}. System maximum: 2 GB.
                           </div>
                           <div style={{ display: "flex", gap: "8px" }}>
                             <select
@@ -7884,6 +9538,20 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             </div>
           )}
         </>
+      ) : isThumbnailGenerationSettingsTab ? (
+        isThumbnailGenerationNewSettingsTab ? (
+          <ThumbnailGenerationSettingsPage
+            isDarkMode={isDarkMode}
+            onBack={() => {
+              const nextUrl = `${adminBasePath}?tab=controls`;
+              window.history.pushState({}, "", nextUrl);
+              setCurrentWindowPath(adminBasePath);
+              window.dispatchEvent(new PopStateEvent("popstate"));
+            }}
+          />
+        ) : (
+          <ExistingUploadSettingsPage isDarkMode={isDarkMode} />
+        )
       ) : isControlsTab ? (
         <>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px" }}>
@@ -8007,6 +9675,62 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   window.dispatchEvent(new PopStateEvent("popstate"));
                 }
               }} style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 14px", borderRadius: "8px", cursor: "pointer", width: "100%", marginTop: "4px" }}>Assets</button>
+            </div>
+          </CardWrapper>
+
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="thumbnail-generation-quality-settings">
+            <h3>Thumbnail Generation Quality Settings</h3>
+            <p style={{ color: isDarkMode ? "#cbd5e1" : "#555", margin: "8px 0 12px" }}>
+              Current settings · hover or focus a box for details
+            </p>
+            <div className="thumbnail-generation-settings" role="group" aria-label="Current thumbnail generation settings">
+              <div className="thumbnail-generation-setting" tabIndex={0} aria-describedby="thumbnail-quality-details">
+                <span className="thumbnail-generation-setting__label">WebP quality</span>
+                <strong className="thumbnail-generation-setting__value"><AnimatedAssetCount value={thumbnailGenerationSettings.quality} /></strong>
+                <span className="thumbnail-generation-setting__detail" id="thumbnail-quality-details" role="tooltip">
+                  Target quality; automatically reduced as low as 1 to meet the file-size limit.
+                </span>
+              </div>
+              <div className="thumbnail-generation-setting" tabIndex={0} aria-describedby="thumbnail-size-details">
+                <span className="thumbnail-generation-setting__label">Maximum size</span>
+                <strong className="thumbnail-generation-setting__value"><AnimatedAssetCount value={thumbnailGenerationSettings.maxFileSizeKb} /> KB</strong>
+                <span className="thumbnail-generation-setting__detail" id="thumbnail-size-details" role="tooltip">
+                  Hard limit for the generated thumbnail file.
+                </span>
+              </div>
+              <div className="thumbnail-generation-setting" tabIndex={0} aria-describedby="thumbnail-dimensions-details">
+                <span className="thumbnail-generation-setting__label">Dimensions</span>
+                <strong className="thumbnail-generation-setting__value"><AnimatedAssetCount value={thumbnailGenerationSettings.dimensionPercent} />%</strong>
+                <span className="thumbnail-generation-setting__detail" id="thumbnail-dimensions-details" role="tooltip">
+                  Of the original width and height; reduced further if needed to fit the size limit.
+                </span>
+              </div>
+            </div>
+            <div style={{ display: "grid", gap: "8px", marginTop: "14px" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextUrl = `${adminBasePath}?tab=controls/thumbnailgeneration_newsettings`;
+                  window.history.pushState({}, "", nextUrl);
+                  setCurrentWindowPath(adminBasePath);
+                  window.dispatchEvent(new PopStateEvent("popstate"));
+                }}
+                style={{ background: "#1976d2", color: "white", border: "none", padding: "9px 12px", borderRadius: "8px", cursor: "pointer", width: "100%" }}
+              >
+                New Upload Setting
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextUrl = `${adminBasePath}?tab=controls/thumbnailgeneration_existingsettings`;
+                  window.history.pushState({}, "", nextUrl);
+                  setCurrentWindowPath(adminBasePath);
+                  window.dispatchEvent(new PopStateEvent("popstate"));
+                }}
+                style={{ background: "#475569", color: "white", border: "none", padding: "9px 12px", borderRadius: "8px", cursor: "pointer", width: "100%" }}
+              >
+                Existing Upload Setting
+              </button>
             </div>
           </CardWrapper>
 

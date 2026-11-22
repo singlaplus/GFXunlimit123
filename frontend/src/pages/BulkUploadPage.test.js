@@ -210,4 +210,12 @@ describe("BulkUploadPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/maximum of 10/i);
     expect(axios.post).not.toHaveBeenCalled();
   });
+
+  it("marks the bulk asset file selector as required", () => {
+    render(<BulkUploadPage />);
+
+    expect(screen.getByLabelText(/upload assets/i)).toBeRequired();
+    expect(screen.getByText("Choose assets from your device").parentElement.querySelector("span[aria-hidden='true']"))
+      .toHaveStyle({ color: "rgb(220, 38, 38)" });
+  });
 });

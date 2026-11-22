@@ -5,6 +5,11 @@ const pool = require('../db');
 const assetThumbnails = require('../utils/assetThumbnails');
 const thumbnailQueue = require('../thumbnail-queue-worker');
 
+test('defaults thumbnail batch processing to four concurrent jobs', () => {
+  assert.equal(thumbnailQueue.workerConcurrency, 4);
+  assert.ok(thumbnailQueue.workerConcurrency <= assetThumbnails.MAX_THUMBNAIL_CONCURRENCY);
+});
+
 test.after(async () => {
   await pool.end();
 });

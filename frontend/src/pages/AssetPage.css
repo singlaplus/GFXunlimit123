@@ -10,6 +10,137 @@
   margin-inline: auto;
 }
 
+.asset-video-player-shell {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: clamp(2px, 0.65vw, 5px);
+  overflow: hidden;
+  border: 1px solid rgba(214, 179, 117, 0.58);
+  border-radius: 20px;
+  background: linear-gradient(145deg, #273449, #0b1220 58%, #1e293b);
+  box-shadow:
+    0 18px 42px rgba(15, 23, 42, 0.24),
+    0 0 0 1px rgba(214, 179, 117, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.asset-video-player {
+  border-radius: 15px;
+  color-scheme: dark;
+}
+
+.asset-video-play-overlay {
+  position: absolute;
+  inset: 0 0 42px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.asset-video-play-overlay:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: -6px;
+}
+
+.asset-video-play-affordance {
+  display: grid;
+  width: 68px;
+  height: 68px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.54);
+  box-shadow:
+    0 10px 28px rgba(2, 6, 23, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(12px);
+  transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.asset-video-play-affordance svg {
+  width: 25px;
+  height: 25px;
+  margin-left: 3px;
+  fill: currentColor;
+}
+
+.asset-video-play-overlay:hover .asset-video-play-affordance,
+.asset-video-play-overlay:focus-visible .asset-video-play-affordance {
+  background: rgba(214, 179, 117, 0.9);
+  box-shadow: 0 12px 32px rgba(2, 6, 23, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transform: scale(1.06);
+}
+
+.video-preview-remove-button {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  z-index: 1;
+  display: flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  border-radius: 9px;
+  background: linear-gradient(145deg, rgba(244, 63, 94, 0.96), rgba(159, 18, 57, 0.98));
+  color: #f8fafc;
+  box-shadow: 0 4px 13px rgba(136, 19, 55, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  backdrop-filter: blur(6px);
+  transform: scale(0.88);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.video-preview-remove-button svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.video-preview-remove-button path {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.7;
+}
+
+.video-preview-card:hover .video-preview-remove-button,
+.video-preview-card:focus-within .video-preview-remove-button {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+.video-preview-remove-button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.88);
+  background: linear-gradient(145deg, #fb7185, #be123c);
+  box-shadow: 0 6px 18px rgba(190, 18, 60, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.38);
+  transform: scale(1.08);
+}
+
+@media (hover: none) {
+  .video-preview-card .video-preview-remove-button {
+    opacity: 1;
+    pointer-events: auto;
+    transform: scale(1);
+  }
+}
+
 @media (max-width: 800px) {
   .asset-page-layout {
     grid-template-columns: minmax(0, 1fr);

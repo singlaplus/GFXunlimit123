@@ -8,6 +8,28 @@ const mockNavigate = jest.fn();
 const mockLocation = { pathname: '/explore', search: '' };
 
 jest.mock('react-router-dom', () => ({
+  Link: ({ to, children, onClick, ...props }) => (
+    <a
+      href={to}
+      {...props}
+      onClick={(event) => {
+        onClick?.(event);
+        if (
+          !event.defaultPrevented &&
+          event.button === 0 &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.shiftKey &&
+          !event.altKey
+        ) {
+          event.preventDefault();
+          mockNavigate(to);
+        }
+      }}
+    >
+      {children}
+    </a>
+  ),
   useNavigate: () => mockNavigate,
   useLocation: () => mockLocation,
 }), { virtual: true });
@@ -36,7 +58,7 @@ describe('AppHeader customer navigation', () => {
 
     global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
 
-    render(
+    const { container } = render(
       <>
         <AppHeader
         showNotifications={false}
@@ -59,8 +81,9 @@ describe('AppHeader customer navigation', () => {
       </>
     );
 
-    expect(screen.getByRole('button', { name: /explore/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /my collections/i })).toBeInTheDocument();
+    expect(container.querySelector('a.logo')).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: /explore/i })).toHaveAttribute('href', '/explore');
+    expect(screen.getByRole('link', { name: /my collections/i })).toHaveAttribute('href', '/favorites');
     expect(screen.getByRole('button', { name: /add credits/i })).toBeInTheDocument();
     expect(screen.queryByPlaceholderText(/search/i)).not.toBeInTheDocument();
     
@@ -105,11 +128,11 @@ describe('AppHeader customer navigation', () => {
     await userEvent.click(screen.getByRole('button', { name: /open account menu for jane doe/i }));
 
     expect(screen.getByText('Jane Doe')).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /^my account$/i })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: /^profile$/i })).toHaveLength(1);
+    expect(screen.getAllByRole('link', { name: /^my account$/i })).toHaveLength(1);
+    expect(screen.getAllByRole('link', { name: /^profile$/i })).toHaveLength(1);
     expect(screen.getByRole('button', { name: /^logout$/i })).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('button', { name: /^my account$/i }));
+    await userEvent.click(screen.getByRole('link', { name: /^my account$/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/customer');
   });
 
@@ -139,7 +162,7 @@ describe('AppHeader customer navigation', () => {
       />
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /explore/i }));
+    await userEvent.click(screen.getByRole('link', { name: /explore/i }));
 
     expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
   });
@@ -179,7 +202,7 @@ describe('AppHeader customer navigation', () => {
       />
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /explore/i }));
+    await userEvent.click(screen.getByRole('link', { name: /explore/i }));
 
     expect(mockNavigate).toHaveBeenCalledWith('/explore');
     expect(setActivePage).not.toHaveBeenCalled();
@@ -219,7 +242,7 @@ describe('AppHeader customer navigation', () => {
       />
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /explore/i }));
+    await userEvent.click(screen.getByRole('link', { name: /explore/i }));
 
     expect(setSearch).toHaveBeenCalledWith('');
     expect(setCurrentPage).toHaveBeenCalledWith(1);
@@ -264,7 +287,7 @@ describe('AppHeader customer navigation', () => {
       />
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /explore/i }));
+    await userEvent.click(screen.getByRole('link', { name: /explore/i }));
 
     expect(setSearch).toHaveBeenCalledWith('');
     expect(setCurrentPage).toHaveBeenCalledWith(1);
@@ -359,14 +382,14 @@ describe('AppHeader customer navigation', () => {
       />
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /^analytics$/i }));
+    await userEvent.click(screen.getByRole('link', { name: /^analytics$/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/analytics');
 
-    await userEvent.click(screen.getByRole('button', { name: /orders/i }));
+    await userEvent.click(screen.getByRole('link', { name: /orders/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm/orders');
 
     await userEvent.hover(screen.getByRole('button', { name: /^admin$/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^controls$/i }));
+    await userEvent.click(screen.getByRole('link', { name: /^controls$/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=controls');
   });
 
@@ -394,11 +417,11 @@ describe('AppHeader customer navigation', () => {
       />
     );
 
-    expect(screen.getByRole('button', { name: /^dashboard$/i }).parentElement).toHaveClass('admin-menu-dropdown');
+    expect(screen.getByRole('link', { name: /^dashboard$/i }).parentElement).toHaveClass('admin-menu-dropdown');
     await userEvent.hover(screen.getByRole('button', { name: /^admin$/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^dashboard$/i }));
+    await userEvent.click(screen.getByRole('link', { name: /^dashboard$/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=admin_dashboard');
-    expect(screen.getByRole('button', { name: /^dashboard$/i }).parentElement.parentElement).not.toHaveClass('is-open');
+    expect(screen.getByRole('link', { name: /^dashboard$/i }).parentElement.parentElement).not.toHaveClass('is-open');
 
     unmount();
     localStorage.setItem('userRole', 'customer');
@@ -451,11 +474,11 @@ describe('AppHeader customer navigation', () => {
 
     const adminButton = screen.getByRole('button', { name: /^admin$/i });
     await userEvent.hover(adminButton);
-    const dashboardButton = screen.getByRole('button', { name: /^dashboard$/i });
-    const controlsButton = screen.getByRole('button', { name: /^controls$/i });
-    const liveAssetsButton = screen.getByRole('button', { name: /^live assets$/i });
-    const usersButton = screen.getByRole('button', { name: /^users$/i });
-    const messagesButton = screen.getByRole('button', { name: /messages/i });
+    const dashboardButton = screen.getByRole('link', { name: /^dashboard$/i });
+    const controlsButton = screen.getByRole('link', { name: /^controls$/i });
+    const liveAssetsButton = screen.getByRole('link', { name: /^live assets$/i });
+    const usersButton = screen.getByRole('link', { name: /^users$/i });
+    const messagesButton = screen.getByRole('link', { name: /messages/i });
     const toolsButton = screen.getByRole('button', { name: /^tools$/i });
     const assetFilter = screen.getByLabelText(/all assets/i);
     expect(assetFilter.compareDocumentPosition(toolsButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -499,10 +522,10 @@ describe('AppHeader customer navigation', () => {
     mockNavigate.mockReset();
     await userEvent.hover(toolsButton);
     const toolsMenu = screen.getByRole('menu', { name: 'Tools menu' });
-    const promotionsButton = screen.getByRole('button', { name: /^promotions$/i });
-    const analyticsButton = screen.getByRole('button', { name: /^analytics$/i });
-    const commerceButton = screen.getByRole('button', { name: /^commerce$/i });
-    const ordersButton = screen.getByRole('button', { name: /^orders$/i });
+    const promotionsButton = screen.getByRole('link', { name: /^promotions$/i });
+    const analyticsButton = screen.getByRole('link', { name: /^analytics$/i });
+    const commerceButton = screen.getByRole('link', { name: /^commerce$/i });
+    const ordersButton = screen.getByRole('link', { name: /^orders$/i });
     expect(toolsMenu).toContainElement(promotionsButton);
     expect(toolsMenu).toContainElement(analyticsButton);
     expect(toolsMenu).toContainElement(commerceButton);
@@ -538,8 +561,8 @@ describe('AppHeader customer navigation', () => {
     expect(toolsButton.compareDocumentPosition(seoButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await userEvent.hover(seoButton);
     const seoMenu = screen.getByRole('menu', { name: 'SEO menu' });
-    const searchConsoleButton = screen.getByRole('button', { name: 'Google Search Console' });
-    const googleAnalyticsButton = screen.getByRole('button', { name: 'Google Analytics' });
+    const searchConsoleButton = screen.getByRole('link', { name: 'Google Search Console' });
+    const googleAnalyticsButton = screen.getByRole('link', { name: 'Google Analytics' });
     expect(seoMenu).toContainElement(searchConsoleButton);
     expect(seoMenu).toContainElement(googleAnalyticsButton);
 
@@ -942,6 +965,6 @@ describe('AppHeader customer navigation', () => {
       />
     );
 
-    expect(screen.getByRole('button', { name: /bulk upload/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /bulk upload/i })).toHaveAttribute('href', '/bulk-upload');
   });
 });

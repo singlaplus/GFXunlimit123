@@ -19,7 +19,7 @@ const DEFAULT_CATEGORY_OPTIONS = [
   { id: "default-videos", name: "Videos" },
   { id: "default-templates", name: "Templates" }
 ];
-const SERVER_MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+const SERVER_MAX_UPLOAD_BYTES = 2 * 1024 ** 3;
 
 function createUploadRequestId() {
   if (window.crypto?.randomUUID) return window.crypto.randomUUID();
@@ -30,6 +30,9 @@ function createUploadRequestId() {
 }
 
 function formatUploadLimit(bytes) {
+  if (bytes >= 1024 ** 3 && bytes % (1024 ** 3) === 0) {
+    return `${bytes / (1024 ** 3)} GB`;
+  }
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
@@ -71,10 +74,11 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
       unit: safeUnit,
       bytes: effectiveBytes,
       label: effectiveBytes < configuredBytes
-        ? `${formatUploadLimit(effectiveBytes)} (SERVER maximum)`
+        ? `${formatUploadLimit(effectiveBytes)} (system maximum; admin setting: ${safeValue} ${safeUnit})`
         : `${safeValue} ${safeUnit}`
     };
   })();
+  const requiresTemplateThumbnail = !editingAsset && collection.trim().toLowerCase() === "templates";
 
   const surfaceStyle = {
     border: `1px solid ${darkMode ? "#4b5563" : "#ccc"}`,
@@ -94,9 +98,22 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
     color: darkMode ? "#f5f5f5" : "#111",
   };
 
+  const fieldLabelStyle = {
+    display: "block",
+    marginBottom: "6px",
+    fontWeight: "600",
+  };
+  const requiredMarkerStyle = {
+    color: "#dc2626",
+    fontSize: "0.75em",
+    marginLeft: "3px",
+  };
+
   const isDisabled = editingAsset
-    ? !title.trim() || category.length === 0 || !collection || !keywords.trim() || loading
-    : !title || category.length === 0 || !keywords || !image || loading;
+    ? !title.trim() || !description.trim() || category.length === 0 || !collection ||
+      !keywords.trim() || !type.trim() || loading
+    : !title.trim() || !description.trim() || category.length === 0 || !keywords.trim() ||
+      !type.trim() || !image || (requiresTemplateThumbnail && !thumbnail) || loading;
 
   const buttonStyle = {
     padding: "10px 20px",
@@ -216,7 +233,13 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
     const trimmedDescription = limitWords(description, 10);
     const trimmedKeywords = formatKeywords(keywords, 14);
 
-    if (!trimmedTitle || category.length === 0 || !trimmedKeywords || (!editingAsset && !image) ||
+    if (requiresTemplateThumbnail && !thumbnail) {
+      toast.error("A thumbnail is required for the Templates collection.");
+      return;
+    }
+
+    if (!trimmedTitle || !trimmedDescription || category.length === 0 || !trimmedKeywords ||
+        !type.trim() || (!editingAsset && !image) ||
         (editingAsset && !collection.trim())) {
       alert("All fields are required");
       return;
@@ -438,17 +461,27 @@ setUploadProgress(100);
 
         <div style={{ display: "flex", gap: "10px", marginBottom: "10px", flexWrap: "wrap" }}>
           <div style={{ flex: "0 0 220px", width: "220px" }}>
+            <label htmlFor="upload-title" style={fieldLabelStyle}>
+              Title <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
+            </label>
             <input
+              id="upload-title"
               type="text"
               placeholder="Title (max 5 words)"
+              required
               value={title}
               onChange={handleTitleChange}
               style={{ ...fieldStyle }}
             />
           </div>
           <div style={{ flex: "1 1 260px", minWidth: "220px" }}>
+            <label htmlFor="upload-description" style={fieldLabelStyle}>
+              Description <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
+            </label>
             <textarea
+              id="upload-description"
               placeholder="Description (max 10 words)"
+              required
               value={description}
               onChange={handleDescriptionChange}
               rows={1}
@@ -456,9 +489,14 @@ setUploadProgress(100);
             />
           </div>
           <div style={{ flex: "1 1 260px", minWidth: "220px" }}>
+            <label htmlFor="upload-keywords" style={fieldLabelStyle}>
+              Keywords <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
+            </label>
             <input
+              id="upload-keywords"
               type="text"
               placeholder="Keywords (max 14 words, Press Tab key to set Auto - format)"
+              required
               value={keywords}
               onChange={handleKeywordChange}
               onKeyDown={handleKeywordKeyDown}
@@ -539,17 +577,13 @@ setUploadProgress(100);
             </select>
           </div>
           <div style={{ flex: 1, minWidth: "220px" }}>
-            <label
-              style={{
-                display: "block",
-                marginBottom: "6px",
-                fontWeight: "600",
-              }}
-            >
-              Type
+            <label htmlFor="upload-type" style={fieldLabelStyle}>
+              Type <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
             </label>
             <select
+              id="upload-type"
               value={type}
+              required
               onChange={(e) => setType(e.target.value)}
               style={{ ...fieldStyle }}
             >
@@ -561,8 +595,9 @@ setUploadProgress(100);
         </div>
 
         {!editingAsset && <div style={{ marginBottom: "10px" }}>
-          <label style={{ display: "block", marginBottom: "6px", fontWeight: "600" }}>
+          <label htmlFor="upload-asset-file" style={fieldLabelStyle}>
             Asset file
+            <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
           </label>
           {currentUserRole === "contributor" && (
             <p style={{ margin: "0 0 8px", fontSize: "12px", color: darkMode ? "#d1d5db" : "#666" }}>
@@ -570,8 +605,10 @@ setUploadProgress(100);
             </p>
           )}
           <input
+            id="upload-asset-file"
             type="file"
             accept=".jpg,.jpeg,.png,.webp,.gif,.svg,.psd,.psb,.ai,.eps,.pdf,.zip,.mp4,.avi,.mkv,.mov,.webm,.aep,.prproj"
+            required
             onChange={(e) => {
               const file = e.target.files[0];
 
@@ -595,11 +632,12 @@ setUploadProgress(100);
 
         {!editingAsset && <div style={{ marginBottom: "10px" }}>
           <label style={{ display: "block", marginBottom: "6px", fontWeight: "600" }}>
-            Optional thumbnail (recommended)
+            {requiresTemplateThumbnail ? "Thumbnail (required for Templates)" : "Optional thumbnail (recommended)"}
           </label>
           <input
             type="file"
             accept="image/*"
+            required={requiresTemplateThumbnail}
             onChange={(e) => setThumbnail(e.target.files?.[0] || null)}
             style={{
               ...fieldStyle,
@@ -608,7 +646,7 @@ setUploadProgress(100);
             }}
           />
           <p style={{ marginTop: "4px", fontSize: "12px", color: "#999", marginBottom: "0" }}>
-            optional thumbnail
+            {requiresTemplateThumbnail ? "A thumbnail is required for the Templates collection." : "optional thumbnail"}
           </p>
         </div>}
 

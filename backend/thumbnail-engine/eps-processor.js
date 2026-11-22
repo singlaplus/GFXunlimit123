@@ -7,6 +7,7 @@
 const BaseProcessor = require('./base-processor');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const pool = require('../db');
 const { resolveGhostscriptExecutable } = require('./ghostscript-path');
@@ -18,6 +19,7 @@ class EpsProcessor extends BaseProcessor {
     this.supportedExtensions = ['.eps'];
     this.supportedMimes = ['application/postscript', 'application/eps', 'image/eps'];
     this.spawnProcess = options.spawnProcess || spawn;
+    this.spawnImageMagick = options.spawnImageMagick || spawn;
   }
 
   /**
@@ -29,17 +31,32 @@ class EpsProcessor extends BaseProcessor {
         return false;
       }
 
-      // Check magic bytes for EPS
-      // EPS files start with %!PS-Adobe or %!PS
-      const buffer = Buffer.alloc(20);
+      const buffer = Buffer.alloc(32);
       const fd = fs.openSync(filePath, 'r');
-      const bytesRead = fs.readSync(fd, buffer, 0, 20, 0);
-      fs.closeSync(fd);
+      let bytesRead;
+      let fileSize;
+      try {
+        bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        fileSize = fs.fstatSync(fd).size;
+        if (bytesRead >= 30 && buffer.subarray(0, 4).equals(Buffer.from([0xc5, 0xd0, 0xd3, 0xc6]))) {
+          const postScriptOffset = buffer.readUInt32LE(4);
+          const postScriptLength = buffer.readUInt32LE(8);
+          if (
+            postScriptOffset < 30 ||
+            postScriptLength === 0 ||
+            postScriptOffset + postScriptLength > fileSize
+          ) {
+            return false;
+          }
+          const postScriptHeader = Buffer.alloc(4);
+          return fs.readSync(fd, postScriptHeader, 0, postScriptHeader.length, postScriptOffset) === 4 &&
+            postScriptHeader.toString('ascii') === '%!PS';
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
 
-      const header = buffer.toString('ascii', 0, bytesRead);
-      const isEps = header.includes('%!PS');
-
-      return isEps;
+      return buffer.toString('ascii', 0, bytesRead).includes('%!PS');
     } catch (err) {
       console.error(`EPS detection error: ${err.message}`);
       return false;
@@ -79,9 +96,24 @@ class EpsProcessor extends BaseProcessor {
   }
 
   /**
-   * Extract preview from EPS using Ghostscript
+   * Extract preview from EPS, falling back to ImageMagick if Ghostscript fails.
    */
   async extractPreview(filePath) {
+    try {
+      return await this.extractPreviewWithGhostscript(filePath);
+    } catch (ghostscriptError) {
+      try {
+        return await this.extractPreviewWithImageMagick(filePath);
+      } catch (imageMagickError) {
+        throw new Error(
+          `EPS preview unavailable (Ghostscript: ${ghostscriptError.message}; ImageMagick: ${imageMagickError.message})`,
+          { cause: ghostscriptError }
+        );
+      }
+    }
+  }
+
+  async extractPreviewWithGhostscript(filePath) {
     return new Promise(async (resolve, reject) => {
       try {
         // Get Ghostscript path from config
@@ -105,7 +137,7 @@ class EpsProcessor extends BaseProcessor {
           fs.mkdirSync(tempDir, { recursive: true });
         }
 
-        const tempOutput = path.join(tempDir, `preview-${Date.now()}.png`);
+        const tempOutput = path.join(tempDir, `preview-${crypto.randomUUID()}.png`);
 
         // Let Ghostscript size the raster from the EPS BoundingBox so portrait
         // and landscape artwork keep their original aspect ratio.
@@ -130,14 +162,8 @@ class EpsProcessor extends BaseProcessor {
         });
 
         let errorOutput = '';
-        let outputData = '';
-
         gs.stderr.on('data', (data) => {
           errorOutput += data.toString();
-        });
-
-        gs.stdout.on('data', (data) => {
-          outputData += data.toString();
         });
 
         gs.on('close', (code, signal) => {
@@ -191,14 +217,16 @@ class EpsProcessor extends BaseProcessor {
           console.warn(`[EpsProcessor] Processor config unavailable, using ImageMagick from PATH: ${err.message}`);
         }
 
-        const imPath = imConfig?.rows[0]?.executable_path || 'magick';
+        const imPath = process.env.IMAGEMAGICK_PATH
+          || imConfig?.rows[0]?.executable_path
+          || (process.platform === 'win32' ? 'magick' : 'convert');
 
         const tempDir = path.join(__dirname, '..', 'tmp', 'eps-processing');
         if (!fs.existsSync(tempDir)) {
           fs.mkdirSync(tempDir, { recursive: true });
         }
 
-        const tempOutput = path.join(tempDir, `preview-${Date.now()}.png`);
+        const tempOutput = path.join(tempDir, `preview-${crypto.randomUUID()}.png`);
 
         const imArgs = [
           `${filePath}[0]`, // Take first page/layer
@@ -211,7 +239,7 @@ class EpsProcessor extends BaseProcessor {
 
         console.log(`[EpsProcessor] Rendering EPS with ImageMagick (fallback)`);
 
-        const im = spawn(imPath, imArgs, {
+        const im = this.spawnImageMagick(imPath, imArgs, {
           windowsHide: true,
           timeout: 60000,
         });

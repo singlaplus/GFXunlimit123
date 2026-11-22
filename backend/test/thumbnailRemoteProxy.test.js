@@ -6,6 +6,7 @@ const express = require('express');
 const { Readable } = require('node:stream');
 const {
   buildRemoteThumbnailUrl,
+  proxyRemoteVideoPreviewDelete,
   proxyRemoteThumbnail,
   shouldProxyRemoteThumbnail,
 } = require('../utils/thumbnailRemoteProxy');
@@ -21,8 +22,8 @@ async function listen(app, t) {
   return server.address().port;
 }
 
-async function request(port, requestPath) {
-  const response = await fetch(`http://127.0.0.1:${port}${requestPath}`, { redirect: 'manual' });
+async function request(port, requestPath, headers = {}) {
+  const response = await fetch(`http://127.0.0.1:${port}${requestPath}`, { redirect: 'manual', headers });
   return {
     status: response.status,
     headers: response.headers,
@@ -128,6 +129,77 @@ test('streams a remote WebP thumbnail with safe headers and the verified authori
   assert.equal(response.headers.get('etag'), '"thumbnail-etag"');
   assert.equal(response.headers.get('last-modified'), 'Sat, 03 Oct 2026 12:00:00 GMT');
   assert.deepEqual(response.body, image);
+});
+
+test('proxies optimized MP4 previews with byte-range support', async (t) => {
+  let requestedHeaders;
+  const video = Buffer.from('video-bytes');
+  const app = express();
+  app.get('/api/assets/:id/video-previews/optimized', (req, res) => proxyRemoteThumbnail({
+    req,
+    res,
+    assetId: req.params.id,
+    cacheControl: 'public, max-age=300, must-revalidate',
+    remotePath: '/video-previews/optimized',
+    baseUrl: PC2_BASE_URL,
+    httpClient: {
+      async get(_url, options) {
+        requestedHeaders = options.headers;
+        return {
+          status: 206,
+          headers: {
+            'content-type': 'video/mp4',
+            'content-length': String(video.length),
+            'content-range': `bytes 0-${video.length - 1}/100`,
+            'accept-ranges': 'bytes',
+          },
+          data: Readable.from(video),
+        };
+      },
+    },
+  }));
+  const port = await listen(app, t);
+  const response = await request(port, '/api/assets/21/video-previews/optimized', {
+    Range: `bytes=0-${video.length - 1}`,
+  });
+
+  assert.deepEqual(requestedHeaders, { range: `bytes=0-${video.length - 1}` });
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get('content-type'), 'video/mp4');
+  assert.equal(response.headers.get('content-range'), `bytes 0-${video.length - 1}/100`);
+  assert.equal(response.headers.get('accept-ranges'), 'bytes');
+  assert.deepEqual(response.body, video);
+});
+
+test('proxies an authenticated video-preview deletion to the remote asset server', async (t) => {
+  let requestedUrl;
+  let requestedHeaders;
+  const app = express();
+  app.delete('/api/assets/:id/video-previews/frame/:index', (req, res) =>
+    proxyRemoteVideoPreviewDelete({
+      req,
+      res,
+      assetId: req.params.id,
+      remotePath: `/video-previews/frame/${req.params.index}`,
+      baseUrl: PC2_BASE_URL,
+      httpClient: {
+        async delete(url, options) {
+          requestedUrl = url;
+          requestedHeaders = options.headers;
+          return { status: 200, data: { deleted: true } };
+        },
+      },
+    }));
+  const port = await listen(app, t);
+  const response = await fetch(
+    `http://127.0.0.1:${port}/api/assets/21/video-previews/frame/2`,
+    { method: 'DELETE', headers: { authorization: 'Bearer admin-session-token' } }
+  );
+
+  assert.equal(requestedUrl, `${PC2_BASE_URL}/api/assets/21/video-previews/frame/2`);
+  assert.deepEqual(requestedHeaders, { authorization: 'Bearer admin-session-token' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { deleted: true });
 });
 
 test('sets a download filename when proxying a thumbnail download', async (t) => {

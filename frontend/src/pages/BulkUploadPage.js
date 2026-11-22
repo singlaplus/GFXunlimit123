@@ -384,7 +384,10 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
         >
           <span aria-hidden="true" style={{ display: "grid", placeItems: "center", width: "54px", height: "54px", flex: "0 0 54px", borderRadius: "15px", background: isDarkMode ? "#2b3155" : "#e9eaff", color: colors.accent, fontSize: "26px", fontWeight: 500 }}>↑</span>
           <span>
-            <strong style={{ display: "block", fontSize: "16px" }}>Choose assets from your device</strong>
+            <strong style={{ display: "block", fontSize: "16px" }}>
+              Choose assets from your device
+              <span aria-hidden="true" style={{ color: "#dc2626", fontSize: "0.75em", marginLeft: "3px" }}>*</span>
+            </strong>
             <span style={{ display: "block", marginTop: "6px", color: colors.muted, fontSize: "13px" }}>Select files to begin · Maximum 10 per batch</span>
           </span>
           <span style={{ marginLeft: "auto", padding: "11px 16px", borderRadius: "10px", background: colors.accentStrong, color: "#fff", fontSize: "13px", fontWeight: 750, whiteSpace: "nowrap" }}>
@@ -396,6 +399,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
           aria-label="Upload assets"
           type="file"
           multiple
+          required
           onChange={handleFilesSelected}
           disabled={activeUploads}
           style={{ display: "none" }}

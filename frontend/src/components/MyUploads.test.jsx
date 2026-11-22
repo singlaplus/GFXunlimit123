@@ -135,9 +135,11 @@ describe('MyUploads', () => {
       data: [{
         id: 18,
         title: 'Ready asset',
+        description: 'Forest image',
         category: 'Nature',
         collection: 'Photos',
         keywords: 'forest',
+        type: 'commercial',
         extension: 'psd',
         status: 'not_submitted',
         generated_thumbnail_status: 'READY',
@@ -158,6 +160,32 @@ describe('MyUploads', () => {
       );
     });
     expect(screen.queryByText('Ready asset')).not.toBeInTheDocument();
+  });
+
+  it('requires bulk draft metadata before enabling submission', async () => {
+    axios.get.mockResolvedValue({
+      data: [{
+        id: 25,
+        title: 'Incomplete draft',
+        category: 'Nature',
+        collection: 'Photos',
+        keywords: 'forest',
+        status: 'not_submitted',
+        generated_thumbnail_status: 'READY',
+      }],
+    });
+
+    render(<MyUploads />);
+    fireEvent.change(screen.getByLabelText(/view/i), { target: { value: 'not-submitted' } });
+
+    expect(await screen.findByText('Incomplete draft')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled();
+    expect(screen.getByText(/add title, description, keywords, and type using edit/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.getByLabelText(/Description/)).toBeRequired();
+    expect(screen.getByLabelText(/Type/)).toBeRequired();
+    expect(screen.getByRole('button', { name: 'Save Metadata' })).toBeDisabled();
   });
 
   it('reuses the Single Upload metadata form to edit a not-submitted asset', async () => {

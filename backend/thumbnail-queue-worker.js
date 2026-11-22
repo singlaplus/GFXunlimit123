@@ -38,16 +38,16 @@ class ThumbnailQueueManager {
     this.queue = null;
     this.worker = null;
     this.isRunning = false;
-    const configuredConcurrency = Number(process.env.THUMBNAIL_CONCURRENCY || process.env.THUMBNAIL_WORKER_CONCURRENCY || 2);
+    const configuredConcurrency = Number(process.env.THUMBNAIL_CONCURRENCY || process.env.THUMBNAIL_WORKER_CONCURRENCY || 4);
     const concurrencyIsValid = Number.isSafeInteger(configuredConcurrency) &&
       configuredConcurrency > 0 &&
       configuredConcurrency <= assetThumbnails.MAX_THUMBNAIL_CONCURRENCY;
     if (!concurrencyIsValid) {
       console.warn(
-        `Invalid thumbnail concurrency ${configuredConcurrency}; using default 2 (maximum ${assetThumbnails.MAX_THUMBNAIL_CONCURRENCY})`
+        `Invalid thumbnail concurrency ${configuredConcurrency}; using default 4 (maximum ${assetThumbnails.MAX_THUMBNAIL_CONCURRENCY})`
       );
     }
-    this.workerConcurrency = concurrencyIsValid ? configuredConcurrency : 2;
+    this.workerConcurrency = concurrencyIsValid ? configuredConcurrency : 4;
   }
 
   /**

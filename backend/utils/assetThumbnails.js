@@ -12,18 +12,19 @@ const pool = require('../db');
 const { getAssetServerOrigin } = require('../config');
 const assetStorageConnections = require('../services/assetStorageConnections');
 const assetStorageCardConnections = require('../services/assetStorageCardConnections');
+const thumbnailGenerationSettings = require('../services/thumbnailGenerationSettings');
 const { findWindowsToolExecutable } = require('../services/windowsToolPaths');
+const { VIDEO_EXTENSIONS } = require('../services/videoFormats');
 const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
 const { getAssetSourceDimensions } = require('./assetDimensions');
 
 const PROCESSOR_VERSION = 'webp-proportional-20pct-q37-max50kb-v2';
 const PROPORTIONAL_PROCESSOR_VERSION = PROCESSOR_VERSION;
-const THUMBNAIL_SCALE = 0.2;
-const THUMBNAIL_INITIAL_QUALITY = 37;
 const THUMBNAIL_MIN_QUALITY = 1;
 const MIN_THUMBNAIL_DIMENSION = 16;
 const MIN_THUMBNAIL_SHORT_DIMENSION = 8;
+const VIDEO_PREVIEW_GENERATION_ID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
 function getWindowsToolExecutable(toolName, fallback) {
   if (process.platform !== 'win32') return fallback;
@@ -41,6 +42,15 @@ function hasMeaningfulThumbnailDimensions(width, height) {
     Math.min(Number(width), Number(height)) >= MIN_THUMBNAIL_SHORT_DIMENSION;
 }
 const MAX_THUMBNAIL_BYTES = 50 * 1024;
+const MAX_THUMBNAIL_HARD_BYTES = 2 * 1024 * 1024;
+const SETTINGS_FORMAT_BY_EXTENSION = Object.freeze({
+  '.jpg': 'jpg',
+  '.jpeg': 'jpg',
+  '.png': 'png',
+  '.eps': 'eps',
+  '.psd': 'psd',
+  ...Object.fromEntries([...VIDEO_EXTENSIONS].map((extension) => [extension, 'video'])),
+});
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_THUMBNAIL_CONCURRENCY = 8;
 const BACKGROUND = { r: 232, g: 234, b: 237, alpha: 1 };
@@ -62,8 +72,56 @@ const NON_CONTRIBUTOR_UPLOAD_DIRECTORIES = new Set([
 const contributorUploadLocks = new Map();
 const assetLifecycleLocks = new Map();
 
-function getProcessorVersion(filename) {
-  return PROCESSOR_VERSION;
+function getGenerationSettingsFormat(filename) {
+  const extension = path.extname(filename).toLowerCase();
+  return extension === '.ai' ? 'eps' : SETTINGS_FORMAT_BY_EXTENSION[extension];
+}
+
+function getProcessorVersion(filename, settings = thumbnailGenerationSettings.getActiveSettings()) {
+  const format = getGenerationSettingsFormat(filename);
+  const normalizedSettings = format
+    ? thumbnailGenerationSettings.getSettingsForFormat(settings, format)
+    : thumbnailGenerationSettings.normalizeThumbnailGenerationSettings(settings);
+  const defaults = thumbnailGenerationSettings.DEFAULT_THUMBNAIL_GENERATION_SETTINGS;
+  const usesDefaultImageSettings =
+    normalizedSettings.quality === defaults.quality &&
+    normalizedSettings.maxFileSizeKb === defaults.maxFileSizeKb &&
+    normalizedSettings.dimensionPercent === defaults.dimensionPercent;
+  const usesDefaultVideoSettings = format !== 'video' || (
+    normalizedSettings.multipleVideoThumbnails === defaults.multipleVideoThumbnails &&
+    normalizedSettings.includeVideoPreview === defaults.includeVideoPreview &&
+    normalizedSettings.generateOptimizedVideoPreview === defaults.generateOptimizedVideoPreview &&
+    normalizedSettings.videoQuality === defaults.videoQuality &&
+    normalizedSettings.videoMaxHeight === defaults.videoMaxHeight &&
+    normalizedSettings.videoMaxFileSizeMb === defaults.videoMaxFileSizeMb
+  );
+  if (usesDefaultImageSettings && usesDefaultVideoSettings) {
+    return PROCESSOR_VERSION;
+  }
+  const imageVersion = `-q${normalizedSettings.quality}-m${normalizedSettings.maxFileSizeKb}-s${normalizedSettings.dimensionPercent}`;
+  if (format !== 'video') return `${PROCESSOR_VERSION}${imageVersion}`;
+  const videoSettingsHash = crypto.createHash('sha256')
+    .update(JSON.stringify([
+      normalizedSettings.multipleVideoThumbnails,
+      normalizedSettings.includeVideoPreview,
+      normalizedSettings.generateOptimizedVideoPreview,
+      normalizedSettings.videoQuality,
+      normalizedSettings.videoMaxHeight,
+      normalizedSettings.videoMaxFileSizeMb,
+    ]))
+    .digest('hex')
+    .slice(0, 8);
+  return `${PROCESSOR_VERSION}${imageVersion}-v${videoSettingsHash}`;
+}
+
+function getVideoPreviewPathsFromMetadata(metadata) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
+  const framePaths = Array.isArray(metadata.frames)
+    ? metadata.frames.map((frame) => frame?.path)
+    : [];
+  const paths = [...framePaths, metadata.optimizedVideo?.path]
+    .filter((value) => typeof value === 'string' && value.trim());
+  return [...new Set(paths)];
 }
 
 function getStagedSourceDirectory() {
@@ -338,6 +396,15 @@ function normalizeThumbnailRelativePath(relativePath, assetId) {
   if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid asset ID');
   const value = String(relativePath || '');
   const segments = value.split('/');
+  const filename = segments[3] || '';
+  const primaryOrFramePattern = new RegExp(
+    `^[\\p{L}\\p{N}\\p{M}._-]+_${id}(?:-frame-[1-6]-${VIDEO_PREVIEW_GENERATION_ID_PATTERN})?\\.webp$`,
+    'u'
+  );
+  const optimizedVideoPattern = new RegExp(
+    `^[\\p{L}\\p{N}\\p{M}._-]+_${id}-preview-${VIDEO_PREVIEW_GENERATION_ID_PATTERN}\\.mp4$`,
+    'u'
+  );
   if (
     !value ||
     value.includes('\\') ||
@@ -348,9 +415,9 @@ function normalizeThumbnailRelativePath(relativePath, assetId) {
     !/^\d{4}$/.test(segments[0]) ||
     !/^(0[1-9]|1[0-2])$/.test(segments[1]) ||
     !/^(0[1-9]|[12]\d|3[01])$/.test(segments[2]) ||
-    !new RegExp(`^[\\p{L}\\p{N}\\p{M}._-]+_[\\p{L}\\p{N}\\p{M}._-]+_${id}\\.webp$`, 'u').test(segments[3]) ||
-    segments[3].includes('..') ||
-    segments[3].length > 200
+    (!primaryOrFramePattern.test(filename) && !optimizedVideoPattern.test(filename)) ||
+    filename.includes('..') ||
+    filename.length > 200
   ) {
     throw new Error('Invalid thumbnail path');
   }
@@ -366,6 +433,14 @@ function normalizeThumbnailRelativePath(relativePath, assetId) {
   return segments.join('/');
 }
 
+function getThumbnailAssetIdFromRelativePath(relativePath) {
+  const filename = path.posix.basename(String(relativePath || ''));
+  const match = filename.match(
+    new RegExp(`_([1-9]\\d*)(?:-frame-[1-6]-${VIDEO_PREVIEW_GENERATION_ID_PATTERN}|-preview-${VIDEO_PREVIEW_GENERATION_ID_PATTERN})?\\.(?:webp|mp4)$`, 'u')
+  );
+  return match ? parseThumbnailAssetId(match[1]) : null;
+}
+
 function getThumbnailFilePath(assetId, root = getThumbnailStorageRoot(), relativePath) {
   const safeRelativePath = normalizeThumbnailRelativePath(relativePath, assetId);
   const resolvedRoot = path.resolve(root);
@@ -377,9 +452,8 @@ function getThumbnailFilePath(assetId, root = getThumbnailStorageRoot(), relativ
   return resolvedPath;
 }
 
-async function ensureThumbnailDirectory(relativePath, assetId) {
+async function ensureThumbnailDirectory(relativePath, assetId, root = getThumbnailStorageRoot()) {
   const safeRelativePath = normalizeThumbnailRelativePath(relativePath, assetId);
-  const root = getThumbnailStorageRoot();
   const dateSegments = safeRelativePath.split('/').slice(0, 3);
   await fsp.mkdir(root, { recursive: true });
   let currentPath = root;
@@ -703,17 +777,218 @@ function runCommand(command, args, timeoutMs = 120000) {
   });
 }
 
+function runCommandToFile(command, args, timeoutMs = 180000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    const stderr = [];
+    let stderrSize = 0;
+    const timeout = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.stderr.on('data', (chunk) => {
+      if (stderrSize < 1024 * 1024) {
+        stderr.push(chunk);
+        stderrSize += chunk.length;
+      }
+    });
+    child.on('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timeout);
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${command} failed (${signal || code}): ${Buffer.concat(stderr).toString().trim() || 'no diagnostic output'}`));
+      }
+    });
+  });
+}
+
+async function extractVideoPreview(sourcePath, run = runCommand) {
+  const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
+  const extractFrame = async (seekTime) => {
+    const output = await run(ffmpeg, [
+      '-v', 'error', '-ss', String(seekTime), '-i', sourcePath,
+      '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', '-',
+    ], 180000);
+    if (output.length === 0) {
+      throw new Error(`FFmpeg produced no frame at ${seekTime} seconds`);
+    }
+    return output;
+  };
+
+  try {
+    return await extractFrame(1);
+  } catch (oneSecondError) {
+    try {
+      return await extractFrame(0);
+    } catch (startError) {
+      const error = new Error(
+        `Video preview unavailable (1-second seek: ${oneSecondError.message}; start of video: ${startError.message})`,
+        { cause: oneSecondError }
+      );
+      if (oneSecondError.code !== 'ENOENT' && startError.code !== 'ENOENT') {
+        error.permanent = true;
+      }
+      throw error;
+    }
+  }
+}
+
+async function getVideoDimensions(sourcePath, run = runCommand) {
+  const ffprobe = process.env.FFPROBE_PATH || 'ffprobe';
+  const output = await run(ffprobe, [
+    '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json',
+    sourcePath,
+  ], 30000);
+  let probeResult;
+  try {
+    probeResult = JSON.parse(output.toString());
+  } catch (error) {
+    throw new Error(`FFprobe returned invalid video dimensions: ${error.message}`, { cause: error });
+  }
+  const stream = probeResult?.streams?.[0];
+  if (!Number.isInteger(stream?.width) || !Number.isInteger(stream?.height)) {
+    throw new Error('FFprobe could not determine valid video dimensions.');
+  }
+  return { width: stream.width, height: stream.height };
+}
+
+function createVideoSizeLimitError(message) {
+  const error = new RangeError(message);
+  error.code = 'VIDEO_SIZE_LIMIT_EXCEEDED';
+  return error;
+}
+
+async function generateOptimizedVideoPreview(sourcePath, settings, outputPath) {
+  const previewSettings = thumbnailGenerationSettings.normalizeThumbnailGenerationSettings(settings);
+  if (!previewSettings.generateOptimizedVideoPreview) {
+    throw new Error('Enable optimized video preview generation before encoding.');
+  }
+  if (!VIDEO_EXTENSIONS.has(path.extname(sourcePath).toLowerCase())) {
+    throw new Error('Optimized video previews require a supported video source.');
+  }
+  if (typeof outputPath !== 'string' || !outputPath || path.extname(outputPath).toLowerCase() !== '.mp4') {
+    throw new TypeError('Optimized video output must use an MP4 file path.');
+  }
+
+  const duration = await getVideoDuration(sourcePath);
+  const sourceDimensions = await getVideoDimensions(sourcePath);
+  const targetBytes = previewSettings.videoMaxFileSizeMb * 1024 * 1024;
+  const temporaryPath = path.join(
+    path.dirname(outputPath),
+    `.${path.basename(outputPath, '.mp4')}-${crypto.randomUUID()}.tmp.mp4`
+  );
+  const maxHeight = previewSettings.videoMaxHeight;
+  const scaleFilter = `scale=-2:min(ih\\,${maxHeight})`;
+  const startingCrf = Math.round(35 - ((previewSettings.videoQuality - 1) * 17) / 99);
+  const encode = async ({ crf, videoBitrate }) => {
+    await fsp.unlink(temporaryPath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    const args = [
+      '-hide_banner', '-v', 'error', '-i', sourcePath,
+      '-map', '0:v:0', '-map', '0:a:0?',
+      '-vf', scaleFilter,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+      ...(videoBitrate
+        ? ['-b:v', String(videoBitrate), '-maxrate', String(videoBitrate), '-bufsize', String(videoBitrate * 2)]
+        : ['-crf', String(crf)]),
+      '-c:a', 'aac', '-ac', '1', '-b:a', '32k',
+      '-movflags', '+faststart', '-f', 'mp4', '-y', temporaryPath,
+    ];
+    await runCommandToFile(process.env.FFMPEG_PATH || 'ffmpeg', args, 30 * 60 * 1000);
+    return (await fsp.stat(temporaryPath)).size;
+  };
+
+  try {
+    let sizeBytes = await encode({ crf: startingCrf, videoBitrate: null });
+    if (sizeBytes > targetBytes) {
+      const totalBitsPerSecond = (targetBytes * 8) / duration;
+      let videoBitrate = Math.floor(Math.max(0, totalBitsPerSecond - 32000) * 0.88);
+      for (let attempt = 0; attempt < 4 && sizeBytes > targetBytes; attempt += 1) {
+        if (videoBitrate < 16000) {
+          throw createVideoSizeLimitError(
+            `The ${previewSettings.videoMaxFileSizeMb} MB limit is too small for this video's duration. Increase the size limit or lower the video resolution.`
+          );
+        }
+        sizeBytes = await encode({ crf: null, videoBitrate });
+        if (sizeBytes > targetBytes) {
+          videoBitrate = Math.floor(videoBitrate * (targetBytes / sizeBytes) * 0.9);
+        }
+      }
+    }
+    if (sizeBytes > targetBytes) {
+      throw createVideoSizeLimitError(
+        `Could not encode the video below the ${previewSettings.videoMaxFileSizeMb} MB limit. Increase the limit or lower the video resolution.`
+      );
+    }
+    await finalizeThumbnailFile(temporaryPath, outputPath);
+    return {
+      path: outputPath,
+      width: Math.min(sourceDimensions.width, Math.round((sourceDimensions.width * maxHeight) / sourceDimensions.height)),
+      height: Math.min(sourceDimensions.height, maxHeight),
+      sizeBytes,
+      format: 'mp4',
+      quality: previewSettings.videoQuality,
+      maxHeight,
+      filename: path.basename(outputPath),
+    };
+  } finally {
+    await fsp.unlink(temporaryPath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
+}
+
+async function getVideoDuration(sourcePath, run = runCommand) {
+  const ffprobe = process.env.FFPROBE_PATH || 'ffprobe';
+  const output = await run(ffprobe, [
+    '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1',
+    sourcePath,
+  ], 30000);
+  const duration = Number(output.toString().trim());
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error('FFprobe could not determine a valid video duration.');
+  }
+  return duration;
+}
+
+function getVideoPreviewFrameCount(duration) {
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new RangeError('Video duration must be a positive number.');
+  }
+  if (duration <= 10) return 3;
+  if (duration <= 20) return 4;
+  return Math.min(6, Math.ceil(duration / 5));
+}
+
+async function extractVideoPreviewFrames(sourcePath, run = runCommand) {
+  const duration = await getVideoDuration(sourcePath, run);
+  const count = getVideoPreviewFrameCount(duration);
+  const frames = [];
+  for (let index = 0; index < count; index += 1) {
+    const timestamp = Math.min((duration * index) / count, Math.max(0, duration - 0.05));
+    const frame = await run(process.env.FFMPEG_PATH || 'ffmpeg', [
+      '-v', 'error', '-ss', timestamp.toFixed(3), '-i', sourcePath,
+      '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', '-',
+    ], 180000);
+    if (frame.length === 0) {
+      throw new Error(`FFmpeg produced no preview frame at ${timestamp.toFixed(3)} seconds.`);
+    }
+    frames.push({ timestamp, buffer: frame });
+  }
+  return frames;
+}
+
 async function extractPreview(sourcePath, extension) {
   const ext = extension.toLowerCase();
   if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.tif', '.tiff'].includes(ext)) {
     return sharp(sourcePath, { animated: false, page: 0, failOn: 'none' }).rotate().toBuffer();
   }
 
-  if (['.mp4', '.avi', '.mkv', '.mov', '.webm'].includes(ext)) {
-    const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
-    return runCommand(ffmpeg, [
-      '-v', 'error', '-ss', '1', '-i', sourcePath, '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', '-',
-    ], 180000);
+  if (VIDEO_EXTENSIONS.has(ext)) {
+    return extractVideoPreview(sourcePath);
   }
 
   if (ext === '.pdf') {
@@ -777,7 +1052,58 @@ async function extractPreview(sourcePath, extension) {
   throw error;
 }
 
-async function encodeThumbnail(previewBuffer, { sourceDimensions = null } = {}) {
+async function generateThumbnailPreview(sourcePath, settings) {
+  const extension = path.extname(sourcePath).toLowerCase();
+  const format = SETTINGS_FORMAT_BY_EXTENSION[extension];
+  if (!format) {
+    throw new Error('Preview uploads must be JPG, PNG, EPS, PSD, or supported video files.');
+  }
+  const normalizedSettings = thumbnailGenerationSettings.normalizeThumbnailGenerationSettings(
+    settings || thumbnailGenerationSettings.getActiveSettings()
+  );
+  const previewSettings = thumbnailGenerationSettings.getSettingsForFormat(normalizedSettings, format);
+  if (!previewSettings.formats.includes(format)) {
+    throw new Error(`Enable ${format.toUpperCase()} in the selected formats before previewing it.`);
+  }
+  if (!VIDEO_EXTENSIONS.has(extension)) {
+    const processor = processorFactory.getProcessor(sourcePath);
+    if (!processor || !(await processor.validate(sourcePath))) {
+      throw new Error('The preview upload is not a valid supported file.');
+    }
+  }
+  const sourceDimensions = await getAssetSourceDimensions(sourcePath, extension);
+  if (VIDEO_EXTENSIONS.has(extension) && previewSettings.multipleVideoThumbnails) {
+    const frames = await extractVideoPreviewFrames(sourcePath);
+    const previews = [];
+    for (const frame of frames) {
+      previews.push({
+        ...await encodeThumbnail(frame.buffer, { sourceDimensions, settings: previewSettings }),
+        timestamp: frame.timestamp,
+      });
+    }
+    return {
+      ...previews[0],
+      previews,
+      videoPreview: previewSettings.includeVideoPreview,
+    };
+  }
+
+  const previewBuffer = await extractPreview(sourcePath, extension);
+  const thumbnail = await encodeThumbnail(previewBuffer, { sourceDimensions, settings: previewSettings });
+  return {
+    ...thumbnail,
+    previews: [{ ...thumbnail, timestamp: null }],
+    videoPreview: VIDEO_EXTENSIONS.has(extension) && previewSettings.includeVideoPreview,
+  };
+}
+
+async function encodeThumbnail(previewBuffer, { sourceDimensions = null, settings = null } = {}) {
+  const activeSettings = thumbnailGenerationSettings.normalizeThumbnailGenerationSettings(
+    settings || thumbnailGenerationSettings.getActiveSettings()
+  );
+  const targetQuality = activeSettings.quality;
+  const maxThumbnailBytes = activeSettings.maxFileSizeKb * 1024;
+  const thumbnailScale = activeSettings.dimensionPercent / 100;
   const metadata = await sharp(previewBuffer, { failOn: 'none' }).metadata();
   const swapsOrientation = [5, 6, 7, 8].includes(metadata.orientation);
   const sourceWidth = sourceDimensions?.width ||
@@ -790,8 +1116,8 @@ async function encodeThumbnail(previewBuffer, { sourceDimensions = null } = {}) 
     throw new Error('Thumbnail source has invalid dimensions');
   }
 
-  const scaledWidth = Math.round(sourceWidth * THUMBNAIL_SCALE);
-  const scaledHeight = Math.round(sourceHeight * THUMBNAIL_SCALE);
+  const scaledWidth = Math.round(sourceWidth * thumbnailScale);
+  const scaledHeight = Math.round(sourceHeight * thumbnailScale);
   // If either scaled axis would be under 2px, retain source dimensions to avoid distorting tiny assets.
   let targetWidth = scaledWidth < 2 || scaledHeight < 2
     ? Math.max(1, Math.round(sourceWidth))
@@ -821,18 +1147,18 @@ async function encodeThumbnail(previewBuffer, { sourceDimensions = null } = {}) 
   };
 
   while (targetWidth > 0 && targetHeight > 0) {
-    const initial = await encodeAt(targetWidth, targetHeight, THUMBNAIL_INITIAL_QUALITY);
-    if (initial.buffer.length <= MAX_THUMBNAIL_BYTES) return initial;
+    const initial = await encodeAt(targetWidth, targetHeight, targetQuality);
+    if (initial.buffer.length <= maxThumbnailBytes) return initial;
 
     const lowestQuality = await encodeAt(targetWidth, targetHeight, THUMBNAIL_MIN_QUALITY);
-    if (lowestQuality.buffer.length <= MAX_THUMBNAIL_BYTES) {
+    if (lowestQuality.buffer.length <= maxThumbnailBytes) {
       let best = lowestQuality;
       let low = THUMBNAIL_MIN_QUALITY + 1;
-      let high = THUMBNAIL_INITIAL_QUALITY - 1;
+      let high = targetQuality - 1;
       while (low <= high) {
         const quality = Math.floor((low + high) / 2);
         const candidate = await encodeAt(targetWidth, targetHeight, quality);
-        if (candidate.buffer.length <= MAX_THUMBNAIL_BYTES) {
+        if (candidate.buffer.length <= maxThumbnailBytes) {
           best = candidate;
           low = quality + 1;
         } else {
@@ -843,12 +1169,12 @@ async function encodeThumbnail(previewBuffer, { sourceDimensions = null } = {}) 
     }
 
     if (targetWidth === 1 && targetHeight === 1) {
-      throw new Error(`Unable to encode thumbnail below the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
+      throw new Error(`Unable to encode thumbnail below the ${maxThumbnailBytes} byte size limit`);
     }
 
     const reduction = Math.min(
       0.9,
-      Math.sqrt(MAX_THUMBNAIL_BYTES / lowestQuality.buffer.length) * 0.9
+      Math.sqrt(maxThumbnailBytes / lowestQuality.buffer.length) * 0.9
     );
     let nextWidth = Math.max(1, Math.floor(targetWidth * reduction));
     let nextHeight = Math.max(1, Math.floor(targetHeight * reduction));
@@ -861,13 +1187,13 @@ async function encodeThumbnail(previewBuffer, { sourceDimensions = null } = {}) 
     targetHeight = nextHeight;
   }
 
-  throw new Error(`Unable to encode thumbnail below the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
+  throw new Error(`Unable to encode thumbnail below the ${maxThumbnailBytes} byte size limit`);
 }
 
-async function isValidThumbnailFile(filePath) {
+async function isValidThumbnailFile(filePath, maxBytes = MAX_THUMBNAIL_HARD_BYTES) {
   try {
     const stats = await fsp.lstat(filePath);
-    if (!stats.isFile() || stats.isSymbolicLink() || stats.size <= 0 || stats.size > MAX_THUMBNAIL_BYTES) return false;
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size <= 0 || stats.size > maxBytes) return false;
     const metadata = await sharp(filePath).metadata();
     if (
       metadata.format !== 'webp' ||
@@ -952,7 +1278,16 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
     if (asset) await markThumbnailFailure(id, error);
     throw error;
   }
-  const processorVersion = getProcessorVersion(asset.filename);
+  const settingsFormat = getGenerationSettingsFormat(asset.filename);
+  const configuredSettings = thumbnailGenerationSettings.getActiveSettings();
+  const activeSettings = thumbnailGenerationSettings.getSettingsForFormat(
+    settingsFormat && configuredSettings.formats.includes(settingsFormat)
+      ? configuredSettings
+      : thumbnailGenerationSettings.DEFAULT_THUMBNAIL_GENERATION_SETTINGS,
+    settingsFormat || 'jpg'
+  );
+  const processorVersion = getProcessorVersion(asset.filename, activeSettings);
+  const maxThumbnailBytes = activeSettings.maxFileSizeKb * 1024;
   const thumbnailPath = getThumbnailRelativePath({
     assetId: id,
     originalFilename: asset.original_filename || asset.filename,
@@ -976,7 +1311,8 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
     );
     throw error;
   }
-  const outputPath = getThumbnailFilePath(id, getThumbnailStorageRoot(), thumbnailPath);
+  const thumbnailRoot = getThumbnailStorageRoot();
+  const outputPath = getThumbnailFilePath(id, thumbnailRoot, thumbnailPath);
   const current = await pool.query(
     'SELECT * FROM asset_thumbnail_metadata WHERE asset_id = $1',
     [id]
@@ -989,7 +1325,7 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
     sourceSize >= 0 &&
     sourceModifiedAt instanceof Date &&
     Number.isFinite(sourceModifiedAt.getTime());
-  const existingFileIsValid = record ? await isValidThumbnailFile(outputPath) : false;
+  const existingFileIsValid = record ? await isValidThumbnailFile(outputPath, maxThumbnailBytes) : false;
   const existingFileStats = existingFileIsValid ? await fsp.stat(outputPath) : null;
   const existingFileMetadata = existingFileIsValid ? await sharp(outputPath).metadata() : null;
   if (!options.force && record?.status === 'READY' && record.processor_version === processorVersion &&
@@ -1006,8 +1342,9 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
 
   let stagedSource = null;
   let temporaryOutput = null;
+  let createdVideoPreviewPaths = [];
   try {
-    await ensureThumbnailDirectory(thumbnailPath, id);
+    await ensureThumbnailDirectory(thumbnailPath, id, thumbnailRoot);
     await pool.query(`
       INSERT INTO asset_thumbnail_metadata
         (asset_id, thumbnail_path, processor, processor_version, status, error_message, attempt_count, last_attempt_at, updated_at)
@@ -1031,7 +1368,7 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
     let previewBuffer;
     let processorName = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.tif', '.tiff'].includes(extension)
       ? 'sharp'
-      : ['.mp4', '.avi', '.mkv', '.mov', '.webm'].includes(extension)
+      : VIDEO_EXTENSIONS.has(extension)
         ? (process.env.FFMPEG_PATH || 'ffmpeg')
         : extension === '.pdf'
           ? (process.env.GHOSTSCRIPT_PATH || 'ghostscript-or-imagemagick')
@@ -1046,53 +1383,67 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
       previewBuffer = await extractPreview(sourcePath, extension);
     }
     if (!Buffer.isBuffer(previewBuffer) || previewBuffer.length === 0) throw new Error('Processor returned an empty preview');
-    const sourceDimensions = options.previewPath
+    const sourceDimensions = options.previewPath && !VIDEO_EXTENSIONS.has(extension)
       ? null
       : await getAssetSourceDimensions(sourcePath, extension);
-    const thumbnail = await encodeThumbnail(previewBuffer, { sourceDimensions });
+    const thumbnail = await encodeThumbnail(previewBuffer, { sourceDimensions, settings: activeSettings });
     if (!hasMeaningfulThumbnailDimensions(thumbnail.width, thumbnail.height)) {
       throw new Error(
         `Generated preview is too small to be a valid stock thumbnail (minimum ${MIN_THUMBNAIL_DIMENSION} px on the long side and ${MIN_THUMBNAIL_SHORT_DIMENSION} px on the short side)`
       );
     }
-    if (thumbnail.buffer.length > MAX_THUMBNAIL_BYTES) {
-      throw new Error(`Generated thumbnail exceeds the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
+    if (thumbnail.buffer.length > maxThumbnailBytes) {
+      throw new Error(`Generated thumbnail exceeds the ${maxThumbnailBytes} byte configured limit`);
     }
 
     temporaryOutput = `${outputPath}.${crypto.randomUUID()}.tmp`;
     await fsp.writeFile(temporaryOutput, thumbnail.buffer, { flag: 'wx' });
     const temporaryStats = await fsp.stat(temporaryOutput);
-    if (temporaryStats.size > MAX_THUMBNAIL_BYTES) {
-      throw new Error(`Generated thumbnail exceeds the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
+    if (temporaryStats.size > maxThumbnailBytes) {
+      throw new Error(`Generated thumbnail exceeds the ${maxThumbnailBytes} byte configured limit`);
     }
     await finalizeThumbnailFile(temporaryOutput, outputPath);
     temporaryOutput = null;
-    if (!(await isThumbnailPathInsideRoot(outputPath))) {
+    if (!(await isThumbnailPathInsideRoot(outputPath, thumbnailRoot))) {
       throw new Error('Generated thumbnail resolved outside the configured thumbnail root');
     }
     const finalStats = await fsp.stat(outputPath);
-    if (finalStats.size > MAX_THUMBNAIL_BYTES) {
+    if (finalStats.size > maxThumbnailBytes) {
       await fsp.unlink(outputPath);
-      throw new Error(`Generated thumbnail exceeds the ${MAX_THUMBNAIL_BYTES} byte hard limit`);
+      throw new Error(`Generated thumbnail exceeds the ${maxThumbnailBytes} byte configured limit`);
+    }
+    let videoPreviewMetadata = { frames: [], optimizedVideo: null, warning: null };
+    if (VIDEO_EXTENSIONS.has(extension)) {
+      const generatedVideoPreviews = await generateProductionVideoPreviews({
+        assetId: id,
+        sourcePath,
+        sourceDimensions,
+        thumbnailPath,
+        settings: activeSettings,
+        thumbnailRoot,
+      });
+      videoPreviewMetadata = generatedVideoPreviews.metadata;
+      createdVideoPreviewPaths = generatedVideoPreviews.createdPaths;
     }
     const updatedAt = new Date();
     await pool.query(`
       INSERT INTO asset_thumbnail_metadata
         (asset_id, thumbnail_path, format, width, height, file_size, quality, generated_at,
-         processor,
+         processor, video_preview_metadata,
          source_size, source_modified_at, processor_version, status, error_message, updated_at)
-      VALUES ($1, $2, 'webp', $3, $4, $5, $6, $7, $8, $9, $10, $11, 'READY', NULL, NOW())
+      VALUES ($1, $2, 'webp', $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, 'READY', NULL, NOW())
       ON CONFLICT (asset_id) DO UPDATE SET
         thumbnail_path = EXCLUDED.thumbnail_path, format = EXCLUDED.format,
         width = EXCLUDED.width, height = EXCLUDED.height, file_size = EXCLUDED.file_size,
         quality = EXCLUDED.quality, generated_at = EXCLUDED.generated_at,
+        video_preview_metadata = EXCLUDED.video_preview_metadata,
         source_size = EXCLUDED.source_size, source_modified_at = EXCLUDED.source_modified_at,
         processor = EXCLUDED.processor,
         processor_version = EXCLUDED.processor_version, status = 'READY',
         error_message = NULL, updated_at = NOW()
     `, [
       id, thumbnailPath, thumbnail.width, thumbnail.height, finalStats.size, thumbnail.quality,
-      updatedAt, processorName, sourceSize,
+      updatedAt, processorName, JSON.stringify(videoPreviewMetadata), sourceSize,
       sourceModifiedAt, processorVersion,
     ]);
     await pool.query(
@@ -1102,7 +1453,7 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
     );
     if (record?.thumbnail_path && record.thumbnail_path !== thumbnailPath) {
       const previousPath = normalizeThumbnailRelativePath(record.thumbnail_path, id);
-      const previousFilePath = getThumbnailFilePath(id, getThumbnailStorageRoot(), previousPath);
+      const previousFilePath = getThumbnailFilePath(id, getThumbnailStorageRoot(previousPath), previousPath);
       try {
         await fsp.unlink(previousFilePath);
         await pool.query(
@@ -1121,6 +1472,12 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
         }
       }
     }
+    const previousVideoPaths = getVideoPreviewPathsFromMetadata(record?.video_preview_metadata);
+    const nextVideoPaths = new Set(createdVideoPreviewPaths);
+    await removeVideoPreviewFiles(
+      id,
+      previousVideoPaths.filter((relativePath) => !nextVideoPaths.has(relativePath))
+    );
     return {
       status: record?.status === 'READY' ? 'regenerated' : 'generated',
       assetId: id,
@@ -1129,8 +1486,10 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
       height: thumbnail.height,
       quality: thumbnail.quality,
       fileSize: finalStats.size,
+      videoPreviewMetadata,
     };
   } catch (error) {
+    await removeVideoPreviewFiles(id, createdVideoPreviewPaths);
     if (['ENOENT', 'ENOTDIR', 'INVALID_ASSET_PATH'].includes(error.code) || error.response?.status === 404) {
       error.permanent = true;
     }
@@ -1167,6 +1526,166 @@ async function acquireAssetLifecycleLock(assetId) {
     if (assetLifecycleLocks.get(id) === currentLock) assetLifecycleLocks.delete(id);
     releaseLock();
   };
+}
+
+async function writeVideoFramePreview(frame, frameIndex, generationId, sourceDimensions, settings, assetId, thumbnailPath, thumbnailRoot) {
+  const thumbnailBase = path.posix.basename(thumbnailPath, '.webp');
+  const relativePath = normalizeThumbnailRelativePath(
+    path.posix.join(
+      path.posix.dirname(thumbnailPath),
+      `${thumbnailBase}-frame-${frameIndex + 1}-${generationId}.webp`
+    ),
+    assetId
+  );
+  const outputPath = getThumbnailFilePath(assetId, thumbnailRoot, relativePath);
+  const encoded = await encodeThumbnail(frame.buffer, { sourceDimensions, settings });
+  if (!hasMeaningfulThumbnailDimensions(encoded.width, encoded.height)) {
+    throw new Error(`Video frame ${frameIndex + 1} is too small to be a valid preview.`);
+  }
+  const maxBytes = settings.maxFileSizeKb * 1024;
+  if (encoded.buffer.length > maxBytes) {
+    throw new Error(`Video frame ${frameIndex + 1} exceeds the ${maxBytes} byte configured limit.`);
+  }
+
+  await ensureThumbnailDirectory(relativePath, assetId, thumbnailRoot);
+  const temporaryPath = `${outputPath}.${crypto.randomUUID()}.tmp`;
+  try {
+    await fsp.writeFile(temporaryPath, encoded.buffer, { flag: 'wx' });
+    const stats = await fsp.stat(temporaryPath);
+    if (stats.size > maxBytes) {
+      throw new Error(`Video frame ${frameIndex + 1} exceeds the ${maxBytes} byte configured limit.`);
+    }
+    await finalizeThumbnailFile(temporaryPath, outputPath);
+    if (!(await isThumbnailPathInsideRoot(outputPath, thumbnailRoot))) {
+      throw new Error(`Video frame ${frameIndex + 1} resolved outside the configured thumbnail root.`);
+    }
+    return {
+      path: relativePath,
+      timestamp: frame.timestamp,
+      width: encoded.width,
+      height: encoded.height,
+      sizeBytes: stats.size,
+    };
+  } catch (error) {
+    await fsp.unlink(outputPath).catch((cleanupError) => {
+      if (cleanupError.code !== 'ENOENT') {
+        console.error(`Failed to remove incomplete video frame for asset ${assetId}: ${cleanupError.message}`);
+      }
+    });
+    throw error;
+  } finally {
+    await fsp.unlink(temporaryPath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
+}
+
+async function generateProductionVideoPreviews({
+  assetId,
+  sourcePath,
+  sourceDimensions,
+  thumbnailPath,
+  settings,
+  thumbnailRoot = getThumbnailStorageRoot(thumbnailPath),
+}) {
+  const metadata = { frames: [], optimizedVideo: null, warning: null };
+  const createdPaths = [];
+  const warnings = [];
+  const generationId = crypto.randomUUID();
+  const thumbnailBase = path.posix.basename(thumbnailPath, '.webp');
+
+  if (settings.multipleVideoThumbnails) {
+    try {
+      const frames = await extractVideoPreviewFrames(sourcePath);
+      for (let index = 0; index < frames.length; index += 1) {
+        const preview = await writeVideoFramePreview(
+          frames[index],
+          index,
+          generationId,
+          sourceDimensions,
+          settings,
+          assetId,
+          thumbnailPath,
+          thumbnailRoot
+        );
+        metadata.frames.push(preview);
+        createdPaths.push(preview.path);
+      }
+    } catch (error) {
+      await Promise.all(createdPaths.map(async (relativePath) => {
+        const fullPath = getThumbnailFilePath(assetId, thumbnailRoot, relativePath);
+        await fsp.unlink(fullPath).catch((cleanupError) => {
+          if (cleanupError.code !== 'ENOENT') {
+            console.error(`Failed to remove incomplete video frame for asset ${assetId}: ${cleanupError.message}`);
+          }
+        });
+      }));
+      metadata.frames = [];
+      createdPaths.length = 0;
+      warnings.push(`Multiple video thumbnails were not generated: ${error.message}`);
+    }
+  }
+
+  if (settings.includeVideoPreview && settings.generateOptimizedVideoPreview) {
+    const relativePath = normalizeThumbnailRelativePath(
+      path.posix.join(
+        path.posix.dirname(thumbnailPath),
+        `${thumbnailBase}-preview-${generationId}.mp4`
+      ),
+      assetId
+    );
+    const outputPath = getThumbnailFilePath(assetId, thumbnailRoot, relativePath);
+    try {
+      await ensureThumbnailDirectory(relativePath, assetId, thumbnailRoot);
+      const preview = await generateOptimizedVideoPreview(sourcePath, settings, outputPath);
+      metadata.optimizedVideo = {
+        path: relativePath,
+        width: preview.width,
+        height: preview.height,
+        sizeBytes: preview.sizeBytes,
+      };
+      createdPaths.push(relativePath);
+    } catch (error) {
+      warnings.push(`Optimized video preview was not generated: ${error.message}`);
+    }
+  }
+
+  metadata.warning = warnings.length ? warnings.join(' ') : null;
+  if (metadata.warning) {
+    console.warn(`Optional video preview generation for asset ${assetId}: ${metadata.warning}`);
+  }
+  return { metadata, createdPaths };
+}
+
+async function removeVideoPreviewFiles(assetId, paths) {
+  for (const candidate of paths) {
+    let relativePath;
+    try {
+      relativePath = normalizeThumbnailRelativePath(candidate, assetId);
+      const filePath = getThumbnailFilePath(assetId, getThumbnailStorageRoot(relativePath), relativePath);
+      await fsp.unlink(filePath).catch((error) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      await pool.query(
+        'DELETE FROM asset_thumbnail_orphans WHERE asset_id = $1 AND thumbnail_path = $2',
+        [assetId, relativePath]
+      );
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      await pool.query(`
+        INSERT INTO asset_thumbnail_orphans (asset_id, thumbnail_path, error_message)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (asset_id, thumbnail_path) DO UPDATE
+          SET error_message = EXCLUDED.error_message, last_attempt_at = NOW(),
+              cleanup_attempts = asset_thumbnail_orphans.cleanup_attempts + 1
+      `, [
+        assetId,
+        typeof candidate === 'string' ? candidate : '(invalid video preview path)',
+        String(error.message || error).slice(0, 2000),
+      ]);
+      console.error(`Could not clean video preview for asset ${assetId}: ${error.message}`);
+    }
+  }
 }
 
 async function generateAssetThumbnail(assetId, options = {}) {
@@ -1370,11 +1889,22 @@ module.exports = {
   BACKGROUND,
   MAX_THUMBNAIL_BYTES,
   MAX_THUMBNAIL_CONCURRENCY,
+  MAX_SOURCE_BYTES,
   PROCESSOR_VERSION,
   PROPORTIONAL_PROCESSOR_VERSION,
+  VIDEO_EXTENSIONS,
   encodeThumbnail,
+  extractVideoPreview,
+  extractVideoPreviewFrames,
+  generateOptimizedVideoPreview,
+  getVideoDuration,
+  getVideoPreviewFrameCount,
   generateAssetThumbnail,
+  generateProductionVideoPreviews,
+  generateThumbnailPreview,
   getProcessorVersion,
+  getVideoPreviewPathsFromMetadata,
+  getThumbnailAssetIdFromRelativePath,
   getDateDirectory,
   getThumbnailRelativePath,
   parseThumbnailAssetId,

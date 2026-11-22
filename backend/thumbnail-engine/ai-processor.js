@@ -8,8 +8,11 @@
 const BaseProcessor = require('./base-processor');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const pool = require('../db');
+const { resolveGhostscriptExecutable } = require('./ghostscript-path');
+const { resolveImageMagickExecutable } = require('./imagemagick-path');
 
 class AiProcessor extends BaseProcessor {
   constructor(options = {}) {
@@ -108,19 +111,32 @@ class AiProcessor extends BaseProcessor {
    * Falls back to Adobe Illustrator worker if needed
    */
   async extractPreview(filePath) {
+    console.log('[AiProcessor] Attempting Ghostscript rendering');
+    let ghostscriptError;
     try {
-      // Ghostscript can render both PDF-compatible and PostScript Illustrator files.
-      // Try it first so files without an embedded PDF preview do not require Illustrator.
-      console.log('[AiProcessor] Attempting server-side rendering');
-      try {
-        return await this.extractPreviewServerSide(filePath);
-      } catch (err) {
-        console.warn(`[AiProcessor] Server-side rendering failed: ${err.message}`);
-        console.log('[AiProcessor] Attempting Adobe Illustrator fallback');
-        return await this.extractPreviewWithIllustrator(filePath);
-      }
-    } catch (err) {
-      throw new Error(`AI preview extraction failed: ${err.message}`);
+      return await this.extractPreviewServerSide(filePath);
+    } catch (error) {
+      ghostscriptError = error;
+      console.warn(`[AiProcessor] Ghostscript rendering failed: ${error.message}`);
+    }
+
+    console.log('[AiProcessor] Attempting ImageMagick fallback');
+    let imageMagickError;
+    try {
+      return await this.extractPreviewWithImageMagick(filePath);
+    } catch (error) {
+      imageMagickError = error;
+      console.warn(`[AiProcessor] ImageMagick rendering failed: ${error.message}`);
+    }
+
+    try {
+      console.log('[AiProcessor] Attempting Adobe Illustrator fallback');
+      return await this.extractPreviewWithIllustrator(filePath);
+    } catch (illustratorError) {
+      throw new Error(
+        `AI preview extraction failed (Ghostscript: ${ghostscriptError.message}; ImageMagick: ${imageMagickError.message}; Illustrator: ${illustratorError.message})`,
+        { cause: ghostscriptError }
+      );
     }
   }
 
@@ -131,26 +147,24 @@ class AiProcessor extends BaseProcessor {
   async extractPreviewServerSide(filePath) {
     return new Promise(async (resolve, reject) => {
       try {
-        const gsConfig = await pool.query(
-          'SELECT executable_path FROM processor_config WHERE processor_name = $1',
-          ['ghostscript']
-        );
-
-        if (!gsConfig.rows[0] || !gsConfig.rows[0].executable_path) {
-          // Try ImageMagick
-          return this.extractPreviewWithImageMagick(filePath)
-            .then(resolve)
-            .catch(reject);
+        let configuredPath;
+        try {
+          const gsConfig = await pool.query(
+            'SELECT executable_path FROM processor_config WHERE processor_name = $1',
+            ['ghostscript']
+          );
+          configuredPath = gsConfig.rows[0]?.executable_path;
+        } catch (error) {
+          console.warn(`[AiProcessor] Processor config unavailable; using Ghostscript from PATH: ${error.message}`);
         }
-
-        const gsPath = gsConfig.rows[0].executable_path;
+        const gsPath = resolveGhostscriptExecutable({ configuredPath });
 
         const tempDir = path.join(__dirname, '..', 'tmp', 'ai-processing');
         if (!fs.existsSync(tempDir)) {
           fs.mkdirSync(tempDir, { recursive: true });
         }
 
-        const tempOutput = path.join(tempDir, `preview-${Date.now()}.png`);
+        const tempOutput = path.join(tempDir, `preview-${crypto.randomUUID()}.png`);
 
         // Ghostscript command to render AI to PNG
         // Same high-quality settings as EPS: 200 DPI with BoundingBox-aware rendering
@@ -213,23 +227,24 @@ class AiProcessor extends BaseProcessor {
   async extractPreviewWithImageMagick(filePath) {
     return new Promise(async (resolve, reject) => {
       try {
-        const imConfig = await pool.query(
-          'SELECT executable_path FROM processor_config WHERE processor_name = $1',
-          ['imagemagick']
-        );
-
-        if (!imConfig.rows[0] || !imConfig.rows[0].executable_path) {
-          return reject(new Error('ImageMagick not available'));
+        let configuredPath;
+        try {
+          const imConfig = await pool.query(
+            'SELECT executable_path FROM processor_config WHERE processor_name = $1',
+            ['imagemagick']
+          );
+          configuredPath = imConfig.rows[0]?.executable_path;
+        } catch (error) {
+          console.warn(`[AiProcessor] Processor config unavailable; using ImageMagick from PATH: ${error.message}`);
         }
-
-        const imPath = imConfig.rows[0].executable_path;
+        const imPath = resolveImageMagickExecutable({ configuredPath });
 
         const tempDir = path.join(__dirname, '..', 'tmp', 'ai-processing');
         if (!fs.existsSync(tempDir)) {
           fs.mkdirSync(tempDir, { recursive: true });
         }
 
-        const tempOutput = path.join(tempDir, `preview-${Date.now()}.png`);
+        const tempOutput = path.join(tempDir, `preview-${crypto.randomUUID()}.png`);
 
         const imArgs = [
           `${filePath}[0]`,

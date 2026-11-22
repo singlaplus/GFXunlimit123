@@ -1,6 +1,6 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useCallback, useState, useRef, useEffect } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import "./AppHeader.css";
 import { toast } from "react-toastify";
@@ -378,10 +378,6 @@ export default function AppHeader({
     return sale.discount_rule || "Discount";
   };
 
-  const handleLogoClick = () => {
-    navigate("/");
-  };
-
   const handleLogout = async () => {
     startFaviconAnimation();
     dispatchAuthBusyStart("logout");
@@ -420,7 +416,22 @@ export default function AppHeader({
     navigate(path);
   };
 
-  const handleExploreClick = () => {
+  const handleHeaderLinkClick = (event, onNavigate) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    if (typeof window !== "undefined") window.scrollTo(0, 0);
+    onNavigate?.();
+  };
+
+  const resetExploreState = () => {
     if (setSearch) {
       setSearch("");
     }
@@ -437,7 +448,6 @@ export default function AppHeader({
       setSelectedCollection("All");
     }
     clearExploreFilterState();
-    handleNavigate("/explore");
   };
 
   const handleSearch = (event) => {
@@ -727,32 +737,21 @@ export default function AppHeader({
 
       <header className={`app-header ${darkMode ? "dark" : ""}`}>
         <div className="app-header-container">
-          <div
-  className="logo"
-  onClick={handleLogoClick}
-  style={{ cursor: "pointer" }}
-  role="button"
-  tabIndex={0}
-  onKeyDown={(event) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      handleLogoClick();
-    }
-  }}
->
-  {branding?.logo ? (
-    <img
-      src={`${API_BASE_URL}${branding.logo}`}
-      alt="Website logo"
-      className="brand-logo-image"
-    />
-  ) : (
-    <>
-      <span className="logo-red">GFX</span>
-      <span className="logo-dark">unlimit</span>
-    </>
-  )}
-</div>
+          <Link to="/" className="logo">
+            {branding?.logo ? (
+              <img
+                src={`${API_BASE_URL}${branding.logo}`}
+                alt="Website logo"
+                className="brand-logo-image"
+                style={{ pointerEvents: "none" }}
+              />
+            ) : (
+              <>
+                <span className="logo-red">GFX</span>
+                <span className="logo-dark">unlimit</span>
+              </>
+            )}
+          </Link>
 
           {hasActiveSession() && (isCustomerUser || isContributorUser || isAdminUser) && (
             <div className="header-notification-wrap" ref={notificationWrapRef}>
@@ -776,59 +775,59 @@ export default function AppHeader({
                       Admin
                     </button>
                     <div className="admin-menu-dropdown">
-                      <button
+                      <Link
+                        to="/messages"
                         className="nav-link-btn"
-                        onClick={() => {
+                        onClick={(event) => handleHeaderLinkClick(event, () => {
                           setAdminMenuOpen(false);
-                          handleNavigate("/messages");
-                        }}
+                        })}
                         aria-label={`Messages, ${messageUnreadCount} unread`}
                       >
                         Messages ({messageUnreadCount})
-                      </button>
-                      <button
+                      </Link>
+                      <Link
+                        to={`${adminBasePath}?tab=admin_dashboard`}
                         className="nav-link-btn"
-                        onClick={() => {
+                        onClick={(event) => handleHeaderLinkClick(event, () => {
                           setAdminMenuOpen(false);
-                          handleNavigate(`${adminBasePath}?tab=admin_dashboard`, "admin");
-                        }}
+                        })}
                       >
                         Dashboard
-                      </button>
-                      <button
+                      </Link>
+                      <Link
+                        to="/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=controls"
                         className="nav-link-btn"
-                        onClick={() => {
+                        onClick={(event) => handleHeaderLinkClick(event, () => {
                           setAdminMenuOpen(false);
-                          handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=controls", "admin");
-                        }}
+                        })}
                       >
                         Controls
-                      </button>
-                      <button
+                      </Link>
+                      <Link
+                        to="/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=live-assets"
                         className="nav-link-btn"
-                        onClick={() => {
+                        onClick={(event) => handleHeaderLinkClick(event, () => {
                           setAdminMenuOpen(false);
-                          handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=live-assets", "admin");
-                        }}
+                        })}
                       >
                         Live Assets
-                      </button>
-                      <button
+                      </Link>
+                      <Link
+                        to="/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=users"
                         className="nav-link-btn"
-                        onClick={() => {
+                        onClick={(event) => handleHeaderLinkClick(event, () => {
                           setAdminMenuOpen(false);
-                          handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=users", "admin");
-                        }}
+                        })}
                       >
                         Users
-                      </button>
+                      </Link>
                     </div>
                   </div>
                 </>
               ) : (
-                <button className="nav-link-btn" onClick={() => handleNavigate("/messages")} aria-label={`Messages, ${messageUnreadCount} unread`}>
+                <Link to="/messages" className="nav-link-btn" aria-label={`Messages, ${messageUnreadCount} unread`} onClick={handleHeaderLinkClick}>
                   Messages ({messageUnreadCount})
-                </button>
+                </Link>
               )}
               <NotificationsPanel showNotifications={notificationOpen} notifications={notifications || []} clearAllNotifications={clearAllNotifications} darkMode={darkMode} userRole={resolvedRole} />
             </div>
@@ -836,18 +835,20 @@ export default function AppHeader({
 
           {isCustomerUser && (
             <div className="header-nav">
-              <button
+              <Link
+                to="/explore"
                 className="nav-link-btn"
-                onClick={handleExploreClick}
+                onClick={(event) => handleHeaderLinkClick(event, resetExploreState)}
               >
                 Explore
-              </button>
-              <button
+              </Link>
+              <Link
+                to="/favorites"
                 className="nav-link-btn"
-                onClick={() => handleNavigate("/favorites", "favorites")}
+                onClick={handleHeaderLinkClick}
               >
                 My Collections
-              </button>
+              </Link>
               {shouldShowCustomerSearch && (
                 <input
                   className="search-input"
@@ -859,18 +860,20 @@ export default function AppHeader({
                 />
               )}
               
-              <button
+              <Link
+                to="/orders"
                 className="nav-link-btn"
-                onClick={() => handleNavigate("/orders", "orders")}
+                onClick={handleHeaderLinkClick}
               >
                 Orders
-              </button>
-              <button
+              </Link>
+              <Link
+                to="/downloads"
                 className="nav-link-btn"
-                onClick={() => handleNavigate("/downloads", "downloads")}
+                onClick={handleHeaderLinkClick}
               >
                 My Downloads
-              </button>
+              </Link>
               <div className="credits-dropdown credits-right" ref={creditsDropdownRef}>
                 <button
                   className="nav-link-btn"
@@ -887,77 +890,79 @@ export default function AppHeader({
                   </div>
                 )}
               </div>
-              <button
+              <Link
+                to="/payments"
                 className="nav-link-btn"
-                onClick={() => {
-                  handleNavigate('/payments', 'payments');
-                  try {
-                    window.dispatchEvent(new Event('paymentsRequested'));
-                  } catch (err) {
-                    // ignore
-                  }
-                }}
+                onClick={(event) => handleHeaderLinkClick(event, () => {
+                  window.dispatchEvent(new Event('paymentsRequested'));
+                })}
               >
                 Payment History
-              </button>
+              </Link>
             </div>
           )}
 
           {isContributorUser && (
             <div className="header-nav">
-              <button
+              <Link
+                to="/upload"
                 className="nav-link-btn"
-                onClick={() => handleNavigate("/upload", "upload")}
+                onClick={handleHeaderLinkClick}
               >
                 Uploads
-              </button>
+              </Link>
 
               {hasBulkUploadPermission && (
-                <button
+                <Link
+                  to="/bulk-upload"
                   className="nav-link-btn"
-                  onClick={() => handleNavigate("/bulk-upload", "bulk-upload")}
+                  onClick={handleHeaderLinkClick}
                 >
                   Bulk Upload
-                </button>
+                </Link>
               )}
 
-              <button
+              <Link
+                to="/myuploads"
                 className="nav-link-btn"
-                onClick={() => handleNavigate("/myuploads", "myuploads")}
+                onClick={handleHeaderLinkClick}
               >
                 My Uploads
-              </button>
+              </Link>
 
-              <button
+              <Link
+                to="/dashboard?tab=analytics"
                 className="nav-link-btn"
-                onClick={() => handleNavigate("/dashboard?tab=analytics", "dashboard")}
+                onClick={handleHeaderLinkClick}
               >
                 Analytics
-              </button>
+              </Link>
 
-              <button
+              <Link
+                to="/payments"
                 className="nav-link-btn"
-                onClick={() => {
-                  handleNavigate('/payments', 'payments');
-                  try { window.dispatchEvent(new Event('paymentsRequested')); } catch (err) {}
-                }}
+                onClick={(event) => handleHeaderLinkClick(event, () => {
+                  window.dispatchEvent(new Event('paymentsRequested'));
+                })}
               >
                 Payment History
-              </button>
+              </Link>
 
-              <button
+              <Link
+                to="/orders"
                 className="nav-link-btn"
-                onClick={() => handleNavigate("/orders", "orders")}
+                onClick={handleHeaderLinkClick}
               >
                 Orders
-              </button>
+              </Link>
 
-              <button
+              <Link
+                to="/favorites"
                 className="nav-link-btn"
-                onClick={() => handleNavigate("/favorites", "favorites")}
+                onClick={handleHeaderLinkClick}
               >
                 My Collection
-              </button>
+              </Link>
             </div>
           )}
 
@@ -1004,43 +1009,43 @@ export default function AppHeader({
                   Tools
                 </button>
                 <div className="tools-menu-dropdown" role="menu" aria-label="Tools menu">
-                  <button
+                  <Link
+                    to="/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=promotions"
                     className="nav-link-btn"
-                    onClick={() => {
+                    onClick={(event) => handleHeaderLinkClick(event, () => {
                       setToolsMenuOpen(false);
                       window.localStorage.removeItem("adminPromotionsActiveSection");
-                      handleNavigate("/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=promotions", "admin");
-                    }}
+                    })}
                   >
                     Promotions
-                  </button>
-                  <button
+                  </Link>
+                  <Link
+                    to={`${adminBasePath}/analytics`}
                     className="nav-link-btn"
-                    onClick={() => {
+                    onClick={(event) => handleHeaderLinkClick(event, () => {
                       setToolsMenuOpen(false);
-                      handleNavigate(`${adminBasePath}/analytics`);
-                    }}
+                    })}
                   >
                     Analytics
-                  </button>
-                  <button
+                  </Link>
+                  <Link
+                    to={`${adminBasePath}/commerce`}
                     className="nav-link-btn"
-                    onClick={() => {
+                    onClick={(event) => handleHeaderLinkClick(event, () => {
                       setToolsMenuOpen(false);
-                      handleNavigate(`${adminBasePath}/commerce`);
-                    }}
+                    })}
                   >
                     Commerce
-                  </button>
-                  <button
+                  </Link>
+                  <Link
+                    to={`${adminBasePath}/orders`}
                     className="nav-link-btn"
-                    onClick={() => {
+                    onClick={(event) => handleHeaderLinkClick(event, () => {
                       setToolsMenuOpen(false);
-                      handleNavigate(`${adminBasePath}/orders`);
-                    }}
+                    })}
                   >
                     Orders
-                  </button>
+                  </Link>
                 </div>
               </div>
               <div
@@ -1058,24 +1063,24 @@ export default function AppHeader({
                   SEO
                 </button>
                 <div className="tools-menu-dropdown" role="menu" aria-label="SEO menu">
-                  <button
+                  <Link
+                    to={`${adminBasePath}/search_console`}
                     className="nav-link-btn"
-                    onClick={() => {
+                    onClick={(event) => handleHeaderLinkClick(event, () => {
                       setSeoMenuOpen(false);
-                      handleNavigate(`${adminBasePath}/search_console`);
-                    }}
+                    })}
                   >
                     Google Search Console
-                  </button>
-                  <button
+                  </Link>
+                  <Link
+                    to={`${adminBasePath}/google_analytics`}
                     className="nav-link-btn"
-                    onClick={() => {
+                    onClick={(event) => handleHeaderLinkClick(event, () => {
                       setSeoMenuOpen(false);
-                      handleNavigate(`${adminBasePath}/google_analytics`);
-                    }}
+                    })}
                   >
                     Google Analytics
-                  </button>
+                  </Link>
                 </div>
               </div>
             </div>
@@ -1083,13 +1088,14 @@ export default function AppHeader({
 
           <div className="header-actions">
             {isCustomerUser && (
-              <button
+              <Link
+                to="/cart"
                 className="nav-link-btn cart-button"
-                onClick={() => navigate('/cart')}
+                onClick={handleHeaderLinkClick}
                 aria-label="Open cart"
               >
                 🛒 Cart{cartCount > 0 ? ` (${cartCount})` : ""}
-              </button>
+              </Link>
             )}
             {isContributorUser && (
               <button
@@ -1152,12 +1158,44 @@ export default function AppHeader({
                 {showAccountMenu && (
                   <div className={`account-menu ${darkMode ? "dark" : ""}`}>
                     <div className="account-menu-name">{displayName}</div>
-                    <button type="button" onClick={() => { setShowAccountMenu(false); handleNavigate(accountPath); }}>
+                    <Link
+                      to={accountPath}
+                      onClick={(event) => handleHeaderLinkClick(event, () => setShowAccountMenu(false))}
+                      style={{
+                        display: "block",
+                        boxSizing: "border-box",
+                        width: "100%",
+                        padding: "10px 11px",
+                        borderRadius: 9,
+                        color: "inherit",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        textDecoration: "none",
+                        fontSize: 14,
+                        fontWeight: 650,
+                      }}
+                    >
                       My Account
-                    </button>
-                    <button type="button" onClick={() => { setShowAccountMenu(false); handleNavigate("/profile"); }}>
+                    </Link>
+                    <Link
+                      to="/profile"
+                      onClick={(event) => handleHeaderLinkClick(event, () => setShowAccountMenu(false))}
+                      style={{
+                        display: "block",
+                        boxSizing: "border-box",
+                        width: "100%",
+                        padding: "10px 11px",
+                        borderRadius: 9,
+                        color: "inherit",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        textDecoration: "none",
+                        fontSize: 14,
+                        fontWeight: 650,
+                      }}
+                    >
                       Profile
-                    </button>
+                    </Link>
                     <button type="button" onClick={handleLogout}>
                       Logout
                     </button>

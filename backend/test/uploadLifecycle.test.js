@@ -77,10 +77,19 @@ function makeMultipart(
   imageField = 'image',
   content = Buffer.from('asset'),
   filename = 'asset.jpg',
-  mimeType = 'image/jpeg'
+  mimeType = 'image/jpeg',
+  collection = null,
+  fields = {},
+  preSubmission = true
 ) {
   const parts = [
-    `--${boundary}\r\nContent-Disposition: form-data; name="preSubmission"\r\n\r\ntrue\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="preSubmission"\r\n\r\n${preSubmission}\r\n`,
+    ...(collection
+      ? [`--${boundary}\r\nContent-Disposition: form-data; name="collection"\r\n\r\n${collection}\r\n`]
+      : []),
+    ...Object.entries(fields).map(([field, value]) =>
+      `--${boundary}\r\nContent-Disposition: form-data; name="${field}"\r\n\r\n${value}\r\n`
+    ),
     `--${boundary}\r\nContent-Disposition: form-data; name="${imageField}"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
   ];
   if (includeCompleteFile) {
@@ -117,6 +126,32 @@ function sendUpload(port, body, boundary, extraHeaders = {}) {
     request.on('error', reject);
     body.forEach((part) => request.write(part));
     request.end();
+  });
+}
+
+function sendJsonRequest(port, requestPath, body, requestToken = token) {
+  const serializedBody = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: requestPath,
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${requestToken}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(serializedBody)
+      }
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        body: Buffer.concat(chunks).toString()
+      }));
+    });
+    request.on('error', reject);
+    request.end(serializedBody);
   });
 }
 
@@ -193,6 +228,7 @@ test('finalizes a complete upload in Pending and responds only with verified fil
       insertedImage = {
         id: nextImageId++,
         filename: values[1],
+        collection: values[3],
         status: values[12],
         file_size: values[7],
         uploaded_by: values[11],
@@ -227,7 +263,7 @@ test('finalizes a complete upload in Pending and responds only with verified fil
   const boundary = '----gfx-upload-lifecycle-success';
   const response = await sendUpload(
     server.address().port,
-    makeMultipart(boundary),
+    makeMultipart(boundary, true, 'image', Buffer.from('asset'), 'asset.jpg', 'image/jpeg', 'Templates'),
     boundary,
     { 'Idempotency-Key': 'c99547ed-2ff2-44c6-9fbf-218e3b61f1b9' }
   );
@@ -238,6 +274,7 @@ test('finalizes a complete upload in Pending and responds only with verified fil
   assert.equal(body.finalized, true);
   assert.equal(body.file_size, 5);
   assert.equal(body.filename, insertedImage.filename);
+  assert.equal(insertedImage.collection, 'Photos');
   assert.equal(body.original_filename, 'asset.jpg');
   const filenameParts = path.basename(insertedImage.filename).match(
     /^upload-test-user_(\d{2})(\d{2})(\d{4})_asset\.jpg$/
@@ -446,6 +483,113 @@ test('rejects unsupported file types before creating an asset record', async (t)
   assert.equal(response.status, 400);
   assert.equal(typeof JSON.parse(response.body).error, 'string');
   assert.deepEqual(await getDirectoryEntries(path.join(temporaryRoot, '.upload-staging')), []);
+});
+
+test('requires description and type for regular uploads', async (t) => {
+  const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gfx-upload-required-fields-'));
+  const originalAssetsRoot = process.env.ASSETS_ROOT;
+  process.env.ASSETS_ROOT = temporaryRoot;
+  pool.query = async (sql) => {
+    if (/SELECT role, status, contributor_cooling_until, username, custom_permissions\s+FROM users/.test(sql)) {
+      return {
+        rows: [{ role: 'contributor', status: 'active', username: 'required-fields-user', custom_permissions: {} }],
+      };
+    }
+    throw new Error('Missing required metadata must be rejected before database writes.');
+  };
+  t.after(async () => {
+    pool.query = originalPoolQuery;
+    if (originalAssetsRoot === undefined) delete process.env.ASSETS_ROOT;
+    else process.env.ASSETS_ROOT = originalAssetsRoot;
+    await fs.rm(temporaryRoot, { recursive: true, force: true });
+  });
+
+  const server = await startServer(t);
+  for (const [missingField, metadata] of [
+    ['description', { title: 'Asset title', category: 'Nature', keywords: 'forest', type: 'commercial' }],
+    ['type', { title: 'Asset title', category: 'Nature', keywords: 'forest', description: 'Forest image' }],
+  ]) {
+    const boundary = `----gfx-upload-required-${missingField}`;
+    const response = await sendUpload(
+      server.address().port,
+      makeMultipart(boundary, true, 'image', Buffer.from('asset'), 'asset.jpg', 'image/jpeg', 'Photos', metadata, false),
+      boundary
+    );
+
+    assert.equal(response.status, 400, `${missingField} should be required`);
+    assert.equal(response.body, '"All fields are required"');
+  }
+  assert.deepEqual(await getDirectoryEntries(path.join(temporaryRoot, '.upload-staging')), []);
+});
+
+test('requires description and type before submitting a bulk draft', async (t) => {
+  const sessionId = 'bulk-submit-required-fields-session';
+  const sessionToken = jwt.sign(
+    { user: contributorId, sid: sessionId },
+    process.env.JWT_SECRET || 'secretkey'
+  );
+  const assets = new Map([
+    [61, {
+      id: 61,
+      uploaded_by: contributorId,
+      status: 'draft',
+      title: 'Draft title',
+      description: '',
+      category: 'Nature',
+      collection: 'Photos',
+      keywords: 'forest',
+      type: 'commercial',
+      filename: 'asset.jpg',
+      original_filename: 'asset.jpg',
+    }],
+    [62, {
+      id: 62,
+      uploaded_by: contributorId,
+      status: 'draft',
+      title: 'Draft title',
+      description: 'Forest image',
+      category: 'Nature',
+      collection: 'Photos',
+      keywords: 'forest',
+      type: '',
+      filename: 'asset.jpg',
+      original_filename: 'asset.jpg',
+    }],
+  ]);
+  pool.query = async (sql, values) => {
+    if (/SELECT last_activity_at FROM auth_sessions/.test(sql)) {
+      return { rows: [{ last_activity_at: new Date() }] };
+    }
+    if (/SELECT status\s+FROM users/.test(sql)) {
+      return { rows: [{ status: 'active' }] };
+    }
+    if (/SELECT role FROM users WHERE id = \$1/.test(sql)) {
+      return { rows: [{ role: 'contributor' }] };
+    }
+    if (/SELECT id, uploaded_by, status, title, description, category, collection, keywords, type, filename, original_filename/.test(sql)) {
+      return { rows: [assets.get(values[0])] };
+    }
+    throw new Error('Incomplete draft metadata must be rejected before database updates.');
+  };
+  t.after(() => {
+    pool.query = originalPoolQuery;
+  });
+
+  const server = await startServer(t);
+  for (const assetId of assets.keys()) {
+    const response = await sendJsonRequest(
+      server.address().port,
+      `/my-uploads/${assetId}/submit`,
+      {},
+      sessionToken
+    );
+
+    assert.equal(response.status, 400);
+    assert.equal(
+      JSON.parse(response.body).error,
+      'Complete the required metadata before submitting this asset.'
+    );
+  }
 });
 
 test('enforces the contributor upload limit before creating an asset record', async (t) => {

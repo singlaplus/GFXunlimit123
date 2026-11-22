@@ -11,7 +11,7 @@ async function main() {
   const limit = all ? '' : positiveInteger(requestedLimit, 'limit', { max: testMode ? 20 : 1000 });
   const offset = positiveInteger(getOption('offset', '0'), 'offset', { allowZero: true });
   const concurrency = positiveInteger(
-    getOption('concurrency', process.env.THUMBNAIL_CONCURRENCY || '2'),
+    getOption('concurrency', process.env.THUMBNAIL_CONCURRENCY || '4'),
     'concurrency',
     { max: MAX_THUMBNAIL_CONCURRENCY }
   );

@@ -8,6 +8,10 @@ import { buildAuthHeaders } from "../utils/authSession";
 import { formatIndiaDate } from "../utils/indiaTime";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
+const hasRequiredDraftMetadata = (image) =>
+  [image.title, image.description, image.keywords, image.type]
+    .every((value) => String(value || "").trim());
+
 function MyUploads({ darkMode = false }) {
   const isDarkMode = Boolean(darkMode);
   const { reportResource, retryKey, routeId } = useStartupReadiness();
@@ -143,6 +147,11 @@ function MyUploads({ darkMode = false }) {
   };
 
   const submitImage = async (image) => {
+    if (!hasRequiredDraftMetadata(image)) {
+      toast.error("Title, description, keywords, and type are required before submitting.");
+      return;
+    }
+
     try {
       await axios.post(
         `${API_BASE_URL}/my-uploads/${image.id}/submit`,
@@ -404,8 +413,19 @@ function MyUploads({ darkMode = false }) {
                       <button
                         type="button"
                         onClick={() => submitImage(image)}
-                        disabled={String(image.generated_thumbnail_status || "").toUpperCase() !== "READY"}
-                        style={{ background: "#16a34a", color: "white", border: "none", padding: "8px 12px", borderRadius: "6px", cursor: "pointer" }}
+                        disabled={
+                          String(image.generated_thumbnail_status || "").toUpperCase() !== "READY" ||
+                          !hasRequiredDraftMetadata(image)
+                        }
+                        style={{
+                          background: "#16a34a",
+                          color: "white",
+                          border: "none",
+                          padding: "8px 12px",
+                          borderRadius: "6px",
+                          cursor: "pointer",
+                          opacity: hasRequiredDraftMetadata(image) ? 1 : 0.55
+                        }}
                       >
                         Submit
                       </button>
@@ -444,6 +464,12 @@ function MyUploads({ darkMode = false }) {
                   </button>}
                 </div>
               </div>
+              {selectedView === "not-submitted" &&
+                !hasRequiredDraftMetadata(image) && (
+                  <p style={{ margin: "8px 0 0", fontSize: "0.85rem", color: isDarkMode ? "#fca5a5" : "#b91c1c" }}>
+                    Add title, description, keywords, and type using Edit before submitting.
+                  </p>
+                )}
             </div>
           ))}
         </div>

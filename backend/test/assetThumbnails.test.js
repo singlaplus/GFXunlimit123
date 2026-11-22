@@ -13,11 +13,13 @@ const {
   encodeThumbnail,
   getThumbnailFilename,
   getThumbnailFilePath,
+  getThumbnailAssetIdFromRelativePath,
   getThumbnailRelativePath,
   getDateDirectory,
   parseThumbnailAssetId,
   getThumbnailCacheControl,
   getProcessorVersion,
+  generateThumbnailPreview,
   getThumbnailStorageRoot,
   getOriginalAssetStorageRoot,
   getLifecycleRecoveryStorageRoots,
@@ -165,6 +167,21 @@ test('does not upscale tiny originals and keeps both output dimensions nonzero',
   assert.equal(result.quality, 37);
 });
 
+test('uses configured quality and dimensions while respecting the configured byte cap', async () => {
+  const source = Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="500"><rect width="1000" height="500" fill="#ff0000"/></svg>'
+  );
+  const result = await encodeThumbnail(source, {
+    settings: { quality: 72, maxFileSizeKb: 10, dimensionPercent: 10 },
+  });
+  const metadata = await sharp(result.buffer).metadata();
+
+  assert.equal(metadata.width, 100);
+  assert.equal(metadata.height, 50);
+  assert.equal(result.quality, 72);
+  assert.ok(result.buffer.length <= 10 * 1024);
+});
+
 test('reduces WebP quality below 37 when needed while keeping the target dimensions', async () => {
   const randomPixels = require('node:crypto').randomBytes(400 * 400 * 3);
   const source = await sharp(randomPixels, {
@@ -224,6 +241,106 @@ test('uses the unified proportional thumbnail processor version for every format
   for (const filename of ['asset.jpg', 'asset.eps', 'asset.ai', 'asset.psd', 'asset.psb']) {
     assert.equal(getProcessorVersion(filename), version);
   }
+});
+
+test('includes changed generation settings in the processor version', () => {
+  const defaults = getProcessorVersion('asset.jpg');
+  assert.notEqual(
+    getProcessorVersion('asset.jpg', { quality: 72, maxFileSizeKb: 50, dimensionPercent: 20 }),
+    defaults
+  );
+});
+
+test('versions video derivatives without exceeding the database processor-version limit', () => {
+  const settings = {
+    formatSettings: {
+      video: {
+        multipleVideoThumbnails: true,
+        includeVideoPreview: true,
+        generateOptimizedVideoPreview: true,
+        videoQuality: 60,
+        videoMaxHeight: 720,
+        videoMaxFileSizeMb: 2,
+      },
+    },
+  };
+  const version = getProcessorVersion('clip.mp4', settings);
+  assert.notEqual(version, getProcessorVersion('clip.mp4'));
+  assert.equal(version, getProcessorVersion('clip.mp4', settings));
+  assert.ok(version.length <= 64);
+});
+
+test('uses the saved settings for the asset format when versioning its thumbnail', () => {
+  const settings = {
+    quality: 37,
+    maxFileSizeKb: 50,
+    dimensionPercent: 20,
+    formats: ['jpg', 'png'],
+    formatSettings: {
+      jpg: { quality: 75, maxFileSizeKb: 80, dimensionPercent: 45 },
+      png: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 },
+      eps: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 },
+      psd: { quality: 37, maxFileSizeKb: 50, dimensionPercent: 20 },
+      video: {
+        quality: 37,
+        maxFileSizeKb: 50,
+        dimensionPercent: 20,
+        multipleVideoThumbnails: false,
+        includeVideoPreview: false,
+        generateOptimizedVideoPreview: false,
+        videoQuality: 60,
+        videoMaxHeight: 720,
+        videoMaxFileSizeMb: 2,
+      },
+    },
+  };
+  assert.notEqual(getProcessorVersion('asset.jpg', settings), getProcessorVersion('asset.png', settings));
+  assert.equal(getProcessorVersion('asset.png', settings), getProcessorVersion('asset.eps', settings));
+});
+
+test('uses EPS settings when versioning an AI thumbnail', () => {
+  const settings = {
+    quality: 37,
+    maxFileSizeKb: 50,
+    dimensionPercent: 20,
+    formats: ['eps'],
+    formatSettings: {
+      eps: { quality: 90, maxFileSizeKb: 51, dimensionPercent: 25 },
+    },
+  };
+
+  assert.equal(getProcessorVersion('asset.ai', settings), getProcessorVersion('asset.eps', settings));
+  assert.notEqual(getProcessorVersion('asset.ai', settings), getProcessorVersion('asset.ai'));
+});
+
+test('generates a WebP preview from a supported temporary raster file', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'thumbnail-preview-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const sourcePath = path.join(directory, 'sample.png');
+  await sharp({ create: { width: 200, height: 100, channels: 3, background: '#ff0000' } })
+    .png()
+    .toFile(sourcePath);
+
+  await assert.rejects(
+    generateThumbnailPreview(sourcePath, {
+      quality: 60,
+      maxFileSizeKb: 50,
+      dimensionPercent: 50,
+      formats: ['jpg'],
+    }),
+    /Enable PNG in the selected formats/
+  );
+  const preview = await generateThumbnailPreview(sourcePath, {
+    quality: 60,
+    maxFileSizeKb: 50,
+    dimensionPercent: 50,
+    formats: ['png'],
+  });
+  const metadata = await sharp(preview.buffer).metadata();
+  assert.equal(metadata.format, 'webp');
+  assert.equal(metadata.width, 100);
+  assert.equal(metadata.height, 50);
+  assert.equal(preview.quality, 60);
 });
 
 test('uses readable unique ID filenames and rejects unsafe stored source paths', () => {
@@ -345,6 +462,7 @@ test('detects Sharp by encoding a real test image', async () => {
 });
 
 test('rejects unsafe and mismatched thumbnail paths', () => {
+  const generationId = 'c0a80123-4567-489a-bcde-123456789abc';
   assert.equal(parseThumbnailAssetId('12345'), 12345);
   for (const invalidId of ['0', '-1', '1.5', '../1', '2147483648', '']) {
     assert.equal(parseThumbnailAssetId(invalidId), null);
@@ -353,6 +471,17 @@ test('rejects unsafe and mismatched thumbnail paths', () => {
   assert.throws(() => normalizeThumbnailRelativePath('2026/10/02/image_124.webp', 123));
   assert.throws(() => normalizeThumbnailRelativePath('2026/02/31/image_123.webp', 123));
   assert.throws(() => normalizeThumbnailRelativePath('2026/10/02/C:evil_123.webp', 123));
+  assert.equal(
+    normalizeThumbnailRelativePath(`2026/10/02/image_123-frame-1-${generationId}.webp`, 123),
+    `2026/10/02/image_123-frame-1-${generationId}.webp`
+  );
+  assert.equal(
+    normalizeThumbnailRelativePath(`2026/10/02/image_123-preview-${generationId}.mp4`, 123),
+    `2026/10/02/image_123-preview-${generationId}.mp4`
+  );
+  assert.equal(getThumbnailAssetIdFromRelativePath(`2026/10/02/image_123-frame-1-${generationId}.webp`), 123);
+  assert.equal(getThumbnailAssetIdFromRelativePath(`2026/10/02/image_123-preview-${generationId}.mp4`), 123);
+  assert.throws(() => normalizeThumbnailRelativePath('2026/10/02/image_123-preview-unsafe.mp4', 123));
 });
 
 test('does not accept symlinked thumbnail outputs and keeps private assets out of shared caches', async () => {
@@ -376,6 +505,7 @@ test('does not accept symlinked thumbnail outputs and keeps private assets out o
     fs.writeFileSync(tinyPath, tinyImage);
     fs.symlinkSync(targetPath, linkPath);
     assert.equal(await isValidThumbnailFile(targetPath), true);
+    assert.equal(await isValidThumbnailFile(targetPath, 1), false);
     assert.equal(await isValidThumbnailFile(proportionalPath), true);
     assert.equal(await isValidThumbnailFile(tinyPath), false);
     assert.equal(await isValidThumbnailFile(linkPath), false);
@@ -387,22 +517,28 @@ test('does not accept symlinked thumbnail outputs and keeps private assets out o
   assert.equal(getThumbnailCacheControl(true, true), 'public, max-age=31536000, immutable');
 });
 
-test('cleanup planning only classifies unreferenced canonical WebP files as orphans', () => {
+test('cleanup planning preserves referenced video derivatives and classifies orphan preview files', () => {
+  const generationId = 'c0a80123-4567-489a-bcde-123456789abc';
   const entries = [
     { relativePath: '2026/10/02/file-title_1.webp', isFile: () => true },
     { relativePath: '2026/10/02/file-title_2.webp', isFile: () => true },
     { relativePath: '2026/10/02/file-title_3.webp', isFile: () => true },
+    { relativePath: `2026/10/02/file-title_1-frame-1-${generationId}.webp`, isFile: () => true },
+    { relativePath: `2026/10/02/file-title_2-preview-${generationId}.mp4`, isFile: () => true },
     { relativePath: '2026/10/02/not-an-asset.webp', isFile: () => true },
     { relativePath: '2026/10/02/file-title_4.WEBP', isFile: () => true },
   ];
   const plan = planOrphanThumbnailFiles(
     entries,
     new Set([1, 2]),
-    new Map([[1, '2026/10/02/file-title_1.webp']])
+    new Map([
+      [1, new Set(['2026/10/02/file-title_1.webp', `2026/10/02/file-title_1-frame-1-${generationId}.webp`])],
+      [2, new Set(['2026/10/02/file-title_2.webp'])],
+    ])
   );
   assert.deepEqual(plan, [
-    { relativePath: '2026/10/02/file-title_2.webp', assetId: 2, reason: 'thumbnail metadata record missing' },
     { relativePath: '2026/10/02/file-title_3.webp', assetId: 3, reason: 'asset and thumbnail record missing' },
+    { relativePath: `2026/10/02/file-title_2-preview-${generationId}.mp4`, assetId: 2, reason: 'thumbnail metadata points to a different file' },
   ]);
 });
 

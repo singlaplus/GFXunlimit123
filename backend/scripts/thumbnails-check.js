@@ -4,6 +4,8 @@ const sharp = require('sharp');
 const {
   getThumbnailStorageRoot,
   getThumbnailFilePath,
+  getThumbnailAssetIdFromRelativePath,
+  getVideoPreviewPathsFromMetadata,
   normalizeThumbnailRelativePath,
   isThumbnailPathInsideRoot,
   isValidThumbnailFile,
@@ -28,6 +30,27 @@ async function listThumbnailFiles(directory, prefix = '') {
       unexpected.push(relativePath);
     }
   }
+  for (const previewPath of getVideoPreviewPathsFromMetadata(record.video_preview_metadata)) {
+    referencedPreviewPaths.add(previewPath);
+    try {
+      const safePath = normalizeThumbnailRelativePath(previewPath, assetId);
+      const previewFilePath = getThumbnailFilePath(assetId, thumbnailRoot, safePath);
+      const previewStats = await fs.lstat(previewFilePath);
+      const expectedSize = [
+        ...(Array.isArray(record.video_preview_metadata?.frames) ? record.video_preview_metadata.frames : []),
+        record.video_preview_metadata?.optimizedVideo,
+      ].find((preview) => preview?.path === safePath)?.sizeBytes;
+      if (
+        !previewStats.isFile() ||
+        previewStats.isSymbolicLink() ||
+        !(await isThumbnailPathInsideRoot(previewFilePath, thumbnailRoot)) ||
+        Number(expectedSize) !== previewStats.size
+      ) invalid.push(assetId);
+    } catch (previewError) {
+      if (previewError.code === 'ENOENT' || previewError.code === 'ENOTDIR') invalid.push(assetId);
+      else throw previewError;
+    }
+  }
   return { files, unexpected };
 }
 
@@ -35,7 +58,7 @@ async function main() {
   await assertSchemaReady();
   const [assetsResult, recordsResult, oldRefsResult, pendingOrphansResult] = await Promise.all([
     pool.query('SELECT id FROM images ORDER BY id'),
-    pool.query('SELECT asset_id, thumbnail_path, format, width, height, status, file_size FROM asset_thumbnail_metadata ORDER BY asset_id'),
+    pool.query('SELECT asset_id, thumbnail_path, format, width, height, status, file_size, video_preview_metadata FROM asset_thumbnail_metadata ORDER BY asset_id'),
     pool.query(`SELECT COUNT(*)::int AS count FROM images WHERE thumbnail_url IS NOT NULL AND BTRIM(thumbnail_url) <> ''`),
     pool.query('SELECT COUNT(*)::int AS count FROM asset_thumbnail_orphans'),
   ]);
@@ -87,21 +110,34 @@ async function main() {
   const diskOrphans = [];
   const nonCanonicalFiles = [];
   const fileIds = new Map();
+  const referencedPreviewPaths = new Set();
+  const thumbnailRoot = getThumbnailStorageRoot();
   let diskFiles = [];
   try {
-    const listing = await listThumbnailFiles(getThumbnailStorageRoot());
+    const listing = await listThumbnailFiles(thumbnailRoot);
     diskFiles = listing.files;
     nonCanonicalFiles.push(...listing.unexpected);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
   for (const entry of diskFiles) {
-    const match = entry.relativePath.match(/_([1-9]\d*)\.webp$/);
-    const assetId = Number(match?.[1]);
+    const assetId = getThumbnailAssetIdFromRelativePath(entry.relativePath);
+    if (assetId === null) {
+      nonCanonicalFiles.push(entry.relativePath);
+      continue;
+    }
     try {
       normalizeThumbnailRelativePath(entry.relativePath, assetId);
     } catch (error) {
       nonCanonicalFiles.push(entry.relativePath);
+      continue;
+    }
+    const isVideoPreviewDerivative = path.extname(entry.relativePath).toLowerCase() === '.mp4' ||
+      /-frame-[1-6]-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.webp$/i.test(entry.relativePath);
+    if (isVideoPreviewDerivative) {
+      if (!assetIds.has(assetId) || !referencedPreviewPaths.has(entry.relativePath)) {
+        diskOrphans.push(entry.relativePath);
+      }
       continue;
     }
     fileIds.set(assetId, (fileIds.get(assetId) || 0) + 1);

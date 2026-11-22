@@ -13,11 +13,16 @@ async function prepareAsset(t, overrides = {}) {
   const filename = 'contributor/Pending/asset.jpg';
   const thumbnailPath = '2026/10/02/title_asset_42.webp';
   const orphanThumbnailPath = '2026/10/02/old_asset_42.webp';
+  const generationId = 'c0a80123-4567-489a-bcde-123456789abc';
+  const framePreviewPath = `2026/10/02/title_asset_42-frame-1-${generationId}.webp`;
+  const optimizedVideoPath = `2026/10/02/title_asset_42-preview-${generationId}.mp4`;
   await fs.mkdir(path.dirname(path.join(assetRoot, filename)), { recursive: true });
   await fs.mkdir(path.join(thumbnailRoot, '2026/10/02'), { recursive: true });
   await fs.writeFile(path.join(assetRoot, filename), 'original');
   await fs.writeFile(path.join(assetRoot, 'contributor/Pending/other.jpg'), 'other');
   await fs.writeFile(path.join(thumbnailRoot, thumbnailPath), 'thumbnail');
+  await fs.writeFile(path.join(thumbnailRoot, framePreviewPath), 'frame');
+  await fs.writeFile(path.join(thumbnailRoot, optimizedVideoPath), 'video');
   await fs.writeFile(path.join(thumbnailRoot, orphanThumbnailPath), 'orphan');
   await fs.writeFile(path.join(thumbnailRoot, '2026/10/02/other_asset_42.webp'), 'other');
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
@@ -35,6 +40,10 @@ async function prepareAsset(t, overrides = {}) {
     operations: [],
     nextOperationId: 1,
     transactionCount: 0,
+    videoPreviewMetadata: {
+      frames: [{ path: framePreviewPath }],
+      optimizedVideo: { path: optimizedVideoPath },
+    },
   };
   let snapshot;
   let failCommitAt = null;
@@ -46,6 +55,14 @@ async function prepareAsset(t, overrides = {}) {
       return { rows: state.asset ? [{ ...state.asset }] : [] };
     }
     if (/SELECT role FROM users/.test(sql)) return { rows: [{ role: state.asset.requesterRole }] };
+    if (/SELECT thumbnail_path, video_preview_metadata FROM asset_thumbnail_metadata/.test(sql)) {
+      return {
+        rows: [{
+          thumbnail_path: state.thumbnailPath || thumbnailPath,
+          video_preview_metadata: state.videoPreviewMetadata,
+        }],
+      };
+    }
     if (/SELECT thumbnail_path FROM asset_thumbnail_metadata/.test(sql)) {
       return { rows: [{ thumbnail_path: state.thumbnailPath || thumbnailPath }] };
     }
@@ -136,8 +153,17 @@ async function prepareAsset(t, overrides = {}) {
     acquireAssetLifecycleLock: async () => () => {},
     getOriginalAssetStorageRoot: () => assetRoot,
     getThumbnailStorageRoot: () => thumbnailRoot,
+    getVideoPreviewPathsFromMetadata(metadata) {
+      return [
+        ...(metadata?.frames || []).map((frame) => frame.path),
+        metadata?.optimizedVideo?.path,
+      ].filter(Boolean);
+    },
     normalizeThumbnailRelativePath(value) {
-      if (!/^\d{4}\/\d{2}\/\d{2}\/[^/]+_42\.webp$/.test(value)) throw new Error('Invalid thumbnail path');
+      if (!/^\d{4}\/\d{2}\/\d{2}\/[^/]+_42(?:-frame-[1-6]-[0-9a-f-]{36}|-preview-[0-9a-f-]{36})?\.webp$/.test(value) &&
+          !/^\d{4}\/\d{2}\/\d{2}\/[^/]+_42-preview-[0-9a-f-]{36}\.mp4$/.test(value)) {
+        throw new Error('Invalid thumbnail path');
+      }
       return value;
     },
   };
@@ -148,6 +174,8 @@ async function prepareAsset(t, overrides = {}) {
     thumbnailRoot,
     filename,
     thumbnailPath,
+    framePreviewPath,
+    optimizedVideoPath,
     orphanThumbnailPath,
     state,
     pool,
@@ -171,6 +199,8 @@ test('deletes the selected asset and thumbnails while preserving unrelated files
   assert.equal(fixture.state.operations[0].state, 'completed');
   await assert.rejects(fs.access(path.join(fixture.assetRoot, fixture.filename)), { code: 'ENOENT' });
   await assert.rejects(fs.access(path.join(fixture.thumbnailRoot, fixture.thumbnailPath)), { code: 'ENOENT' });
+  await assert.rejects(fs.access(path.join(fixture.thumbnailRoot, fixture.framePreviewPath)), { code: 'ENOENT' });
+  await assert.rejects(fs.access(path.join(fixture.thumbnailRoot, fixture.optimizedVideoPath)), { code: 'ENOENT' });
   await assert.rejects(fs.access(path.join(fixture.thumbnailRoot, fixture.orphanThumbnailPath)), { code: 'ENOENT' });
   await fs.access(path.join(fixture.assetRoot, 'contributor/Pending/other.jpg'));
   await fs.access(path.join(fixture.thumbnailRoot, '2026/10/02/other_asset_42.webp'));

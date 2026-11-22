@@ -9,6 +9,7 @@ const path = require('path');
 const { execFileSync, execSync, spawn } = require('child_process');
 const pool = require('../db');
 const { getWindowsToolPaths } = require('../services/windowsToolPaths');
+const { resolveImageMagickExecutable } = require('./imagemagick-path');
 
 // Windows-specific paths for common tool installations
 const WINDOWS_TOOL_PATHS = {
@@ -147,63 +148,30 @@ class ProcessorDetector {
         }
       }
 
-      // For Unix-like systems (macOS, Linux)
-      if (!this.isWindows) {
-        try {
-          const whichResult = execSync('which magick', { encoding: 'utf8' }).trim();
-          if (whichResult) {
-            const version = execSync('magick --version', { encoding: 'utf8' }).trim();
-            return {
-              status: 'READY',
-              executablePath: whichResult,
-              version: version.split('\n')[0] || 'unknown',
-              message: `Found at ${whichResult}`,
-            };
-          }
-        } catch (err) {
-          // Continue - not found
-        }
-        
-        return {
-          status: 'NOT_AVAILABLE',
-          message: 'ImageMagick not found. Install with: brew install imagemagick',
-        };
-      }
-
-      // For Windows systems
       try {
-        const version = execSync('magick -version', { encoding: 'utf8', windowsHide: true });
+        const executablePath = resolveImageMagickExecutable();
+        const version = execFileSync(executablePath, ['-version'], {
+          encoding: 'utf8',
+          windowsHide: true,
+        }).trim();
         return {
           status: 'READY',
-          executablePath: 'magick',
-          version: version.split('\n')[0],
-          message: 'Found in PATH',
+          executablePath,
+          version: version.split(/\r?\n/)[0] || 'unknown',
+          message: `Found at ${executablePath}`,
         };
       } catch (err) {
-        // Not in PATH, try common installation paths
-      }
-
-      // Try common installation paths
-      for (const pathCandidate of getWindowsToolPaths('imagemagick')) {
-        if (fs.existsSync(pathCandidate)) {
-          try {
-            const version = execFileSync(pathCandidate, ['-version'], { encoding: 'utf8', windowsHide: true });
-            return {
-              status: 'READY',
-              executablePath: pathCandidate,
-              version: version.split('\n')[0],
-              message: `Found at ${pathCandidate}`,
-            };
-          } catch (err) {
-            // Continue to next path
-          }
+        if (process.env.IMAGEMAGICK_PATH) {
+          return {
+            status: 'ERROR',
+            message: `Configured IMAGEMAGICK_PATH could not run: ${err.message}`,
+          };
         }
+        return {
+          status: 'NOT_AVAILABLE',
+          message: 'ImageMagick not found. Optional fallback for image processing.',
+        };
       }
-
-      return {
-        status: 'NOT_AVAILABLE',
-        message: 'ImageMagick not found. Optional fallback for image processing.',
-      };
     } catch (err) {
       return {
         status: 'ERROR',
@@ -271,6 +239,25 @@ class ProcessorDetector {
       return {
         status: 'ERROR',
         message: `Failed to detect PSD processor: ${err.message}`,
+      };
+    }
+  }
+
+  async detectAiProcessor() {
+    try {
+      const AiProcessor = require('./ai-processor');
+      const processor = new AiProcessor();
+      if (!processor.isSupported('thumbnail-check.ai')) {
+        throw new Error('Built-in AI processor does not accept .ai files');
+      }
+      return {
+        status: 'READY',
+        message: 'Built-in AI processor is available',
+      };
+    } catch (err) {
+      return {
+        status: 'ERROR',
+        message: `Built-in AI processor failed to load: ${err.message}`,
       };
     }
   }
@@ -434,6 +421,17 @@ class ProcessorDetector {
       results.detections.photoshop = { status: 'ERROR', message: err.message };
     }
 
+    results.detections.ai_processor = await this.detectAiProcessor();
+    results.detections.illustrator_worker = {
+      status: 'NOT_AVAILABLE',
+      message: 'Adobe Illustrator worker integration is not implemented',
+    };
+    results.detections.photoshop_worker = {
+      status: 'NOT_AVAILABLE',
+      message: 'Adobe Photoshop worker integration is not implemented',
+    };
+    this.detectionResults = results.detections;
+
     console.log('\n========== PROCESSOR DETECTION COMPLETE ==========\n');
     
     return results;
@@ -443,6 +441,7 @@ class ProcessorDetector {
    * Update database with detection results
    */
   async saveDetectionResults(results) {
+    this.detectionResults = results.detections;
     if (!ProcessorDetector.isProcessorConfigWriteAllowed()) {
       console.warn('Skipping processor configuration persistence on macOS; shared configuration is read-only here.');
       return;
@@ -497,12 +496,24 @@ class ProcessorDetector {
    */
   async printStatusTable() {
     const config = await this.getProcessorConfig();
+    const processorsByName = new Map(config.map((processor) => [processor.processor_name, processor]));
+    for (const [processorName, detection] of Object.entries(this.detectionResults || {})) {
+      const existing = processorsByName.get(processorName) || { processor_name: processorName };
+      processorsByName.set(processorName, {
+        ...existing,
+        status: detection.status || existing.status,
+        executable_path: detection.executablePath || existing.executable_path,
+        version: detection.version || existing.version,
+      });
+    }
+    const processors = [...processorsByName.values()]
+      .sort((left, right) => left.processor_name.localeCompare(right.processor_name));
     
     console.log('\n========== PROCESSOR STATUS ==========\n');
     console.log('Dependency                 Status             Version');
     console.log('─'.repeat(60));
     
-    config.forEach(processor => {
+    processors.forEach(processor => {
       const status = processor.status === 'READY' ? '✓ READY' : 
                     processor.status === 'AVAILABLE' ? '◐ OPTIONAL' : '✗ NOT AVAILABLE';
       const version = processor.version || 'N/A';

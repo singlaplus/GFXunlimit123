@@ -7,6 +7,7 @@
     "start": "npm run start:frontend",
     "start:frontend": "cd frontend && npm start",
     "start:backend": "cd backend && npm start",
+    "postinstall": "npm --prefix backend install",
     "setup": "node setup.js",
     "setup:repair": "node setup.js --repair",
     "setup:check": "node setup.js --check-only",

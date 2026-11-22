@@ -33,6 +33,7 @@ const columns = Object.entries(REQUIRED_COLUMNS).flatMap(([table_name, definitio
       created_at: 'now()',
       cleanup_attempts: '0',
       thumbnail_paths: "'[]'::jsonb",
+      video_preview_metadata: "'{}'::jsonb",
     })[column_name] || null,
   }));
 });

@@ -3,6 +3,8 @@ const path = require('node:path');
 const {
   getThumbnailStorageRoot,
   getThumbnailFilePath,
+  getThumbnailAssetIdFromRelativePath,
+  getVideoPreviewPathsFromMetadata,
   normalizeThumbnailRelativePath,
   isThumbnailPathInsideRoot,
 } = require('../utils/assetThumbnails');
@@ -52,7 +54,7 @@ async function main() {
   const root = getThumbnailStorageRoot();
   const [assetsResult, recordsResult, orphanRecordsResult, legacyRefsResult, listing] = await Promise.all([
     pool.query('SELECT id FROM images'),
-    pool.query('SELECT asset_id, thumbnail_path, status FROM asset_thumbnail_metadata'),
+    pool.query('SELECT asset_id, thumbnail_path, status, video_preview_metadata FROM asset_thumbnail_metadata'),
     pool.query('SELECT asset_id, thumbnail_path FROM asset_thumbnail_orphans'),
     pool.query(`SELECT COUNT(*)::int AS count FROM images WHERE thumbnail_url IS NOT NULL AND BTRIM(thumbnail_url) <> ''`),
     fs.readdir(root, { withFileTypes: true }).then(() => listStorageEntries(root)).catch((error) => {
@@ -63,13 +65,23 @@ async function main() {
   const assetIds = new Set(assetsResult.rows.map((row) => Number(row.id)));
   const recordsById = new Map(recordsResult.rows.map((row) => [
     Number(row.asset_id),
-    { path: row.thumbnail_path, status: row.status },
+    {
+      path: row.thumbnail_path,
+      status: row.status,
+      previewPaths: getVideoPreviewPathsFromMetadata(row.video_preview_metadata),
+    },
   ]));
-  const recordPaths = new Map([...recordsById].map(([assetId, record]) => [assetId, record.path]));
+  const recordPaths = new Map([...recordsById].map(([assetId, record]) => [
+    assetId,
+    new Set([record.path, ...record.previewPaths].filter(Boolean)),
+  ]));
   const canonicalFiles = [];
   for (const entry of listing.files) {
-    const match = entry.relativePath.match(/_([1-9]\d*)\.webp$/);
-    const assetId = Number(match?.[1]);
+    const assetId = getThumbnailAssetIdFromRelativePath(entry.relativePath);
+    if (assetId === null) {
+      listing.unexpected.push(entry.relativePath);
+      continue;
+    }
     try {
       normalizeThumbnailRelativePath(entry.relativePath, assetId);
       canonicalFiles.push({ ...entry, assetId });
@@ -94,8 +106,16 @@ async function main() {
     recordsById.get(entry.assetId)?.path === entry.relativePath &&
     !plannedPaths.has(entry.relativePath)
   );
+  const currentPreviewFiles = canonicalFiles.filter((entry) =>
+    recordsById.get(entry.assetId)?.status === 'READY' &&
+    recordsById.get(entry.assetId)?.previewPaths.includes(entry.relativePath) &&
+    !plannedPaths.has(entry.relativePath)
+  );
   const retainedNonReadyFiles = canonicalFiles.filter((entry) =>
-    recordsById.get(entry.assetId)?.path === entry.relativePath &&
+    (
+      recordsById.get(entry.assetId)?.path === entry.relativePath ||
+      recordsById.get(entry.assetId)?.previewPaths.includes(entry.relativePath)
+    ) &&
     recordsById.get(entry.assetId)?.status !== 'READY'
   );
   const currentBytes = currentFiles.reduce((total, entry) => total + (fileSizes.get(entry.relativePath) || 0), 0);
@@ -129,6 +149,7 @@ async function main() {
   console.log(`Thumbnail cleanup ${apply ? '(apply)' : '(dry run)'}`);
   console.log(`Storage root:                          ${root}`);
   console.log(`Current new thumbnails:                ${currentFiles.length} (${currentBytes} bytes)`);
+  console.log(`Referenced video previews:             ${currentPreviewFiles.length} (${currentPreviewFiles.reduce((total, entry) => total + (fileSizes.get(entry.relativePath) || 0), 0)} bytes)`);
   console.log(`Non-ready files retained:               ${retainedNonReadyFiles.length} (${retainedNonReadyBytes} bytes)`);
   console.log(`Legacy thumbnail references:           ${legacyRefsResult.rows[0].count} (files/records untouched)`);
   console.log(`Orphan thumbnail files planned:         ${cleanupPlan.length} (${orphanBytes} bytes)`);
@@ -142,7 +163,7 @@ async function main() {
     console.error(`Leaving unsafe cleanup record for asset ${record.asset_id}: ${record.thumbnail_path}`);
   }
   if (!apply) {
-    console.log('No files or records deleted. Re-run with --apply to remove only the listed orphan WebP files.');
+    console.log('No files or records deleted. Re-run with --apply to remove only the listed orphan preview files.');
     return;
   }
 
