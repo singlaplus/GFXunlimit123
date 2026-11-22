@@ -448,6 +448,7 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
   const openDestinationBrowser = async (directoryPath = "") => {
     setDestinationBrowserLoading(true);
     setErrorMessage("");
+    setDestinationBrowser((current) => current || { path: null, roots: [], directories: [] });
     try {
       const params = directoryPath ? { path: directoryPath } : {};
       const response = await axios.get(`${endpoint}/preview-folders`, {
@@ -456,7 +457,10 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
       });
       setDestinationBrowser(response.data);
     } catch (error) {
-      setErrorMessage(error.response?.data?.error || "Unable to browse server folders.");
+      const message = error.response?.data?.error
+        || (error.response?.status === 401 ? "Your admin session is no longer authorized. Sign in again and retry." : "Unable to browse server folders.");
+      setErrorMessage(message);
+      setDestinationBrowser((current) => ({ ...(current || {}), error: message }));
     } finally {
       setDestinationBrowserLoading(false);
     }
@@ -914,6 +918,7 @@ function ThumbnailGenerationSettingsPage({ onBack }) {
                   <h5 id="thumbnail-folder-browser-title">Choose a server folder</h5>
                   {destinationBrowserLoading ? <p>Loading folders…</p> : (
                     <>
+                      {destinationBrowser.error && <p role="alert" className="thumbnail-preview-status">{destinationBrowser.error}</p>}
                       {destinationBrowser.path && (
                         <>
                           <p className="thumbnail-file-path">Current folder: {destinationBrowser.path}</p>

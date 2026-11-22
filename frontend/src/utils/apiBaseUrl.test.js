@@ -6,6 +6,13 @@ describe("API base URL configuration", () => {
     expect(getApiBaseUrl({ NODE_ENV: "test" })).toBe("http://localhost:5000");
   });
 
+  test("uses the current server hostname for remote development browsers", () => {
+    expect(getApiBaseUrl(
+      { NODE_ENV: "development" },
+      { hostname: "192.168.1.25" }
+    )).toBe("http://192.168.1.25:5000");
+  });
+
   test("uses a configured URL and normalizes trailing slashes", () => {
     expect(getApiBaseUrl({
       NODE_ENV: "production",
