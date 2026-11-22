@@ -219,6 +219,7 @@ function ImageGallery(props) {
   return (
     <>
       <div
+        className="explore-filter-area"
         style={{
           display: "flex",
           alignItems: "flex-start",
@@ -230,6 +231,7 @@ function ImageGallery(props) {
         }}
       >
         <aside
+          className="explore-filter-card"
           style={{
             width: "260px",
             padding: "18px",
@@ -243,7 +245,7 @@ function ImageGallery(props) {
             boxSizing: "border-box",
           }}
         >
-          <div style={{ marginBottom: "16px" }}>
+          <div className="explore-filter-group" style={{ marginBottom: "16px" }}>
             <h3 style={{ margin: "0 0 8px", color: darkMode ? "#f5f5f5" : "#111" }}>Sort</h3>
             <button
               type="button"
@@ -308,7 +310,7 @@ function ImageGallery(props) {
             </div>
           </div>
 
-          <div style={{ marginBottom: "16px" }}>
+          <div className="explore-filter-group" style={{ marginBottom: "16px" }}>
             <h3 style={{ margin: "0 0 8px", color: darkMode ? "#f5f5f5" : "#111" }}>Categories</h3>
             <button
               type="button"
@@ -380,7 +382,7 @@ function ImageGallery(props) {
             </div>
           </div>
 
-          <div style={{ marginBottom: "16px" }}>
+          <div className="explore-filter-group" style={{ marginBottom: "16px" }}>
             <h3 style={{ margin: "0 0 8px", color: darkMode ? "#f5f5f5" : "#111" }}>Results</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <div style={{ color: darkMode ? "#9ca3af" : "#6b7280", fontSize: "14px" }}>
@@ -411,7 +413,7 @@ function ImageGallery(props) {
             </div>
           </div>
 
-          <div>
+          <div className="explore-filter-group">
             <h3 style={{ margin: "0 0 8px", color: darkMode ? "#f5f5f5" : "#111" }}>Collections</h3>
             <button
               type="button"

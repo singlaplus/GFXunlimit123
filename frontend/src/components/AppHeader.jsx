@@ -113,6 +113,9 @@ export default function AppHeader({
   setSortType,
   setSelectedCategory,
   setSelectedCollection,
+  showExploreFiltersToggle = false,
+  exploreFiltersOpen = false,
+  setExploreFiltersOpen = () => {},
 }) {
   const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
   const navigate = useNavigate();
@@ -473,6 +476,7 @@ export default function AppHeader({
   const [showCreditsMenu, setShowCreditsMenu] = useState(false);
   const [messageUnreadCount, setMessageUnreadCount] = useState(0);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [cartCount, setCartCount] = useState(0);
   const [branding, setBranding] = useState({});
   const [showPayoutModal, setShowPayoutModal] = useState(false);
@@ -508,6 +512,10 @@ export default function AppHeader({
   const profileIconSrc = profileIconUrl
     ? `${API_BASE_URL}${profileIconUrl}?v=${branding?.profileIconsVersion || "default"}`
     : null;
+
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [location.pathname]);
 
   useEffect(() => {
     if (!isCustomerUser) {
@@ -736,7 +744,7 @@ export default function AppHeader({
       ========================== */}
 
       <header className={`app-header ${darkMode ? "dark" : ""}`}>
-        <div className="app-header-container">
+        <div className={`app-header-container${mobileMenuOpen ? " mobile-menu-open" : ""}`}>
           <Link to="/" className="logo">
             {branding?.logo ? (
               <img
@@ -834,7 +842,15 @@ export default function AppHeader({
           )}
 
           {isCustomerUser && (
-            <div className="header-nav">
+            <div className="header-nav" id="mobile-header-navigation">
+              <Link
+                to="/messages"
+                className="nav-link-btn mobile-messages-link"
+                aria-label={`Messages, ${messageUnreadCount} unread`}
+                onClick={handleHeaderLinkClick}
+              >
+                Messages ({messageUnreadCount})
+              </Link>
               <Link
                 to="/explore"
                 className="nav-link-btn"
@@ -903,7 +919,15 @@ export default function AppHeader({
           )}
 
           {isContributorUser && (
-            <div className="header-nav">
+            <div className="header-nav" id="mobile-header-navigation">
+              <Link
+                to="/messages"
+                className="nav-link-btn mobile-messages-link"
+                aria-label={`Messages, ${messageUnreadCount} unread`}
+                onClick={handleHeaderLinkClick}
+              >
+                Messages ({messageUnreadCount})
+              </Link>
               <Link
                 to="/upload"
                 className="nav-link-btn"
@@ -967,7 +991,15 @@ export default function AppHeader({
           )}
 
           {isAdminUser && (
-            <div className="header-nav">
+            <div className="header-nav" id="mobile-header-navigation">
+              <Link
+                to="/messages"
+                className="nav-link-btn mobile-messages-link"
+                aria-label={`Messages, ${messageUnreadCount} unread`}
+                onClick={handleHeaderLinkClick}
+              >
+                Messages ({messageUnreadCount})
+              </Link>
               <div className="nav-link-btn" style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "0 12px", cursor: "default" }}>
                 <span style={{ color: "inherit" }}>All Assets</span>
                 <select
@@ -1086,7 +1118,25 @@ export default function AppHeader({
             </div>
           )}
 
-          <div className="header-actions">
+          <div className={`header-actions${showExploreFiltersToggle ? " has-filter-toggle" : ""}`}>
+            {showExploreFiltersToggle && (
+              <button
+                type="button"
+                className={`header-filter-toggle${darkMode ? " dark" : ""}`}
+                aria-label={exploreFiltersOpen ? "Hide filters" : "Show filters"}
+                aria-expanded={exploreFiltersOpen}
+                aria-controls="marketplace-filter-panel"
+                onClick={() => setExploreFiltersOpen((open) => !open)}
+              >
+                {[0, 1, 2].map((row) => (
+                  <span className="header-filter-row" aria-hidden="true" key={row}>
+                    <span className="header-filter-dot" />
+                    <span className="header-filter-line" />
+                  </span>
+                ))}
+              </button>
+            )}
+
             {isCustomerUser && (
               <Link
                 to="/cart"
@@ -1122,6 +1172,22 @@ export default function AppHeader({
               </button>
             )}
 
+            <div className="mobile-header-controls">
+              {(isCustomerUser || isContributorUser || isAdminUser) && (
+                <button
+                  type="button"
+                  className="mobile-menu-toggle"
+                  aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+                  aria-expanded={mobileMenuOpen}
+                  aria-controls="mobile-header-navigation"
+                  onClick={() => setMobileMenuOpen((open) => !open)}
+                >
+                  <span />
+                  <span />
+                  <span />
+                </button>
+              )}
+            </div>
             <button
               className="darkmode-btn"
               onClick={() => setDarkMode(!darkMode)}

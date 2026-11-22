@@ -49,6 +49,7 @@ import PromotionalBannerPage from "./PromotionalBannerExperience";
 import SearchConsolePage from "../pages/SearchConsolePage";
 import GoogleAnalyticsPage from "../pages/GoogleAnalyticsPage";
 import SitemapPage from "../pages/SitemapPage";
+import "./PublicBlogPage.css";
 
 const BLOG_DRAFTS_STORAGE_KEY = "gfx-blog-drafts";
 const blogDraftHeaders = () => ({ Authorization: `Bearer ${getEffectiveAuthToken()}` });
@@ -1141,26 +1142,26 @@ function PublicBlogDetailPage({ pathname }) {
   }
 
   return (
-    <main style={{ minHeight: "70vh", background: "#f8fafc", color: "#0f172a" }}>
-      <article style={{ width: "min(900px, 100%)", margin: "0 auto", padding: "72px 24px 90px", boxSizing: "border-box" }}>
+    <main className="public-blog-article-page" style={{ minHeight: "70vh" }}>
+      <article className="public-blog-article" style={{ width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
         <div style={{ marginBottom: "22px" }}>
           <a href="/blog" style={{ color: "#2563eb", fontSize: "0.82rem", fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", textDecoration: "none" }}>← Back to blog</a>
         </div>
-        <p style={{ margin: "0 0 12px", color: "#2563eb", fontSize: "0.78rem", fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase" }}>{post.category || "Blog"}</p>
+        <p className="public-blog-article__category" style={{ margin: "0 0 12px", color: "#2563eb", fontSize: "0.78rem", fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase" }}>{post.category || "Blog"}</p>
         <h1 style={{ margin: "0 0 18px", fontSize: "clamp(2.2rem, 5vw, 4.4rem)", lineHeight: 1.08 }}>{post.title || "Untitled blog"}</h1>
-        <p style={{ margin: "0 0 24px", color: "#64748b", fontSize: "1.08rem", lineHeight: 1.7 }}>{post.excerpt || "Read the latest from GFXunlimit."}</p>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "12px 18px", padding: "14px 0", borderTop: "1px solid #e2e8f0", borderBottom: "1px solid #e2e8f0", color: "#64748b", fontSize: "0.82rem" }}>
+        <p className="public-blog-article__excerpt" style={{ margin: "0 0 24px", color: "#64748b", fontSize: "1.08rem", lineHeight: 1.7 }}>{post.excerpt || "Read the latest from GFXunlimit."}</p>
+        <div className="public-blog-article__meta" style={{ display: "flex", flexWrap: "wrap", gap: "12px 18px", padding: "14px 0", borderTop: "1px solid #e2e8f0", borderBottom: "1px solid #e2e8f0", color: "#64748b", fontSize: "0.82rem" }}>
           <span>By {post.author || post.addedBy || "GFXunlimit"}</span>
           <span>•</span>
           <time dateTime={post.publishAt || post.updatedAt}>{formatIndiaDate(post.publishAt || post.updatedAt)}</time>
         </div>
-        <div onClick={handleBlogContentClick} style={{ marginTop: "30px", fontSize: "1.06rem", lineHeight: 1.8, color: "#0f172a" }} dangerouslySetInnerHTML={{ __html: renderRichTextContent(post.content) }} />
+        <div className="public-blog-article__content" onClick={handleBlogContentClick} style={{ marginTop: "30px", fontSize: "1.06rem", lineHeight: 1.8, color: "#0f172a" }} dangerouslySetInnerHTML={{ __html: renderRichTextContent(post.content) }} />
       </article>
     </main>
   );
 }
 
-function PublicBlogPage() {
+function PublicBlogPage({ darkMode }) {
   const { reportResource, retryKey, routeId } = useStartupReadiness();
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1209,23 +1210,23 @@ function PublicBlogPage() {
   const pagePosts = filteredPosts.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return (
-    <main aria-labelledby="public-blog-title" style={{ minHeight: "70vh", padding: "42px 18px 72px", background: "#f8fafc", color: "#0f172a" }}>
+    <main className="public-blog-list" aria-labelledby="public-blog-title" style={{ minHeight: "70vh" }}>
       <div style={{ width: "100%", margin: 0 }}>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "end", justifyContent: "space-between", gap: "28px", marginBottom: "38px" }}>
-          <div>
+        <div className="public-blog-list__header">
+          <div className="public-blog-list__intro">
             <p style={{ margin: "0 0 8px", color: "#2563eb", fontSize: "0.78rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>GFXunlimit Journal</p>
             <h1 id="public-blog-title" style={{ margin: 0, fontSize: "clamp(2.3rem, 6vw, 4.8rem)", lineHeight: 1.02 }}>Latest from the blog</h1>
             <p style={{ maxWidth: "620px", margin: "16px 0 0", color: "#64748b", fontSize: "1.05rem", lineHeight: 1.6 }}>Ideas, stories, and practical inspiration from the creative community.</p>
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "end", gap: "12px" }}>
-          <label htmlFor="public-blog-search" style={{ display: "grid", gap: "6px", width: "min(360px, 32vw)", minWidth: "220px", color: "#334155", fontSize: "0.82rem", fontWeight: 800 }}>Search blogs
+          <div className="public-blog-list__tools">
+          <label className="public-blog-list__search" htmlFor="public-blog-search">Search blogs
             <input id="public-blog-search" type="search" value={searchTerm} onChange={(event) => { setSearchTerm(event.target.value); setCurrentPage(1); }} placeholder="Search title, category, author, tags, or content" style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: "7px", background: "#fff", color: "#0f172a", fontSize: "0.9rem" }} />
           </label>
-          <span style={{ padding: "8px 12px", border: "1px solid #bbf7d0", borderRadius: "999px", background: "#f0fdf4", color: "#166534", fontSize: "0.8rem", fontWeight: 800 }}>{filteredPosts.length} {filteredPosts.length === 1 ? "post" : "posts"}</span>
+          <span className="public-blog-list__count" style={{ padding: "8px 12px", border: "1px solid #bbf7d0", borderRadius: "999px", background: "#f0fdf4", color: "#166534", fontSize: "0.8rem", fontWeight: 800 }}>{filteredPosts.length} {filteredPosts.length === 1 ? "post" : "posts"}</span>
           </div>
         </div>
-        {loading ? <p style={{ color: "#64748b" }}>Loading latest posts...</p> : loadError ? <p role="alert" style={{ color: "#991b1b" }}>{loadError}</p> : posts.length === 0 ? <p style={{ color: "#64748b" }}>No published blog posts yet.</p> : filteredPosts.length === 0 ? <p style={{ color: "#64748b" }}>No blog posts match your search.</p> : <><div style={{ width: "100%", display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "18px" }}>{pagePosts.map((post, index) => (
-          <a key={post.id} href={buildBlogPostUrl(post)} style={{ display: "block", minWidth: 0, border: "1px solid #e2e8f0", borderRadius: "3px", background: "#fff", boxShadow: "0 8px 20px rgba(15, 23, 42, 0.1)", textDecoration: "none", color: "inherit" }}>
+        {loading ? <p style={{ color: "#64748b" }}>Loading latest posts...</p> : loadError ? <p role="alert" style={{ color: "#991b1b" }}>{loadError}</p> : posts.length === 0 ? <p style={{ color: "#64748b" }}>No published blog posts yet.</p> : filteredPosts.length === 0 ? <p style={{ color: "#64748b" }}>No blog posts match your search.</p> : <><div className="public-blog-list__grid">{pagePosts.map((post, index) => (
+          <a className="public-blog-list__card" key={post.id} href={buildBlogPostUrl(post)} style={{ display: "block", minWidth: 0, border: "1px solid #e2e8f0", borderRadius: "3px", background: "#fff", boxShadow: "0 8px 20px rgba(15, 23, 42, 0.1)", textDecoration: "none", color: "inherit" }}>
             <article style={{ overflow: "hidden" }}>
               <div style={{ position: "relative", aspectRatio: "16 / 9", display: "grid", placeItems: "center", overflow: "hidden", background: post.coverImage || post.cover_image ? "#e2e8f0" : coverColors[index % coverColors.length] }}>
                 {post.coverImage || post.cover_image ? <img src={post.coverImage || post.cover_image} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ padding: "14px", color: "rgba(255,255,255,0.92)", fontSize: "0.72rem", fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", textAlign: "center" }}>GFXunlimit<br />Journal</span>}
@@ -1242,7 +1243,7 @@ function PublicBlogPage() {
               </div>
             </article>
           </a>
-        ))}</div>{totalPages > 1 && <Pagination currentPage={currentPage} totalPages={totalPages} totalImages={posts.length} setCurrentPage={setCurrentPage} darkMode={false} />}</>}
+        ))}</div>{totalPages > 1 && <Pagination currentPage={currentPage} totalPages={totalPages} totalImages={posts.length} setCurrentPage={setCurrentPage} darkMode={darkMode} totalLabel="Total Blogs" />}</>}
       </div>
     </main>
   );
@@ -1619,7 +1620,7 @@ export default function AppRoutes(props) {
   if (isPromotionBannerRoute) {
     return <PromotionalBannerPage slug={promotionBannerSlug} userRole={normalizedUserRole} />;
   }
-  if (isSitemapRoute) return <SitemapPage />;
+  if (isSitemapRoute) return <SitemapPage darkMode={props.darkMode} />;
 
   if (!isAdmin && pageAvailability?.pathname !== pathname) {
     return <main aria-live="polite" aria-busy="true" style={{ minHeight: "60vh" }} />;
@@ -1669,7 +1670,7 @@ export default function AppRoutes(props) {
   }
 
   if (pathname === "/about") return <CompanyPage slug="about" />;
-  if (pathname === "/blog") return <PublicBlogPage />;
+  if (pathname === "/blog") return <PublicBlogPage darkMode={props.darkMode} />;
   if (pathname.startsWith("/blog/")) return <PublicBlogDetailPage pathname={pathname} />;
   if (pathname === "/pricing") return <CompanyPage slug="pricing" />;
   if (pathname === "/account-settings") return <AccountSettingsPage darkMode={props.darkMode} username={props.username} />;
@@ -1942,6 +1943,10 @@ export default function AppRoutes(props) {
           contributorDownloads={props.homeSectionProps.popupProps.contributorDownloads}
 
           contributorBestImage={props.homeSectionProps.popupProps.contributorBestImage}
+
+          filtersOpen={props.exploreFiltersOpen}
+
+          setFiltersOpen={props.setExploreFiltersOpen}
         />
       )}
 

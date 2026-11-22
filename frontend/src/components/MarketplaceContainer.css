@@ -66,7 +66,7 @@
 @media (max-width: 1200px) {
   .marketplace-layout {
     flex-direction: column;
-    align-items: center;
+    align-items: stretch;
     padding: 0 16px 32px;
   }
 
@@ -78,9 +78,34 @@
     overflow-y: visible;
   }
 
+  .marketplace-sidebar {
+    display: none;
+  }
+
+  .marketplace-sidebar.is-open {
+    display: block;
+  }
+
   .marketplace-results {
     width: 100%;
     max-width: 100%;
+  }
+
+  .explore-filter-area {
+    justify-content: flex-start !important;
+    gap: 0 !important;
+  }
+
+  .explore-filter-card {
+    display: grid;
+    width: 100% !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 20px;
+  }
+
+  .explore-filter-group {
+    min-width: 0;
+    margin-bottom: 0 !important;
   }
 }
 
@@ -99,6 +124,24 @@
     grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
     gap: 16px;
   }
+
+  .marketplace-searchbar {
+    padding: 16px 0 20px;
+  }
+
+  .marketplace-layout {
+    padding: 0 4px 24px;
+    gap: 20px;
+  }
+
+  .explore-filter-card {
+    padding: 14px !important;
+    gap: 14px;
+  }
+
+  .explore-filter-group h3 {
+    font-size: 1rem;
+  }
 }
 
 @media (max-width: 480px) {
@@ -109,5 +152,41 @@
   .explore-asset-grid {
     grid-template-columns: repeat(auto-fill, minmax(min(130px, 100%), 1fr));
     gap: 12px;
+  }
+
+  .marketplace-searchbar {
+    padding: 12px 0 16px;
+  }
+
+  .marketplace-searchbox > input {
+    padding: 13px 14px 13px 42px !important;
+    font-size: 14px !important;
+  }
+
+  .marketplace-searchbox > span {
+    left: 14px !important;
+  }
+
+  .marketplace-layout {
+    padding: 0 0 20px;
+    gap: 16px;
+  }
+
+  .explore-filter-card {
+    padding: 12px !important;
+    gap: 12px 10px;
+    border-radius: 16px !important;
+  }
+
+  .explore-filter-card button {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+}
+
+@media (max-width: 380px) {
+  .explore-filter-card {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

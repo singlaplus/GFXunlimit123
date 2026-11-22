@@ -73,6 +73,7 @@ function FeaturedImages({
   return (
     <>
       <h2
+        className="featured-section-heading"
         style={{
           marginBottom: "15px",
           marginTop: "30px",
@@ -84,6 +85,7 @@ function FeaturedImages({
       </h2>
 
       <div
+  className="featured-grid"
   style={{
     display: "grid",
     gridTemplateColumns:

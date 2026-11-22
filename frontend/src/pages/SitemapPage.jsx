@@ -6,7 +6,7 @@ import "./SitemapPage.css";
 
 const EMPTY_SITEMAP = { groups: [], totalUrls: 0, generatedAt: "" };
 
-export default function SitemapPage() {
+export default function SitemapPage({ darkMode = false }) {
   const [sitemap, setSitemap] = useState(EMPTY_SITEMAP);
   const [error, setError] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState("");
@@ -129,7 +129,7 @@ export default function SitemapPage() {
                       totalPages={pageCount}
                       totalImages={selectedGroup.entries.length}
                       setCurrentPage={setCurrentPage}
-                      darkMode={false}
+                      darkMode={darkMode}
                       totalLabel="Total Pages"
                       scrollToTop={false}
                     />

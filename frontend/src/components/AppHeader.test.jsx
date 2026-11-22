@@ -101,6 +101,40 @@ describe('AppHeader customer navigation', () => {
     global.fetch.mockRestore && global.fetch.mockRestore();
   });
 
+  it('toggles the collapsible mobile navigation', async () => {
+    localStorage.setItem('token', 'demo-token');
+
+    const { container } = render(
+      <AppHeader
+        showNotifications={false}
+        setShowNotifications={jest.fn()}
+        notificationCount={0}
+        setNotificationCount={jest.fn()}
+        setShowLoginModal={jest.fn()}
+        setShowJoinModal={jest.fn()}
+        showLoginModal={false}
+        showJoinModal={false}
+        joinModalAccountType=""
+        setJoinModalAccountType={jest.fn()}
+        darkMode={false}
+        notifications={[]}
+        setDarkMode={jest.fn()}
+        userRole="customer"
+      />
+    );
+
+    const menuButton = screen.getByRole('button', { name: 'Open navigation menu' });
+    expect(menuButton).toHaveAttribute('aria-expanded', 'false');
+
+    await userEvent.click(menuButton);
+    expect(screen.getByRole('button', { name: 'Close navigation menu' })).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.app-header-container')).toHaveClass('mobile-menu-open');
+    expect(container.querySelector('.mobile-messages-link')).toHaveAttribute('href', '/messages');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Close navigation menu' }));
+    expect(container.querySelector('.app-header-container')).not.toHaveClass('mobile-menu-open');
+  });
+
   it('opens the account menu with the user name, account, profile, and logout actions', async () => {
     localStorage.setItem('token', 'demo-token');
     localStorage.setItem('username', 'jane');

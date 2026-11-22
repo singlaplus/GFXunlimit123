@@ -587,8 +587,8 @@ export default function AssetPage(props) {
 
   return (
     <div
+      className="asset-page-root"
       style={{
-        padding: "40px 0",
         minHeight: "100vh",
         background: darkMode ? "linear-gradient(180deg, #020617 0%, #101828 100%)" : "#f3f4f6",
         color: darkMode ? "#f8fafc" : "#111827",
@@ -602,16 +602,16 @@ export default function AssetPage(props) {
           gap: "32px",
         }}
       >
-          <div
-            className="asset-page-preview-card"
-            style={{
-              borderRadius: "32px",
-              overflow: "hidden",
-              background: darkMode ? "rgba(255,255,255,0.02)" : "#ffffff",
-              boxShadow: "none",
-              border: "none",
-            }}
-          >
+        <div
+          className="asset-page-preview-card"
+          style={{
+            borderRadius: "32px",
+            overflow: "hidden",
+            background: darkMode ? "rgba(255,255,255,0.02)" : "#ffffff",
+            boxShadow: "none",
+            border: "none",
+          }}
+        >
           <div
             style={{
               position: "relative",
@@ -951,9 +951,9 @@ export default function AssetPage(props) {
           }}
         >
           <div
+            className="asset-page-info-card"
             style={{
               background: darkMode ? "rgba(255,255,255,0.04)" : "#ffffff",
-              padding: "32px",
               borderRadius: "28px",
               boxShadow: darkMode ? "0 24px 60px rgba(0,0,0,0.24)" : "0 20px 50px rgba(15,23,42,0.08)",
               border: darkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(226,232,240,1)",
@@ -973,14 +973,7 @@ export default function AssetPage(props) {
               >
                 Exclusive collection
               </p>
-              <h1
-                style={{
-                  margin: 0,
-                  fontSize: "2.4rem",
-                  lineHeight: 1.05,
-                  letterSpacing: "-0.03em",
-                }}
-              >
+              <h1 className="asset-page-title" style={{ margin: 0 }}>
                 {image.title || "Untitled asset"}
               </h1>
             </div>
@@ -1033,51 +1026,50 @@ export default function AssetPage(props) {
             </div>
 
             <div
+              className="asset-page-stats"
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                gap: "16px",
                 marginBottom: "28px",
               }}
             >
               <div
+                className="asset-page-stat"
                 style={{
-                  padding: "20px",
                   borderRadius: "20px",
                   background: darkMode ? "rgba(255,255,255,0.04)" : "#f8fafc",
                   border: darkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(226,232,240,1)",
                 }}
               >
-                <div style={{ fontSize: "0.85rem", color: darkMode ? "#cbd5e1" : "#6b7280", marginBottom: "6px" }}>
+                <div className="asset-page-stat-label" style={{ color: darkMode ? "#cbd5e1" : "#6b7280", marginBottom: "6px" }}>
                   Likes
                 </div>
-                <div style={{ fontSize: "1.55rem", fontWeight: 700 }}>{image.likes || 0}</div>
+                <div className="asset-page-stat-value" style={{ fontWeight: 700 }}>{image.likes || 0}</div>
               </div>
               <div
+                className="asset-page-stat"
                 style={{
-                  padding: "20px",
                   borderRadius: "20px",
                   background: darkMode ? "rgba(255,255,255,0.04)" : "#f8fafc",
                   border: darkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(226,232,240,1)",
                 }}
               >
-                <div style={{ fontSize: "0.85rem", color: darkMode ? "#cbd5e1" : "#6b7280", marginBottom: "6px" }}>
+                <div className="asset-page-stat-label" style={{ color: darkMode ? "#cbd5e1" : "#6b7280", marginBottom: "6px" }}>
                   Views
                 </div>
-                <div style={{ fontSize: "1.55rem", fontWeight: 700 }}>{image.views || 0}</div>
+                <div className="asset-page-stat-value" style={{ fontWeight: 700 }}>{image.views || 0}</div>
               </div>
               <div
+                className="asset-page-stat"
                 style={{
-                  padding: "20px",
                   borderRadius: "20px",
                   background: darkMode ? "rgba(255,255,255,0.04)" : "#f8fafc",
                   border: darkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(226,232,240,1)",
                 }}
               >
-                <div style={{ fontSize: "0.85rem", color: darkMode ? "#cbd5e1" : "#6b7280", marginBottom: "6px" }}>
+                <div className="asset-page-stat-label" style={{ color: darkMode ? "#cbd5e1" : "#6b7280", marginBottom: "6px" }}>
                   Downloads
                 </div>
-                <div style={{ fontSize: "1.55rem", fontWeight: 700 }}>{image.downloads || 0}</div>
+                <div className="asset-page-stat-value" style={{ fontWeight: 700 }}>{image.downloads || 0}</div>
               </div>
             </div>
 
@@ -1105,7 +1097,7 @@ export default function AssetPage(props) {
               >
                 Add to cart
               </button>}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+              <div className="asset-page-secondary-actions" style={{ display: "grid", gap: "14px" }}>
                 <button
                   type="button"
                   onClick={async () => {
@@ -1186,6 +1178,7 @@ export default function AssetPage(props) {
 
         {relatedImages.length > 0 && (
           <section
+            className="asset-page-related"
             aria-labelledby="related-assets-heading"
             style={{
               gridColumn: "1 / -1",
@@ -1194,7 +1187,7 @@ export default function AssetPage(props) {
               borderTop: darkMode ? "1px solid rgba(255,255,255,0.1)" : "1px solid #e2e8f0",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", marginBottom: "16px" }}>
+            <div className="asset-page-related-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", marginBottom: "16px" }}>
               <h2 id="related-assets-heading" style={{ margin: 0, fontSize: "1.45rem" }}>Related assets</h2>
               <div style={{ display: "flex", gap: "8px" }}>
                 {[-1, 1].map((direction) => (

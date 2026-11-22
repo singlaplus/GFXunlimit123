@@ -1,5 +1,5 @@
 .public-sitemap {
-  width: min(100% - 48px, 1280px);
+  width: min(100%, 1600px);
   min-height: 60vh;
   margin: 48px auto 72px;
   color: #141b2d;
@@ -304,6 +304,67 @@
   color: #64748b;
 }
 
+body.dark-mode .public-sitemap {
+  color: #e2e8f0 !important;
+}
+
+body.dark-mode .public-sitemap-category {
+  border-color: #334155 !important;
+  background: linear-gradient(145deg, #1e293b, #111827) !important;
+  color: #f8fafc !important;
+}
+
+body.dark-mode .public-sitemap-category:hover,
+body.dark-mode .public-sitemap-category[aria-expanded="true"] {
+  border-color: #60a5fa !important;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.3);
+}
+
+body.dark-mode .public-sitemap-category-count,
+body.dark-mode .public-sitemap-pages-heading > span {
+  border-color: #334155 !important;
+  background: #1e293b !important;
+  color: #cbd5e1 !important;
+}
+
+body.dark-mode .public-sitemap-category::after {
+  border-color: #475569;
+  background: #0f172a;
+  color: #93c5fd;
+}
+
+body.dark-mode .public-sitemap-category[aria-expanded="true"]::after {
+  border-color: #3b82f6;
+  background: #1e3a8a;
+  color: #dbeafe;
+}
+
+body.dark-mode .public-sitemap-pages {
+  border-color: #334155;
+  background: linear-gradient(145deg, #111827, #0f172a);
+}
+
+body.dark-mode .public-sitemap-pages li a {
+  border-color: #334155;
+  background: #1e293b;
+  color: #bfdbfe !important;
+}
+
+body.dark-mode .public-sitemap-pages li a:hover {
+  border-color: #60a5fa;
+  color: #dbeafe !important;
+}
+
+body.dark-mode .public-sitemap-pages time,
+body.dark-mode .public-sitemap-directory-heading p,
+body.dark-mode .public-sitemap-meta {
+  color: #94a3b8 !important;
+}
+
+body.dark-mode .public-sitemap-error {
+  color: #fca5a5 !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .public-sitemap-pages:not([hidden]) {
     animation: none;
@@ -314,11 +375,29 @@
   .public-sitemap-directory {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .public-sitemap-category {
+    aspect-ratio: auto;
+    min-height: 112px;
+    flex-direction: row;
+    justify-content: space-between;
+    gap: 12px;
+    text-align: left;
+  }
+
+  .public-sitemap-category > span:first-child {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .public-sitemap-category-count {
+    margin-left: auto;
+  }
 }
 
 @media (max-width: 640px) {
   .public-sitemap {
-    width: min(100% - 24px, 1280px);
+    width: 100%;
     margin: 24px auto 44px;
   }
 
@@ -331,7 +410,10 @@
   }
 
   .public-sitemap-category {
-    font-size: 16px;
+    min-height: 84px;
+    gap: 8px;
+    padding: 14px 12px;
+    font-size: 15px;
   }
 
   .public-sitemap-pages {

@@ -12,6 +12,7 @@ import ContributorPopup from "./gallery/ContributorPopup";
 
 export default function MarketplaceContainer(props) {
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const { filtersOpen, setFiltersOpen } = props;
   const { search, setSearch, setCurrentPage, allImages = [] } = props.galleryProps || {};
   const { isExplore } = props;
 
@@ -128,7 +129,10 @@ export default function MarketplaceContainer(props) {
       </div>
 
       <div className="marketplace-layout">
-        <div className="marketplace-sidebar">
+        <div
+          id="marketplace-filter-panel"
+          className={`marketplace-sidebar${filtersOpen ? " is-open" : ""}`}
+        >
           <ImageGallery {...props.galleryProps} darkMode={props.darkMode} />
         </div>
 

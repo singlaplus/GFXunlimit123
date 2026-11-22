@@ -402,7 +402,13 @@ export default function CompanyPage({ slug = "about" }) {
   };
 
   return (
-    <div className="company-page-shell">
+    <div
+      className={`company-page-shell${
+        slug === "about" ? " company-page-shell--about" : ""
+      }${slug === "pricing" ? " company-page-shell--pricing" : ""}${
+        slug === "careers" ? " company-page-shell--careers" : ""
+      }${slug === "contact" ? " company-page-shell--contact" : ""}`}
+    >
       <div className={`company-page-grid${isAdmin ? " admin-layout" : ""}`}>
         {isAdmin && (
           <aside className="company-page-sidebar">
@@ -518,7 +524,7 @@ export default function CompanyPage({ slug = "about" }) {
                 <div style={{ display: "inline-block", padding: "8px 12px", borderRadius: "999px", background: "rgba(255,255,255,0.16)", fontSize: "0.85rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: "12px" }}>
                   {content.eyebrow}
                 </div>
-                <h1 style={{ fontSize: "clamp(2rem, 3vw, 3rem)", margin: "0 0 12px", lineHeight: 1.15 }}>{content.title}</h1>
+                <h1 className="company-page-hero-title" style={{ margin: "0 0 12px", lineHeight: 1.15 }}>{content.title}</h1>
                 <p style={{ fontSize: "1.05rem", lineHeight: 1.7, margin: 0, opacity: 0.95 }}>{content.intro}</p>
               </div>
               {visibleButtons.length > 0 ? (

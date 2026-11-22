@@ -1,9 +1,13 @@
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import axios from "axios";
 import MessagesPage from "./MessagesPage";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 
 jest.mock("axios");
+jest.mock("react-router-dom", () => ({
+  useLocation: () => ({ pathname: "/messages", search: "" }),
+  useNavigate: () => jest.fn(),
+}));
 jest.mock("../startup/StartupReadinessProvider", () => ({
   useStartupReadiness: jest.fn(),
 }));
@@ -45,6 +49,31 @@ describe("MessagesPage startup readiness", () => {
     await waitFor(() => expect(messageRequests()).toHaveLength(2));
     expect(axios.post).not.toHaveBeenCalled();
     expect(axios.put).not.toHaveBeenCalled();
+  });
+
+  it("labels inbox pagination with the total message count", async () => {
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/api/messages?")) {
+        return Promise.resolve({
+          data: Array.from({ length: 6 }, (_, index) => ({
+            id: index + 1,
+            subject: `Message ${index + 1}`,
+            body: "Inbox message",
+            created_at: "2026-11-22T10:00:00Z",
+            message_type: "SYSTEM_NOTIFICATION",
+          })),
+        });
+      }
+      if (url.endsWith("/activity")) return Promise.resolve({ data: { rows: [], total: 0 } });
+      if (url.endsWith("/conversations")) return Promise.resolve({ data: [] });
+      if (url.endsWith("/types")) return Promise.resolve({ data: [] });
+      if (url.includes("/notifications/")) return Promise.resolve({ data: [] });
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<MessagesPage userRole="customer" />);
+
+    expect(await screen.findByText("Total Messages: 6")).toBeInTheDocument();
   });
 
   it("keeps malformed inbox responses from reporting readiness success", async () => {

@@ -23,6 +23,7 @@ function TrendingImages({
   return (
     <>
       <h2
+        className="trending-section-heading"
         style={{
           marginTop: "30px",
           marginBottom: "15px",

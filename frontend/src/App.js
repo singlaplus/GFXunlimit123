@@ -53,6 +53,8 @@ function App() {
     location.pathname === "/search" ||
     ["/photos", "/vectors", "/psd", "/psds", "/videos", "/templates"].includes(location.pathname) ||
     /^\/explore(?:\/\d+)?$/.test(location.pathname);
+  const isMarketplaceFilterRoute =
+    isCatalogRoute && location.pathname !== "/" && location.pathname !== "/home";
   const isDashboardRoute = ["/dashboard", "/customer", "/contributor"].includes(location.pathname);
   const dashboardReadinessRouteId = isDashboardRoute ? routeId : "";
   const isStartTaxFormPage = location.pathname === "/dashboard" && new URLSearchParams(location.search).get("tab") === "starttaxform";
@@ -327,6 +329,11 @@ const [showNotifications, setShowNotifications] = useState(false);
    UI SETTINGS
 ********************************************/
   const [darkMode, setDarkMode] = useState(getInitialDarkMode);
+  const [exploreFiltersOpen, setExploreFiltersOpen] = useState(false);
+
+  useEffect(() => {
+    setExploreFiltersOpen(false);
+  }, [location.pathname]);
 
   useEffect(() => {
     applyTheme(darkMode);
@@ -650,8 +657,8 @@ const popupProps = {
   return (
 
     <div
+      className="app-shell"
       style={{
-        padding: "20px",
         background: darkMode
           ? "#121212"
           : "#f5f5f5",
@@ -700,6 +707,9 @@ const popupProps = {
   notifications={notifications}
   clearAllNotifications={clearAllNotifications}
   setDarkMode={setDarkMode}
+  showExploreFiltersToggle={isMarketplaceFilterRoute}
+  exploreFiltersOpen={exploreFiltersOpen}
+  setExploreFiltersOpen={setExploreFiltersOpen}
   userRole={userRole}
   userPermissions={userPermissions}
   earningsStats={earningsStats}
@@ -796,6 +806,8 @@ const popupProps = {
      <AppRoutes
   username={username}
   darkMode={darkMode}
+  exploreFiltersOpen={exploreFiltersOpen}
+  setExploreFiltersOpen={setExploreFiltersOpen}
   userRole={userRole}
   userPermissions={userPermissions}
   reportResource={reportResource}
@@ -856,6 +868,7 @@ const popupProps = {
       />
 
         {(!isBlankSeoPage || location.pathname === `${adminBasePath}/google_analytics`) && <div
+        className="world-clock-bar"
         style={{
           marginTop: "24px",
           padding: "20px",

@@ -712,3 +712,322 @@
     min-height: 390px;
   }
 }
+
+.company-page-shell--about {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.company-page-shell--about .company-page-grid,
+.company-page-shell--about .company-page-main {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.company-page-shell--about .company-page-grid {
+  max-width: none;
+}
+
+.company-page-shell--about .company-page-hero,
+.company-page-shell--about .company-page-hero-row,
+.company-page-shell--about .company-page-hero-copy,
+.company-page-shell--about .company-page-stats,
+.company-page-shell--about .company-page-cta-banner,
+.company-page-shell--about .company-page-features {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.company-page-shell--about .company-page-hero-title {
+  font-size: clamp(1.65rem, 5vw, 3rem);
+  overflow-wrap: anywhere;
+}
+
+.company-page-shell--about .company-page-cta-banner {
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .company-page-shell--about .company-page-cta-banner {
+    height: auto;
+    min-height: 200px;
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-shell--about .company-page-cta-banner {
+    min-height: 160px;
+    padding: 20px;
+  }
+
+  .company-page-shell--about .company-page-cta-button {
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 16px 20px;
+    white-space: normal;
+  }
+}
+
+.company-page-shell--pricing {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.company-page-shell--pricing .company-page-grid,
+.company-page-shell--pricing .company-page-main {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.company-page-shell--pricing .company-page-grid {
+  max-width: none;
+}
+
+.company-page-shell--pricing .company-page-hero,
+.company-page-shell--pricing .company-page-hero-row,
+.company-page-shell--pricing .company-page-hero-copy,
+.company-page-shell--pricing .company-page-stats,
+.company-page-shell--pricing .company-page-currency-control,
+.company-page-shell--pricing .company-page-plans,
+.company-page-shell--pricing .company-page-plan-offer,
+.company-page-shell--pricing .company-page-cta-banner,
+.company-page-shell--pricing .company-page-features {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.company-page-shell--pricing .company-page-cta-banner {
+  width: 100%;
+  max-width: 1200px;
+}
+
+@media (max-width: 900px) {
+  .company-page-shell--pricing .company-page-cta-banner {
+    height: auto;
+    min-height: 200px;
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-shell--pricing .company-page-hero-title {
+    font-size: clamp(1.65rem, 5vw, 3rem);
+    overflow-wrap: anywhere;
+  }
+
+  .company-page-shell--pricing .company-page-cta-banner {
+    min-height: 160px;
+    padding: 20px;
+  }
+
+  .company-page-shell--pricing .company-page-cta-button {
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 16px 20px;
+    white-space: normal;
+  }
+}
+
+.company-page-shell--careers {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.company-page-shell--careers .company-page-grid,
+.company-page-shell--careers .company-page-main {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.company-page-shell--careers .company-page-grid {
+  max-width: none;
+}
+
+.company-page-shell--careers .company-page-hero,
+.company-page-shell--careers .company-page-hero-row,
+.company-page-shell--careers .company-page-hero-copy,
+.company-page-shell--careers .company-page-stats,
+.company-page-shell--careers .company-page-cta-banner,
+.company-page-shell--careers .company-page-features {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.company-page-shell--careers .company-page-cta-banner {
+  width: 100%;
+  max-width: 1200px;
+}
+
+@media (max-width: 900px) {
+  .company-page-shell--careers .company-page-cta-banner {
+    height: auto;
+    min-height: 200px;
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-shell--careers .company-page-hero-title {
+    font-size: clamp(1.65rem, 5vw, 3rem);
+    overflow-wrap: anywhere;
+  }
+
+  .company-page-shell--careers .company-page-cta-banner {
+    min-height: 160px;
+    padding: 20px;
+  }
+
+  .company-page-shell--careers .company-page-cta-button {
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 16px 20px;
+    white-space: normal;
+  }
+}
+
+.company-page-shell--contact {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.company-page-shell--contact .company-page-grid,
+.company-page-shell--contact .company-page-main {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.company-page-shell--contact .company-page-grid {
+  max-width: none;
+}
+
+.company-page-shell--contact .company-page-hero,
+.company-page-shell--contact .company-page-hero-row,
+.company-page-shell--contact .company-page-hero-copy,
+.company-page-shell--contact .company-page-stats,
+.company-page-shell--contact .company-page-cta-banner,
+.company-page-shell--contact .company-page-features {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.company-page-shell--contact .company-page-cta-banner {
+  width: 100%;
+  max-width: 1200px;
+}
+
+@media (max-width: 900px) {
+  .company-page-shell--contact .company-page-cta-banner {
+    height: auto;
+    min-height: 200px;
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-shell--contact .company-page-hero-title {
+    font-size: clamp(1.65rem, 5vw, 3rem);
+    overflow-wrap: anywhere;
+  }
+
+  .company-page-shell--contact .company-page-cta-banner {
+    min-height: 160px;
+    padding: 20px;
+  }
+
+  .company-page-shell--contact .company-page-cta-button {
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 16px 20px;
+    white-space: normal;
+  }
+}
+
+.dark-mode .company-page-shell--contact .company-page-cta-button,
+.dark-mode .company-page-shell--about .company-page-cta-button,
+.dark-mode .company-page-shell--pricing .company-page-cta-button,
+.dark-mode .company-page-shell--careers .company-page-cta-button {
+  border: 1px solid #475569;
+  background: #1e293b;
+  color: #f8fafc !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-cta-button:hover,
+.dark-mode .company-page-shell--about .company-page-cta-button:hover,
+.dark-mode .company-page-shell--pricing .company-page-cta-button:hover,
+.dark-mode .company-page-shell--careers .company-page-cta-button:hover {
+  background: #334155;
+}
+
+.dark-mode .company-page-shell--contact .company-page-cta-modal,
+.dark-mode .company-page-shell--about .company-page-cta-modal,
+.dark-mode .company-page-shell--pricing .company-page-cta-modal,
+.dark-mode .company-page-shell--careers .company-page-cta-modal {
+  border-color: #334155;
+  background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+  color: #f8fafc;
+}
+
+.dark-mode .company-page-shell--contact .company-page-cta-modal-subtitle,
+.dark-mode .company-page-shell--about .company-page-cta-modal-subtitle,
+.dark-mode .company-page-shell--pricing .company-page-cta-modal-subtitle,
+.dark-mode .company-page-shell--careers .company-page-cta-modal-subtitle {
+  color: #cbd5e1 !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-cta-modal-close,
+.dark-mode .company-page-shell--about .company-page-cta-modal-close,
+.dark-mode .company-page-shell--pricing .company-page-cta-modal-close,
+.dark-mode .company-page-shell--careers .company-page-cta-modal-close {
+  background: #1e293b;
+  color: #f8fafc !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-cta-modal-close:hover,
+.dark-mode .company-page-shell--about .company-page-cta-modal-close:hover,
+.dark-mode .company-page-shell--pricing .company-page-cta-modal-close:hover,
+.dark-mode .company-page-shell--careers .company-page-cta-modal-close:hover {
+  background: #334155;
+}
+
+.dark-mode .company-page-shell--contact .company-page-otp-button,
+.dark-mode .company-page-shell--about .company-page-otp-button,
+.dark-mode .company-page-shell--pricing .company-page-otp-button,
+.dark-mode .company-page-shell--careers .company-page-otp-button {
+  background: #1d4ed8;
+  color: #fff !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-otp-status,
+.dark-mode .company-page-shell--about .company-page-otp-status,
+.dark-mode .company-page-shell--pricing .company-page-otp-status,
+.dark-mode .company-page-shell--careers .company-page-otp-status {
+  border: 1px solid #9a3412;
+  background: #422006;
+  color: #fed7aa !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-otp-status.is-verified,
+.dark-mode .company-page-shell--about .company-page-otp-status.is-verified,
+.dark-mode .company-page-shell--pricing .company-page-otp-status.is-verified,
+.dark-mode .company-page-shell--careers .company-page-otp-status.is-verified {
+  border-color: #166534;
+  background: #064e3b;
+  color: #d1fae5 !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-form-cancel,
+.dark-mode .company-page-shell--about .company-page-form-cancel,
+.dark-mode .company-page-shell--pricing .company-page-form-cancel,
+.dark-mode .company-page-shell--careers .company-page-form-cancel {
+  background: #334155;
+  color: #f8fafc !important;
+}
