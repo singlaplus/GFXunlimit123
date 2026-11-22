@@ -5,7 +5,10 @@ const { raw } = require('react-scripts/config/env');
 const { getApiBaseUrl } = require('../src/utils/apiBaseUrl');
 
 try {
-  getApiBaseUrl({ ...process.env, ...raw, NODE_ENV: 'production' });
+  getApiBaseUrl(
+    { ...process.env, ...raw, NODE_ENV: 'production' },
+    { origin: 'https://same-origin.invalid', hostname: 'same-origin.invalid' }
+  );
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

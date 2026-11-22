@@ -13,6 +13,20 @@ describe("API base URL configuration", () => {
     )).toBe("http://192.168.1.25:3000");
   });
 
+  test("replaces a configured loopback API URL for remote browsers", () => {
+    expect(getApiBaseUrl(
+      { NODE_ENV: "development", REACT_APP_API_BASE_URL: "http://localhost:5000" },
+      { origin: "http://192.168.1.25:3000", hostname: "192.168.1.25" }
+    )).toBe("http://192.168.1.25:3000");
+  });
+
+  test("uses the browser origin for production builds served alongside the API", () => {
+    expect(getApiBaseUrl(
+      { NODE_ENV: "production" },
+      { origin: "https://stocksite.example", hostname: "stocksite.example" }
+    )).toBe("https://stocksite.example");
+  });
+
   test("uses a configured URL and normalizes trailing slashes", () => {
     expect(getApiBaseUrl({
       NODE_ENV: "production",
@@ -21,7 +35,7 @@ describe("API base URL configuration", () => {
   });
 
   test("rejects missing production and malformed or unsafe URLs", () => {
-    expect(() => getApiBaseUrl({ NODE_ENV: "production" }))
+    expect(() => getApiBaseUrl({ NODE_ENV: "production" }, null))
       .toThrow("REACT_APP_API_BASE_URL must be configured for production builds.");
     for (const value of ["not a URL", "ftp://api.example.test", "https://user:pass@api.example.test", "https://api.example.test?debug=1"]) {
       expect(() => getApiBaseUrl({ NODE_ENV: "production", REACT_APP_API_BASE_URL: value }))
