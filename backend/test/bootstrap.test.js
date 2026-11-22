@@ -7,6 +7,7 @@ const path = require('node:path');
 const { buildStartupPlan } = require('../startup/bootstrap');
 const {
   findWindowsToolExecutable,
+  getWindowsFfprobePaths,
   getWindowsToolPaths,
 } = require('../services/windowsToolPaths');
 
@@ -93,4 +94,21 @@ test('Windows tool detection selects an installed versioned executable', (t) => 
     findWindowsToolExecutable('ghostscript', { ProgramFiles: root }),
     executable
   );
+});
+
+test('Windows FFprobe detection finds the executable paired with the selected FFmpeg package', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bootstrap-ffprobe-paths-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ffmpegDirectory = path.join(
+    root,
+    'Microsoft', 'WinGet', 'Packages',
+    'Gyan.FFmpeg.Shared_Winget',
+    'ffmpeg-7.1.1', 'bin'
+  );
+  const ffprobePath = path.join(ffmpegDirectory, 'ffprobe.exe');
+  fs.mkdirSync(ffmpegDirectory, { recursive: true });
+  fs.writeFileSync(path.join(ffmpegDirectory, 'ffmpeg.exe'), '');
+  fs.writeFileSync(ffprobePath, '');
+
+  assert.ok(getWindowsFfprobePaths({ LOCALAPPDATA: root }).includes(ffprobePath));
 });

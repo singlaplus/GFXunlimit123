@@ -18,7 +18,8 @@ test('detectFfmpeg honors the configured executable path', async (t) => {
   try {
     const result = await new ProcessorDetector().detectFfmpeg();
     assert.equal(result.status, 'READY');
-    assert.equal(result.executablePath, executablePath);
+    assert.equal(result.executablePath, fs.realpathSync.native(executablePath));
+    assert.equal(process.env.FFMPEG_PATH, fs.realpathSync.native(executablePath));
     assert.equal(result.version, '7.1.1');
   } finally {
     if (previousPath === undefined) delete process.env.FFMPEG_PATH;

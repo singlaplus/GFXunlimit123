@@ -116,4 +116,22 @@ function findWindowsToolExecutable(toolName, environment = process.env, fileSyst
     .find((candidate) => fileSystem.existsSync(candidate)) || null;
 }
 
-module.exports = { findWindowsToolExecutable, getWindowsToolPaths };
+function getWindowsFfprobePaths(environment = process.env, fileSystem = fs) {
+  const ffmpegPaths = getWindowsToolPaths('ffmpeg', environment, fileSystem);
+  if (environment.FFMPEG_PATH) ffmpegPaths.unshift(environment.FFMPEG_PATH);
+  if (environment.LOCALAPPDATA) {
+    ffmpegPaths.unshift(path.join(
+      environment.LOCALAPPDATA,
+      'Microsoft', 'WinGet', 'Links', 'ffmpeg.exe'
+    ));
+  }
+  return [...new Set(ffmpegPaths.map((ffmpegPath) => (
+    path.join(path.dirname(ffmpegPath), 'ffprobe.exe')
+  )))].filter((candidate) => fileSystem.existsSync(candidate));
+}
+
+module.exports = {
+  findWindowsToolExecutable,
+  getWindowsFfprobePaths,
+  getWindowsToolPaths,
+};
