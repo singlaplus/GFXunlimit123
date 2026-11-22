@@ -113,7 +113,8 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
         if (controller.signal.aborted || !queueRef.current.some((item) => item.id === queueItemId)) return;
         const response = await axios.get(`${API_BASE_URL}/my-uploads?view=bulk-status`, {
           headers: buildAuthHeaders(),
-          signal: controller.signal
+          signal: controller.signal,
+          skipGlobalLoading: true
         });
         if (controller.signal.aborted) return;
         const asset = (response.data || []).find((item) => Number(item.id) === Number(assetId));
@@ -179,6 +180,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
           "Idempotency-Key": item.uploadRequestId
         },
         signal: activeUpload.controller.signal,
+        skipGlobalLoading: true,
         onUploadProgress: (event) => {
           if (activeUpload.cancelled || !event.total) return;
           updateItem(item.id, { progress: Math.min(99, Math.round((event.loaded * 100) / event.total)) });
@@ -248,7 +250,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
         await axios.post(
           `${API_BASE_URL}/images/${item.assetId}/thumbnail/retry`,
           {},
-          { headers: buildAuthHeaders() }
+          { headers: buildAuthHeaders(), skipGlobalLoading: true }
         );
         await waitForThumbnail(item.assetId, item.id);
       } catch (error) {

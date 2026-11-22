@@ -135,6 +135,7 @@ describe("BulkUploadPage", () => {
 
     await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
     expect(axios.post.mock.calls[1][2].headers["Idempotency-Key"]).toBe(firstHeaders["Idempotency-Key"]);
+    expect(axios.post.mock.calls[1][2].skipGlobalLoading).toBe(true);
     await waitForPolling(() => screen.queryByText("Completed - ready to submit"));
   });
 
@@ -158,11 +159,15 @@ describe("BulkUploadPage", () => {
     expect(axios.post).toHaveBeenCalledWith(
       "http://localhost:5000/upload",
       expect.any(FormData),
-      expect.objectContaining({ signal: expect.any(AbortSignal), onUploadProgress: expect.any(Function) })
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        skipGlobalLoading: true,
+        onUploadProgress: expect.any(Function)
+      })
     );
     expect(axios.get).toHaveBeenCalledWith(
       "http://localhost:5000/my-uploads?view=bulk-status",
-      expect.anything()
+      expect.objectContaining({ skipGlobalLoading: true })
     );
   });
 
