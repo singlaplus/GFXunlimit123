@@ -65,7 +65,7 @@ function Pagination(props) {
   const activePageStyle = {
     ...baseButtonStyle,
     background: "linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)",
-    borderColor: "transparent",
+    border: "1px solid transparent",
     color: "#fff",
     boxShadow: "0 10px 20px rgba(37, 99, 235, 0.35)",
   };

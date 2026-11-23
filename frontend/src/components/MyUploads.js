@@ -3,14 +3,35 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import AssetThumbnail from "./AssetThumbnail";
+import Pagination from "./Pagination";
 import Upload from "../Upload";
 import { buildAuthHeaders } from "../utils/authSession";
 import { formatIndiaDate } from "../utils/indiaTime";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
+import "./MyUploads.css";
 
 const hasRequiredDraftMetadata = (image) =>
   [image.title, image.description, image.keywords, image.type]
     .every((value) => String(value || "").trim());
+
+function EditIcon() {
+  return (
+    <svg
+      className="my-upload-edit-icon"
+      aria-hidden="true"
+      focusable="false"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </svg>
+  );
+}
 
 function MyUploads({ darkMode = false }) {
   const isDarkMode = Boolean(darkMode);
@@ -27,6 +48,12 @@ function MyUploads({ darkMode = false }) {
   const [loadStatus, setLoadStatus] = useState("loading");
   const [loadError, setLoadError] = useState("");
   const [localRetry, setLocalRetry] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [paginationLayout, setPaginationLayout] = useState(() => ({
+    isDesktop: typeof window !== "undefined" && window.innerWidth >= 1024,
+    columns: 4
+  }));
+  const uploadsGridRef = useRef(null);
   const activeRequestIdRef = useRef(0);
   const readinessAttemptRef = useRef({ routeId, retryKey, localRetry });
   readinessAttemptRef.current = { routeId, retryKey, localRetry };
@@ -112,6 +139,56 @@ function MyUploads({ darkMode = false }) {
     return () => { activeRequestIdRef.current += 1; };
   }, [fetchMyUploads, localRetry, retryKey, routeId, selectedView]);
 
+  useEffect(() => {
+    if (loadStatus !== "ready" || images.length === 0) return undefined;
+
+    const updatePaginationLayout = () => {
+      const isDesktop = window.innerWidth >= 1024;
+      const grid = uploadsGridRef.current;
+      const gridTemplateColumns = grid
+        ? window.getComputedStyle(grid).gridTemplateColumns.trim()
+        : "";
+      const columnsFromGrid = gridTemplateColumns && gridTemplateColumns !== "none"
+        ? gridTemplateColumns.split(/\s+/).filter(Boolean).length
+        : 0;
+      const estimatedColumns = Math.max(1, Math.floor((window.innerWidth - 113) / 288));
+      const columns = columnsFromGrid || estimatedColumns;
+
+      setPaginationLayout((current) => (
+        current.isDesktop === isDesktop && current.columns === columns
+          ? current
+          : { isDesktop, columns }
+      ));
+    };
+
+    updatePaginationLayout();
+    window.addEventListener("resize", updatePaginationLayout);
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(updatePaginationLayout);
+    if (resizeObserver && uploadsGridRef.current) {
+      resizeObserver.observe(uploadsGridRef.current);
+    }
+
+    return () => {
+      window.removeEventListener("resize", updatePaginationLayout);
+      resizeObserver?.disconnect();
+    };
+  }, [images.length, loadStatus, selectedView]);
+
+  const pageSize = paginationLayout.isDesktop
+    ? Math.max(1, paginationLayout.columns) * 2
+    : Math.max(images.length, 1);
+  const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const visibleImages = paginationLayout.isDesktop
+    ? images.slice((safeCurrentPage - 1) * pageSize, safeCurrentPage * pageSize)
+    : images;
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages));
+  }, [totalPages]);
+
   const deleteImage = async (id) => {
     const image = images.find((item) => Number(item.id) === Number(id));
     const confirmDelete = window.confirm(
@@ -172,6 +249,11 @@ function MyUploads({ darkMode = false }) {
     setEditTitle(image.title);
     setEditCategory(image.category);
     setEditKeywords(image.keywords);
+  };
+
+  const closeEditDialog = () => {
+    setEditingImage(null);
+    setThumbnailFile(null);
   };
 
   const saveImage = async () => {
@@ -275,57 +357,55 @@ function MyUploads({ darkMode = false }) {
   };
 
   return (
-    <div style={{ marginTop: "20px", marginBottom: "30px", color: isDarkMode ? "#f5f5f5" : "#111827" }}>
-      <h2>My Uploads</h2>
+    <div className={`my-uploads${isDarkMode ? " my-uploads--dark" : ""}`}>
+      <header className="my-uploads-header">
+        <div>
+          <p className="my-uploads-eyebrow"><span aria-hidden="true" /> CREATOR STUDIO / LIBRARY</p>
+          <h2>My Uploads</h2>
+          <p className="my-uploads-intro">Manage drafts, review status, and published assets from one workspace.</p>
+        </div>
+        {loadStatus === "ready" && (
+          <div className="my-uploads-header-count" aria-label={`${images.length} uploads in the current filter`}>
+            <strong>{images.length}</strong>
+            <span>{images.length === 1 ? "asset" : "assets"} in view</span>
+          </div>
+        )}
+      </header>
 
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "12px",
-          flexWrap: "wrap",
-          marginBottom: "16px"
-        }}
-      >
-        <label htmlFor="my-uploads-view" style={{ fontWeight: 600 }}>
-          View
-        </label>
-        <select
-          id="my-uploads-view"
-          aria-label="View"
-          value={selectedView}
-          onChange={(e) => {
-            const view = e.target.value;
-            if (view === selectedView) return;
-            activeRequestIdRef.current += 1;
-            setSelectedView(view);
-            setImages([]);
-            setLoadStatus("loading");
-            setLoadError("");
-            reportResource("myUploads", "loading", "", routeId);
-          }}
-          style={{
-            padding: "8px 10px",
-            borderRadius: "6px",
-            border: "1px solid #555",
-            background: isDarkMode ? "#111" : "#ffffff",
-            color: isDarkMode ? "white" : "#111827"
-          }}
-        >
-          <option value="not-submitted">Not Submitted</option>
-          <option value="approved">Approved</option>
-          <option value="pending">Pending</option>
-          <option value="reviewed">Reviewed</option>
-          <option value="rejected">Rejected</option>
-          <option value="portfolio">My Portfolio</option>
-        </select>
-        <span style={{ color: isDarkMode ? "#cbd5e1" : "#64748b", fontSize: "0.95rem" }}>{getViewHint()}</span>
-      </div>
+      <section className="my-uploads-view-panel" aria-label="Upload library filters">
+        <div className="my-uploads-view-control">
+          <label htmlFor="my-uploads-view">View</label>
+          <select
+            id="my-uploads-view"
+            aria-label="View"
+            value={selectedView}
+            onChange={(e) => {
+              const view = e.target.value;
+              if (view === selectedView) return;
+              activeRequestIdRef.current += 1;
+              setSelectedView(view);
+              setCurrentPage(1);
+              setImages([]);
+              setLoadStatus("loading");
+              setLoadError("");
+              reportResource("myUploads", "loading", "", routeId);
+            }}
+          >
+            <option value="not-submitted">Not Submitted</option>
+            <option value="approved">Approved</option>
+            <option value="pending">Pending</option>
+            <option value="reviewed">Reviewed</option>
+            <option value="rejected">Rejected</option>
+            <option value="portfolio">My Portfolio</option>
+          </select>
+        </div>
+        <p className="my-uploads-view-hint">{getViewHint()}</p>
+      </section>
 
       {loadStatus === "loading" ? (
-        <p role="status">Loading uploads...</p>
+        <p className="my-uploads-state" role="status">Loading uploads...</p>
       ) : loadError ? (
-        <div role="alert">
+        <div className="my-uploads-state my-uploads-state--error" role="alert">
           <p>{loadError}</p>
           <button type="button" onClick={() => {
             activeRequestIdRef.current += 1;
@@ -337,250 +417,249 @@ function MyUploads({ darkMode = false }) {
         </div>
       ) : (
         <>
-          <p>Total Uploads: {images.length}</p>
+          <div className="my-uploads-results-heading">
+            <p>{`Total Uploads: ${images.length}`}</p>
+          </div>
 
-      {images.length === 0 ? (
-        <p style={{ color: isDarkMode ? "#cbd5e1" : "#64748b" }}>No uploads match this view yet.</p>
-      ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))",
-            gap: "15px"
-          }}
-        >
-          {images.map((image) => (
-            <div
-              key={image.id}
-              style={{
-                border: isDarkMode ? "1px solid #444" : "1px solid #dbe2ea",
-                borderRadius: "10px",
-                overflow: "hidden",
-                background: isDarkMode ? "#1e1e1e" : "#ffffff",
-                color: isDarkMode ? "#f5f5f5" : "#111827"
-              }}
-            >
-              <AssetThumbnail
-                image={image}
-                darkMode={isDarkMode}
-                style={{
-                  width: "100%",
-                  height: "180px",
-                  objectFit: "cover"
-                }}
-              />
-
-              <div style={{ padding: "10px", color: isDarkMode ? "white" : "#111827" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                  <strong>{image.title || "Untitled"}</strong>
-                  <span style={{ fontSize: "0.8rem", color: isDarkMode ? "#a8d0ff" : "#2563eb" }}>
-                    {selectedView === "not-submitted"
-                      ? "Not Submitted"
-                      : image.status
-                        ? image.status.charAt(0).toUpperCase() + image.status.slice(1)
-                        : "Pending"}
-                  </span>
-                </div>
-
-                <p style={{ marginTop: "8px", color: isDarkMode ? "#ddd" : "#475569" }}>
-                  {image.description || "No description provided."}
-                </p>
-
-                <p style={{ marginTop: "8px" }}>Collection: {image.collection || "—"}</p>
-                <p>File Type: {image.extension ? String(image.extension).replace(/^\./, "").toUpperCase() : "—"}</p>
-                <p>Asset Type: {image.type || "—"}</p>
-                <p>Category: {image.category || "—"}</p>
-
-                {selectedView !== "pending" && selectedView !== "portfolio" && selectedView !== "not-submitted" && (
-                  <div style={{ marginTop: "10px", fontSize: "0.9rem", color: isDarkMode ? "#bcdcff" : "#475569" }}>
-                    <p>Submitted: {formatDate(image.created_at)}</p>
-                    <p>Reviewed: {formatDate(image.updated_at || image.reviewed_at || image.created_at)}</p>
-                    <p>Days left: {getDaysLeft(image)}</p>
-                  </div>
-                )}
-
-
-                <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                  {selectedView === "not-submitted" && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => setEditingDraftAsset(image)}
-                        style={{ background: "#2196f3", color: "white", border: "none", padding: "8px 12px", borderRadius: "6px", cursor: "pointer" }}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => submitImage(image)}
-                        disabled={
-                          String(image.generated_thumbnail_status || "").toUpperCase() !== "READY" ||
-                          !hasRequiredDraftMetadata(image)
-                        }
-                        style={{
-                          background: "#16a34a",
-                          color: "white",
-                          border: "none",
-                          padding: "8px 12px",
-                          borderRadius: "6px",
-                          cursor: "pointer",
-                          opacity: hasRequiredDraftMetadata(image) ? 1 : 0.55
-                        }}
-                      >
-                        Submit
-                      </button>
-                    </>
-                  )}
-                  {selectedView === "portfolio" && (
-                    <button
-                      onClick={() => editImage(image)}
-                      style={{
-                        background: "#2196f3",
-                        color: "white",
-                        border: "none",
-                        padding: "8px 12px",
-                        borderRadius: "6px",
-                        cursor: "pointer"
-                      }}
-                    >
-                      ✏ Edit
-                    </button>
-                  )}
-                  {selectedView === "not-submitted" && <button
-                    type="button"
-                    onClick={() => deleteImage(image.id)}
-                    disabled={deletingImageIds.has(image.id)}
-                    style={{
-                      background: "#dc2626",
-                      color: "white",
-                      border: "none",
-                      padding: "8px 12px",
-                      borderRadius: "6px",
-                      cursor: deletingImageIds.has(image.id) ? "wait" : "pointer",
-                      opacity: deletingImageIds.has(image.id) ? 0.65 : 1
-                    }}
-                  >
-                    {deletingImageIds.has(image.id) ? "Deleting..." : "Delete"}
-                  </button>}
-                </div>
-              </div>
-              {selectedView === "not-submitted" &&
-                !hasRequiredDraftMetadata(image) && (
-                  <p style={{ margin: "8px 0 0", fontSize: "0.85rem", color: isDarkMode ? "#fca5a5" : "#b91c1c" }}>
-                    Add title, description, keywords, and type using Edit before submitting.
-                  </p>
-                )}
+          {images.length === 0 ? (
+            <div className="my-uploads-empty">
+              <span className="my-uploads-empty-icon" aria-hidden="true">✦</span>
+              <h3>Your library is clear</h3>
+              <p>No uploads match this view yet.</p>
             </div>
-          ))}
-        </div>
-      )}
+          ) : (
+            <div className="my-uploads-grid" ref={uploadsGridRef}>
+              {visibleImages.map((image) => (
+                <article className="my-upload-card" key={image.id}>
+                  <div className="my-upload-card-media">
+                    <AssetThumbnail
+                      image={image}
+                      darkMode={isDarkMode}
+                      style={{
+                        width: "100%",
+                        height: "180px",
+                        objectFit: "cover"
+                      }}
+                    />
+                    <span className={`my-upload-status my-upload-status--${String(image.status || "pending").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>
+                      {selectedView === "not-submitted"
+                        ? "Not Submitted"
+                        : image.status
+                          ? image.status.charAt(0).toUpperCase() + image.status.slice(1)
+                          : "Pending"}
+                    </span>
+                  </div>
+
+                  <div className="my-upload-card-body">
+                    <div className="my-upload-card-heading">
+                      <strong>{image.title || "Untitled"}</strong>
+                    </div>
+
+                    <p className="my-upload-description">{image.description || "No description provided."}</p>
+
+                    <div className="my-upload-metadata">
+                      <p>{`Collection: ${image.collection || "—"}`}</p>
+                      <p>{`File Type: ${image.extension ? String(image.extension).replace(/^\./, "").toUpperCase() : "—"}`}</p>
+                      <p>{`Asset Type: ${image.type || "—"}`}</p>
+                      <p>{`Category: ${image.category || "—"}`}</p>
+                    </div>
+
+                    {selectedView !== "pending" && selectedView !== "portfolio" && selectedView !== "not-submitted" && (
+                      <div className="my-upload-review-details">
+                        <p>Submitted: {formatDate(image.created_at)}</p>
+                        <p>Reviewed: {formatDate(image.updated_at || image.reviewed_at || image.created_at)}</p>
+                        <p>Days left: {getDaysLeft(image)}</p>
+                      </div>
+                    )}
+
+                    {selectedView === "not-submitted" && !hasRequiredDraftMetadata(image) && (
+                      <p className="my-upload-draft-warning">
+                        Add title, description, keywords, and type using Edit before submitting.
+                      </p>
+                    )}
+
+                    <div className="my-upload-actions">
+                      {selectedView === "not-submitted" && (
+                        <>
+                          <button
+                            className="my-upload-action my-upload-action--edit"
+                            type="button"
+                            onClick={() => setEditingDraftAsset(image)}
+                          >
+                            <EditIcon />
+                            Edit
+                          </button>
+                          <button
+                            className="my-upload-action my-upload-action--submit"
+                            type="button"
+                            onClick={() => submitImage(image)}
+                            disabled={
+                              String(image.generated_thumbnail_status || "").toUpperCase() !== "READY" ||
+                              !hasRequiredDraftMetadata(image)
+                            }
+                            style={{ opacity: hasRequiredDraftMetadata(image) ? 1 : 0.55 }}
+                          >
+                            Submit
+                          </button>
+                        </>
+                      )}
+                      {selectedView === "portfolio" && (
+                        <button
+                          className="my-upload-action my-upload-action--edit"
+                          type="button"
+                          onClick={() => editImage(image)}
+                        >
+                          <EditIcon />
+                          Edit
+                        </button>
+                      )}
+                      {selectedView === "not-submitted" && (
+                        <button
+                          className="my-upload-action my-upload-action--delete"
+                          type="button"
+                          onClick={() => deleteImage(image.id)}
+                          disabled={deletingImageIds.has(image.id)}
+                          style={{
+                            cursor: deletingImageIds.has(image.id) ? "wait" : "pointer",
+                            opacity: deletingImageIds.has(image.id) ? 0.65 : 1
+                          }}
+                        >
+                          {deletingImageIds.has(image.id) ? "Deleting..." : "Delete"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+          {paginationLayout.isDesktop && totalPages > 1 && (
+            <div className="my-uploads-pagination">
+              <Pagination
+                currentPage={safeCurrentPage}
+                totalPages={totalPages}
+                totalImages={images.length}
+                setCurrentPage={setCurrentPage}
+                darkMode={isDarkMode}
+                totalLabel="Total Uploads"
+              />
+            </div>
+          )}
         </>
       )}
 
       {editingImage && (
         <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            background: "rgba(0,0,0,0.7)",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-            zIndex: 9999
+          className="my-upload-edit-overlay"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closeEditDialog();
           }}
         >
           <div
-            style={{
-              background: isDarkMode ? "#1e1e1e" : "#ffffff",
-              color: isDarkMode ? "white" : "#111827",
-              padding: "20px",
-              borderRadius: "10px",
-              width: "400px"
-            }}
+            className={`my-upload-edit-dialog${isDarkMode ? " my-upload-edit-dialog--dark" : ""}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="my-upload-edit-title"
           >
-            <h3>Edit Image</h3>
+            <header className="my-upload-edit-header">
+              <span className="my-upload-edit-mark"><EditIcon /></span>
+              <div>
+                <p className="my-upload-edit-eyebrow">ASSET SETTINGS</p>
+                <h3 id="my-upload-edit-title">Edit Image</h3>
+                <p className="my-upload-edit-intro">Refine your asset details or replace its thumbnail.</p>
+              </div>
+              <button
+                className="my-upload-edit-close"
+                type="button"
+                aria-label="Close edit dialog"
+                onClick={closeEditDialog}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                  <path d="m6 6 12 12" />
+                  <path d="M18 6 6 18" />
+                </svg>
+              </button>
+            </header>
 
-            <label>
-              <strong>Title</strong>
-            </label>
+            <div className="my-upload-edit-content">
+              <div className="my-upload-edit-fields">
+                <div>
+                  <label className="my-upload-edit-label" htmlFor="my-upload-edit-title-field">Title</label>
+                  <input
+                    id="my-upload-edit-title-field"
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    className="my-upload-edit-input"
+                  />
+                </div>
 
-            <input
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              style={{
-                width: "100%",
-                marginBottom: "15px",
-                padding: "8px",
-                background: isDarkMode ? "#333" : "#ffffff",
-                color: isDarkMode ? "white" : "#111827",
-                border: "1px solid #555"
-              }}
-            />
+                <div>
+                  <label className="my-upload-edit-label" htmlFor="my-upload-edit-category">Category</label>
+                  <input
+                    id="my-upload-edit-category"
+                    value={editCategory}
+                    onChange={(e) => setEditCategory(e.target.value)}
+                    className="my-upload-edit-input"
+                  />
+                </div>
 
-            <label>
-              <strong>Category</strong>
-            </label>
+                <div>
+                  <label className="my-upload-edit-label" htmlFor="my-upload-edit-keywords">Keywords</label>
+                  <input
+                    id="my-upload-edit-keywords"
+                    value={editKeywords}
+                    onChange={(e) => setEditKeywords(e.target.value)}
+                    className="my-upload-edit-input"
+                  />
+                </div>
+              </div>
 
-            <input
-              value={editCategory}
-              onChange={(e) => setEditCategory(e.target.value)}
-              style={{
-                width: "100%",
-                marginBottom: "15px",
-                padding: "8px",
-                background: isDarkMode ? "#333" : "#ffffff",
-                color: isDarkMode ? "white" : "#111827",
-                border: "1px solid #555"
-              }}
-            />
-
-            <label>
-              <strong>Keywords</strong>
-            </label>
-
-            <input
-              value={editKeywords}
-              onChange={(e) => setEditKeywords(e.target.value)}
-              style={{
-                width: "100%",
-                marginBottom: "15px",
-                padding: "8px",
-                background: isDarkMode ? "#333" : "#ffffff",
-                color: isDarkMode ? "white" : "#111827",
-                border: "1px solid #555"
-              }}
-            />
-
-            <div style={{ marginTop: "12px" }}>
-              <label style={{ display: "block", marginBottom: "8px", fontWeight: "600" }}>
-                Change thumbnail
-              </label>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => setThumbnailFile(e.target.files?.[0] || null)}
-                style={{
-                  width: "100%",
-                  marginBottom: "10px",
-                  padding: "8px",
-                  background: isDarkMode ? "#333" : "#ffffff",
-                  color: isDarkMode ? "white" : "#111827",
-                  border: "1px solid #555"
-                }}
-              />
-              <div style={{ display: "flex", gap: "10px" }}>
-                <button onClick={updateThumbnail} disabled={!thumbnailFile} style={{ opacity: thumbnailFile ? 1 : 0.5 }}>
+              <section className="my-upload-thumbnail-edit">
+                <div className="my-upload-thumbnail-heading">
+                  <span className="my-upload-thumbnail-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 16V4" />
+                      <path d="m7 9 5-5 5 5" />
+                      <path d="M20 16.5v2A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5v-2" />
+                    </svg>
+                  </span>
+                  <div>
+                    <label className="my-upload-edit-label" htmlFor="my-upload-edit-thumbnail">Change thumbnail</label>
+                    <p>Choose an image file to refresh this asset’s preview.</p>
+                  </div>
+                </div>
+                <input
+                  id="my-upload-edit-thumbnail"
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setThumbnailFile(e.target.files?.[0] || null)}
+                  className="my-upload-edit-input my-upload-thumbnail-input"
+                />
+                <button
+                  className="my-upload-edit-button my-upload-edit-button--utility"
+                  type="button"
+                  onClick={updateThumbnail}
+                  disabled={!thumbnailFile}
+                  style={{ opacity: thumbnailFile ? 1 : 0.5 }}
+                >
                   Update Thumbnail
                 </button>
-                <button onClick={saveImage}>Save</button>
-                <button onClick={() => { setEditingImage(null); setThumbnailFile(null); }} style={{ marginLeft: "10px" }}>
-                  Cancel
-                </button>
-              </div>
+              </section>
             </div>
+
+            <footer className="my-upload-edit-footer">
+              <button
+                className="my-upload-edit-button my-upload-edit-button--secondary"
+                type="button"
+                onClick={closeEditDialog}
+              >
+                Cancel
+              </button>
+              <button className="my-upload-edit-button my-upload-edit-button--primary" type="button" onClick={saveImage}>
+                Save
+              </button>
+            </footer>
           </div>
         </div>
       )}

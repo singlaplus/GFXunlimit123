@@ -3,6 +3,10 @@ import MyUploads from './MyUploads';
 import axios from 'axios';
 
 jest.mock('axios');
+jest.mock('react-router-dom', () => ({
+  useLocation: jest.fn(),
+  useNavigate: jest.fn(),
+}));
 jest.mock('react-toastify', () => ({
   toast: {
     success: jest.fn(),
@@ -10,11 +14,17 @@ jest.mock('react-toastify', () => ({
   },
 }));
 
+import { useLocation, useNavigate } from 'react-router-dom';
+
+const navigate = jest.fn();
+
 describe('MyUploads', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.clear();
     localStorage.setItem('token', 'test-token');
+    useLocation.mockReturnValue({ pathname: '/myuploads', search: '' });
+    useNavigate.mockReturnValue(navigate);
   });
 
   afterEach(() => {
@@ -272,6 +282,84 @@ describe('MyUploads', () => {
 
     expect(screen.queryByText(/days left/i)).not.toBeInTheDocument();
   });
+
+  it('closes the asset editor from its header close button', async () => {
+    axios.get.mockResolvedValue({
+      data: [{
+        id: 31,
+        title: 'Editable portfolio asset',
+        status: 'approved',
+      }],
+    });
+
+    render(<MyUploads />);
+    fireEvent.change(screen.getByLabelText(/view/i), {
+      target: { value: 'portfolio' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Edit Image' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close edit dialog' }));
+
+    expect(screen.queryByRole('dialog', { name: 'Edit Image' })).not.toBeInTheDocument();
+    expect(axios.put).not.toHaveBeenCalled();
+  });
+
+  it('closes the asset editor when clicking outside the dialog', async () => {
+    axios.get.mockResolvedValue({
+      data: [{
+        id: 32,
+        title: 'Backdrop-dismiss asset',
+        status: 'approved',
+      }],
+    });
+
+    render(<MyUploads />);
+    fireEvent.change(screen.getByLabelText(/view/i), {
+      target: { value: 'portfolio' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Edit Image' })).toBeInTheDocument();
+    fireEvent.click(document.querySelector('.my-upload-edit-overlay'));
+
+    expect(screen.queryByRole('dialog', { name: 'Edit Image' })).not.toBeInTheDocument();
+    expect(axios.put).not.toHaveBeenCalled();
+  });
+
+  it('paginates desktop uploads after two grid rows', async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
+    jest.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    axios.get.mockResolvedValue({
+      data: Array.from({ length: 7 }, (_, index) => ({
+        id: index + 1,
+        title: `Portfolio asset ${index + 1}`,
+        status: 'approved',
+      })),
+    });
+
+    try {
+      render(<MyUploads />);
+      fireEvent.change(screen.getByLabelText(/view/i), {
+        target: { value: 'portfolio' },
+      });
+
+      expect(await screen.findByText('Portfolio asset 6')).toBeInTheDocument();
+      expect(await screen.findByText('Page 1 of 2')).toBeInTheDocument();
+      expect(screen.queryByText('Portfolio asset 7')).not.toBeInTheDocument();
+      expect(document.querySelectorAll('.my-upload-card')).toHaveLength(6);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Next ▶' }));
+
+      expect(await screen.findByText('Portfolio asset 7')).toBeInTheDocument();
+      expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+      expect(screen.queryByText('Portfolio asset 1')).not.toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+    }
+  });
+
 
   it('ignores stale responses so the latest tab stays visible', async () => {
     let resolvePending;

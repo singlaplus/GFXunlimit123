@@ -4,6 +4,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { limitWords, formatKeywords } from "./utils/uploadInputLimits";
 import { buildAuthHeaders } from "./utils/authSession";
+import "./Upload.css";
 import {
   DEFAULT_WATCH_CONFIG,
   WATCH_CONFIG_STORAGE_KEY,
@@ -80,15 +81,6 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
   })();
   const requiresTemplateThumbnail = !editingAsset && collection.trim().toLowerCase() === "templates";
 
-  const surfaceStyle = {
-    border: `1px solid ${darkMode ? "#4b5563" : "#ccc"}`,
-    padding: "20px",
-    borderRadius: "10px",
-    marginBottom: "30px",
-    background: darkMode ? "#1e1e1e" : "#fff",
-    color: darkMode ? "#f5f5f5" : "#111",
-  };
-
   const fieldStyle = {
     width: "100%",
     padding: "10px",
@@ -116,13 +108,14 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
       !type.trim() || !image || (requiresTemplateThumbnail && !thumbnail) || loading;
 
   const buttonStyle = {
-    padding: "10px 20px",
+    padding: "12px 24px",
     background: isDisabled ? "gray" : darkMode ? "#f5f5f5" : "#111",
     color: isDisabled ? "white" : darkMode ? "#111" : "white",
     border: "none",
-    borderRadius: "5px",
+    borderRadius: "12px",
     cursor: isDisabled ? "not-allowed" : "pointer",
     marginTop: "20px",
+    fontWeight: "700",
   };
 
   // 🧠 cleanup preview URL to avoid memory leak
@@ -445,23 +438,29 @@ setUploadProgress(100);
         padding: "20px",
         overflowY: "auto",
         background: "rgba(0,0,0,0.7)"
-      } : undefined}>
-      <div style={editingAsset ? {
-        ...surfaceStyle,
+      } : undefined} className={editingAsset ? "upload-edit-overlay" : undefined}>
+      <div className={`upload-surface${darkMode ? " upload-surface--dark" : ""}${editingAsset ? " upload-surface--editing" : ""}`} style={editingAsset ? {
         width: "min(760px, 100%)",
         maxHeight: "90vh",
         overflowY: "auto"
-      } : surfaceStyle}>
-        <h2>{editingAsset ? "Edit Not Submitted Asset" : "Upload Image"}</h2>
+      } : undefined}>
+        <header className="upload-card-header">
+          <div className="upload-card-eyebrow">
+            <span className="upload-card-eyebrow-dot" aria-hidden="true" />
+            CREATOR STUDIO
+          </div>
+          <h2>{editingAsset ? "Edit Not Submitted Asset" : "Upload Image"}</h2>
+          <p>Prepare your creative asset with clear details so it can be reviewed and discovered.</p>
+        </header>
         {editingAsset?.extension && (
-          <p>File type: {String(editingAsset.extension).replace(/^\./, "").toUpperCase()}</p>
+          <p className="upload-file-type">File type: {String(editingAsset.extension).replace(/^\./, "").toUpperCase()}</p>
         )}
 
-      <form onSubmit={handleUpload}>
+      <form className="upload-form" onSubmit={handleUpload}>
 
-        <div style={{ display: "flex", gap: "10px", marginBottom: "10px", flexWrap: "wrap" }}>
-          <div style={{ flex: "0 0 220px", width: "220px" }}>
-            <label htmlFor="upload-title" style={fieldLabelStyle}>
+        <div className="upload-form-grid upload-metadata-fields">
+          <div className="upload-field">
+            <label className="upload-field-label" htmlFor="upload-title" style={fieldLabelStyle}>
               Title <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
             </label>
             <input
@@ -474,8 +473,8 @@ setUploadProgress(100);
               style={{ ...fieldStyle }}
             />
           </div>
-          <div style={{ flex: "1 1 260px", minWidth: "220px" }}>
-            <label htmlFor="upload-description" style={fieldLabelStyle}>
+          <div className="upload-field">
+            <label className="upload-field-label" htmlFor="upload-description" style={fieldLabelStyle}>
               Description <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
             </label>
             <textarea
@@ -488,8 +487,8 @@ setUploadProgress(100);
               style={{ ...fieldStyle, minHeight: "42px", resize: "vertical" }}
             />
           </div>
-          <div style={{ flex: "1 1 260px", minWidth: "220px" }}>
-            <label htmlFor="upload-keywords" style={fieldLabelStyle}>
+          <div className="upload-field">
+            <label className="upload-field-label" htmlFor="upload-keywords" style={fieldLabelStyle}>
               Keywords <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
             </label>
             <input
@@ -506,23 +505,17 @@ setUploadProgress(100);
         </div>
 
         <label
+          className="upload-section-label"
           style={{
             display: "block",
             marginBottom: "6px",
             fontWeight: "600",
           }}
         >
-          Category (1 required, 2 max)
+          Category <span>(1 required, 2 max)</span>
         </label>
-        <div
-          style={{
-            display: "flex",
-            gap: "10px",
-            marginBottom: "10px",
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ flex: 1, minWidth: "220px" }}>
+        <div className="upload-form-grid upload-category-fields">
+          <div className="upload-field">
             <select
               value={category[0] || ""}
               onChange={(e) => handleCategorySelection(0, e.target.value)}
@@ -536,7 +529,7 @@ setUploadProgress(100);
               ))}
             </select>
           </div>
-          <div style={{ flex: 1, minWidth: "220px" }}>
+          <div className="upload-field">
             <select
               value={category[1] || ""}
               onChange={(e) => handleCategorySelection(1, e.target.value)}
@@ -552,9 +545,10 @@ setUploadProgress(100);
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: "10px", marginBottom: "10px", flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: "220px" }}>
+        <div className="upload-form-grid upload-collection-fields">
+          <div className="upload-field">
             <label
+              className="upload-field-label"
               style={{
                 display: "block",
                 marginBottom: "6px",
@@ -576,8 +570,8 @@ setUploadProgress(100);
               ))}
             </select>
           </div>
-          <div style={{ flex: 1, minWidth: "220px" }}>
-            <label htmlFor="upload-type" style={fieldLabelStyle}>
+          <div className="upload-field">
+            <label className="upload-field-label" htmlFor="upload-type" style={fieldLabelStyle}>
               Type <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
             </label>
             <select
@@ -594,8 +588,8 @@ setUploadProgress(100);
           </div>
         </div>
 
-        {!editingAsset && <div style={{ marginBottom: "10px" }}>
-          <label htmlFor="upload-asset-file" style={fieldLabelStyle}>
+        {!editingAsset && <div className="upload-file-section">
+          <label className="upload-field-label" htmlFor="upload-asset-file" style={fieldLabelStyle}>
             Asset file
             <span aria-hidden="true" style={requiredMarkerStyle}>*</span>
           </label>
@@ -622,6 +616,7 @@ setUploadProgress(100);
 
               setPreview(url);
             }}
+            className="upload-file-input"
             style={{
               ...fieldStyle,
               width: "100%",
@@ -630,8 +625,8 @@ setUploadProgress(100);
           />
         </div>}
 
-        {!editingAsset && <div style={{ marginBottom: "10px" }}>
-          <label style={{ display: "block", marginBottom: "6px", fontWeight: "600" }}>
+        {!editingAsset && <div className="upload-file-section">
+          <label className="upload-field-label" style={{ display: "block", marginBottom: "6px", fontWeight: "600" }}>
             {requiresTemplateThumbnail ? "Thumbnail (required for Templates)" : "Optional thumbnail (recommended)"}
           </label>
           <input
@@ -639,6 +634,7 @@ setUploadProgress(100);
             accept="image/*"
             required={requiresTemplateThumbnail}
             onChange={(e) => setThumbnail(e.target.files?.[0] || null)}
+            className="upload-file-input"
             style={{
               ...fieldStyle,
               width: "100%",
@@ -653,6 +649,7 @@ setUploadProgress(100);
         {preview && (
           <div style={{ marginBottom: "20px" }}>
             <img
+              className="upload-preview"
               src={preview}
               alt="Preview"
               width="300"
@@ -703,18 +700,21 @@ setUploadProgress(100);
   </div>
 
 )}
-        <button
-          type="submit"
-          disabled={isDisabled}
-          style={buttonStyle}
-        >
-          {loading ? (editingAsset ? "Saving..." : "Uploading...") : (editingAsset ? "Save Metadata" : "Upload")}
-        </button>
-        {editingAsset && (
-          <button type="button" onClick={() => onSaved?.(null)} style={{ marginLeft: "10px", marginTop: "20px" }}>
-            Cancel
+        <div className="upload-actions">
+          <button
+            className="upload-submit-button"
+            type="submit"
+            disabled={isDisabled}
+            style={buttonStyle}
+          >
+            {loading ? (editingAsset ? "Saving..." : "Uploading...") : (editingAsset ? "Save Metadata" : "Upload")}
           </button>
-        )}
+          {editingAsset && (
+            <button className="upload-cancel-button" type="button" onClick={() => onSaved?.(null)}>
+              Cancel
+            </button>
+          )}
+        </div>
 
       </form>
       </div>
