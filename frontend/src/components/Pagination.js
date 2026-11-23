@@ -9,22 +9,34 @@ function Pagination(props) {
     darkMode,
     totalLabel = "Total Assets",
     scrollToTop = true,
+    search = "",
   } = props;
   const location = useLocation();
   const navigate = useNavigate();
 
-  const goToPage = (page) => {
+  const goToPage = (page, event) => {
     setCurrentPage(page);
 
+    const isExplorePagination = /^\/explore(?:\/\d+)?$/.test(location.pathname);
     if (scrollToTop && typeof window !== "undefined") {
+      if (isExplorePagination && event?.detail > 0) {
+        event.currentTarget.blur();
+      }
       window.scrollTo(0, 0);
     }
 
-    const isExplorePagination = /^\/explore(?:\/\d+)?$/.test(location.pathname);
     if (!isExplorePagination) return;
 
     const targetPath = page <= 1 ? "/explore" : `/explore/${page}`;
-    navigate(targetPath, { replace: false });
+    const params = new URLSearchParams(location.search);
+    const searchTerm = search.trim();
+    if (searchTerm) {
+      params.set("type", searchTerm);
+    } else {
+      params.delete("type");
+    }
+    const query = params.toString();
+    navigate(`${targetPath}${query ? `?${query}` : ""}`, { replace: false });
   };
 
   const baseButtonStyle = {
@@ -99,7 +111,7 @@ function Pagination(props) {
     >
       <button
         disabled={currentPage === 1}
-        onClick={() => goToPage(1)}
+        onClick={(event) => goToPage(1, event)}
         style={{
           ...navButtonStyle,
           padding: "0 12px",
@@ -110,7 +122,7 @@ function Pagination(props) {
 
       <button
         disabled={currentPage === 1}
-        onClick={() => goToPage(currentPage - 1)}
+        onClick={(event) => goToPage(currentPage - 1, event)}
         style={{
           ...navButtonStyle,
           padding: "0 12px",
@@ -142,7 +154,7 @@ function Pagination(props) {
         return (
           <button
             key={page}
-            onClick={() => goToPage(page)}
+            onClick={(event) => goToPage(page, event)}
             style={
               isCurrent
                 ? {
@@ -165,7 +177,7 @@ function Pagination(props) {
 
       <button
         disabled={currentPage === totalPages}
-        onClick={() => goToPage(currentPage + 1)}
+        onClick={(event) => goToPage(currentPage + 1, event)}
         style={{
           ...navButtonStyle,
           opacity: currentPage === totalPages ? 0.5 : 1,
@@ -178,7 +190,7 @@ function Pagination(props) {
 
       <button
         disabled={currentPage === totalPages}
-        onClick={() => goToPage(totalPages)}
+        onClick={(event) => goToPage(totalPages, event)}
         style={{
           ...navButtonStyle,
           opacity: currentPage === totalPages ? 0.5 : 1,

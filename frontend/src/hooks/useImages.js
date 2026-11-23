@@ -89,6 +89,7 @@ export default function useImages({
   const currentQueryKeyRef = useRef(queryKey);
   currentQueryKeyRef.current = queryKey;
   const previousQueryKeyRef = useRef(queryKey);
+  const previousCollectionRef = useRef(selectedCollection);
 
   const reportCatalogLoading = useCallback(() => {
     if (readinessEnabled && !readinessAttemptRef.current.settled) {
@@ -280,9 +281,12 @@ export default function useImages({
 
   useEffect(() => {
     const enteredExplorePage = isExplorePage && !previousExplorePageRef.current;
+    const exitedExplorePage = !isExplorePage && previousExplorePageRef.current;
     previousExplorePageRef.current = isExplorePage;
     const queryChanged = previousQueryKeyRef.current !== queryKey;
     previousQueryKeyRef.current = queryKey;
+    const collectionChanged = previousCollectionRef.current !== selectedCollection;
+    previousCollectionRef.current = selectedCollection;
     requestControllerRef.current?.abort();
     const hasExplicitExplorePage = typeof window !== "undefined" && /^\/explore\/\d+$/.test(window.location.pathname);
 
@@ -318,6 +322,21 @@ export default function useImages({
 
       if (!hasExplicitExplorePage && currentPage !== 1) {
         setCurrentPage(1);
+        return undefined;
+      }
+    }
+
+    if (
+      !isExplorePage &&
+      (exitedExplorePage || collectionChanged || (queryChanged && currentPage !== 1))
+    ) {
+      setImages([]);
+      setTotalImages(0);
+      setTotalPages(1);
+
+      if (currentPage !== 1) {
+        setCurrentPage(1);
+        setLoading(true);
         return undefined;
       }
     }

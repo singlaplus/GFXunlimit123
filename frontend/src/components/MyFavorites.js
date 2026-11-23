@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { getAssetPreviewUrl } from "../utils/assetPreview";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
+import { loadCartItems, saveCartItems } from "../utils/cartPersistence";
+import "./MyFavorites.css";
 
 function MyFavorites({ darkMode = false }) {
   const navigate = useNavigate();
@@ -14,8 +16,10 @@ function MyFavorites({ darkMode = false }) {
   const [hoveredFavoriteId, setHoveredFavoriteId] = useState(null);
   const [loadStatus, setLoadStatus] = useState("loading");
   const [loadError, setLoadError] = useState("");
+  const [cartError, setCartError] = useState("");
   const [localRetry, setLocalRetry] = useState(0);
   const favoritesRequestIdRef = useRef(0);
+  const cartLoadRequestIdRef = useRef(0);
   const readinessAttemptRef = useRef({ routeId, retryKey, localRetry });
   readinessAttemptRef.current = { routeId, retryKey, localRetry };
 
@@ -33,19 +37,24 @@ function MyFavorites({ darkMode = false }) {
 
   useEffect(() => {
     fetchFavorites();
-    loadCart();
+    loadCartFromStorage();
+    loadCartFromServer();
     const onFavoritesUpdate = () => fetchFavorites();
-    const onCartUpdate = () => loadCart();
+    const onCartUpdate = () => loadCartFromStorage();
+    const onCartSync = () => loadCartFromStorage();
     window.addEventListener("favoritesUpdated", onFavoritesUpdate);
     window.addEventListener("cartUpdated", onCartUpdate);
+    window.addEventListener("cartSynced", onCartSync);
     return () => {
       favoritesRequestIdRef.current += 1;
+      cartLoadRequestIdRef.current += 1;
       window.removeEventListener("favoritesUpdated", onFavoritesUpdate);
       window.removeEventListener("cartUpdated", onCartUpdate);
+      window.removeEventListener("cartSynced", onCartSync);
     };
   }, [retryKey, routeId, localRetry]);
 
-  const loadCart = () => {
+  const loadCartFromStorage = () => {
     try {
       const stored = localStorage.getItem("customer-cart");
       const items = JSON.parse(stored || "[]");
@@ -55,46 +64,74 @@ function MyFavorites({ darkMode = false }) {
     }
   };
 
-  const saveCart = (items) => {
-    localStorage.setItem("customer-cart", JSON.stringify(items));
-    setCartItems(items);
-    window.dispatchEvent(new Event("cartUpdated"));
+  const loadCartFromServer = async () => {
+    const requestId = ++cartLoadRequestIdRef.current;
+    try {
+      const items = await loadCartItems({ strict: true });
+      if (requestId !== cartLoadRequestIdRef.current) return;
+      if (!Array.isArray(items)) {
+        throw new Error("The cart response was invalid.");
+      }
+      localStorage.setItem("customer-cart", JSON.stringify(items));
+      setCartItems(items);
+      setCartError("");
+    } catch (err) {
+      if (requestId !== cartLoadRequestIdRef.current) return;
+      console.error("Failed to load cart:", err);
+      setCartError(err?.response?.data?.error || "Unable to load your cart. Please try again.");
+    }
   };
 
   const isInCart = (imageId) => {
     return cartItems.some((item) => Number(item.id) === Number(imageId));
   };
 
-  const addToCart = (image) => {
-    let existingCart = [];
+  const addToCart = async (image) => {
+    let existingCart;
+    const requestId = ++cartLoadRequestIdRef.current;
     try {
-      existingCart = JSON.parse(localStorage.getItem("customer-cart") || "[]");
+      setCartError("");
+      existingCart = await loadCartItems({ strict: true });
+      if (requestId !== cartLoadRequestIdRef.current) return;
+      if (!Array.isArray(existingCart)) {
+        throw new Error("The cart response was invalid.");
+      }
+
+      if (existingCart.some((item) => Number(item.id) === Number(image.id))) {
+        localStorage.setItem("customer-cart", JSON.stringify(existingCart));
+        setCartItems(existingCart);
+        window.dispatchEvent(new Event("cartUpdated"));
+        return;
+      }
+
+      const nextCart = [
+        ...existingCart,
+        {
+          id: image.id,
+          title: image.title,
+          filename: image.filename,
+          collection: image.collection,
+          category: image.category,
+          price: image.price || null,
+        },
+      ];
+
+      await saveCartItems(nextCart, { strict: true });
+      if (requestId !== cartLoadRequestIdRef.current) return;
+      setCartItems(nextCart);
+      window.dispatchEvent(new Event("cartUpdated"));
     } catch (err) {
-      existingCart = [];
+      console.error("Failed to add favorite to cart:", err);
+      if (Array.isArray(existingCart)) {
+        try {
+          localStorage.setItem("customer-cart", JSON.stringify(existingCart));
+          setCartItems(existingCart);
+        } catch (restoreError) {
+          console.error("Failed to restore the previous cart:", restoreError);
+        }
+      }
+      setCartError(err?.response?.data?.error || "Unable to add this asset to your cart. Please try again.");
     }
-
-    const exists = Array.isArray(existingCart)
-      ? existingCart.some((item) => Number(item.id) === Number(image.id))
-      : false;
-
-    if (exists) {
-      loadCart();
-      return;
-    }
-
-    const nextCart = [
-      ...(Array.isArray(existingCart) ? existingCart : []),
-      {
-        id: image.id,
-        title: image.title,
-        filename: image.filename,
-        collection: image.collection,
-        category: image.category,
-        price: image.price || null,
-      },
-    ];
-
-    saveCart(nextCart);
   };
 
   const fetchFavorites = async () => {
@@ -178,14 +215,16 @@ function MyFavorites({ darkMode = false }) {
 
   return (
 
-    <div style={{ marginTop: "20px", color: darkMode ? "#f5f5f5" : "#111827" }}>
+    <div className="my-favorites-page" style={{ color: darkMode ? "#f5f5f5" : "#111827" }}>
 
       <h2>⭐ My Favorites</h2>
 
+      {cartError && <p className="my-favorites-cart-error" role="alert" style={{ color: darkMode ? "#fca5a5" : "#b91c1c" }}>{cartError}</p>}
+
       {loadStatus === "loading" ? (
-        <p role="status">Loading favorites...</p>
+        <p className="my-favorites-message" role="status">Loading favorites...</p>
       ) : loadError ? (
-        <div role="alert">
+        <div className="my-favorites-error" role="alert">
           <p>{loadError}</p>
           <button type="button" onClick={() => {
             favoritesRequestIdRef.current += 1;
@@ -193,18 +232,11 @@ function MyFavorites({ darkMode = false }) {
           }}>Retry</button>
         </div>
       ) : (
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns:
-            "repeat(auto-fill,minmax(200px,1fr))",
-          gap: "12px"
-        }}
-      >
+      <div className="my-favorites-grid">
 
         {favorites.length === 0 ? (
 
-          <p>No favorite images yet.</p>
+          <p className="my-favorites-empty">No favorite images yet.</p>
 
         ) : (
 
@@ -212,6 +244,7 @@ function MyFavorites({ darkMode = false }) {
 
             <div
               key={`favorite-${image.id}-${index}`}
+              className="my-favorites-card"
               onClick={() => navigate(getAssetUrl(image))}
               onMouseEnter={(e) => {
                 setHoveredFavoriteId(image.id);
@@ -236,25 +269,26 @@ function MyFavorites({ darkMode = false }) {
             >
 
               <img
+                className="my-favorites-image"
                 src={getAssetPreviewUrl(image, { quality: 50, watermark: false, thumbnailOnly: true })}
                 alt={image.title}
                 loading="lazy"
                 decoding="async"
                 style={{
                   width: "100%",
-                  height: "150px",
                   objectFit: "cover"
                 }}
               />
 
               <div
+                className="my-favorites-card-content"
                 style={{
-                  padding: "10px",
                   color: darkMode ? "#f5f5f5" : "#111827"
                 }}
               >
 
                 <strong
+                  className="my-favorites-title"
                   style={{
                     display: "block",
                     fontSize: "0.96rem",
@@ -266,12 +300,12 @@ function MyFavorites({ darkMode = false }) {
                   {image.title}
                 </strong>
 
-                <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", marginBottom: "8px", fontSize: "0.86rem" }}>
+                <div className="my-favorites-stats">
                   <span style={{ color: darkMode ? "#cbd5e1" : "#475569" }}>❤️ {image.likes || 0}</span>
                   <span style={{ color: darkMode ? "#cbd5e1" : "#475569" }}>⬇ {image.downloads || 0}</span>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginTop: "8px" }}>
+                <div className="my-favorites-actions">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -279,17 +313,31 @@ function MyFavorites({ darkMode = false }) {
                     }}
                     disabled={isInCart(image.id)}
                     style={{
-                      width: "100%",
-                      padding: "7px 10px",
                       background: isInCart(image.id) ? "#9ca3af" : "#2563eb",
                       color: "white",
                       border: "none",
                       borderRadius: "6px",
                       cursor: isInCart(image.id) ? "not-allowed" : "pointer",
-                      fontSize: "0.9rem"
                     }}
                   >
-                    {isInCart(image.id) ? "Added" : "Add"}
+                    {isInCart(image.id) ? "Added" : <>
+                      <svg
+                        className="my-favorites-cart-icon"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <circle cx="9" cy="21" r="1" />
+                        <circle cx="20" cy="21" r="1" />
+                        <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H5" />
+                      </svg>
+                      Add
+                    </>}
                   </button>
                   <button
                     onClick={(e) => {
@@ -297,17 +345,14 @@ function MyFavorites({ darkMode = false }) {
                       removeFavorite(image.id);
                     }}
                     style={{
-                      width: "100%",
-                      padding: "7px 10px",
                       background: "#f44336",
                       color: "white",
                       border: "none",
                       borderRadius: "6px",
                       cursor: "pointer",
-                      fontSize: "0.9rem"
                     }}
                   >
-                    ❌ Remove
+                    <span className="my-favorites-remove-icon" aria-hidden="true">✕</span> Remove
                   </button>
                 </div>
 

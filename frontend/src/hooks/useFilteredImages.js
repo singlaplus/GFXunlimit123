@@ -142,6 +142,7 @@ export default function useFilteredImages({
 
   let filteredImages = images.filter((image) => {
     const title = (image.title || "").toLowerCase();
+    const description = (image.description || "").toLowerCase();
     const category = (image.category || "").toLowerCase();
     const keywords = (image.keywords || "").toLowerCase();
     const searchText = (search || "").toLowerCase().trim();
@@ -152,6 +153,7 @@ export default function useFilteredImages({
 
     return (
       title.includes(searchText) ||
+      description.includes(searchText) ||
       category.includes(searchText) ||
       keywords.includes(searchText)
     );

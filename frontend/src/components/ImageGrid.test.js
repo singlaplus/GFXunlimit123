@@ -61,7 +61,7 @@ describe('ImageGrid dark mode', () => {
 
     const image = screen.getByRole('img', { name: /sample title/i });
     expect(image.style.height).toBe('auto');
-    expect(image.style.aspectRatio).toBe('');
+    expect(image.style.aspectRatio).toBe('16 / 9');
     expect(image.style.objectFit).toBe('contain');
     expect(image.getAttribute('src')).toContain('/api/catalog-preview/1?quality=63');
 
@@ -76,6 +76,44 @@ describe('ImageGrid dark mode', () => {
 
     expect(image.style.aspectRatio).toBe('300 / 600');
     expect(image.parentElement.style.gridRowEnd).toBe('span 19');
+  });
+
+  it('recalculates masonry row spans when the grid becomes measurable', () => {
+    const originalResizeObserver = global.ResizeObserver;
+    let resize;
+    global.ResizeObserver = class MockResizeObserver {
+      constructor(callback) {
+        resize = callback;
+      }
+
+      observe() {}
+      disconnect() {}
+    };
+
+    try {
+      render(
+        <ImageGrid
+          filteredImages={[{ id: 1, filename: 'sample.jpg', title: 'Sample' }]}
+          darkMode={false}
+        />
+      );
+
+      const image = screen.getByRole('img', { name: 'Sample' });
+      const card = image.parentElement;
+      let cardWidth = 0;
+      card.getBoundingClientRect = () => ({ width: cardWidth });
+      Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 300 });
+      Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 600 });
+      fireEvent.load(image);
+      expect(card.style.gridRowEnd).toBe('span 1');
+
+      cardWidth = 220;
+      act(() => resize([{ target: card.parentElement }]));
+
+      expect(card.style.gridRowEnd).toBe('span 19');
+    } finally {
+      global.ResizeObserver = originalResizeObserver;
+    }
   });
 
   it('uses the generated thumbnail for vector and layered assets in Explore', () => {
@@ -395,19 +433,12 @@ describe('ImageGrid dark mode', () => {
       expect(firstImage).not.toHaveAttribute('src');
       expect(secondImage).not.toHaveAttribute('src');
       expect(observers).toHaveLength(1);
-      expect(observerOptions[0]).toEqual({ rootMargin: '0px' });
+      expect(observerOptions[0]).toEqual({ rootMargin: '200px 0px' });
 
       firstImage.getBoundingClientRect = () => ({
         top: window.innerHeight + 20,
         bottom: window.innerHeight + 220,
       });
-      act(() => {
-        observers[0].callback([{ target: firstImage, isIntersecting: true }]);
-      });
-
-      expect(firstImage).not.toHaveAttribute('src');
-
-      firstImage.getBoundingClientRect = () => ({ top: 10, bottom: 210 });
       act(() => {
         observers[0].callback([{ target: firstImage, isIntersecting: true }]);
       });

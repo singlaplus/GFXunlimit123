@@ -523,22 +523,37 @@ export default function AppHeader({
       return;
     }
 
-    const loadCart = () => {
-      const stored = localStorage.getItem("customer-cart");
-      let items = [];
+    let active = true;
+    let requestId = 0;
+    const loadCart = async () => {
+      const currentRequestId = ++requestId;
       try {
-        items = JSON.parse(stored || "[]");
+        const items = await loadCartItems();
+        if (!active || currentRequestId !== requestId) return;
+        const cart = Array.isArray(items) ? items : [];
+        localStorage.setItem("customer-cart", JSON.stringify(cart));
+        setCartCount(cart.length);
+        window.dispatchEvent(new Event("cartSynced"));
       } catch (err) {
-        items = [];
+        console.error("Failed to sync cart count:", err);
       }
-      setCartCount(Array.isArray(items) ? items.length : 0);
     };
 
     loadCart();
     const handleCartUpdated = () => loadCart();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") loadCart();
+    };
+    const timer = setInterval(loadCart, 30000);
     window.addEventListener("cartUpdated", handleCartUpdated);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
-    return () => window.removeEventListener("cartUpdated", handleCartUpdated);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      window.removeEventListener("cartUpdated", handleCartUpdated);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [isCustomerUser]);
 
   useEffect(() => {

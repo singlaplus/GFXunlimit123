@@ -16,15 +16,13 @@ function observeDeferredPreview(element, onVisible) {
     deferredPreviewObserver = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
-        const bounds = entry.target.getBoundingClientRect();
-        if (bounds.bottom <= 0 || bounds.top >= window.innerHeight) return;
 
         const callback = deferredPreviewCallbacks.get(entry.target);
         deferredPreviewCallbacks.delete(entry.target);
         deferredPreviewObserver.unobserve(entry.target);
         callback?.();
       });
-    }, { rootMargin: "0px" });
+    }, { rootMargin: "200px 0px" });
   }
 
   deferredPreviewCallbacks.set(element, onVisible);
@@ -155,11 +153,16 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
     if (card && resizeObserver) {
       resizeObserver.observe(card);
     }
+    if (card?.parentElement && resizeObserver) {
+      resizeObserver.observe(card.parentElement);
+    }
     window.addEventListener("resize", updateRowSpan);
+    window.visualViewport?.addEventListener("resize", updateRowSpan);
 
     return () => {
       resizeObserver?.disconnect();
       window.removeEventListener("resize", updateRowSpan);
+      window.visualViewport?.removeEventListener("resize", updateRowSpan);
     };
   }, [sourceDimensions]);
 
@@ -239,7 +242,9 @@ function MasonryAssetCard({ image, darkMode, onClick }) {
         style={{
           width: "100%",
           height: "auto",
-          aspectRatio: sourceDimensions ? `${sourceDimensions.width} / ${sourceDimensions.height}` : aspectRatio || undefined,
+          aspectRatio: sourceDimensions
+            ? `${sourceDimensions.width} / ${sourceDimensions.height}`
+            : aspectRatio || "16 / 9",
           objectFit: "contain",
           transition: "0.4s",
           display: "block",

@@ -154,6 +154,57 @@ describe("useImages Explore pagination", () => {
     });
   });
 
+  it("resets non-Explore results to page one when the collection filter changes", async () => {
+    getImages.mockImplementation((page, limit, category, collection) => {
+      const isVectorsCollection = collection === "Vectors";
+      const images = Array.from({ length: isVectorsCollection ? 30 : 80 }, (_, index) => ({
+        id: `${isVectorsCollection ? "vector" : "asset"}-${index + 1}`,
+        created_at: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+      }));
+
+      return Promise.resolve({
+        data: {
+          images: images.slice((page - 1) * limit, page * limit),
+          totalImages: images.length,
+          totalLikes: 0,
+          totalDownloads: 0,
+          totalViews: 0,
+        },
+      });
+    });
+
+    render(
+      <ExploreImagesHarness
+        pageSize={50}
+        initialPage={2}
+        initialExplorePage={false}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("current-page")).toHaveTextContent("2");
+      expect(screen.getByTestId("asset-ids").textContent.split(",")).toHaveLength(30);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Change asset type" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("current-page")).toHaveTextContent("1");
+      expect(screen.getByTestId("total-pages")).toHaveTextContent("1");
+      expect(screen.getByTestId("asset-ids").textContent.split(",")).toHaveLength(30);
+      expect(screen.getByTestId("asset-ids").textContent.startsWith("vector-1,")).toBe(true);
+    });
+    expect(getImages).toHaveBeenLastCalledWith(
+      1,
+      50,
+      "All",
+      "Vectors",
+      "",
+      "newest",
+      expect.any(AbortSignal)
+    );
+  });
+
   it("ignores a stale batch when the search query changes", async () => {
     let resolveOldSearch;
     let oldSearchSignal;

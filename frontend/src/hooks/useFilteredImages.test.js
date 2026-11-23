@@ -71,3 +71,30 @@ describe("useFilteredImages newest sort", () => {
     ]);
   });
 });
+
+describe("useFilteredImages search", () => {
+  it("matches search terms in asset titles, descriptions, keywords, and categories", () => {
+    const images = [
+      { id: "title", title: "Cloud in the sky" },
+      { id: "description", title: "Open sky", description: "Cloud formation" },
+      { id: "keywords", title: "Open sky", keywords: "clouds, blue" },
+      { id: "category", title: "Open sky", category: "Clouds" },
+      { id: "unmatched", title: "Open sky", description: "Clear weather" },
+    ];
+
+    const filteredImages = useFilteredImages({
+      images,
+      search: " CLOUD ",
+      selectedCategory: "All",
+      selectedCollection: "All",
+      sortType: "",
+    });
+
+    expect(filteredImages.map((image) => image.id)).toEqual([
+      "title",
+      "description",
+      "keywords",
+      "category",
+    ]);
+  });
+});

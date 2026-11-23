@@ -1,0 +1,140 @@
+.my-favorites-page {
+  width: 100%;
+  margin: 20px auto 0;
+  padding: 0 clamp(12px, 1.25vw, 20px) 32px;
+}
+
+.my-favorites-page > h2 {
+  margin: 0 0 20px;
+  font-size: clamp(1.35rem, 2.2vw, 1.8rem);
+  line-height: 1.25;
+}
+
+.my-favorites-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: clamp(12px, 1.6vw, 20px);
+}
+
+.my-favorites-card {
+  min-width: 0;
+}
+
+.my-favorites-image {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+}
+
+.my-favorites-card-content {
+  min-width: 0;
+  padding: clamp(10px, 1.2vw, 16px);
+}
+
+.my-favorites-title {
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.my-favorites-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+  font-size: clamp(0.78rem, 0.95vw, 0.86rem);
+}
+
+.my-favorites-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.my-favorites-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px;
+  font-size: clamp(0.875rem, 0.95vw, 1rem);
+  font-weight: 600;
+  line-height: 1.2;
+  transition: transform 140ms ease, filter 140ms ease;
+  white-space: nowrap;
+}
+
+.my-favorites-actions button:active:not(:disabled) {
+  transform: scale(0.96);
+  filter: brightness(0.92);
+}
+
+.my-favorites-remove-icon {
+  font-size: 1.35em;
+  line-height: 1;
+}
+
+.my-favorites-cart-icon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+}
+
+.my-favorites-message,
+.my-favorites-empty {
+  margin: 0;
+  padding: 12px 0;
+}
+
+.my-favorites-cart-error {
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+
+.my-favorites-empty {
+  grid-column: 1 / -1;
+}
+
+.my-favorites-error {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.my-favorites-error p {
+  margin: 0 0 12px;
+}
+
+.my-favorites-error button {
+  min-height: 44px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  background: #2563eb;
+  color: #fff;
+}
+
+@media (max-width: 480px) {
+  .my-favorites-page {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .my-favorites-page > h2 {
+    margin-bottom: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .my-favorites-actions button {
+    transition: none;
+  }
+
+  .my-favorites-actions button:active:not(:disabled) {
+    transform: none;
+    filter: none;
+  }
+}

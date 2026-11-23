@@ -1,5 +1,6 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
 import { useLayoutEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import ImageGallery from "./home/ImageGallery";
 import "./MarketplaceContainer.css";
@@ -15,12 +16,14 @@ export default function MarketplaceContainer(props) {
   const { filtersOpen, setFiltersOpen } = props;
   const { search, setSearch, setCurrentPage, allImages = [] } = props.galleryProps || {};
   const { isExplore } = props;
+  const location = useLocation();
+  const navigate = useNavigate();
 
   useLayoutEffect(() => {
     if (isExplore) {
       window.scrollTo(0, 0);
     }
-  }, [isExplore]);
+  }, [isExplore, location.pathname]);
 
   const suggestions = (allImages || [])
     .filter((image) => {
@@ -31,6 +34,31 @@ export default function MarketplaceContainer(props) {
     })
     .slice(0, 6);
 
+  const persistExploreSearch = (searchTerm) => {
+    if (!isExplore) return;
+
+    const params = new URLSearchParams(location.search);
+    if (searchTerm) {
+      params.set("type", searchTerm);
+    } else {
+      params.delete("type");
+    }
+
+    const query = params.toString();
+    navigate(`/explore${query ? `?${query}` : ""}`, { replace: true });
+  };
+
+  const handleSearchKeyDown = (event) => {
+    if (event.key !== "Enter") return;
+
+    event.preventDefault();
+    const searchTerm = search?.trim() || "";
+    setSearch(searchTerm);
+    setCurrentPage(1);
+    persistExploreSearch(searchTerm);
+    setShowSuggestions(false);
+  };
+
   return (
     <div className="marketplace-shell">
       <div className="marketplace-searchbar">
@@ -38,12 +66,14 @@ export default function MarketplaceContainer(props) {
           <input
             type="text"
             placeholder="Search images..."
+            aria-label="Search images"
             value={search}
             onChange={(e) => {
               setSearch(e.target.value);
               setCurrentPage(1);
               setShowSuggestions(true);
             }}
+            onKeyDown={handleSearchKeyDown}
             onFocus={() => setShowSuggestions(true)}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 120)}
             style={{
@@ -105,6 +135,7 @@ export default function MarketplaceContainer(props) {
                     
                     setSearch(searchTerm);
                     setCurrentPage(1);
+                    persistExploreSearch(searchTerm);
                   }}
                   style={{
                     width: "100%",
@@ -165,6 +196,7 @@ export default function MarketplaceContainer(props) {
             totalImages={props.totalImages}
             setCurrentPage={props.setCurrentPage}
             darkMode={props.darkMode}
+            search={search}
           />
         </div>
       </div>
