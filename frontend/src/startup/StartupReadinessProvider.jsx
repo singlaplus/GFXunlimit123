@@ -2,7 +2,7 @@ import axios from "axios";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { API_BASE_URL } from "../utils/apiBaseUrl";
-import { clearAuthSessionStorage, getEffectiveAuthToken, normalizeAuthToken } from "../utils/authSession";
+import { clearAuthSessionStorage, getEffectiveAuthToken, hasActiveSession, normalizeAuthToken } from "../utils/authSession";
 import { THEME_STORAGE_KEY } from "../utils/theme";
 
 const StartupReadinessContext = createContext(null);
@@ -328,6 +328,34 @@ export function StartupReadinessProvider({ children }) {
     initialize();
     return () => { active = false; };
   }, [startupAttempt]);
+
+  useEffect(() => {
+    const handleAuthChanged = () => {
+      if (!hasActiveSession()) {
+        setAuth((current) => (
+          current.status === "anonymous" && !current.role
+            ? current
+            : { status: "anonymous", role: "" }
+        ));
+        return;
+      }
+
+      const role = String(localStorage.getItem("userRole") || "").trim().toLowerCase();
+      if (role) {
+        setAuth((current) => (
+          current.status === "authenticated" && current.role === role
+            ? current
+            : { status: "authenticated", role }
+        ));
+        return;
+      }
+
+      setStartupAttempt((attempt) => attempt + 1);
+    };
+
+    window.addEventListener("auth-changed", handleAuthChanged);
+    return () => window.removeEventListener("auth-changed", handleAuthChanged);
+  }, []);
 
   const requirements = requirementsForRoute(location.pathname, location.search, auth.role);
   const currentResources = resourceStates[routeId] || {};

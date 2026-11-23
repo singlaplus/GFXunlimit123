@@ -60,6 +60,7 @@ function ReadinessProbe({ autoAvailabilityReady = true }) {
   return (
     <main>
       <span data-testid="ready-app">{pathname}:{auth.status}</span>
+      <span data-testid="auth-state">{auth.status}:{auth.role}</span>
       <button type="button" onClick={() => reportResource("catalog", "ready", "", routeId)}>Catalog ready</button>
       <button type="button" onClick={() => reportResource("hero", "ready", "", routeId)}>Hero ready</button>
       <button type="button" onClick={() => reportResource("dashboard", "ready", "", routeId)}>Dashboard ready</button>
@@ -139,6 +140,19 @@ describe("StartupReadinessProvider", () => {
       expect.objectContaining({ withCredentials: true })
     );
     expect(localStorage.getItem("userRole")).toBeNull();
+  });
+
+  it("updates the route auth state after login without a page reload", async () => {
+    renderReadiness();
+
+    expect(await screen.findByTestId("auth-state")).toHaveTextContent("anonymous:");
+
+    localStorage.setItem("token", "admin-token");
+    localStorage.setItem("userRole", "admin");
+    act(() => window.dispatchEvent(new Event("auth-changed")));
+
+    expect(await screen.findByTestId("auth-state")).toHaveTextContent("authenticated:admin");
+    expect(axios.get.mock.calls.filter(([url]) => url.endsWith("/me"))).toHaveLength(1);
   });
 
   it("uses the configured website logo on the loading screen without delaying startup", async () => {
