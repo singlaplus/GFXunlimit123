@@ -204,12 +204,11 @@ function installMissingTools(toolNames, platform = process.platform, {
           '--accept-package-agreements',
           '--silent',
         ];
-        const reinstallWithWinget = () => {
-          runInstallerFn('winget', ['uninstall', '--id', definition.wingetId, '--exact', '--silent']);
+        const forceInstallWithWinget = () => {
           runInstallerFn('winget', [...installArgs, '--force']);
         };
         if (toolName === 'ffmpeg' && repair) {
-          reinstallWithWinget();
+          forceInstallWithWinget();
           return;
         }
         try {
@@ -217,7 +216,6 @@ function installMissingTools(toolNames, platform = process.platform, {
         } catch (error) {
           const noUpgradeAvailable = (Number(error.exitCode) >>> 0) === 2316632107;
           if (toolName !== 'ffmpeg' || !noUpgradeAvailable) throw error;
-          reinstallWithWinget();
         }
       } else {
         runInstallerFn('choco', [

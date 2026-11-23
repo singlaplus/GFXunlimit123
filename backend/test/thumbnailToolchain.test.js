@@ -96,7 +96,7 @@ test('discovers FFmpeg installed by WinGet when its PATH entry is not loaded yet
   assert.equal(result.version, '7.1.1');
 });
 
-test('uninstalls and force-reinstalls FFmpeg when WinGet reports no upgrade', () => {
+test('leaves installed FFmpeg untouched when WinGet reports no upgrade', () => {
   const calls = [];
   installMissingTools(['ffmpeg'], 'win32', {
     commandExistsFn: (command) => command === 'winget',
@@ -110,9 +110,24 @@ test('uninstalls and force-reinstalls FFmpeg when WinGet reports no upgrade', ()
     },
   });
 
-  assert.deepEqual(calls.map(({ args }) => args[0]), ['install', 'uninstall', 'install']);
-  assert.ok(calls[1].args.includes('Gyan.FFmpeg.Shared'));
-  assert.ok(calls[2].args.includes('--force'));
+  assert.deepEqual(calls.map(({ args }) => args[0]), ['install']);
+  assert.ok(calls[0].args.includes('Gyan.FFmpeg.Shared'));
+  assert.ok(!calls[0].args.includes('--force'));
+});
+
+test('force-installs broken FFmpeg without uninstalling it first', () => {
+  const calls = [];
+  installMissingTools([], 'win32', {
+    reinstall: ['ffmpeg'],
+    commandExistsFn: (command) => command === 'winget',
+    runInstallerFn(command, args) {
+      calls.push({ command, args });
+    },
+  });
+
+  assert.deepEqual(calls.map(({ args }) => args[0]), ['install']);
+  assert.ok(calls[0].args.includes('Gyan.FFmpeg.Shared'));
+  assert.ok(calls[0].args.includes('--force'));
 });
 
 test('ImageMagick runtime resolution falls back from magick to ImageMagick 6 convert', () => {
