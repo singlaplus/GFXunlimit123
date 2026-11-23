@@ -244,25 +244,27 @@ export default function CustomerDashboard({ darkMode, username }) {
         </button>
       </section>
       <section className="account-section">
-        <div className="account-section-heading">
+        <div className="account-section-heading account-subscription-heading">
           <div>
             <span className="account-eyebrow">Your plan</span>
             <h2>Subscription</h2>
           </div>
-          <button
-            className="account-link"
-            type="button"
-            onClick={() => setShowSubscriptionHistory(true)}
-          >
-            Previous subscriptions
-          </button>
-          <button
-            className="account-link"
-            type="button"
-            onClick={() => navigate("/pricing")}
-          >
-            View plans ↗
-          </button>
+          <div className="account-section-actions">
+            <button
+              className="account-link"
+              type="button"
+              onClick={() => setShowSubscriptionHistory(true)}
+            >
+              Previous subscriptions
+            </button>
+            <button
+              className="account-link"
+              type="button"
+              onClick={() => navigate("/pricing")}
+            >
+              View plans ↗
+            </button>
+          </div>
         </div>
         <div className="subscription-panel">
           <div>
@@ -500,8 +502,8 @@ export default function CustomerDashboard({ darkMode, username }) {
           <Stat label="Orders" value={orders.length} note="Recent history" />
           <Stat label="Cart" value={cart.length} note="Ready to review" />
         </div>
-        <div className="account-mobile-nav">
-          {sections.map(([key, label]) => (
+        <nav className="account-mobile-nav" aria-label="Account sections">
+          {[...sections, ...accountSections].map(([key, label]) => (
             <button
               className={activeSection === key ? "is-active" : ""}
               key={key}
@@ -511,7 +513,7 @@ export default function CustomerDashboard({ darkMode, username }) {
               {label}
             </button>
           ))}
-        </div>
+        </nav>
         {loading ? (
           <div className="account-loading">
             <span />

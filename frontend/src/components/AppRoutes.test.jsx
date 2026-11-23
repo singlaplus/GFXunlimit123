@@ -20,6 +20,7 @@ jest.mock("../pages/AdminAnalyticsPage", () => () => <div>Admin Analytics</div>)
 jest.mock("../pages/AdminOrdersPage", () => () => <div>Admin Orders</div>);
 jest.mock("../pages/ExplorePage", () => () => <div>Explore Page</div>);
 jest.mock("../pages/OrderHistoryPage", () => () => <div>Order History</div>);
+jest.mock("../pages/CartPage", () => () => <div>Cart Page</div>);
 jest.mock("./CompanyPage", () => ({ slug }) => (
   <main><a href="http://localhost:3000/privacy">Privacy Policy</a><a href="http://localhost:3000/terms">Terms</a>{slug}</main>
 ));
@@ -35,6 +36,7 @@ describe("AppRoutes", () => {
     mockLocation.search = "";
     mockLocation.state = null;
     useStartupReadiness.mockReturnValue({
+      auth: { status: "ready", role: "" },
       routeId: "route-test",
       reportResource: jest.fn(),
       reportAvailability: jest.fn(),
@@ -52,6 +54,36 @@ describe("AppRoutes", () => {
   it("renders admin analytics for admin users regardless of role casing", () => {
     render(<AppRoutes userRole="Admin" activePage="analytics" />);
     expect(screen.getByText("Admin Analytics")).toBeInTheDocument();
+  });
+
+  it("uses the verified session role when rendering the cart route", async () => {
+    mockLocation.pathname = "/cart";
+    useStartupReadiness.mockReturnValue({
+      auth: { status: "authenticated", role: "customer" },
+      routeId: "cart-route",
+      reportResource: jest.fn(),
+      reportAvailability: jest.fn(),
+      availabilityRetryKey: 0,
+    });
+
+    render(<AppRoutes userRole="" />);
+
+    expect(await screen.findByText("Cart Page")).toBeInTheDocument();
+  });
+
+  it("does not grant cart access from a stale role when the session is anonymous", async () => {
+    mockLocation.pathname = "/cart";
+    useStartupReadiness.mockReturnValue({
+      auth: { status: "anonymous", role: "" },
+      routeId: "cart-route",
+      reportResource: jest.fn(),
+      reportAvailability: jest.fn(),
+      availabilityRetryKey: 0,
+    });
+
+    render(<AppRoutes userRole="customer" />);
+
+    expect(await screen.findByText("/")).toBeInTheDocument();
   });
 
   it("renders the Google Search Console connection section", () => {

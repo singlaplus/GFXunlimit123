@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import axios from "axios";
 import CustomerDashboard from "./CustomerDashboard";
 import { useStartupReadiness } from "../../startup/StartupReadinessProvider";
@@ -49,6 +49,24 @@ describe("CustomerDashboard startup readiness", () => {
       );
     });
     expect(screen.getByText("Fresh assets for your next idea.")).toBeInTheDocument();
+  });
+
+  it("keeps all account sections available in the responsive navigation", async () => {
+    render(<CustomerDashboard darkMode={false} username="buyer" />);
+
+    await waitFor(() => {
+      expect(reportResource).toHaveBeenCalledWith(
+        "customerDashboard",
+        "ready",
+        "",
+        "dashboard-test"
+      );
+    });
+
+    const navigation = within(screen.getByRole("navigation", { name: "Account sections" }));
+    fireEvent.click(navigation.getByRole("button", { name: "Billing" }));
+
+    expect(screen.getByText("Your invoices and payment history are available through your order history.")).toBeInTheDocument();
   });
 
   it("reports malformed essential responses as failures", async () => {

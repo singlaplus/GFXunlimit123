@@ -417,7 +417,7 @@ export default function CartPage({ darkMode = false }) {
   };
 
   return (
-    <div style={{ minHeight: '100vh', padding: '32px 20px 48px', background: darkMode ? '#020617' : '#f8fafc', color: darkMode ? '#f8fafc' : '#0f172a' }}>
+    <div className="cart-page" style={{ background: darkMode ? '#020617' : '#f8fafc', color: darkMode ? '#f8fafc' : '#0f172a' }}>
       {showBogoCheckoutDialog && appliedFlashSale?.sale && (
         <div className={`cart-bogo-dialog-backdrop${darkMode ? ' is-dark' : ''}`} role="presentation">
           <section
@@ -506,49 +506,49 @@ export default function CartPage({ darkMode = false }) {
         onApplyBundle={applyBundleFromOffers}
         subscriptionRestricted={subscriptionRestricted}
       />
-      <div style={{ maxWidth: 1280, margin: '0 auto', display: 'grid', gap: 24 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+      <div className="cart-page-content">
+        <div className="cart-page-header">
           <div>
             <p style={{ textTransform: 'uppercase', letterSpacing: '0.2em', color: '#ED2224', fontWeight: 700, margin: 0 }}>Enterprise cart</p>
-            <h1 style={{ margin: '6px 0 0', fontSize: '2rem' }}>Your selected assets</h1>
+            <h1 className="cart-page-title" style={{ margin: '6px 0 0' }}>Your selected assets</h1>
           </div>
           <button onClick={() => navigate('/explore')} style={{ border: 'none', borderRadius: 999, padding: '12px 18px', background: darkMode ? 'rgba(255,255,255,0.12)' : '#fff', color: darkMode ? '#fff' : '#0f172a', cursor: 'pointer', fontWeight: 700 }}>
             Continue shopping
           </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1.35fr 0.65fr', gap: 24, alignItems: 'start' }}>
-          <div style={{ display: 'grid', gap: 16 }}>
+        <div className="cart-page-layout">
+          <div className="cart-page-items">
             {items.length === 0 ? (
-              <div style={{ padding: 28, borderRadius: 24, background: darkMode ? 'rgba(255,255,255,0.05)' : '#fff', border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(226,232,240,1)' }}>
+              <div className="cart-page-empty" style={{ background: darkMode ? 'rgba(255,255,255,0.05)' : '#fff', border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(226,232,240,1)' }}>
                 <h2 style={{ marginTop: 0 }}>Your cart is empty</h2>
                 <p style={{ color: darkMode ? '#cbd5e1' : '#64748b', marginBottom: 0 }}>Add assets from the marketplace to start your enterprise checkout.</p>
               </div>
             ) : items.map((item) => (
-              <div key={item.id} style={{ display: 'grid', gap: 14, padding: 20, borderRadius: 24, background: darkMode ? 'rgba(255,255,255,0.05)' : '#fff', border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(226,232,240,1)' }}>
-                <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div key={item.id} className="cart-page-item" style={{ background: darkMode ? 'rgba(255,255,255,0.05)' : '#fff', border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(226,232,240,1)' }}>
+                <div className="cart-page-item-details-row">
                   {item.creditPackage ? (
-                    <div style={{ width: 88, height: 88, borderRadius: 18, display: 'grid', placeItems: 'center', background: '#fee2e2', color: '#b91c1c', fontWeight: 800, textAlign: 'center', flexShrink: 0 }}>CREDITS</div>
+                    <div className="cart-page-item-preview cart-page-credit-preview" style={{ background: '#fee2e2', color: '#b91c1c' }}>CREDITS</div>
                   ) : (
-                    <div style={{ width: 88, height: 88, borderRadius: 18, overflow: 'hidden', background: '#e2e8f0', flexShrink: 0 }}>
+                    <div className="cart-page-item-preview" style={{ background: '#e2e8f0' }}>
                       <img src={getAssetPreviewUrl(item, { quality: 10, watermark: false, thumbnailOnly: true })} alt={item.title} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     </div>
                   )}
-                  <div style={{ flex: 1 }}>
+                  <div className="cart-page-item-info">
                     <div style={{ fontWeight: 800, fontSize: '1.05rem' }}>{item.title || 'Untitled asset'}</div>
                     <div style={{ color: darkMode ? '#cbd5e1' : '#64748b', marginTop: 4 }}>{item.category || 'Marketplace asset'} • {item.collection || 'Collection'}</div>
                     <div style={{ marginTop: 8, color: '#ED2224', fontWeight: 700 }}>{item.license || 'Standard license'}</div>
                   </div>
-                  <div style={{ fontSize: '1.15rem', fontWeight: 800 }}>{formatCurrency(item.unitPrice || item.price || 0, item.currency || cartCurrency)}</div>
+                  <div className="cart-page-item-price">{formatCurrency(item.unitPrice || item.price || 0, item.currency || cartCurrency)}</div>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <div className="cart-page-item-actions">
                   <button onClick={() => removeItem(item.id)} style={{ border: 'none', background: 'transparent', color: '#DC2626', cursor: 'pointer', fontWeight: 700 }}>Remove</button>
                 </div>
               </div>
             ))}
           </div>
 
-          <div style={{ padding: 24, borderRadius: 24, background: darkMode ? 'rgba(255,255,255,0.05)' : '#fff', border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(226,232,240,1)', position: 'sticky', top: 24 }}>
+          <div className="cart-page-summary" style={{ background: darkMode ? 'rgba(255,255,255,0.05)' : '#fff', border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(226,232,240,1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <h2 style={{ marginTop: 0 }}>Order summary</h2>
             </div>
@@ -608,7 +608,7 @@ export default function CartPage({ darkMode = false }) {
               </div>
               {!(appliedFlashSale?.discount > 0) && (
                 <>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div className="cart-page-coupon-entry">
                   <input value={couponCode} onChange={(e) => setCouponCode(e.target.value)} placeholder="WELCOME10" style={{ flex: 1, borderRadius: 12, border: '1px solid #cbd5e1', padding: '10px 12px' }} />
                   {coupon ? (
                     <button onClick={clearCoupon} style={{ border: 'none', background: '#64748b', color: '#fff', borderRadius: 12, padding: '10px 14px', cursor: 'pointer', fontWeight: 700 }}>Remove coupon</button>

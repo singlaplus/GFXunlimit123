@@ -1445,13 +1445,21 @@ export default function AppRoutes(props) {
   const loc = useLocation();
   const navigate = useNavigate();
   const {
+    auth,
     routeId,
     reportAvailability,
     availabilityRetryKey,
   } = useStartupReadiness();
   const pathname = (loc && loc.pathname) || (typeof window !== 'undefined' ? window.location.pathname : '/');
   const search = (loc && loc.search) ?? (typeof window !== 'undefined' ? window.location.search : '');
-  const normalizedUserRole = (props.userRole || "").toString();
+  const sessionRole = (
+    auth?.status === "authenticated"
+      ? auth.role || props.userRole
+      : auth?.status === "anonymous"
+        ? ""
+        : props.userRole
+  );
+  const normalizedUserRole = String(sessionRole || "").trim();
   const isAdmin = isAdminRole(normalizedUserRole);
   const promotionBannerMatch = pathname.match(/^\/promotionbanners\/([^/]+)\/?$/);
   const isPromotionBannerRoute = Boolean(promotionBannerMatch);
@@ -1992,7 +2000,7 @@ export default function AppRoutes(props) {
         />
       )}
       {resolvedActivePage === "payments" && (
-        <PaymentsPage />
+        <PaymentsPage darkMode={props.darkMode} />
       )}
       {resolvedActivePage === "myuploads" && (
         <MyUploadsPage darkMode={props.darkMode} />

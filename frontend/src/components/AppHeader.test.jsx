@@ -507,12 +507,14 @@ describe('AppHeader customer navigation', () => {
     );
 
     const adminButton = screen.getByRole('button', { name: /^admin$/i });
-    await userEvent.hover(adminButton);
+    await userEvent.click(adminButton);
+    expect(adminButton).toHaveAttribute('aria-expanded', 'true');
+    expect(adminButton.parentElement).toHaveClass('is-open');
     const dashboardButton = screen.getByRole('link', { name: /^dashboard$/i });
     const controlsButton = screen.getByRole('link', { name: /^controls$/i });
     const liveAssetsButton = screen.getByRole('link', { name: /^live assets$/i });
     const usersButton = screen.getByRole('link', { name: /^users$/i });
-    const messagesButton = screen.getByRole('link', { name: /messages/i });
+    const messagesButton = adminButton.parentElement.querySelector('a[href="/messages"]');
     const toolsButton = screen.getByRole('button', { name: /^tools$/i });
     const assetFilter = screen.getByLabelText(/all assets/i);
     expect(assetFilter.compareDocumentPosition(toolsButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -554,7 +556,9 @@ describe('AppHeader customer navigation', () => {
     expect(adminButton.parentElement).not.toHaveClass('is-open');
 
     mockNavigate.mockReset();
-    await userEvent.hover(toolsButton);
+    await userEvent.click(toolsButton);
+    expect(toolsButton).toHaveAttribute('aria-expanded', 'true');
+    expect(toolsButton.parentElement).toHaveClass('is-open');
     const toolsMenu = screen.getByRole('menu', { name: 'Tools menu' });
     const promotionsButton = screen.getByRole('link', { name: /^promotions$/i });
     const analyticsButton = screen.getByRole('link', { name: /^analytics$/i });
@@ -593,7 +597,9 @@ describe('AppHeader customer navigation', () => {
 
     const seoButton = screen.getByRole('button', { name: /^seo$/i });
     expect(toolsButton.compareDocumentPosition(seoButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    await userEvent.hover(seoButton);
+    await userEvent.click(seoButton);
+    expect(seoButton).toHaveAttribute('aria-expanded', 'true');
+    expect(seoButton.parentElement).toHaveClass('is-open');
     const seoMenu = screen.getByRole('menu', { name: 'SEO menu' });
     const searchConsoleButton = screen.getByRole('link', { name: 'Google Search Console' });
     const googleAnalyticsButton = screen.getByRole('link', { name: 'Google Analytics' });

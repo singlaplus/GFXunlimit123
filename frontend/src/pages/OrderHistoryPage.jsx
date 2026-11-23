@@ -4,6 +4,7 @@ import axios from "axios";
 import Pagination from "../components/Pagination";
 import { formatIndiaDate, formatIndiaDateTime, formatIndiaTime } from "../utils/indiaTime";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
+import "./OrderHistoryPage.css";
 
 function formatCurrency(value, currency = "USD") {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
@@ -32,6 +33,7 @@ function formatDetailedTime(dateString) {
 export default function OrderHistoryPage({ darkMode = false }) {
   const { reportResource, retryKey, routeId } = useStartupReadiness();
   const lastReadinessAttempt = useRef({ routeId: "", retryKey: -1 });
+  const animatedTotalRef = useRef(0);
   const isDarkMode = Boolean(darkMode);
   const [orders, setOrders] = useState([]);
   const [isContributor, setIsContributor] = useState(false);
@@ -39,6 +41,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
   const [page, setPage] = useState(1);
   const [limit] = useState(20);
   const [total, setTotal] = useState(0);
+  const [animatedTotal, setAnimatedTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -56,6 +59,34 @@ export default function OrderHistoryPage({ darkMode = false }) {
 
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
   const apiBaseUrl = API_BASE_URL;
+
+  useEffect(() => {
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (prefersReducedMotion || typeof window.requestAnimationFrame !== "function") {
+      animatedTotalRef.current = total;
+      setAnimatedTotal(total);
+      return undefined;
+    }
+
+    const startValue = animatedTotalRef.current;
+    const duration = 900;
+    let startTime;
+    let frameId;
+    const animate = (timestamp) => {
+      if (startTime === undefined) startTime = timestamp;
+      const progress = Math.min((timestamp - startTime) / duration, 1);
+      const easedProgress = 1 - Math.pow(1 - progress, 3);
+      const nextValue = Math.round(startValue + (total - startValue) * easedProgress);
+      animatedTotalRef.current = nextValue;
+      setAnimatedTotal(nextValue);
+      if (progress < 1) {
+        frameId = window.requestAnimationFrame(animate);
+      }
+    };
+
+    frameId = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [total]);
 
   useEffect(() => {
     let active = true;
@@ -257,16 +288,33 @@ export default function OrderHistoryPage({ darkMode = false }) {
 
   if (error && !selectedOrderId) {
     return (
-      <div style={{ padding: "24px" }}>
-        <h2>Order History</h2>
+      <div className={`order-history-page${isDarkMode ? " is-dark" : ""}`}>
+        <div className="order-history-heading">
+          <div>
+            <p className="order-history-eyebrow">Account purchases</p>
+            <h2>Order History</h2>
+          </div>
+        </div>
         <p>{error}</p>
       </div>
     );
   }
 
   return (
-    <div style={{ padding: "24px" }}>
-      <h2 style={{ marginBottom: "16px" }}>Order History</h2>
+    <div className={`order-history-page${isDarkMode ? " is-dark" : ""}`}>
+      <header className="order-history-heading">
+        <div>
+          <p className="order-history-eyebrow">Account purchases</p>
+          <h2>Order History</h2>
+          <p className="order-history-description">Review your purchases, invoices, and payment status.</p>
+        </div>
+        {!selectedOrderId && !loading && !error && (
+          <div className="order-history-count" aria-label={`${total} ${total === 1 ? "order" : "orders"}`}>
+            <span aria-hidden="true" className="order-history-count-number">{animatedTotal.toLocaleString()}</span>
+            <span>{total === 1 ? "order" : "orders"}</span>
+          </div>
+        )}
+      </header>
       {selectedOrderId ? (
         <div>
           <button
@@ -289,7 +337,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
           ) : error ? (
             <p>{error}</p>
           ) : orderDetail ? (
-            <div style={{ display: "grid", gap: "20px" }}>
+            <div className="order-history-detail">
               <section style={{ padding: "20px", border: isDarkMode ? "1px solid rgba(148,163,184,0.25)" : "1px solid #ddd", borderRadius: "18px", background: isDarkMode ? "#1f2937" : "#fff", color: isDarkMode ? "#f5f5f5" : "#111827" }}>
                 <h3>Order #{orderDetail.order.order_number}</h3>
                 <p>
@@ -495,17 +543,17 @@ export default function OrderHistoryPage({ darkMode = false }) {
           ) : (
             <>
               <div
+                className="order-history-table-scroll"
                 style={{
-                  overflowX: "auto",
                   border: isDarkMode ? "1px solid rgba(148,163,184,0.18)" : "1px solid #e2e8f0",
                   borderRadius: "18px",
                   background: isDarkMode ? "#111827" : "#ffffff",
                   boxShadow: "0 12px 28px rgba(15, 23, 42, 0.04)",
                 }}
               >
-                <table style={{ width: "100%", borderCollapse: "collapse", borderSpacing: 0, minWidth: "920px" }}>
+                <table className="order-history-table">
                   <thead>
-                    <tr style={{ background: isDarkMode ? "rgba(15,23,42,0.92)" : "#0f172a" }}>
+                    <tr style={{ background: isDarkMode ? "linear-gradient(90deg, #0f172a, #1e293b)" : "linear-gradient(90deg, #111827, #1e293b)" }}>
                       <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Order date</th>
                       <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Asset</th>
                       <th style={{ textAlign: "left", padding: "11px 14px", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: isDarkMode ? "#e2e8f0" : "#f8fafc", borderBottom: isDarkMode ? "1px solid rgba(148,163,184,0.22)" : "1px solid rgba(148,163,184,0.18)" }}>Upload date</th>
@@ -531,6 +579,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
                           }}
                         >
                           <span
+                            className="order-history-status-pill"
                             style={{
                               display: "inline-block",
                               padding: "5px 10px",
@@ -557,29 +606,37 @@ export default function OrderHistoryPage({ darkMode = false }) {
                             borderTop: isDarkMode ? "1px solid rgba(148,163,184,0.08)" : "1px solid #f1f5f9",
                           }}
                         >
-                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem" }}>
-                            <div style={{ fontWeight: 700 }}>{formatDetailedDate(order.created_at)}</div>
-                            <div style={{ marginTop: "4px", fontSize: "0.75rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{formatDetailedTime(order.created_at)}</div>
+                          <td data-label="Order date" style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem" }}>
+                            <div className="order-history-cell-content">
+                              <div style={{ fontWeight: 700 }}>{formatDetailedDate(order.created_at)}</div>
+                              <div style={{ marginTop: "4px", fontSize: "0.75rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{formatDetailedTime(order.created_at)}</div>
+                            </div>
                           </td>
-                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem" }}>
+                          <td data-label="Asset" style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem" }}>
                             <div style={{ fontWeight: 700, maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{order.asset_names || "—"}</div>
                           </td>
-                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem" }}>
+                          <td data-label="Upload date" style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem" }}>
                             <div style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.82rem" }}>{order.asset_upload_dates || "—"}</div>
                           </td>
-                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem", fontWeight: 650 }}>
-                            <div style={{ fontWeight: 700 }}>{order.order_number || "—"}</div>
-                            <div style={{ marginTop: "4px", fontSize: "0.72rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{order.order_type || "Purchase"}</div>
+                          <td data-label="Order" style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.9rem", fontWeight: 650 }}>
+                            <div className="order-history-cell-content">
+                              <div style={{ fontWeight: 700 }}>{order.order_number || "—"}</div>
+                              <div style={{ marginTop: "4px", fontSize: "0.72rem", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>{order.order_type || "Purchase"}</div>
+                            </div>
                           </td>
-                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.82rem" }}>
-                            <div style={{ fontWeight: 600, color: isDarkMode ? "#e2e8f0" : "#0f172a" }}>{order.invoice_number || "—"}</div>
-                            <div style={{ marginTop: "4px", fontSize: "0.72rem" }}>{order.assets_count ?? 0} item{(order.assets_count ?? 0) === 1 ? "" : "s"}</div>
+                          <td data-label="Invoice" style={{ padding: "10px 14px", color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.82rem" }}>
+                            <div className="order-history-cell-content">
+                              <div style={{ fontWeight: 600, color: isDarkMode ? "#e2e8f0" : "#0f172a" }}>{order.invoice_number || "—"}</div>
+                              <div style={{ marginTop: "4px", fontSize: "0.72rem" }}>{order.assets_count ?? 0} item{(order.assets_count ?? 0) === 1 ? "" : "s"}</div>
+                            </div>
                           </td>
-                          <td style={{ padding: "10px 14px", textAlign: "right", color: isDarkMode ? "#f8fafc" : "#0f172a", fontSize: "0.92rem", fontWeight: 700 }}>
-                            <div>{formatCurrency(isContributor ? order.contributor_earnings : order.total_amount, order.currency)}</div>
-                            <div style={{ marginTop: "4px", fontSize: "0.72rem", color: isDarkMode ? "#cbd5e1" : "#64748b", fontWeight: 600 }}>{order.currency || "USD"}</div>
+                          <td data-label={isContributor ? "Contributor earning" : "Total"} style={{ padding: "10px 14px", textAlign: "right", color: isDarkMode ? "#f8fafc" : "#0f172a", fontSize: "0.92rem", fontWeight: 700 }}>
+                            <div className="order-history-cell-content">
+                              <div>{formatCurrency(isContributor ? order.contributor_earnings : order.total_amount, order.currency)}</div>
+                              <div style={{ marginTop: "4px", fontSize: "0.72rem", color: isDarkMode ? "#cbd5e1" : "#64748b", fontWeight: 600 }}>{order.currency || "USD"}</div>
+                            </div>
                           </td>
-                          <td style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.82rem" }}>
+                          <td data-label="Payment status" style={{ padding: "10px 14px", color: isDarkMode ? "#e2e8f0" : "#0f172a", fontSize: "0.82rem" }}>
                             {(() => {
                               const paymentStatus = String(order.payment_status || "unknown").trim().toLowerCase();
                               const isPending = paymentStatus === "pending";
@@ -604,6 +661,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
                                   {!isContributor && isPending && !isSubmitted && Number(order.total_amount) > 0 && (
                                     <button
                                       type="button"
+                                      className="order-history-retry-button"
                                       onClick={() => openPaymentRetry(order)}
                                       style={{ border: "none", borderRadius: "8px", padding: "7px 10px", background: "#dc2626", color: "#fff", fontWeight: 700, cursor: "pointer" }}
                                     >
@@ -627,6 +685,7 @@ export default function OrderHistoryPage({ darkMode = false }) {
                   totalImages={total}
                   setCurrentPage={setPage}
                   darkMode={isDarkMode}
+                  totalLabel="Total Orders"
                 />
               )}
               {retryPaymentSuccess && <p role="status" style={{ color: "#15803d", fontWeight: 600 }}>{retryPaymentSuccess}</p>}

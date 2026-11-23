@@ -794,7 +794,17 @@ export default function AppHeader({
                       }
                     }}
                   >
-                    <button className="nav-link-btn" type="button">
+                    <button
+                      className="nav-link-btn"
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded={adminMenuOpen}
+                      onClick={() => {
+                        setAdminMenuOpen(true);
+                        setToolsMenuOpen(false);
+                        setSeoMenuOpen(false);
+                      }}
+                    >
                       Admin
                     </button>
                     <div className="admin-menu-dropdown">
@@ -1052,7 +1062,17 @@ export default function AppHeader({
                   }
                 }}
               >
-                <button className="nav-link-btn" type="button" aria-haspopup="menu" aria-expanded={toolsMenuOpen}>
+                <button
+                  className="nav-link-btn"
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={toolsMenuOpen}
+                  onClick={() => {
+                    setAdminMenuOpen(false);
+                    setToolsMenuOpen(true);
+                    setSeoMenuOpen(false);
+                  }}
+                >
                   Tools
                 </button>
                 <div className="tools-menu-dropdown" role="menu" aria-label="Tools menu">
@@ -1106,7 +1126,17 @@ export default function AppHeader({
                   }
                 }}
               >
-                <button className="nav-link-btn" type="button" aria-haspopup="menu" aria-expanded={seoMenuOpen}>
+                <button
+                  className="nav-link-btn"
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={seoMenuOpen}
+                  onClick={() => {
+                    setAdminMenuOpen(false);
+                    setToolsMenuOpen(false);
+                    setSeoMenuOpen(true);
+                  }}
+                >
                   SEO
                 </button>
                 <div className="tools-menu-dropdown" role="menu" aria-label="SEO menu">

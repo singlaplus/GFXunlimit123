@@ -6,6 +6,7 @@ import { getAssetPreviewUrl } from "../utils/assetPreview";
 import { formatIndiaDateTime } from "../utils/indiaTime";
 import Pagination from "./Pagination";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
+import "./MyDownloads.css";
 
 function MyDownloads({ darkMode = false }) {
 
@@ -17,7 +18,9 @@ function MyDownloads({ darkMode = false }) {
   const [loadStatus, setLoadStatus] = useState("loading");
   const [loadError, setLoadError] = useState("");
   const [localRetry, setLocalRetry] = useState(0);
+  const [animatedDownloadCount, setAnimatedDownloadCount] = useState(0);
   const requestIdRef = useRef(0);
+  const animatedDownloadCountRef = useRef(0);
   const legacyHistoryRequestedRef = useRef(false);
   const readinessAttemptRef = useRef({ routeId, retryKey, localRetry });
   readinessAttemptRef.current = { routeId, retryKey, localRetry };
@@ -135,6 +138,34 @@ function MyDownloads({ darkMode = false }) {
   const totalPages = Math.max(1, Math.ceil(downloads.length / limit));
   const visibleDownloads = downloads.slice((page - 1) * limit, page * limit);
 
+  useEffect(() => {
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (prefersReducedMotion || typeof window.requestAnimationFrame !== "function") {
+      animatedDownloadCountRef.current = downloads.length;
+      setAnimatedDownloadCount(downloads.length);
+      return undefined;
+    }
+
+    const startValue = animatedDownloadCountRef.current;
+    const duration = 900;
+    let startTime;
+    let frameId;
+    const animate = (timestamp) => {
+      if (startTime === undefined) startTime = timestamp;
+      const progress = Math.min((timestamp - startTime) / duration, 1);
+      const easedProgress = 1 - Math.pow(1 - progress, 3);
+      const nextValue = Math.round(startValue + (downloads.length - startValue) * easedProgress);
+      animatedDownloadCountRef.current = nextValue;
+      setAnimatedDownloadCount(nextValue);
+      if (progress < 1) {
+        frameId = window.requestAnimationFrame(animate);
+      }
+    };
+
+    frameId = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [downloads.length]);
+
   const handleDownload = async (image) => {
     try {
       const authHeaders = buildAuthHeaders();
@@ -208,8 +239,14 @@ function MyDownloads({ darkMode = false }) {
 
   if (!token) {
     return (
-      <div style={{ marginTop: 20, color: darkMode ? "#f5f5f5" : "#111827" }}>
-        <h2>⬇ My Downloads</h2>
+      <div className={`my-downloads-page${darkMode ? " is-dark" : ""}`}>
+        <header className="my-downloads-heading">
+          <div>
+            <p className="my-downloads-eyebrow">Your library</p>
+            <h2 className="my-downloads-title">My Downloads</h2>
+            <p className="my-downloads-description">Your purchased assets, all in one place.</p>
+          </div>
+        </header>
         <p>You must be logged in to view your downloads. Please <a href="/login" style={{ color: darkMode ? "#93c5fd" : undefined }}>log in</a>.</p>
       </div>
     );
@@ -217,42 +254,44 @@ function MyDownloads({ darkMode = false }) {
 
   return (
 
-    <div
-      style={{
-        marginTop: "20px",
-        color: darkMode ? "#f5f5f5" : "#111827"
-      }}
-    >
+    <div className={`my-downloads-page${darkMode ? " is-dark" : ""}`}>
 
-      <h2>
-        ⬇ My Downloads
-      </h2>
+      <header className="my-downloads-heading">
+        <div>
+          <p className="my-downloads-eyebrow">Your library</p>
+          <h2 className="my-downloads-title">My Downloads</h2>
+          <p className="my-downloads-description">Your purchased assets, all in one place.</p>
+        </div>
+        {loadStatus === "ready" && !loadError && (
+          <div className="my-downloads-count" aria-label={`${downloads.length} downloads`}>
+            <span aria-hidden="true">{animatedDownloadCount.toLocaleString()}</span>
+            <span>Downloads</span>
+          </div>
+        )}
+      </header>
 
       {loadStatus === "loading" ? (
-        <p role="status">Loading downloads...</p>
+        <p className="my-downloads-message" role="status">Loading downloads...</p>
       ) : loadError ? (
-        <div role="alert">
+        <div className="my-downloads-message" role="alert">
           <p>{loadError}</p>
-          <button type="button" onClick={() => {
+          <button className="my-downloads-retry" type="button" onClick={() => {
             requestIdRef.current += 1;
             setLocalRetry((attempt) => attempt + 1);
           }}>Retry</button>
         </div>
       ) : downloads.length === 0 ? (
 
-        <p>
-          No downloads yet.
-        </p>
+        <div className="my-downloads-empty">
+          <span className="my-downloads-empty-icon" aria-hidden="true">↓</span>
+          <h3>No downloads yet.</h3>
+          <p>Your purchased assets will appear here when they’re ready.</p>
+        </div>
 
       ) : (
 
         <div
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              "repeat(auto-fill,minmax(220px,1fr))",
-            gap: "15px"
-          }}
+          className="my-downloads-grid"
         >
 
           {visibleDownloads.map((image) => (
@@ -262,43 +301,34 @@ function MyDownloads({ darkMode = false }) {
                 image.id +
                 image.downloaded_at
               }
+              className="my-download-card"
               style={{
                 background: darkMode ? "#1e1e1e" : "#ffffff",
                 border: darkMode ? "1px solid #3a3a3a" : "1px solid #e5e7eb",
-                borderRadius: "12px",
-                overflow: "hidden",
-                boxShadow:
-                  "0 2px 10px rgba(0,0,0,0.1)"
               }}
             >
 
               <img
+                className="my-download-card-image"
                 src={getAssetPreviewUrl({ id: image.image_id || image.id, title: image.title, thumbnail_url: image.thumbnail_url, thumbnail_status: image.thumbnail_status, thumbnail_generated_at: image.thumbnail_generated_at }, { quality: 50, watermark: false, thumbnailOnly: true })}
                 alt={image.title}
                 loading="lazy"
                 decoding="async"
-                style={{
-                  width: "100%",
-                  height: "180px",
-                  objectFit: "cover"
-                }}
               />
 
               <div
-                style={{
-                  padding: "10px",
-                  color: darkMode ? "#f5f5f5" : "#111827"
-                }}
+                className="my-download-card-content"
+                style={{ color: darkMode ? "#f5f5f5" : "#111827" }}
               >
 
-                <strong>
+                <strong className="my-download-card-title">
                   {image.title}
                 </strong>
 
-                <p style={{ margin: 0, fontSize: '0.95rem', color: darkMode ? '#cbd5e1' : '#475569' }}>
+                <p className="my-download-card-date" style={{ color: darkMode ? '#cbd5e1' : '#475569' }}>
                   {image.downloaded_at ? `${formatIndiaDateTime(image.downloaded_at)} IST` : ''}
                 </p>
-                <div style={{ marginTop: 10 }}>
+                <div className="my-download-card-actions">
                   {(() => {
                     const expiresAt = image.expires_at ? new Date(image.expires_at) : null;
                     const now = new Date();
@@ -306,13 +336,13 @@ function MyDownloads({ darkMode = false }) {
                     const disabled = !image.is_active || daysLeft <= 0;
                     return (
                       <>
-                        <div style={{ fontSize: '0.92rem', color: disabled ? '#f87171' : darkMode ? '#cbd5e1' : '#475569', marginBottom: 6 }}>
+                        <div className={`my-download-card-expiry${disabled ? " is-expired" : ""}`}>
                           {disabled ? 'Expired' : `Expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`}
                         </div>
                         <button
+                          className={`my-download-button${disabled ? " is-disabled" : ""}`}
                           onClick={() => handleDownload(image)}
                           disabled={disabled}
-                          style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #1f6feb', background: disabled ? (darkMode ? '#374151' : '#f5f5f5') : '#1f6feb', color: disabled ? (darkMode ? '#cbd5e1' : '#999') : '#fff', cursor: disabled ? 'not-allowed' : 'pointer' }}
                         >
                           {disabled ? 'Download unavailable' : 'Download'}
                         </button>
