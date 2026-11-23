@@ -62,6 +62,35 @@ describe("ContributorDashboard", () => {
     });
   });
 
+  it("opens contributor navigation from the mobile menu and closes it after navigation", async () => {
+    render(
+      <ContributorDashboard
+        darkMode={false}
+        username="asxc"
+        dashboardStats={{ uploads: 5, downloads: 11, views: 17, likes: 0 }}
+        earningsStats={{ total_earnings: "8.07", unpaid_earnings: "8.07" }}
+      />
+    );
+
+    const openMenuButton = await screen.findByRole("button", {
+      name: "Open contributor menu",
+    });
+    expect(openMenuButton).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(openMenuButton);
+    expect(
+      screen.getByRole("button", { name: "Close contributor menu" })
+    ).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Earnings/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Payment history" }));
+
+    expect(mockNavigate).toHaveBeenCalledWith("/dashboard?tab=paymenthistory");
+    expect(
+      screen.getByRole("button", { name: "Open contributor menu" })
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("uses unpaid earnings as the available balance when available_balance is missing", async () => {
     render(
       <ContributorDashboard

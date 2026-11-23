@@ -136,6 +136,7 @@ export default function ContributorDashboard({
   });
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [portfolioPage, setPortfolioPage] = useState(1);
   const [soldAssetPage, setSoldAssetPage] = useState(1);
   const [earningsModalOpen, setEarningsModalOpen] = useState(false);
@@ -488,6 +489,8 @@ export default function ContributorDashboard({
     );
   }, [soldAssetPageCount]);
   const go = (key) => {
+    setMobileMenuOpen(false);
+
     if (key === "upload") {
       navigate("/upload");
       return;
@@ -556,8 +559,26 @@ export default function ContributorDashboard({
       className={`contributor-shell ${darkMode ? "is-dark" : ""} ${section === "account" ? "account-only" : ""}`}
     >
       {section !== "analytics" && (
-        <aside className="contributor-sidebar">
-          <div className="contributor-nav">
+        <aside
+          className={`contributor-sidebar ${mobileMenuOpen ? "is-mobile-open" : ""}`}
+        >
+          <button
+            type="button"
+            className="contributor-mobile-menu"
+            aria-label={mobileMenuOpen ? "Close contributor menu" : "Open contributor menu"}
+            aria-expanded={mobileMenuOpen}
+            aria-controls="contributor-navigation"
+            onClick={() => setMobileMenuOpen((isOpen) => !isOpen)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+          <nav
+            className="contributor-nav"
+            id="contributor-navigation"
+            aria-label="Contributor navigation"
+          >
             {navGroups.map((group, groupIndex) => (
               <div key={`${group.label || "main"}-${groupIndex}`}>
                 {group.collapsible ? (
@@ -582,6 +603,7 @@ export default function ContributorDashboard({
                           setInsightsOpen((isOpen) => !isOpen);
                         } else {
                           setAccountOpen((isOpen) => !isOpen);
+                          setMobileMenuOpen(false);
                           navigate("/dashboard?tab=account");
                         }
                       }}
@@ -642,7 +664,7 @@ export default function ContributorDashboard({
                 )}
               </div>
             ))}
-          </div>
+          </nav>
         </aside>
       )}
       <main className="contributor-main">

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { buildAuthHeaders } from "../utils/authSession";
+import "./BulkUploadPage.css";
 
 const MAX_BULK_UPLOAD_FILES = 10;
 
@@ -69,7 +70,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
         track: "#e8edf5"
       };
   const surfaceStyle = {
-    maxWidth: "1120px",
+    maxWidth: "1600px",
     margin: "32px auto 64px",
     padding: "0 24px",
     color: colors.text
@@ -300,7 +301,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
   };
 
   return (
-    <div style={surfaceStyle}>
+    <div className="bulk-upload-surface" style={surfaceStyle}>
       <section
         style={{
           ...panelStyle,

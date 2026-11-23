@@ -178,7 +178,7 @@ export default function ContributorAnalyticsDashboard({ darkMode, profile = {}, 
     URL.revokeObjectURL(link.href);
   };
 
-  return <section className={`analytics-dashboard ${darkMode ? "is-dark" : ""}`}>
+  return <section className={`analytics-dashboard contributor-analytics-surface ${darkMode ? "is-dark" : ""}`}>
     <header className="analytics-header"><div><span className="contributor-kicker">Performance</span><h2>Contributor Analytics</h2><p>Track your assets, downloads, views, earnings and contributor growth.</p></div><button className="analytics-export" type="button" onClick={exportReport}>Export Report</button></header>
     <div className="analytics-controls"><div className="analytics-periods">{periods.map((item) => <button key={item} type="button" className={period === item ? "is-active" : ""} onClick={() => handlePeriodChange(item)}>{item}</button>)}</div><label>Asset type<select value={type} onChange={(event) => setType(event.target.value)}><option>All types</option>{types.map((item) => <option key={item}>{item}</option>)}</select></label><label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}><option>All categories</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></label></div>
     {customRangeActive && <div className="custom-range-controls" style={{ display: "flex", gap: "12px", alignItems: "center", marginBottom: "18px", flexWrap: "wrap" }}>

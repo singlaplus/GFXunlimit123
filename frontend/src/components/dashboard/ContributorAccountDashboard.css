@@ -1,2 +1,226 @@
 .account-dashboard { max-width: 1160px; margin: 0 auto; color: var(--creator-ink); }.account-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 24px; }.account-header h2 { margin: 0 0 7px; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.06em; }.account-header p { margin: 0; color: var(--creator-muted); font-size: 13px; }.account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.account-card { padding: 20px; background: var(--creator-surface); border: 1px solid var(--creator-line); border-radius: 18px; }.account-profile-card { grid-column: span 2; }.account-profile-top, .account-card-heading, .account-actions { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }.account-avatar { display: grid; flex: 0 0 auto; width: 64px; height: 64px; place-items: center; color: #fff; background: #ed2224; border-radius: 18px; font-size: 27px; font-weight: 800; }.account-profile-top > div:nth-child(2) { flex: 1; }.account-card h3 { margin: 0; font-size: 22px; letter-spacing: -.05em; }.account-profile-top p { margin: 5px 0 0; color: var(--creator-muted); font-size: 12px; }.account-status { color: var(--creator-muted); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .08em; }.account-status.is-positive, .account-positive { color: #17845d; }.account-info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 22px 0 18px; padding-top: 18px; border-top: 1px solid var(--creator-line); }.account-info-grid span, .account-status-list span { display: flex; justify-content: space-between; gap: 12px; color: var(--creator-muted); font-size: 11px; }.account-info-grid b, .account-status-list b { color: var(--creator-ink); text-align: right; }.account-status-list { display: grid; gap: 11px; margin: 22px 0; }.account-primary-button, .account-outline-button, .account-danger-button, .account-link-button, .account-quick-links button { padding: 10px 13px; border-radius: 9px; font: inherit; font-size: 11px; font-weight: 750; cursor: pointer; }.account-primary-button { color: #fff; background: #ed2224; border: 1px solid #ed2224; }.account-outline-button { color: var(--creator-ink); background: var(--creator-surface); border: 1px solid var(--creator-line); }.account-link-button { padding: 0; color: #ed2224; background: none; border: 0; }.account-danger-button { color: #b42328; background: transparent; border: 1px solid #e8a2a5; }.account-helper { display: block; margin-top: 12px; color: var(--creator-muted); font-size: 10px; line-height: 1.5; }.account-quick-links { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 20px; }.account-quick-links button { color: var(--creator-ink); background: color-mix(in srgb, #ed2224 8%, transparent); border: 1px solid color-mix(in srgb, #ed2224 25%, var(--creator-line)); }.account-actions { grid-column: span 2; align-items: center; margin-top: 12px; }.account-actions h3 { font-size: 16px; }.account-actions p { margin: 6px 0 0; color: var(--creator-muted); font-size: 11px; }.account-message { margin-top: 12px; padding: 12px 14px; color: var(--creator-ink); background: color-mix(in srgb, #ed2224 8%, transparent); border-radius: 10px; font-size: 12px; }.account-modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: rgba(10, 12, 15, .6); }.account-modal { display: grid; gap: 10px; width: min(420px, 100%); padding: 22px; color: var(--creator-ink); background: var(--creator-surface); border: 1px solid var(--creator-line); border-radius: 16px; box-shadow: 0 20px 50px rgba(0,0,0,.2); }.account-modal h3 { margin: 0 0 6px; }.account-modal input { padding: 11px 12px; color: var(--creator-ink); background: transparent; border: 1px solid var(--creator-line); border-radius: 8px; font: inherit; }.account-modal > div { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+
+.app-shell main .account-dashboard {
+  max-width: 1160px;
+}
 @media (max-width: 700px) { .account-header { display: block; }.account-outline-button { margin-top: 15px; }.account-grid { grid-template-columns: 1fr; }.account-profile-card, .account-actions { grid-column: auto; }.account-profile-top { flex-wrap: wrap; }.account-info-grid { grid-template-columns: 1fr; }.account-actions { display: block; }.account-danger-button { margin-top: 14px; } }
+
+.account-dashboard {
+  --account-accent: #d9263a;
+}
+
+.account-header {
+  align-items: center;
+  margin-bottom: 22px;
+  padding: 24px 28px;
+  background: linear-gradient(120deg, #fff 0%, #fff7f7 100%);
+  border: 1px solid color-mix(in srgb, var(--account-accent) 14%, var(--creator-line));
+  border-radius: 20px;
+  box-shadow: 0 12px 30px rgba(20, 25, 32, 0.05);
+}
+
+.account-header .contributor-kicker,
+.account-card .contributor-kicker {
+  color: var(--account-accent);
+}
+
+.account-grid {
+  align-items: start;
+  gap: 16px;
+}
+
+.account-card {
+  position: relative;
+  overflow: hidden;
+  padding: 24px;
+  border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(18, 24, 32, 0.05);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.account-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--account-accent) 24%, var(--creator-line));
+  box-shadow: 0 14px 32px rgba(18, 24, 32, 0.09);
+}
+
+.account-profile-card {
+  background: linear-gradient(120deg, var(--creator-surface) 0%, color-mix(in srgb, var(--account-accent) 3%, var(--creator-surface)) 100%);
+}
+
+.account-profile-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: linear-gradient(180deg, #f35b66, var(--account-accent));
+  content: "";
+}
+
+.account-profile-top {
+  align-items: center;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--creator-line);
+}
+
+.account-avatar {
+  width: 68px;
+  height: 68px;
+  background: linear-gradient(145deg, #f04b59, #b7162b);
+  border-radius: 20px;
+  box-shadow: 0 8px 18px rgba(217, 38, 58, 0.2);
+}
+
+.account-status.is-positive {
+  padding: 8px 11px;
+  color: #16784f;
+  background: color-mix(in srgb, #1d9a66 12%, var(--creator-surface));
+  border-radius: 999px;
+}
+
+.account-info-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 18px 0 16px;
+}
+
+.account-info-grid span {
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--creator-line) 18%, var(--creator-surface));
+  border: 1px solid color-mix(in srgb, var(--creator-line) 70%, transparent);
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.account-info-grid b {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 750;
+  text-align: left;
+}
+
+.account-card-heading {
+  align-items: center;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--creator-line);
+}
+
+.account-card h3 {
+  font-size: 19px;
+  letter-spacing: -0.035em;
+}
+
+.account-status-list {
+  gap: 0;
+  margin: 16px 0;
+}
+
+.account-status-list span {
+  align-items: center;
+  min-width: 0;
+  padding: 10px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--creator-line) 75%, transparent);
+}
+
+.account-status-list span:last-child {
+  border-bottom: 0;
+}
+
+.account-status-list b {
+  overflow-wrap: anywhere;
+}
+
+.account-primary-button,
+.account-outline-button,
+.account-danger-button,
+.account-quick-links button {
+  min-height: 40px;
+  padding: 10px 15px;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.account-primary-button {
+  background: linear-gradient(135deg, #ed3545, #c91f32);
+  border: 0;
+  box-shadow: 0 6px 14px rgba(217, 38, 58, 0.18);
+}
+
+.account-primary-button:hover,
+.account-quick-links button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(217, 38, 58, 0.15);
+}
+
+.account-outline-button {
+  border-radius: 999px;
+  box-shadow: 0 4px 12px rgba(18, 24, 32, 0.05);
+}
+
+.account-danger-button {
+  min-width: 100px;
+  color: #b42328;
+  background: color-mix(in srgb, #ed2224 5%, var(--creator-surface));
+  border-radius: 999px;
+}
+
+.account-quick-links button {
+  border-radius: 999px;
+}
+
+.account-dashboard :is(button, input):focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--account-accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
+.account-dashboard.is-dark .account-header {
+  background: linear-gradient(120deg, #1a2026 0%, #271d22 100%);
+  border-color: color-mix(in srgb, var(--account-accent) 30%, var(--creator-line));
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+}
+
+.account-dashboard.is-dark .account-profile-card {
+  background: linear-gradient(120deg, var(--creator-surface) 0%, color-mix(in srgb, var(--account-accent) 8%, var(--creator-surface)) 100%);
+}
+
+.account-dashboard.is-dark .account-info-grid span {
+  background: color-mix(in srgb, var(--creator-line) 34%, var(--creator-surface));
+}
+
+@media (max-width: 700px) {
+  .account-header {
+    padding: 20px;
+    border-radius: 18px;
+  }
+
+  .account-grid {
+    gap: 12px;
+  }
+
+  .account-card {
+    padding: 18px;
+    border-radius: 17px;
+  }
+
+  .account-info-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .account-status-list span {
+    gap: 8px;
+    font-size: 10px;
+  }
+}
+
+@media (min-width: 701px) and (max-width: 860px) {
+  .account-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .account-profile-card {
+    grid-column: 1;
+  }
+}

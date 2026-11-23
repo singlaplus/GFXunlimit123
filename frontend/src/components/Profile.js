@@ -5,6 +5,7 @@ import AdminPanel from "./AdminPanel";
 import { toast } from "react-toastify";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../utils/authSession";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
+import "./Profile.css";
 
 function Profile({ darkMode = false }) {
 
@@ -194,115 +195,69 @@ function Profile({ darkMode = false }) {
     }
   };
 
-  const pageStyle = {
-    border: isDarkMode ? "1px solid rgba(255,255,255,0.12)" : "1px solid #dbe2ea",
-    padding: "28px",
-    borderRadius: "24px",
-    marginBottom: "24px",
-    background: isDarkMode ? "linear-gradient(135deg, #0f172a 0%, #111827 50%, #1f2937 100%)" : "#f8fafc",
-    color: isDarkMode ? "#f8fafc" : "#111827",
-    colorScheme: isDarkMode ? "dark" : "light",
-    boxShadow: isDarkMode ? "0 20px 45px rgba(15, 23, 42, 0.45)" : "0 12px 30px rgba(15, 23, 42, 0.08)",
-    position: "relative",
-    overflow: "hidden"
-  };
-
-  const heroStyle = {
-    background: isDarkMode ? "linear-gradient(135deg, rgba(59,130,246,0.2), rgba(168,85,247,0.16))" : "linear-gradient(135deg, #eaf2ff, #f4efff)",
-    border: isDarkMode ? "1px solid rgba(255,255,255,0.12)" : "1px solid #cbd5e1",
-    borderRadius: "18px",
-    padding: "20px 22px",
-    marginBottom: "18px"
-  };
-
-  const cardStyle = {
-    background: isDarkMode ? "rgba(255,255,255,0.04)" : "#ffffff",
-    border: isDarkMode ? "1px solid rgba(255,255,255,0.09)" : "1px solid #dbe2ea",
-    borderRadius: "16px",
-    padding: "16px",
-    boxShadow: isDarkMode ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "0 6px 18px rgba(15, 23, 42, 0.06)"
-  };
-
-  const statCardStyle = {
-    background: isDarkMode ? "linear-gradient(145deg, rgba(255,255,255,0.07), rgba(255,255,255,0.03))" : "#ffffff",
-    padding: "16px",
-    borderRadius: "14px",
-    textAlign: "center",
-    border: isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid #dbe2ea",
-    boxShadow: isDarkMode ? "0 10px 25px rgba(2, 6, 23, 0.22)" : "0 8px 20px rgba(15, 23, 42, 0.06)",
-    color: isDarkMode ? "#f8fafc" : "#111827"
-  };
-
-  const buttonStyle = {
-    background: "linear-gradient(135deg, #3b82f6, #8b5cf6)",
-    color: "white",
-    border: "none",
-    padding: "10px 14px",
-    borderRadius: "999px",
-    cursor: "pointer",
-    fontWeight: 600,
-    boxShadow: "0 10px 20px rgba(59,130,246,0.25)"
-  };
-
-  const secondaryButtonStyle = {
-    background: isDarkMode ? "rgba(255,255,255,0.08)" : "#ffffff",
-    color: isDarkMode ? "#f8fafc" : "#111827",
-    border: isDarkMode ? "1px solid rgba(255,255,255,0.12)" : "1px solid #cbd5e1",
-    padding: "10px 14px",
-    borderRadius: "999px",
-    cursor: "pointer",
-    fontWeight: 600
-  };
-
   if (!profile) {
     return <p>Loading...</p>;
   }
 
   return (
-    <div style={pageStyle}>
-      <div style={heroStyle}>
-        <h2 style={{ margin: 0, fontSize: "1.6rem" }}>User Profile</h2>
-        <p style={{ margin: "6px 0 0", color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-          Your account overview, contributor performance, and credit balance in one place.
-        </p>
-      </div>
+    <div className={`profile-page ${isDarkMode ? "profile-page--dark" : ""}`}>
+      <header className="profile-hero">
+        <div>
+          <span className="profile-eyebrow">Account overview</span>
+          <h2>User Profile</h2>
+          <p>
+            Your account overview, contributor performance, and credit balance in one place.
+          </p>
+        </div>
+        <div className="profile-hero-badge" aria-hidden="true">MY ACCOUNT</div>
+      </header>
 
-      <div style={{ ...cardStyle, marginBottom: "16px" }}>
-        <p style={{ margin: "0 0 8px", color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-          <strong style={{ color: isDarkMode ? "#f8fafc" : "#111827" }}>ID:</strong>{" "}
-          {profile.id}
-        </p>
+      <section className="profile-account-card" aria-label="Account details">
+        <div className="profile-account-heading">
+          <div className="profile-avatar" aria-hidden="true">
+            {typeof profile.username === "string" && profile.username
+              ? profile.username.charAt(0).toUpperCase()
+              : "U"}
+          </div>
+          <div>
+            <span className="profile-eyebrow">Personal details</span>
+            <h3>{profile.username}</h3>
+          </div>
+          <span className="profile-role">{profile.role}</span>
+        </div>
+        <div className="profile-info-grid">
+          <div className="profile-info-row">
+            <strong>ID:</strong>
+            <span>{profile.id}</span>
+          </div>
+          <div className="profile-info-row">
+            <strong>Username:</strong>
+            <span>{profile.username}</span>
+          </div>
+          <div className="profile-info-row">
+            <strong>Email:</strong>
+            <span>{profile.email}</span>
+          </div>
+          <div className="profile-info-row">
+            <strong>Role:</strong>
+            <span>{profile.role}</span>
+          </div>
+          <div ref={creditsRef} className="profile-info-row profile-credits-row">
+            <strong>Credits:</strong>
+            <span>₹ {Number(profile.credits || 0).toFixed(2)}</span>
+          </div>
+        </div>
+      </section>
 
-        <p style={{ margin: "0 0 8px", color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-          <strong style={{ color: isDarkMode ? "#f8fafc" : "#111827" }}>Username:</strong>{" "}
-          {profile.username}
-        </p>
-
-        <p style={{ margin: "0 0 8px", color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-          <strong style={{ color: isDarkMode ? "#f8fafc" : "#111827" }}>Email:</strong>{" "}
-          {profile.email}
-        </p>
-
-        <p style={{ margin: "0 0 8px", color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-          <strong style={{ color: isDarkMode ? "#f8fafc" : "#111827" }}>Role:</strong>{" "}
-          {profile.role}
-        </p>
-
-        <p ref={creditsRef} style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-          <strong style={{ color: isDarkMode ? "#f8fafc" : "#111827" }}>Credits:</strong>{" "}
-          ₹ {Number(profile.credits || 0).toFixed(2)}
-        </p>
-      </div>
-
-      <div style={{ marginTop: 12, display: "flex", gap: "10px", flexWrap: "wrap" }}>
-        <button onClick={() => setShowChangeModal(true)} style={buttonStyle}>
+      <div className="profile-actions">
+        <button className="profile-button" onClick={() => setShowChangeModal(true)}>
           Change Password
         </button>
 
         {isAdmin && (
           <button
             onClick={() => window.location.href = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm?tab=controls"}
-            style={{ ...buttonStyle, background: "linear-gradient(135deg, #f59e0b, #fb923c)" }}
+            className="profile-button profile-button--admin"
           >
             👑 Admin Panel
           </button>
@@ -310,17 +265,18 @@ function Profile({ darkMode = false }) {
       </div>
 
       {showChangeModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(2,6,23,0.72)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, padding: "16px" }}>
-          <div style={{ background: "linear-gradient(145deg, #111827, #1f2937)", padding: 22, borderRadius: 16, width: 420, color: "white", border: "1px solid rgba(255,255,255,0.12)", boxShadow: "0 20px 45px rgba(0,0,0,0.3)" }}>
-            <h3 style={{ marginTop: 0 }}>Change Password</h3>
-            <div style={{ display: "grid", gap: 10, marginTop: 8 }}>
-              <input type="password" placeholder="Current password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.06)", color: "white" }} />
-              <input type="password" placeholder="New password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.06)", color: "white" }} />
-              <input type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.06)", color: "white" }} />
+        <div className="profile-modal-backdrop">
+          <div className="profile-modal">
+            <span className="profile-eyebrow">Security</span>
+            <h3>Change Password</h3>
+            <div className="profile-modal-fields">
+              <input type="password" placeholder="Current password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+              <input type="password" placeholder="New password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+              <input type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
             </div>
-            <div style={{ marginTop: 14, display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setShowChangeModal(false)} style={{ ...secondaryButtonStyle, padding: "8px 12px" }}>Cancel</button>
-              <button onClick={submitChangePassword} style={{ ...buttonStyle, padding: "8px 12px" }}>Save</button>
+            <div className="profile-modal-actions">
+              <button className="profile-button profile-button--secondary" onClick={() => setShowChangeModal(false)}>Cancel</button>
+              <button className="profile-button" onClick={submitChangePassword}>Save</button>
             </div>
           </div>
         </div>
@@ -332,59 +288,70 @@ function Profile({ darkMode = false }) {
 
       {stats && profile.role === "contributor" && (
         <>
-          <h3 style={{ marginTop: "24px", marginBottom: "10px" }}>
+          <h3 className="profile-section-title">
             {profile.role === "admin"
               ? "👑 Admin Dashboard"
               : "📊 Contributor Dashboard"}
           </h3>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-              gap: "12px",
-              marginTop: "12px",
-              marginBottom: "18px"
-            }}
-          >
-            <div style={statCardStyle}>📊 Approved<h3 style={{ margin: "6px 0 0" }}>{stats.approved_images}</h3></div>
-            <div style={statCardStyle}>⏳ Pending<h3 style={{ margin: "6px 0 0" }}>{stats.pending_images}</h3></div>
-            <div style={statCardStyle}>❌ Rejected<h3 style={{ margin: "6px 0 0" }}>{stats.rejected_images}</h3></div>
-            <div style={statCardStyle}>🔥 Best Downloads<h3 style={{ margin: "6px 0 0" }}>{stats.top_downloads || 0}</h3></div>
-            <div style={statCardStyle}>👁 Best Views<h3 style={{ margin: "6px 0 0" }}>{stats.top_views || 0}</h3></div>
-            <div style={statCardStyle}>❤️ Best Likes<h3 style={{ margin: "6px 0 0" }}>{stats.top_likes || 0}</h3></div>
-          </div>
-
-          <h3 style={{ marginBottom: "10px" }}>📈 Statistics</h3>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-              gap: "12px",
-              marginTop: "8px"
-            }}
-          >
-            <div style={statCardStyle}>📸 Uploads<h3 style={{ margin: "6px 0 0" }}>{stats.total_uploads}</h3></div>
-            <div style={statCardStyle}>❤️ Likes<h3 style={{ margin: "6px 0 0" }}>{stats.total_likes}</h3></div>
-            <div style={statCardStyle}>👁 Views<h3 style={{ margin: "6px 0 0" }}>{stats.total_views}</h3></div>
-            <div style={statCardStyle}>⬇ Downloads<h3 style={{ margin: "6px 0 0" }}>{stats.total_downloads}</h3></div>
-            <div style={statCardStyle}>💰 Earnings<h3 style={{ margin: "6px 0 0" }}>₹ {Number(stats.total_earnings || 0).toFixed(2)}</h3></div>
-          </div>
-
-          <div style={{ marginTop: "22px" }}>
-            <div style={{ ...cardStyle, borderColor: "rgba(74, 222, 128, 0.35)" }}>
-              <h3 style={{ marginTop: 0, marginBottom: "8px" }}>💰 Earnings Dashboard</h3>
-              <p style={{ margin: "0 0 8px", color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-                Total Earnings: <strong style={{ color: isDarkMode ? "#f8fafc" : "#111827" }}>₹ {Number(stats.total_earnings || 0).toFixed(2)}</strong>
-              </p>
-              <p style={{ margin: "0 0 8px", color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-                Total Downloads: {stats.total_downloads}
-              </p>
-              <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#475569" }}>
-                Rate Per Download: ₹ 0.25
-              </p>
+          <div className="profile-stats-grid profile-stats-grid--dashboard">
+            <div className="profile-stat-card">
+              <span>📊 Approved</span>
+              <strong>{stats.approved_images}</strong>
             </div>
-
+            <div className="profile-stat-card">
+              <span>⏳ Pending</span>
+              <strong>{stats.pending_images}</strong>
+            </div>
+            <div className="profile-stat-card">
+              <span>❌ Rejected</span>
+              <strong>{stats.rejected_images}</strong>
+            </div>
+            <div className="profile-stat-card">
+              <span>🔥 Best Downloads</span>
+              <strong>{stats.top_downloads || 0}</strong>
+            </div>
+            <div className="profile-stat-card">
+              <span>👁 Best Views</span>
+              <strong>{stats.top_views || 0}</strong>
+            </div>
+            <div className="profile-stat-card">
+              <span>❤️ Best Likes</span>
+              <strong>{stats.top_likes || 0}</strong>
+            </div>
           </div>
+
+          <h3 className="profile-section-title profile-section-title--secondary">📈 Statistics</h3>
+          <div className="profile-stats-grid profile-stats-grid--summary">
+            <div className="profile-stat-card">
+              <span>📸 Uploads</span>
+              <strong>{stats.total_uploads}</strong>
+            </div>
+            <div className="profile-stat-card">
+              <span>❤️ Likes</span>
+              <strong>{stats.total_likes}</strong>
+            </div>
+            <div className="profile-stat-card">
+              <span>👁 Views</span>
+              <strong>{stats.total_views}</strong>
+            </div>
+            <div className="profile-stat-card">
+              <span>⬇ Downloads</span>
+              <strong>{stats.total_downloads}</strong>
+            </div>
+            <div className="profile-stat-card">
+              <span>💰 Earnings</span>
+              <strong>₹ {Number(stats.total_earnings || 0).toFixed(2)}</strong>
+            </div>
+          </div>
+
+          <section className="profile-earnings-card">
+            <h3>💰 Earnings Dashboard</h3>
+            <p>
+              Total Earnings: <strong>₹ {Number(stats.total_earnings || 0).toFixed(2)}</strong>
+            </p>
+            <p>Total Downloads: {stats.total_downloads}</p>
+            <p>Rate Per Download: ₹ 0.25</p>
+          </section>
         </>
       )}
     </div>

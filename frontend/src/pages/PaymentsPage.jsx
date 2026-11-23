@@ -6,7 +6,7 @@ import Pagination from "../components/Pagination";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import "./PaymentsPage.css";
 
-const PAYMENT_PAGE_SIZE = 20;
+const HISTORY_PAGE_SIZE = 5;
 
 export default function PaymentsPage({ darkMode = false }) {
   const { reportResource, retryKey, routeId } = useStartupReadiness();
@@ -16,6 +16,7 @@ export default function PaymentsPage({ darkMode = false }) {
   const [payments, setPayments] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [payoutRequests, setPayoutRequests] = useState([]);
+  const [currentPayoutPage, setCurrentPayoutPage] = useState(1);
   const [error, setError] = useState(null);
   const animatedPaymentCountRef = useRef(0);
   const [animatedPaymentCount, setAnimatedPaymentCount] = useState(0);
@@ -179,9 +180,14 @@ export default function PaymentsPage({ darkMode = false }) {
   }, [loadPaymentData, retryKey]);
 
   useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(payments.length / PAYMENT_PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(payments.length / HISTORY_PAGE_SIZE));
     setCurrentPage((page) => Math.min(page, totalPages));
   }, [payments.length]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(payoutRequests.length / HISTORY_PAGE_SIZE));
+    setCurrentPayoutPage((page) => Math.min(page, totalPages));
+  }, [payoutRequests.length]);
 
   const isDarkMode = Boolean(darkMode);
   const pageClassName = `payments-page${isDarkMode ? " is-dark" : ""}`;
@@ -194,10 +200,15 @@ export default function PaymentsPage({ darkMode = false }) {
   }
 
   const hasPaymentHistory = payments.length > 0 || payoutRequests.length > 0;
-  const totalPages = Math.ceil(payments.length / PAYMENT_PAGE_SIZE);
+  const totalPages = Math.ceil(payments.length / HISTORY_PAGE_SIZE);
   const visiblePayments = payments.slice(
-    (currentPage - 1) * PAYMENT_PAGE_SIZE,
-    currentPage * PAYMENT_PAGE_SIZE
+    (currentPage - 1) * HISTORY_PAGE_SIZE,
+    currentPage * HISTORY_PAGE_SIZE
+  );
+  const payoutTotalPages = Math.ceil(payoutRequests.length / HISTORY_PAGE_SIZE);
+  const visiblePayoutRequests = payoutRequests.slice(
+    (currentPayoutPage - 1) * HISTORY_PAGE_SIZE,
+    currentPayoutPage * HISTORY_PAGE_SIZE
   );
 
   return (
@@ -238,7 +249,7 @@ export default function PaymentsPage({ darkMode = false }) {
                 </tr>
               </thead>
               <tbody>
-                {payoutRequests.map((request) => (
+                {visiblePayoutRequests.map((request) => (
                   <tr key={request.id}>
                     <td data-label="Submitted">{formatIndiaDateTime(request.created_at)} IST</td>
                     <td data-label="Credits">{request.requested_credits}</td>
@@ -255,6 +266,18 @@ export default function PaymentsPage({ darkMode = false }) {
               </tbody>
             </table>
           </div>
+          {payoutRequests.length > 0 && (
+            <div className="payments-pagination">
+              <Pagination
+                currentPage={currentPayoutPage}
+                totalPages={payoutTotalPages}
+                totalImages={payoutRequests.length}
+                setCurrentPage={setCurrentPayoutPage}
+                darkMode={isDarkMode}
+                totalLabel="Total Requests"
+              />
+            </div>
+          )}
         </section>
       )}
 
@@ -306,15 +329,17 @@ export default function PaymentsPage({ darkMode = false }) {
               </tbody>
             </table>
           </div>
-          {payments.length > PAYMENT_PAGE_SIZE && (
-            <Pagination
-              currentPage={currentPage}
-              totalPages={totalPages}
-              totalImages={payments.length}
-              setCurrentPage={setCurrentPage}
-              darkMode={isDarkMode}
-              totalLabel="Total Transactions"
-            />
+          {payments.length > HISTORY_PAGE_SIZE && (
+            <div className="payments-pagination">
+              <Pagination
+                currentPage={currentPage}
+                totalPages={totalPages}
+                totalImages={payments.length}
+                setCurrentPage={setCurrentPage}
+                darkMode={isDarkMode}
+                totalLabel="Total Transactions"
+              />
+            </div>
           )}
         </section>
       ) : (

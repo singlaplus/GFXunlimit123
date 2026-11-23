@@ -1,0 +1,11 @@
+@media (min-width: 1200px) {
+  .bulk-upload-surface {
+    margin-right: 170px !important;
+  }
+}
+
+@media (max-width: 1199px) {
+  body:has(.bulk-upload-surface) .promotion-banner-placement--right {
+    display: none;
+  }
+}

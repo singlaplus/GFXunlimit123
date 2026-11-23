@@ -4,6 +4,7 @@ import axios from "axios";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../../utils/authSession";
 import { calculateLoyaltyPoints } from "../../utils/loyaltyPoints";
 import { formatIndiaDate } from "../../utils/indiaTime";
+import "./ContributorAccountDashboard.css";
 
 const number = (value) => Number(value || 0).toLocaleString();
 const unavailable = "Not available";

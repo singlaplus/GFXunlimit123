@@ -137,6 +137,11 @@
   font-weight: 700;
 }
 
+.payments-pagination {
+  position: relative;
+  z-index: 1201;
+}
+
 .payments-table-scroll {
   max-width: 100%;
   overflow-x: auto;
