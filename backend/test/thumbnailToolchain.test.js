@@ -18,6 +18,18 @@ test('ImageMagick detection supports both magick and convert on Unix-like system
   );
 });
 
+test('prefers the bundled FFmpeg binary when no explicit path is configured', () => {
+  const bundledPath = path.join('backend', 'node_modules', 'ffmpeg-static', 'ffmpeg.exe');
+  assert.equal(
+    getToolCandidates('ffmpeg', {
+      platform: 'win32',
+      env: {},
+      bundledFfmpegPath: bundledPath,
+    })[0],
+    bundledPath
+  );
+});
+
 test('thumbnail toolchain installs missing open-source tools and verifies them again', async () => {
   const installed = [];
   const available = new Set(['ghostscript']);

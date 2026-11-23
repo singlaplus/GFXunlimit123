@@ -1,3 +1,4 @@
+const fs = require('node:fs');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { getWindowsToolPaths } = require('./windowsToolPaths');
 
@@ -35,13 +36,22 @@ const TOOL_DEFINITIONS = {
   },
 };
 
-function getToolCandidates(toolName, { platform = process.platform, env = process.env } = {}) {
+function getToolCandidates(toolName, {
+  platform = process.platform,
+  env = process.env,
+  bundledFfmpegPath,
+} = {}) {
   const definition = TOOL_DEFINITIONS[toolName];
   if (!definition) throw new Error(`Unknown thumbnail tool: ${toolName}`);
 
   const configuredPath = String(env[definition.envKey] || '').trim();
   if (configuredPath) return [configuredPath];
 
+  const resolvedBundledFfmpegPath = toolName === 'ffmpeg'
+    ? bundledFfmpegPath === undefined
+      ? getBundledFfmpegPath()
+      : bundledFfmpegPath
+    : null;
   if (platform === 'win32' && toolName === 'ghostscript') {
     return [...new Set([
       'gswin64c',
@@ -53,9 +63,16 @@ function getToolCandidates(toolName, { platform = process.platform, env = proces
     return [...new Set(['magick', ...getWindowsToolPaths('imagemagick', env)])];
   }
   if (platform === 'win32' && toolName === 'ffmpeg') {
-    return [...new Set(['ffmpeg', ...getWindowsToolPaths('ffmpeg', env)])];
+    return [...new Set([
+      resolvedBundledFfmpegPath,
+      'ffmpeg',
+      ...getWindowsToolPaths('ffmpeg', env),
+    ].filter(Boolean))];
   }
-  return definition.commands;
+  return [...new Set([
+    resolvedBundledFfmpegPath,
+    ...definition.commands,
+  ].filter(Boolean))];
 }
 
 function defaultRun(command, args, options = {}) {
@@ -121,6 +138,13 @@ function probeTool(toolName, options = {}) {
 function commandExists(command, platform = process.platform) {
   const lookup = platform === 'win32' ? 'where.exe' : 'which';
   return spawnSync(lookup, [command], { stdio: 'ignore', windowsHide: true }).status === 0;
+}
+
+function getBundledFfmpegPath() {
+  const bundledPath = require('ffmpeg-static');
+  return typeof bundledPath === 'string' && bundledPath.trim() && fs.existsSync(bundledPath)
+    ? bundledPath
+    : null;
 }
 
 function runInstaller(command, args) {

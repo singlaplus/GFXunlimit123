@@ -14,6 +14,7 @@ const assetStorageConnections = require('../services/assetStorageConnections');
 const assetStorageCardConnections = require('../services/assetStorageCardConnections');
 const thumbnailGenerationSettings = require('../services/thumbnailGenerationSettings');
 const { findWindowsToolExecutable } = require('../services/windowsToolPaths');
+const { getToolCandidates } = require('../services/thumbnailToolchain');
 const { VIDEO_EXTENSIONS } = require('../services/videoFormats');
 const processorFactory = require('../thumbnail-engine/processor-factory');
 const { resolveAssetFile } = require('./assetServing');
@@ -851,7 +852,7 @@ function runCommandToFile(command, args, timeoutMs = 180000, onProgress = null) 
 }
 
 async function extractVideoPreview(sourcePath, run = runCommand) {
-  const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
+  const ffmpeg = getToolCandidates('ffmpeg')[0];
   const extractFrame = async (seekTime) => {
     const output = await run(ffmpeg, [
       '-v', 'error', '-ss', String(seekTime), '-i', sourcePath,
@@ -902,7 +903,7 @@ async function getVideoDimensions(sourcePath, run = runCommand, metadataRunner =
     throw new Error('FFprobe could not determine valid video dimensions.');
   } catch (probeError) {
     try {
-      const output = await metadataRunner(process.env.FFMPEG_PATH || 'ffmpeg', sourcePath, 30000);
+      const output = await metadataRunner(getToolCandidates('ffmpeg')[0], sourcePath, 30000);
       return parseFfmpegVideoDimensions(output.toString());
     } catch (ffmpegError) {
       throw new Error(
@@ -962,7 +963,7 @@ async function generateOptimizedVideoPreview(sourcePath, settings, outputPath, o
     ];
     const attemptBase = encodeAttempt === 0 ? 0 : 75 + ((encodeAttempt - 1) * 5);
     await runCommandToFile(
-      process.env.FFMPEG_PATH || 'ffmpeg',
+      getToolCandidates('ffmpeg')[0],
       args,
       30 * 60 * 1000,
       typeof onProgress === 'function'
@@ -1043,7 +1044,7 @@ async function getVideoDuration(sourcePath, run = runCommand, metadataRunner = r
     return duration;
   } catch (probeError) {
     try {
-      const output = await metadataRunner(process.env.FFMPEG_PATH || 'ffmpeg', sourcePath, 30000);
+      const output = await metadataRunner(getToolCandidates('ffmpeg')[0], sourcePath, 30000);
       return parseFfmpegVideoDuration(output.toString());
     } catch (ffmpegError) {
       throw new Error(
@@ -1069,7 +1070,7 @@ async function extractVideoPreviewFrames(sourcePath, run = runCommand, onProgres
   const frames = [];
   for (let index = 0; index < count; index += 1) {
     const timestamp = Math.min((duration * index) / count, Math.max(0, duration - 0.05));
-    const frame = await run(process.env.FFMPEG_PATH || 'ffmpeg', [
+    const frame = await run(getToolCandidates('ffmpeg')[0], [
       '-v', 'error', '-ss', timestamp.toFixed(3), '-i', sourcePath,
       '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', '-',
     ], 180000);
@@ -1502,7 +1503,7 @@ async function generateAssetThumbnailUnlocked(assetId, options = {}) {
     let processorName = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.tif', '.tiff'].includes(extension)
       ? 'sharp'
       : VIDEO_EXTENSIONS.has(extension)
-        ? (process.env.FFMPEG_PATH || 'ffmpeg')
+        ? getToolCandidates('ffmpeg')[0]
         : extension === '.pdf'
           ? (process.env.GHOSTSCRIPT_PATH || 'ghostscript-or-imagemagick')
           : extension === '.zip'

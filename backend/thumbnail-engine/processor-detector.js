@@ -276,6 +276,7 @@ class ProcessorDetector {
           windowsHide: true,
         });
         const version = output.match(/ffmpeg version ([^\s]+)/i)?.[1] || 'unknown';
+        let ffprobeStatusMessage = null;
         if (path.isAbsolute(executablePath)) {
           let resolvedFfmpegPath = executablePath;
           try {
@@ -307,19 +308,15 @@ class ProcessorDetector {
                 ffprobeError = error;
               }
             }
-            if (!ffprobePath) {
-              return {
-                status: 'NOT_AVAILABLE',
-                executablePath: resolvedFfmpegPath,
-                version,
-                message: `FFmpeg is installed, but FFprobe could not run (${ffprobeCandidates.join(', ')}): ${ffprobeError?.message || 'executable not found'}`,
-              };
-            }
-            try {
-              process.env.FFPROBE_PATH = fs.realpathSync.native(ffprobePath);
-            } catch (error) {
-              if (error.code !== 'ENOENT') throw error;
-              process.env.FFPROBE_PATH = ffprobePath;
+            if (ffprobePath) {
+              try {
+                process.env.FFPROBE_PATH = fs.realpathSync.native(ffprobePath);
+              } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+                process.env.FFPROBE_PATH = ffprobePath;
+              }
+            } else {
+              ffprobeStatusMessage = `FFprobe unavailable, using FFmpeg for metadata: ${ffprobeError?.message || 'executable not found'}`;
             }
           }
         }
@@ -327,7 +324,7 @@ class ProcessorDetector {
           status: 'READY',
           executablePath: process.env.FFMPEG_PATH || executablePath,
           version,
-          message: `Found at ${executablePath}`,
+          message: `Found at ${executablePath}${ffprobeStatusMessage ? `; ${ffprobeStatusMessage}` : ''}`,
         };
       } catch (err) {
         lastError = err;
