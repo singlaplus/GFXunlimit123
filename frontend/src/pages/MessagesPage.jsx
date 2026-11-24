@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import axios from "axios";
 import { getEffectiveAuthToken } from "../utils/authSession";
 import Pagination from "../components/Pagination";
@@ -51,6 +51,193 @@ const formatActivityMetadata = (metadata) => {
   return JSON.stringify(safeMetadata, null, 2);
 };
 
+const createCalendarDate = (year, month, day = 1) => {
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(year, month - 1, day);
+  return date;
+};
+
+const parseBroadcastDateTime = (value) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value || ""));
+  if (!match) return null;
+  const [, yearText, monthText, dayText, hourText, minuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const date = createCalendarDate(year, month, day);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day || hour > 23 || minute > 59) return null;
+  return { dateKey: date.toISOString().slice(0, 10), hour: hourText, minute: minuteText };
+};
+
+const formatCalendarDate = (dateKey) => {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" })
+    .format(createCalendarDate(year, month, day));
+};
+
+function BroadcastDateTimePicker({ label, value, onChange }) {
+  const titleId = useId();
+  const triggerRef = useRef(null);
+  const dialogRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const selected = parseBroadcastDateTime(value);
+  const todayKey = getIndiaDateKey();
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState(() => {
+    const [year, month] = (selected?.dateKey || todayKey).split("-").map(Number);
+    return { year, month };
+  });
+  const [draftDate, setDraftDate] = useState("");
+  const [draftHour, setDraftHour] = useState("");
+  const [draftMinute, setDraftMinute] = useState("");
+  const monthDate = createCalendarDate(view.year, view.month);
+  const monthLabel = new Intl.DateTimeFormat("en-IN", { month: "long", year: "numeric", timeZone: "UTC" }).format(monthDate);
+  const firstDayOffset = (monthDate.getUTCDay() + 6) % 7;
+  const firstCalendarDate = createCalendarDate(view.year, view.month, 1 - firstDayOffset);
+  const days = Array.from({ length: 42 }, (_, index) => new Date(firstCalendarDate.getTime() + index * 86400000));
+  const displayValue = selected ? `${formatCalendarDate(selected.dateKey)} · ${selected.hour}:${selected.minute} IST` : "Choose date and time";
+
+  const closePicker = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const openPicker = () => {
+    const current = parseBroadcastDateTime(value);
+    const dateKey = current?.dateKey || todayKey;
+    const [year, month] = dateKey.split("-").map(Number);
+    setView({ year, month });
+    setDraftDate(current?.dateKey || "");
+    setDraftHour(current?.hour || "");
+    setDraftMinute(current?.minute || "");
+    setOpen(true);
+  };
+
+  const changeMonth = (amount) => {
+    const nextMonth = createCalendarDate(view.year, view.month + amount);
+    setView({ year: nextMonth.getUTCFullYear(), month: nextMonth.getUTCMonth() + 1 });
+  };
+
+  const selectDate = (date) => {
+    const dateKey = date.toISOString().slice(0, 10);
+    setDraftDate(dateKey);
+    if (date.getUTCMonth() + 1 !== view.month || date.getUTCFullYear() !== view.year) {
+      setView({ year: date.getUTCFullYear(), month: date.getUTCMonth() + 1 });
+    }
+  };
+
+  const applySelection = () => {
+    onChange(`${draftDate}T${draftHour}:${draftMinute}`);
+    closePicker();
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    closeButtonRef.current?.focus();
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open]);
+
+  const trapDialogTab = (event) => {
+    if (event.key !== "Tab") return;
+    const focusable = dialogRef.current?.querySelectorAll('button:not(:disabled), select:not(:disabled)');
+    if (!focusable?.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return (
+    <div className="broadcast-datetime-field">
+      <span>{label}</span>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="broadcast-datetime-trigger"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`${label}: ${selected ? displayValue : "Choose date and time"}`}
+        onClick={openPicker}
+      >
+        <span className={selected ? "" : "is-placeholder"}>{displayValue}</span>
+        <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="16" rx="2" /><path d="M7.5 3v4M16.5 3v4M4 9.5h16" /></svg>
+      </button>
+      {open && (
+        <div className="broadcast-date-picker-backdrop" role="presentation" onClick={closePicker}>
+          <section
+            ref={dialogRef}
+            className="broadcast-date-picker"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={trapDialogTab}
+          >
+            <header className="broadcast-date-picker-header">
+              <div>
+                <p>SELECT DATE &amp; TIME · IST</p>
+                <h3 id={titleId}>{label}</h3>
+              </div>
+              <button ref={closeButtonRef} type="button" className="broadcast-date-picker-close" aria-label="Close calendar" onClick={closePicker}>×</button>
+            </header>
+            <div className="broadcast-calendar-month">
+              <button type="button" aria-label="Previous month" onClick={() => changeMonth(-1)}>‹</button>
+              <strong>{monthLabel}</strong>
+              <button type="button" aria-label="Next month" onClick={() => changeMonth(1)}>›</button>
+            </div>
+            <div className="broadcast-calendar-weekdays" aria-hidden="true">
+              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((weekday) => <span key={weekday}>{weekday}</span>)}
+            </div>
+            <div className="broadcast-calendar-days" aria-label={monthLabel}>
+              {days.map((date) => {
+                const dateKey = date.toISOString().slice(0, 10);
+                const outsideMonth = date.getUTCMonth() + 1 !== view.month;
+                const classes = ["broadcast-calendar-day", outsideMonth && "is-outside-month", dateKey === todayKey && "is-today", dateKey === draftDate && "is-selected"].filter(Boolean).join(" ");
+                return <button key={dateKey} type="button" className={classes} aria-label={formatCalendarDate(dateKey)} aria-pressed={dateKey === draftDate} aria-current={dateKey === todayKey ? "date" : undefined} onClick={() => selectDate(date)}>{date.getUTCDate()}</button>;
+              })}
+            </div>
+            <div className="broadcast-calendar-time">
+              <label>Hour (IST)
+                <select aria-label="Hour (IST)" value={draftHour} onChange={(event) => setDraftHour(event.target.value)}>
+                  <option value="">Hour</option>
+                  {Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, "0")).map((hour) => <option key={hour} value={hour}>{hour}</option>)}
+                </select>
+              </label>
+              <label>Minute
+                <select aria-label="Minute" value={draftMinute} onChange={(event) => setDraftMinute(event.target.value)}>
+                  <option value="">Minute</option>
+                  {Array.from({ length: 60 }, (_, minute) => String(minute).padStart(2, "0")).map((minute) => <option key={minute} value={minute}>{minute}</option>)}
+                </select>
+              </label>
+              <button type="button" className="broadcast-calendar-today" onClick={() => selectDate(createCalendarDate(...todayKey.split("-").map(Number)))}>Today</button>
+            </div>
+            <footer className="broadcast-date-picker-actions">
+              {value && <button type="button" className="is-secondary" onClick={() => { onChange(""); closePicker(); }}>Clear</button>}
+              <button type="button" className="is-secondary" onClick={closePicker}>Cancel</button>
+              <button type="button" className="is-primary" disabled={!draftDate || draftHour === "" || draftMinute === ""} onClick={applySelection}>Apply</button>
+            </footer>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BroadcastPanel({ broadcast, setBroadcast, notice, onSave, onPreview = () => {}, onTest }) {
   const [scheduled, setScheduled] = useState([]);
   const setField = (field, value) => setBroadcast((current) => ({ ...current, [field]: value }));
@@ -59,7 +246,70 @@ function BroadcastPanel({ broadcast, setBroadcast, notice, onSave, onPreview = (
   };
   useEffect(() => { loadScheduled(); }, []);
   const cancel = async (id) => { await axios.post(`${API}/api/messages/admin/broadcasts/${id}/cancel`, {}, { headers: { Authorization: `Bearer ${getEffectiveAuthToken()}` } }); loadScheduled(); };
-  return <div className="broadcast-panel"><div className="messages-section-heading"><div><p className="messages-kicker">ADMIN BROADCASTS</p><h2>Announcement broadcast</h2></div></div><div className="broadcast-form"><label>Subject<input value={broadcast.subject} onChange={(event) => setField("subject", event.target.value)} /></label><label>Message<textarea rows="6" value={broadcast.body} onChange={(event) => setField("body", event.target.value)} /></label><label>Audience<select value={broadcast.audience} onChange={(event) => setField("audience", event.target.value)}><option value="everyone">Everyone</option><option value="customers">Customers</option><option value="contributors">Contributors</option><option value="selected_users">Selected users</option><option value="selected_contributors">Selected contributors</option><option value="subscription">Users on selected subscription</option><option value="criteria">Users matching criteria</option></select></label>{["selected_users", "selected_contributors"].includes(broadcast.audience) && <label>User IDs<input placeholder="Comma-separated IDs" value={broadcast.userIds} onChange={(event) => setField("userIds", event.target.value)} /></label>}{broadcast.audience === "subscription" && <label>Subscription ID<input inputMode="numeric" value={broadcast.subscriptionId} onChange={(event) => setField("subscriptionId", event.target.value)} /></label>}{broadcast.audience === "criteria" && <label>Matching role<select value={broadcast.criteriaRole} onChange={(event) => setField("criteriaRole", event.target.value)}><option value="">Any role</option><option value="customer">Customer</option><option value="contributor">Contributor</option><option value="admin">Admin</option></select></label>}<label>Delivery<select value={broadcast.channel} onChange={(event) => setField("channel", event.target.value)}><option value="internal">Internal notification</option><option value="email">Email</option><option value="both">Both</option></select></label><label>Priority<select value={broadcast.priority} onChange={(event) => setField("priority", event.target.value)}><option value="LOW">Low</option><option value="NORMAL">Normal</option><option value="HIGH">High</option><option value="URGENT">Urgent</option></select></label><label>Schedule date/time (IST)<input type="datetime-local" value={broadcast.scheduledAt} onChange={(event) => setField("scheduledAt", event.target.value)} /></label><label>Expiry date/time (IST)<input type="datetime-local" value={broadcast.expiresAt} onChange={(event) => setField("expiresAt", event.target.value)} /></label><div className="broadcast-actions"><button type="button" onClick={onPreview}>Preview</button><button type="button" onClick={onSave}>Save / schedule</button><button type="button" onClick={() => onSave("send")}>Send</button></div><label>Test recipient<input type="email" placeholder="you@example.com" value={broadcast.testTo} onChange={(event) => setField("testTo", event.target.value)} /></label><button type="button" onClick={onTest}>Send test</button>{notice && <div className="messages-alert" role="status">{notice}</div>}</div>{scheduled.filter((item) => item.status === "SCHEDULED").map((item) => <div className="broadcast-scheduled" key={item.id}><span>{item.subject}</span><time>{formatIndiaDateTime(item.scheduled_at)} IST</time><button type="button" onClick={() => cancel(item.id)}>Cancel scheduled message</button></div>)}</div>;
+  return (
+    <div className="broadcast-panel">
+      <div className="messages-section-heading">
+        <div><p className="messages-kicker">ADMIN BROADCASTS</p><h2>Announcement broadcast</h2></div>
+      </div>
+      <div className="broadcast-form">
+        <label>Subject<input value={broadcast.subject} onChange={(event) => setField("subject", event.target.value)} /></label>
+        <label>Message<textarea rows="6" value={broadcast.body} onChange={(event) => setField("body", event.target.value)} /></label>
+        <label>Audience
+          <select value={broadcast.audience} onChange={(event) => setField("audience", event.target.value)}>
+            <option value="everyone">Everyone</option>
+            <option value="customers">Customers</option>
+            <option value="contributors">Contributors</option>
+            <option value="selected_users">Selected users</option>
+            <option value="selected_contributors">Selected contributors</option>
+            <option value="subscription">Users on selected subscription</option>
+            <option value="criteria">Users matching criteria</option>
+          </select>
+        </label>
+        {["selected_users", "selected_contributors"].includes(broadcast.audience) && <label>User IDs<input placeholder="Comma-separated IDs" value={broadcast.userIds} onChange={(event) => setField("userIds", event.target.value)} /></label>}
+        {broadcast.audience === "subscription" && <label>Subscription ID<input inputMode="numeric" value={broadcast.subscriptionId} onChange={(event) => setField("subscriptionId", event.target.value)} /></label>}
+        {broadcast.audience === "criteria" && <label>Matching role
+          <select value={broadcast.criteriaRole} onChange={(event) => setField("criteriaRole", event.target.value)}>
+            <option value="">Any role</option>
+            <option value="customer">Customer</option>
+            <option value="contributor">Contributor</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>}
+        <label>Delivery
+          <select value={broadcast.channel} onChange={(event) => setField("channel", event.target.value)}>
+            <option value="internal">Internal notification</option>
+            <option value="email">Email</option>
+            <option value="both">Both</option>
+          </select>
+        </label>
+        <label>Priority
+          <select value={broadcast.priority} onChange={(event) => setField("priority", event.target.value)}>
+            <option value="LOW">Low</option>
+            <option value="NORMAL">Normal</option>
+            <option value="HIGH">High</option>
+            <option value="URGENT">Urgent</option>
+          </select>
+        </label>
+        <BroadcastDateTimePicker label="Schedule date/time (IST)" value={broadcast.scheduledAt} onChange={(value) => setField("scheduledAt", value)} />
+        <BroadcastDateTimePicker label="Expiry date/time (IST)" value={broadcast.expiresAt} onChange={(value) => setField("expiresAt", value)} />
+        <div className="broadcast-actions">
+          <button type="button" onClick={onPreview}>Preview</button>
+          <button type="button" onClick={onSave}>Save / schedule</button>
+          <button type="button" onClick={() => onSave("send")}>Send</button>
+        </div>
+        <label>Test recipient<input type="email" placeholder="you@example.com" value={broadcast.testTo} onChange={(event) => setField("testTo", event.target.value)} /></label>
+        <button type="button" onClick={onTest}>Send test</button>
+        {notice && <div className="messages-alert" role="status">{notice}</div>}
+      </div>
+      {scheduled.filter((item) => item.status === "SCHEDULED").map((item) => (
+        <div className="broadcast-scheduled" key={item.id}>
+          <span>{item.subject}</span>
+          <time>{formatIndiaDateTime(item.scheduled_at)} IST</time>
+          <button type="button" onClick={() => cancel(item.id)}>Cancel scheduled message</button>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export default function MessagesPage({ darkMode, userRole }) {
@@ -457,7 +707,7 @@ export default function MessagesPage({ darkMode, userRole }) {
         </section>
         {tab === "inbox" && <aside className="compose-panel"><p className="messages-kicker">{isAdmin ? "DIRECT MESSAGE" : "SUPPORT CHAT"}</p><h2>{isAdmin ? "Start a conversation" : "Chat with Support"}</h2><p>{isAdmin ? "Reach a customer, contributor, or teammate directly." : "Send a private message to the GFXunlimit support team. No email is required."}</p><form onSubmit={sendMessage}>{isAdmin && <label>Recipient username<input list="message-recipient-options" value={recipientUsername} onChange={(event) => { setRecipientUsername(event.target.value); setMessageType(""); const match = recipients.find((item) => item.username.toLowerCase() === event.target.value.toLowerCase() || item.email.toLowerCase() === event.target.value.toLowerCase()); setRecipientId(match?.id || ""); }} placeholder="Search by username or email" /><datalist id="message-recipient-options">{recipients.map((recipient) => <option key={recipient.id} value={recipient.username}>{recipient.full_name || recipient.email} ({recipient.role})</option>)}</datalist></label>}{isAdmin && <label>Message type<select value={messageType} onChange={(event) => { setMessageType(event.target.value); if (event.target.value) { setRecipientUsername(""); setRecipientId(""); } }}>{[<option value="" key="none">Choose a message type or recipient</option>, ...messageTypes.map((type) => <option key={type.code} value={type.code}>{type.label}</option>)]}</select></label>}<label>Subject<input required value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="What can we help with?" /></label><label>Message<textarea required rows="5" value={body} onChange={(event) => setBody(event.target.value)} placeholder="Write your message..." /></label><button type="submit">{isAdmin ? "Send message" : "Start chat"} <span>→</span></button></form></aside>}
       </div>
-      {replyConversation && <div className="activity-modal-backdrop" role="presentation" onClick={() => setReplyConversation(null)}><section className="reply-modal" role="dialog" aria-modal="true" aria-label="Conversation replies" onClick={(event) => event.stopPropagation()}><div className="activity-modal-heading"><div><p className="messages-kicker">CONVERSATION</p><h2>{replyConversation.subject || "Message thread"}</h2></div><button type="button" aria-label="Close conversation" onClick={() => setReplyConversation(null)}>×</button></div><div className="reply-thread">{(replyConversation.messages || []).map((item) => <article className={`reply-message ${Number(item.sender_id) === Number(replyConversation.currentUserId) ? "is-own" : ""}`} key={item.id}><div><strong>{item.sender_username || (item.sender_id ? `User #${item.sender_id}` : "System")}</strong><time>{formatIndiaDateTime(item.created_at)} IST</time></div><p>{item.body}</p></article>)}</div><form className="reply-form" onSubmit={sendReply}><textarea aria-label="Reply message" rows="4" value={replyBody} onChange={(event) => setReplyBody(event.target.value)} placeholder="Write a reply..." required /><div className="reply-form-actions"><button type="button" className="reply-delete-button" onClick={() => deleteConversation(replyConversation.conversationId, replyConversation.subject)}>Delete conversation</button><button type="submit" disabled={replySending || !replyBody.trim()}>{replySending ? "Sending..." : "Send reply"}</button></div></form></section></div>}
+      {replyConversation && <div className={`activity-modal-backdrop${isAdmin ? " is-admin-reply" : ""}`} role="presentation" onClick={() => setReplyConversation(null)}><section className="reply-modal" role="dialog" aria-modal="true" aria-label="Conversation replies" onClick={(event) => event.stopPropagation()}><div className="activity-modal-heading"><div><p className="messages-kicker">CONVERSATION</p><h2>{replyConversation.subject || "Message thread"}</h2></div><button type="button" aria-label="Close conversation" onClick={() => setReplyConversation(null)}>×</button></div><div className="reply-thread">{(replyConversation.messages || []).map((item) => <article className={`reply-message ${Number(item.sender_id) === Number(replyConversation.currentUserId) ? "is-own" : ""}`} key={item.id}><div><strong>{item.sender_username || (item.sender_id ? `User #${item.sender_id}` : "System")}</strong><time>{formatIndiaDateTime(item.created_at)} IST</time></div><p>{item.body}</p></article>)}</div><form className="reply-form" onSubmit={sendReply}><textarea aria-label="Reply message" rows="4" value={replyBody} onChange={(event) => setReplyBody(event.target.value)} placeholder="Write a reply..." required /><div className="reply-form-actions"><button type="button" className="reply-delete-button" onClick={() => deleteConversation(replyConversation.conversationId, replyConversation.subject)}>Delete conversation</button><button type="submit" disabled={replySending || !replyBody.trim()}>{replySending ? "Sending..." : "Send reply"}</button></div></form></section></div>}
       {selectedActivity && <div className="activity-modal-backdrop" role="presentation" onClick={() => setSelectedActivity(null)}><section className="activity-modal" role="dialog" aria-modal="true" aria-label="Activity event details" onClick={(event) => event.stopPropagation()}><div className="activity-modal-heading"><div><p className="messages-kicker">EVENT DETAILS</p><h2>{formatActivityType(selectedActivity.event_type)}</h2></div><button type="button" aria-label="Close event details" onClick={() => setSelectedActivity(null)}>×</button></div><dl><div><dt>Event ID</dt><dd>{selectedActivity.id}</dd></div><div><dt>Event type</dt><dd>{selectedActivity.event_type}</dd></div><div><dt>User ID</dt><dd>{selectedActivity.user_id || "System"}</dd></div><div><dt>User</dt><dd>{selectedActivity.username || "System"}</dd></div><div><dt>User role</dt><dd>{selectedActivity.user_role || "System"}</dd></div><div><dt>IP address</dt><dd>{selectedActivity.ip_address || "Not recorded"}</dd></div><div><dt>Timestamp</dt><dd>{formatIndiaDateTime(selectedActivity.created_at)} IST</dd></div><div><dt>Related records</dt><dd>{[selectedActivity.asset_id && `Asset #${selectedActivity.asset_id}`, selectedActivity.order_id && `Order #${selectedActivity.order_id}`, selectedActivity.payment_id && `Payment #${selectedActivity.payment_id}`, selectedActivity.subscription_id && `Subscription #${selectedActivity.subscription_id}`, selectedActivity.coupon_id && `Coupon #${selectedActivity.coupon_id}`].filter(Boolean).join(" · ") || "None"}</dd></div><div><dt>Description</dt><dd>{selectedActivity.description || "No description"}</dd></div><div><dt>Result</dt><dd>{selectedActivity.success ? "Success" : "Failure"}</dd></div>{selectedActivity.error_message && <div><dt>Error</dt><dd>{selectedActivity.error_message}</dd></div>}</dl><div className="activity-metadata"><dt>Metadata JSON</dt><pre>{formatActivityMetadata(selectedActivity.metadata)}</pre></div></section></div>}
     </main>
   );

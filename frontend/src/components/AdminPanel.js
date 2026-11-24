@@ -33,6 +33,8 @@ const COLLECTION_STORAGE_KEY = "asset-collections";
 const ASSET_STORAGE_CARD_COUNT_KEY = "admin-assets-connection-card-count";
 const THUMBNAIL_STORAGE_CARD_COUNT_KEY = "admin-thumbnails-connection-card-count";
 const USER_DELETE_COOLING_PERIOD_MINUTES = 60;
+const ADMIN_DASHBOARD_SECTION_STORAGE_KEY = "admin-dashboard-section";
+const ADMIN_DASHBOARD_SECTIONS = new Set(["dashboard", "contributor-approval", "customer-approval"]);
 const DEFAULT_THUMBNAIL_FORMATS = ["jpg", "png", "eps", "psd", "video"];
 const THUMBNAIL_FORMAT_OPTIONS = [
   ["jpg", "JPG / JPEG"],
@@ -1270,6 +1272,38 @@ const formatCoolingRemaining = (coolingUntil, now = Date.now()) => {
   const minutes = Math.ceil((remainingSeconds % 3600) / 60);
   return `${hours}h ${minutes}m remaining`;
 };
+const formatRequestAge = (createdAt, now = Date.now()) => {
+  const createdTime = new Date(createdAt || "").getTime();
+  if (!Number.isFinite(createdTime)) return "Request time unavailable";
+
+  const ageMinutes = Math.floor(Math.max(0, now - createdTime) / 60000);
+  if (ageMinutes < 1) return "Just now";
+  if (ageMinutes < 60) return `${ageMinutes}m ago`;
+
+  const ageHours = Math.floor(ageMinutes / 60);
+  if (ageHours < 24) return `${ageHours}h ago`;
+
+  const ageDays = Math.floor(ageHours / 24);
+  if (ageDays < 7) return `${ageDays}d ago`;
+  if (ageDays < 30) return `${Math.floor(ageDays / 7)}w ago`;
+
+  const ageMonths = Math.floor(ageDays / 30);
+  if (ageMonths < 12) return `${ageMonths}mo ago`;
+  return `${Math.floor(ageMonths / 12)}y ago`;
+};
+const getApprovalRequestInfo = (user) => {
+  const role = String(user?.role || "").toLowerCase();
+  if (role === "contributor") {
+    return {
+      title: "Contributor registration request",
+      description: "A new contributor account is awaiting approval."
+    };
+  }
+  return {
+    title: "Customer registration request",
+    description: "A new customer account is awaiting approval."
+  };
+};
 const formatFileSize = (bytes) => {
   if (typeof bytes !== "number" || bytes < 0) return "0 KB";
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
@@ -1466,75 +1500,154 @@ function CardWrapper({ cardId, cardOrder, isLayoutEditMode, isDarkMode, moveCard
 }
 
 function AdminDashboardContent({ images, users, collections, isDarkMode }) {
-  const [section, setSection] = useState("dashboard");
+  const [section, setSection] = useState(() => {
+    if (typeof window === "undefined") return "dashboard";
+    const navigationType = window.performance?.getEntriesByType?.("navigation")?.[0]?.type;
+    if (navigationType !== "reload") {
+      window.sessionStorage.removeItem(ADMIN_DASHBOARD_SECTION_STORAGE_KEY);
+      return "dashboard";
+    }
+
+    const storedSection = window.sessionStorage.getItem(ADMIN_DASHBOARD_SECTION_STORAGE_KEY);
+    return ADMIN_DASHBOARD_SECTIONS.has(storedSection) ? storedSection : "dashboard";
+  });
+  const [resolvedUserIds, setResolvedUserIds] = useState(() => new Set());
+  const [pendingActionUserId, setPendingActionUserId] = useState(null);
+  const [viewingUser, setViewingUser] = useState(null);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setCurrentTime(Date.now()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const pendingAssets = images.filter((image) => String(image?.status || "").toLowerCase() === "pending").length;
-  const pendingContributors = users.filter((user) => String(user?.role || "").toLowerCase() === "contributor" && String(user?.status || "").toLowerCase() === "pending");
-  const pendingCustomers = users.filter((user) => String(user?.role || "").toLowerCase() === "customer" && String(user?.status || "").toLowerCase() === "pending");
+  const pendingContributors = users.filter((user) => String(user?.role || "").toLowerCase() === "contributor" && String(user?.status || "").toLowerCase() === "pending" && !resolvedUserIds.has(String(user.id)));
+  const pendingCustomers = users.filter((user) => String(user?.role || "").toLowerCase() === "customer" && String(user?.status || "").toLowerCase() === "pending" && !resolvedUserIds.has(String(user.id)));
   const approvalUsers = section === "contributor-approval" ? pendingContributors : pendingCustomers;
   const approvalLabel = section === "contributor-approval" ? "Contributor Approval" : "Customer Approval";
 
-  const approveUser = async (userId) => {
+  useEffect(() => {
+    const dashboardPath = window.location.pathname;
+    return () => {
+      const currentUrl = new URL(window.location.href);
+      if (currentUrl.pathname !== dashboardPath || currentUrl.searchParams.get("tab") !== "admin_dashboard") {
+        window.sessionStorage.removeItem(ADMIN_DASHBOARD_SECTION_STORAGE_KEY);
+      }
+    };
+  }, []);
+
+  const selectSection = (nextSection) => {
+    setSection(nextSection);
+    window.sessionStorage.setItem(ADMIN_DASHBOARD_SECTION_STORAGE_KEY, nextSection);
+  };
+
+  const updateRequestStatus = async (user, status) => {
+    const userId = String(user.id);
+    setPendingActionUserId(userId);
     try {
       const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-      await axios.put(`${API_BASE_URL}/admin/users/${userId}/approve`, {}, {
+      await axios.put(`${API_BASE_URL}/admin/users/${user.id}/${status}`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
+      setResolvedUserIds((previous) => new Set(previous).add(userId));
+      toast.success(`Account request ${status === "approve" ? "approved" : "rejected"}.`);
     } catch (error) {
-      console.error("Failed to approve user", error);
-      toast.error("Failed to approve user.");
+      console.error(`Failed to ${status} account request`, error);
+      toast.error(`Failed to ${status} account request.`);
+    } finally {
+      setPendingActionUserId(null);
     }
   };
 
   return (
-    <div style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "220px minmax(0, 1fr)", gap: "24px", alignItems: "start" }}>
-        <aside aria-label="Admin dashboard menu" style={{ display: "grid", gap: "6px", padding: "12px", borderRadius: "12px", background: isDarkMode ? "#111827" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0" }}>
+    <div className={`admin-dashboard${isDarkMode ? " is-dark" : ""}`} style={{ colorScheme: isDarkMode ? "dark" : "light" }}>
+      <div className="admin-dashboard-layout">
+        <aside className="admin-dashboard-menu" aria-label="Admin dashboard menu" style={{ background: isDarkMode ? "#111827" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0" }}>
           {[
             ["dashboard", "Dashboard"],
             ["contributor-approval", `Contributor Approval (${pendingContributors.length})`],
             ["customer-approval", `Customer Approval (${pendingCustomers.length})`]
           ].map(([menuSection, label]) => (
-            <button key={menuSection} type="button" onClick={() => setSection(menuSection)} aria-pressed={section === menuSection} style={{ padding: "11px 12px", border: 0, borderRadius: "8px", background: section === menuSection ? "#1976d2" : "transparent", color: section === menuSection ? "#fff" : "inherit", textAlign: "left", fontWeight: 700, cursor: "pointer" }}>
+            <button className="admin-dashboard-menu__button" key={menuSection} type="button" onClick={() => selectSection(menuSection)} aria-pressed={section === menuSection} style={{ background: section === menuSection ? "#1976d2" : "transparent", color: section === menuSection ? "#fff" : "inherit" }}>
               {label}
             </button>
           ))}
         </aside>
 
         {section === "dashboard" ? (
-          <section aria-labelledby="admin-dashboard-heading" style={{ display: "grid", gap: "22px" }}>
+          <section className="admin-dashboard-content" aria-labelledby="admin-dashboard-heading">
             <div>
-              <p style={{ margin: 0, color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.78rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>Admin overview</p>
+              <p className="admin-dashboard-eyebrow">Admin overview</p>
               <h1 id="admin-dashboard-heading" style={{ margin: "6px 0 0", fontSize: "2rem" }}>Dashboard</h1>
-              <p style={{ margin: "8px 0 0", color: isDarkMode ? "#cbd5e1" : "#64748b" }}>Monitor marketplace activity and jump into the areas that need attention.</p>
+              <p className="admin-dashboard-description">Monitor marketplace activity and jump into the areas that need attention.</p>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "14px" }}>
+            <div className="admin-dashboard-stat-grid">
               {[["Total assets", images.length], ["Pending assets", pendingAssets], ["Users", users.length], ["Collections", collections.length]].map(([label, value]) => (
-                <div key={label} style={{ padding: "18px", borderRadius: "12px", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", background: isDarkMode ? "#111827" : "#ffffff", boxShadow: "0 8px 24px rgba(15, 23, 42, 0.08)" }}>
-                  <div style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.85rem" }}>{label}</div>
-                  <strong style={{ display: "block", marginTop: "8px", fontSize: "1.8rem" }}>{value.toLocaleString()}</strong>
+                <div className="admin-dashboard-stat-card" key={label} data-stat={label.toLowerCase().replace(/\s+/g, "-")}>
+                  <div className="admin-dashboard-stat-card__label">{label}</div>
+                  <strong style={{ display: "block", marginTop: "8px", fontSize: "1.8rem" }}><AnimatedAssetCount value={value} /></strong>
                 </div>
               ))}
             </div>
           </section>
         ) : (
-          <section aria-labelledby="admin-approval-heading" style={{ display: "grid", gap: "16px" }}>
+          <section className="admin-dashboard-content admin-dashboard-approvals" aria-labelledby="admin-approval-heading">
             <div>
-              <p style={{ margin: 0, color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.78rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>User management</p>
-              <h1 id="admin-approval-heading" style={{ margin: "6px 0 0", fontSize: "2rem" }}>{approvalLabel}</h1>
+              <p className="admin-dashboard-eyebrow">User management</p>
+              <h1 id="admin-approval-heading" className="admin-dashboard-heading">{approvalLabel}</h1>
             </div>
             {approvalUsers.length === 0 ? <p>No pending approvals.</p> : (
               <div style={{ display: "grid", gap: "10px" }}>
-                {approvalUsers.map((user) => (
-                  <div key={user.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", padding: "16px", borderRadius: "10px", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", background: isDarkMode ? "#111827" : "#fff" }}>
-                    <div><strong>{user.full_name || user.username || user.email}</strong><div style={{ color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: "0.9rem" }}>{user.email || user.username}</div></div>
-                    <button type="button" onClick={() => approveUser(user.id)} style={{ border: 0, borderRadius: "8px", padding: "9px 14px", background: "#2e7d32", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Approve</button>
-                  </div>
-                ))}
+                {approvalUsers.map((user) => {
+                  const requestAge = formatRequestAge(user.created_at, currentTime);
+                  const requestInfo = getApprovalRequestInfo(user);
+                  return (
+                    <article className="admin-dashboard-approval-row" key={user.id}>
+                      <div className="admin-dashboard-approval-user">
+                        <div className="admin-dashboard-approval-topic">
+                          <strong>{requestInfo.title}</strong>
+                          <span>{requestInfo.description}</span>
+                        </div>
+                        <strong>{user.full_name || user.username || user.email}</strong>
+                        <div>{user.email || user.username}</div>
+                        <time dateTime={user.created_at || undefined}>{requestAge === "Request time unavailable" ? requestAge : `Requested ${requestAge}`}</time>
+                      </div>
+                      <div className="admin-dashboard-approval-actions">
+                        <button type="button" className="admin-dashboard-action--view" onClick={() => setViewingUser(user)} aria-label={`View ${user.full_name || user.username || user.email}`}>View</button>
+                        <button type="button" className="admin-dashboard-action--approve" onClick={() => updateRequestStatus(user, "approve")} disabled={pendingActionUserId === String(user.id)}>{pendingActionUserId === String(user.id) ? "Working…" : "Approve"}</button>
+                        <button type="button" className="admin-dashboard-action--reject" onClick={() => updateRequestStatus(user, "reject")} disabled={pendingActionUserId === String(user.id)}>{pendingActionUserId === String(user.id) ? "Working…" : "Reject"}</button>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>
         )}
       </div>
+      {viewingUser && (
+        <div className="admin-dashboard-dialog-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setViewingUser(null);
+        }}>
+          <section className="admin-dashboard-user-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-dashboard-user-title">
+            <header>
+              <div>
+                <p className="admin-dashboard-eyebrow">Review request</p>
+                <h2 id="admin-dashboard-user-title">{getApprovalRequestInfo(viewingUser).title}</h2>
+                <p className="admin-dashboard-user-dialog__description">{getApprovalRequestInfo(viewingUser).description}</p>
+              </div>
+              <button type="button" onClick={() => setViewingUser(null)} aria-label="Close user details">×</button>
+            </header>
+            <dl>
+              <div><dt>Name</dt><dd>{viewingUser.full_name || "—"}</dd></div>
+              <div><dt>Username</dt><dd>{viewingUser.username || "—"}</dd></div>
+              <div><dt>Email</dt><dd>{viewingUser.email || "—"}</dd></div>
+              <div><dt>Role</dt><dd>{viewingUser.role || "—"}</dd></div>
+              <div><dt>Request received</dt><dd>{viewingUser.created_at ? new Date(viewingUser.created_at).toLocaleString() : "Unavailable"}</dd></div>
+            </dl>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -13576,6 +13689,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           {isLiveAssetsTab && (
             <>
               <div
+                className={`admin-live-assets-header${isDarkMode ? " admin-live-assets-header--dark" : ""}`}
                 style={{
                   marginBottom: "20px",
                   padding: "20px",
@@ -13592,8 +13706,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   <h3>Live Assets</h3>
                   <p style={{ color: isDarkMode ? "#cbd5e1" : "#555", marginTop: "-4px" }}>Manage currently approved assets that are visible on the site.</p>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px" }}>
-                  <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <div className="admin-live-assets-header__actions" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px" }}>
+                  <div className="admin-live-assets-header__buttons" style={{ display: "flex", gap: "10px", alignItems: "center" }}>
                     {bulkSelectionControls}
                     {bulkAssetSelectionToggle}
                     {bulkSelectionCount}
@@ -13617,6 +13731,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 </div>
               )}
               <div
+                className={`admin-live-assets-filters${isDarkMode ? " admin-live-assets-filters--dark" : ""}`}
                 aria-hidden={isEditing}
                 style={{
                   marginBottom: "18px",
@@ -13706,6 +13821,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           )}
 
           <div
+            className={isLiveAssetsTab ? `admin-live-assets-grid${isDarkMode ? " admin-live-assets-grid--dark" : ""}` : undefined}
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(4, 1fr)",
@@ -13715,6 +13831,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           >
             {renderedImages.map((image) => (
               <div
+                className={isLiveAssetsTab ? `admin-live-assets-card${isDarkMode ? " admin-live-assets-card--dark" : ""}` : undefined}
                 key={image.id}
                 style={{
                   border: isDarkMode ? "1px solid rgba(148, 163, 184, 0.25)" : "1px solid #ddd",
@@ -13789,7 +13906,13 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     Live
                   </div>
                 )}
-                <AdminAssetThumbnail image={image} isDarkMode={isDarkMode} />
+                {isLiveAssetsTab ? (
+                  <div className="admin-live-assets-thumbnail">
+                    <AdminAssetThumbnail image={image} isDarkMode={isDarkMode} />
+                  </div>
+                ) : (
+                  <AdminAssetThumbnail image={image} isDarkMode={isDarkMode} />
+                )}
                 {statusFilter === "reviewed" && (
                   <div
                     style={{
@@ -13831,7 +13954,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     </p>
                   </div>
                 )}
-                <div style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
+                <div className={isLiveAssetsTab ? "admin-live-assets-card__actions" : undefined} style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
                   <button
                     onClick={() => openImage(image, true)}
                     style={{
@@ -13880,7 +14003,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     Active
                   </button>
                 </div>
-                <div style={{ display: "flex", gap: "5px", marginTop: "6px" }}>
+                <div className={isLiveAssetsTab ? "admin-live-assets-card__downloads" : undefined} style={{ display: "flex", gap: "5px", marginTop: "6px" }}>
                   <button
                     onClick={() => downloadOriginalFile(image.id)}
                     title="Download Original File"
@@ -14045,6 +14168,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
           {selectedImage && (
             <div
+              className={isLiveAssetsTab ? `admin-live-asset-modal-overlay${isDarkMode ? " admin-live-asset-modal-overlay--dark" : ""}` : undefined}
               style={{
                 position: "fixed",
                 top: 0,
@@ -14060,6 +14184,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               }}
             >
               <div
+                className={isLiveAssetsTab ? `admin-live-asset-modal${isDarkMode ? " admin-live-asset-modal--dark" : ""}` : undefined}
                 style={{
                   width: "100%",
                   maxWidth: "880px",
@@ -14071,7 +14196,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   boxShadow: "0 20px 50px rgba(0,0,0,0.2)"
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                <div className={isLiveAssetsTab ? "admin-live-asset-modal__header" : undefined} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                   <h3 style={{ margin: 0 }}>{selectedImage.title}</h3>
                   <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
                     <button
@@ -14103,14 +14228,15 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   </div>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: "20px", marginTop: "20px" }}>
+                <div className={isLiveAssetsTab ? "admin-live-asset-modal__content" : undefined} style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: "20px", marginTop: "20px" }}>
                   <img
+                    className={isLiveAssetsTab ? "admin-live-asset-modal__preview" : undefined}
                     src={getAssetPreviewUrl(selectedImage, { quality: 80, watermark: false })}
                     alt={selectedImage.title}
                     style={{ width: "100%", borderRadius: "12px", objectFit: "cover", maxHeight: "420px" }}
                   />
 
-                  <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                  <div className={isLiveAssetsTab ? "admin-live-asset-modal__form" : undefined} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                     {isEditing ? (
                       <>
                         <label>
@@ -14134,7 +14260,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                         <label style={{ display: "block", marginBottom: "6px", fontWeight: "600" }}>
                           Category (1 required, 2 max)
                         </label>
-                        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                        <div className="admin-live-asset-modal__footer" style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
                           <div style={{ flex: 1, minWidth: "220px" }}>
                             <select
                               aria-label="Select primary category"

@@ -61,6 +61,7 @@ function ReadinessProbe({ autoAvailabilityReady = true }) {
     <main>
       <span data-testid="ready-app">{pathname}:{auth.status}</span>
       <span data-testid="auth-state">{auth.status}:{auth.role}</span>
+      <span data-testid="route-id">{routeId}</span>
       <button type="button" onClick={() => reportResource("catalog", "ready", "", routeId)}>Catalog ready</button>
       <button type="button" onClick={() => reportResource("hero", "ready", "", routeId)}>Hero ready</button>
       <button type="button" onClick={() => reportResource("dashboard", "ready", "", routeId)}>Dashboard ready</button>
@@ -125,6 +126,10 @@ describe("StartupReadinessProvider", () => {
       if (url.endsWith("/me")) return Promise.reject({ response: { status: 401 } });
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it("verifies PostgreSQL health and permits anonymous public routes", async () => {
@@ -350,12 +355,12 @@ describe("StartupReadinessProvider", () => {
       if (url.endsWith("/me")) return Promise.reject({ response: { status: 401 } });
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Go to homepage" }));
     expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "0");
     await act(async () => {
       resolveRetryHealth(HEALTH_RESPONSE);
     });
-    expect(await screen.findByTestId("ready-app")).toHaveTextContent("/about:anonymous");
+    expect(await screen.findByTestId("ready-app")).toHaveTextContent("/:anonymous");
   });
 
   it("shows a user-friendly message instead of raw network errors", async () => {
@@ -363,6 +368,40 @@ describe("StartupReadinessProvider", () => {
 
     renderReadiness();
     expect(await screen.findByRole("alert")).toHaveTextContent("We couldn’t reach the server. Please try again.");
+  });
+
+  it("automatically retries transient startup failures until the backend is ready", async () => {
+    jest.useFakeTimers();
+    let healthAttempts = 0;
+    axios.get.mockImplementation((url) => {
+      if (url.endsWith("/health")) {
+        healthAttempts += 1;
+        if (healthAttempts === 1) {
+          return Promise.reject(Object.assign(new Error("Network Error"), { code: "ERR_NETWORK" }));
+        }
+        return Promise.resolve(HEALTH_RESPONSE);
+      }
+      if (url.endsWith("/me")) return Promise.reject({ response: { status: 401 } });
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    renderReadiness();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("We couldn’t reach the server. Please try again.");
+    expect(healthAttempts).toBe(1);
+
+    await act(async () => {
+      jest.advanceTimersByTime(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("ready-app")).toHaveTextContent("/about:anonymous");
+    expect(healthAttempts).toBe(2);
   });
 
   it.each([401, 403])("continues anonymously after /me returns %s", async (status) => {
@@ -716,7 +755,7 @@ describe("StartupReadinessProvider", () => {
     });
   });
 
-  it("offers a working retry after an essential route resource fails", async () => {
+  it("navigates home after an essential route resource fails", async () => {
     const { container } = renderReadiness("/explore");
     await screen.findByTestId("ready-app");
 
@@ -727,30 +766,36 @@ describe("StartupReadinessProvider", () => {
     clickButton(container, "Catalog failed");
     expect(await screen.findByRole("alert")).toHaveTextContent("Catalog unavailable.");
 
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(screen.getByTestId("retry-key")).toHaveTextContent("1"));
-    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "75");
+    const failedRouteId = screen.getByTestId("route-id").textContent;
+    fireEvent.click(screen.getByRole("button", { name: "Go to homepage" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("route-id").textContent).not.toBe(failedRouteId);
+      expect(screen.getByTestId("ready-app")).toHaveTextContent("/:anonymous");
+    });
     clickButton(container, "Catalog ready");
+    clickButton(container, "Hero ready");
     await waitFor(() => expect(container.querySelector(".startup-readiness-content")).toHaveAttribute("aria-hidden", "false"));
   });
 
-  it("retries availability independently and keeps the route covered across repeated failures", async () => {
+  it("navigates home after repeated availability failures", async () => {
     const { container } = renderReadiness("/", { autoAvailabilityReady: false });
     await screen.findByTestId("ready-app");
 
     clickButton(container, "Availability failed");
     expect(await screen.findByRole("alert")).toHaveTextContent("Availability unavailable.");
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    const failedRouteId = screen.getByTestId("route-id").textContent;
+    fireEvent.click(screen.getByRole("button", { name: "Go to homepage" }));
     await waitFor(() => {
-      expect(screen.getByTestId("availability-retry-key")).toHaveTextContent("1");
+      expect(screen.getByTestId("route-id").textContent).not.toBe(failedRouteId);
     });
     expect(screen.getByTestId("retry-key")).toHaveTextContent("0");
 
     clickButton(container, "Availability failed");
     expect(await screen.findByRole("alert")).toHaveTextContent("Availability unavailable.");
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    const secondFailedRouteId = screen.getByTestId("route-id").textContent;
+    fireEvent.click(screen.getByRole("button", { name: "Go to homepage" }));
     await waitFor(() => {
-      expect(screen.getByTestId("availability-retry-key")).toHaveTextContent("2");
+      expect(screen.getByTestId("route-id").textContent).not.toBe(secondFailedRouteId);
     });
 
     clickButton(container, "Catalog ready");

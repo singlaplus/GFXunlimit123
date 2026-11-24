@@ -55,6 +55,7 @@ describe("AdminPanel collection controls", () => {
 
   beforeEach(() => {
     window.history.pushState({}, "", "/");
+    sessionStorage.removeItem("admin-dashboard-section");
     sessionStorage.removeItem("admin-thumbnail-preview-sample-session");
     sessionStorage.removeItem("admin-thumbnail-preview-sample-history");
     localStorage.removeItem("admin-assets-connection-card-count");
@@ -2412,6 +2413,97 @@ describe("AdminPanel collection controls", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /customer approval/i }));
     expect(await screen.findByRole("heading", { name: /customer approval/i })).toBeInTheDocument();
+  });
+
+  it("shows request ages and lets admins view, approve, or reject pending users", async () => {
+    const createdAt = new Date(Date.now() - (3.5 * 60 * 60 * 1000)).toISOString();
+    window.history.pushState({}, "", "/admin?tab=admin_dashboard");
+    localStorage.setItem("userRole", "admin");
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=admin_dashboard" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/users")) {
+        return Promise.resolve({ data: [
+          { id: 21, full_name: "Creator Request", username: "creator-request", email: "creator@example.com", role: "contributor", status: "pending", created_at: createdAt },
+          { id: 22, full_name: "Customer Request", username: "customer-request", email: "customer@example.com", role: "customer", status: "pending", created_at: createdAt }
+        ] });
+      }
+      if (url.includes("/admin/images")) return Promise.resolve({ data: [] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
+    });
+    axios.put.mockResolvedValue({ data: { status: "active" } });
+
+    render(<AdminPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /contributor approval/i }));
+    expect(await screen.findByText("Contributor registration request")).toBeInTheDocument();
+    expect(screen.getByText("A new contributor account is awaiting approval.")).toBeInTheDocument();
+    expect(await screen.findByText("Requested 3h ago")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View Creator Request" }));
+    expect(screen.getByRole("dialog", { name: /contributor registration request/i })).toHaveTextContent("creator@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Close user details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/users/21/reject"),
+        {},
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "View Creator Request" })).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /customer approval/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/users/22/approve"),
+        {},
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+    });
+  });
+
+  it("restores the selected dashboard section on refresh and resets after leaving", async () => {
+    window.history.pushState({}, "", "/admin?tab=admin_dashboard");
+    useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=admin_dashboard" });
+    const originalGetEntriesByType = window.performance.getEntriesByType;
+    const navigationEntries = jest.fn().mockReturnValue([{ type: "reload" }]);
+    Object.defineProperty(window.performance, "getEntriesByType", {
+      configurable: true,
+      value: navigationEntries,
+    });
+
+    try {
+      const firstRender = render(<AdminPanel />);
+      fireEvent.click(screen.getByRole("button", { name: /contributor approval/i }));
+      expect(await screen.findByRole("heading", { name: /contributor approval/i })).toBeInTheDocument();
+      expect(sessionStorage.getItem("admin-dashboard-section")).toBe("contributor-approval");
+      firstRender.unmount();
+
+      const secondRender = render(<AdminPanel />);
+      expect(await screen.findByRole("heading", { name: /contributor approval/i })).toBeInTheDocument();
+
+      window.history.pushState({}, "", "/home");
+      expect(sessionStorage.getItem("admin-dashboard-section")).toBe("contributor-approval");
+      secondRender.unmount();
+      expect(sessionStorage.getItem("admin-dashboard-section")).toBeNull();
+      navigationEntries.mockReturnValue([{ type: "navigate" }]);
+      window.history.pushState({}, "", "/admin?tab=admin_dashboard");
+      useLocation.mockReturnValue({ pathname: "/admin", search: "?tab=admin_dashboard" });
+      render(<AdminPanel />);
+      expect(await screen.findByRole("heading", { name: /^dashboard$/i })).toBeInTheDocument();
+      expect(sessionStorage.getItem("admin-dashboard-section")).toBeNull();
+    } finally {
+      if (originalGetEntriesByType) {
+        Object.defineProperty(window.performance, "getEntriesByType", {
+          configurable: true,
+          value: originalGetEntriesByType,
+        });
+      } else {
+        delete window.performance.getEntriesByType;
+      }
+    }
   });
 
   it("shows contributor and customer detail cards in the controls tab", async () => {

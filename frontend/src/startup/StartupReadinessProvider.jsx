@@ -1,8 +1,9 @@
 import axios from "axios";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { API_BASE_URL } from "../utils/apiBaseUrl";
 import { clearAuthSessionStorage, getEffectiveAuthToken, hasActiveSession, normalizeAuthToken } from "../utils/authSession";
+import { getBackendRetryDelay, isRetryableBackendError } from "../utils/backendRetry";
 import { THEME_STORAGE_KEY } from "../utils/theme";
 
 const StartupReadinessContext = createContext(null);
@@ -190,7 +191,7 @@ function LoadingScreen({ logo, logoKey, progress }) {
   );
 }
 
-function ErrorScreen({ message, onRetry, logo }) {
+function ErrorScreen({ message, onGoHome, logo }) {
   const theme = getStartupTheme();
   return (
     <main className="startup-readiness-screen" data-theme={theme} role="alert">
@@ -222,8 +223,8 @@ function ErrorScreen({ message, onRetry, logo }) {
         </div>
         <h1>Let&apos;s get you back in.</h1>
         <p className="startup-readiness-message">{message}</p>
-        <button className="startup-readiness-retry" type="button" onClick={onRetry}>
-          <span>Try again</span>
+        <button className="startup-readiness-retry" type="button" onClick={onGoHome}>
+          <span>Go to homepage</span>
           <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
             <path d="M4.5 10h10m-4-4 4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
@@ -236,14 +237,16 @@ function ErrorScreen({ message, onRetry, logo }) {
 
 export function StartupReadinessProvider({ children }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const routeId = `${location.key || "initial"}:${location.pathname}${location.search}`;
   const [bootstrap, setBootstrap] = useState({ status: "checking", message: "" });
   const [auth, setAuth] = useState({ status: "pending", role: "" });
   const [resourceStates, setResourceStates] = useState({});
   const [availabilityStates, setAvailabilityStates] = useState({});
   const [startupAttempt, setStartupAttempt] = useState(0);
-  const [retryKey, setRetryKey] = useState(0);
-  const [availabilityRetryKey, setAvailabilityRetryKey] = useState(0);
+  const startupRetryCount = useRef(0);
+  const retryKey = 0;
+  const availabilityRetryKey = 0;
   const [startupMilestones, setStartupMilestones] = useState({ health: false, session: false });
   const [branding, setBranding] = useState({ logo: DEFAULT_STARTUP_LOGO });
   const [brandingLoaded, setBrandingLoaded] = useState(false);
@@ -314,13 +317,15 @@ export function StartupReadinessProvider({ children }) {
           setAuth({ status: "anonymous", role: "" });
         }
         window.dispatchEvent(new Event("auth-changed"));
-        setBootstrap({ status: "ready", message: "" });
+        startupRetryCount.current = 0;
+        setBootstrap({ status: "ready", message: "", retryable: false });
       } catch (error) {
         if (!active) return;
         console.error("Startup readiness check failed", error);
         setBootstrap({
           status: "error",
           message: getStartupErrorMessage(error),
+          retryable: isRetryableBackendError(error),
         });
       }
     };
@@ -328,6 +333,18 @@ export function StartupReadinessProvider({ children }) {
     initialize();
     return () => { active = false; };
   }, [startupAttempt]);
+
+  useEffect(() => {
+    if (bootstrap.status !== "error" || !bootstrap.retryable) return undefined;
+
+    const delay = getBackendRetryDelay(startupRetryCount.current);
+    const retryTimer = window.setTimeout(() => {
+      startupRetryCount.current += 1;
+      setStartupAttempt((attempt) => attempt + 1);
+    }, delay);
+
+    return () => window.clearTimeout(retryTimer);
+  }, [bootstrap.status, bootstrap.retryable, startupAttempt]);
 
   useEffect(() => {
     const handleAuthChanged = () => {
@@ -384,6 +401,7 @@ export function StartupReadinessProvider({ children }) {
   ) || "";
 
   const retryStartup = useCallback(() => {
+    startupRetryCount.current = 0;
     setResourceStates((current) => ({ ...current, [routeId]: {} }));
     setAvailabilityStates((current) => {
       const next = { ...current };
@@ -391,19 +409,9 @@ export function StartupReadinessProvider({ children }) {
       return next;
     });
     setStartupAttempt((attempt) => attempt + 1);
-  }, [routeId]);
-  const retryRoute = useCallback(() => {
-    setResourceStates((current) => ({ ...current, [routeId]: {} }));
-    setRetryKey((attempt) => attempt + 1);
-  }, [routeId]);
-  const retryAvailability = useCallback(() => {
-    setAvailabilityStates((current) => ({
-      ...current,
-      [routeId]: { status: "loading", error: "" },
-    }));
-    setAvailabilityRetryKey((attempt) => attempt + 1);
-  }, [routeId]);
-
+    navigate("/");
+  }, [navigate, routeId]);
+  const goHome = useCallback(() => navigate("/"), [navigate]);
   useEffect(() => {
     let active = true;
     const loadBranding = async () => {
@@ -474,7 +482,7 @@ export function StartupReadinessProvider({ children }) {
   if (bootstrap.status === "error") {
     return <ErrorScreen
       message={bootstrap.message}
-      onRetry={retryStartup}
+      onGoHome={retryStartup}
       logo={brandingLoaded ? branding.logo : ""}
     />;
   }
@@ -493,7 +501,7 @@ export function StartupReadinessProvider({ children }) {
           {routeError
             ? <ErrorScreen
                 message={routeError}
-                onRetry={availabilityRequired && currentAvailability?.status === "error" ? retryAvailability : retryRoute}
+                onGoHome={goHome}
                 logo={brandingLoaded ? branding.logo : ""}
               />
             : <LoadingScreen

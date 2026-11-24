@@ -6,9 +6,10 @@
   --profile-surface: #fff;
   --profile-soft: #f5f7fa;
   box-sizing: border-box;
-  width: auto;
+  width: calc(100% - 32px);
   max-width: none;
-  margin: 0 164px 24px 0;
+  margin: 0 16px 24px;
+  box-sizing: border-box;
   padding: clamp(22px, 3vw, 36px);
   color: var(--profile-ink);
   color-scheme: light;
@@ -245,19 +246,26 @@
 }
 
 .profile-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 0 0 12px;
   font-size: clamp(19px, 2.2vw, 24px);
   letter-spacing: -0.04em;
 }
 
 .profile-section-title--secondary {
-  margin-top: 26px;
+  margin-top: 28px;
 }
 
 .profile-stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
+}
+
+.profile-stats-grid--summary {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .profile-stats-grid--dashboard {
@@ -267,14 +275,16 @@
 .profile-stat-card {
   display: flex;
   min-width: 0;
-  min-height: 96px;
+  min-height: 112px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 15px 12px;
-  border-radius: 15px;
+  padding: 18px 12px;
+  border-radius: 16px;
   text-align: center;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--profile-accent) 3%, var(--profile-surface)), var(--profile-surface));
   transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
@@ -293,35 +303,48 @@
 
 .profile-stat-card strong {
   color: var(--profile-ink);
-  font-size: 22px;
+  font-size: clamp(20px, 2vw, 26px);
   font-weight: 800;
   letter-spacing: -0.04em;
 }
 
 .profile-earnings-card {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 22px;
-  padding: 20px;
-  border-color: color-mix(in srgb, #20976b 30%, var(--profile-border));
-  border-radius: 18px;
+  gap: 14px;
+  margin-top: 24px;
+  padding: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(32, 151, 107, 0.10), transparent 28%),
+    var(--profile-surface);
+  border: 1px solid var(--profile-border);
+  border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(24, 32, 44, 0.045);
 }
 
 .profile-earnings-card h3 {
   grid-column: 1 / -1;
   margin: 0;
-  font-size: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--profile-border);
+  font-size: 20px;
   letter-spacing: -0.035em;
+}
+
+.profile-earnings-card {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-color: color-mix(in srgb, #20976b 30%, var(--profile-border));
 }
 
 .profile-earnings-card p {
   margin: 0;
-  padding: 12px 14px;
+  min-height: 82px;
+  padding: 15px;
   color: var(--profile-muted);
   background: var(--profile-soft);
-  border-radius: 11px;
+  border: 1px solid var(--profile-border);
+  border-radius: 13px;
   font-size: 11px;
+  font-weight: 650;
   line-height: 1.5;
 }
 
@@ -402,8 +425,37 @@
 
 @media (min-width: 561px) and (max-width: 768px) {
   .profile-page {
-    margin-right: 164px;
+    width: calc(100% - 24px);
+    margin: 0 12px 18px;
     padding: 24px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .profile-stats-grid,
+  .profile-stats-grid--summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .profile-dashboard-card .profile-stats-grid,
+  .profile-dashboard-card--summary .profile-stats-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 561px) and (max-width: 820px) {
+  .profile-page {
+    width: calc(100% - 24px);
+  }
+
+  .profile-stats-grid,
+  .profile-stats-grid--summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .profile-dashboard-card .profile-stats-grid,
+  .profile-dashboard-card--summary .profile-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -457,6 +509,15 @@
   .profile-info-grid,
   .profile-stats-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .profile-dashboard-card .profile-stats-grid,
+  .profile-dashboard-card--summary .profile-stats-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .profile-dashboard-card {
+    padding: 16px;
   }
 
   .profile-earnings-card {

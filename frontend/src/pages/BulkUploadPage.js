@@ -70,7 +70,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
         track: "#e8edf5"
       };
   const surfaceStyle = {
-    maxWidth: "1600px",
+    maxWidth: "none",
     margin: "32px auto 64px",
     padding: "0 24px",
     color: colors.text

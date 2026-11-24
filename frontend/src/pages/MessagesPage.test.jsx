@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import axios from "axios";
 import MessagesPage from "./MessagesPage";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
@@ -95,5 +95,26 @@ describe("MessagesPage startup readiness", () => {
         "messages-route"
       );
     });
+  });
+
+  it("selects and clears broadcast date/time using the custom IST calendar", async () => {
+    render(<MessagesPage userRole="admin" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Broadcasts" }));
+    const trigger = await screen.findByRole("button", { name: "Schedule date/time (IST): Choose date and time" });
+    fireEvent.click(trigger);
+
+    const dialog = screen.getByRole("dialog", { name: "Schedule date/time (IST)" });
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Hour (IST)" }), { target: { value: "09" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Minute" }), { target: { value: "30" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(dialog).not.toBeInTheDocument();
+    expect(trigger).toHaveTextContent(/\d{2} [A-Z][a-z]{2} \d{4} · 09:30 IST/);
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(trigger).toHaveTextContent("Choose date and time");
   });
 });

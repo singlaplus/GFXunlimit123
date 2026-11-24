@@ -170,6 +170,39 @@ describe('AppHeader customer navigation', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/customer');
   });
 
+  it('shows a toast after logging out from the account menu', async () => {
+    localStorage.setItem('token', 'demo-token');
+    localStorage.setItem('username', 'jane');
+    localStorage.setItem('fullName', 'Jane Doe');
+
+    render(
+      <>
+        <AppHeader
+          showNotifications={false}
+          setShowNotifications={jest.fn()}
+          notificationCount={0}
+          setNotificationCount={jest.fn()}
+          setShowLoginModal={jest.fn()}
+          setShowJoinModal={jest.fn()}
+          showLoginModal={false}
+          showJoinModal={false}
+          joinModalAccountType=""
+          setJoinModalAccountType={jest.fn()}
+          darkMode={false}
+          notifications={[]}
+          setDarkMode={jest.fn()}
+          userRole="customer"
+        />
+        <ToastContainer />
+      </>
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /open account menu for jane doe/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^logout$/i }));
+
+    expect(await screen.findByText('Logged out')).toBeInTheDocument();
+  });
+
   it('resets the browser viewport when the header menu sends a user to another route', async () => {
     localStorage.setItem('token', 'demo-token');
 

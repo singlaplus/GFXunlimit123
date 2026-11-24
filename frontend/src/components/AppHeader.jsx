@@ -404,6 +404,7 @@ export default function AppHeader({
       window.dispatchEvent(new Event("auth-changed"));
       stopFaviconAnimation();
       dispatchAuthBusyEnd();
+      toast.success("Logged out");
       navigate("/");
     }
     clearAuthSessionStorage();
@@ -759,7 +760,7 @@ export default function AppHeader({
       ========================== */}
 
       <header className={`app-header ${darkMode ? "dark" : ""}`}>
-        <div className={`app-header-container${mobileMenuOpen ? " mobile-menu-open" : ""}`}>
+        <div className={`app-header-container${mobileMenuOpen ? " mobile-menu-open" : ""}${isAdminUser ? " is-admin" : ""}`}>
           <Link to="/" className="logo">
             {branding?.logo ? (
               <img
@@ -1163,7 +1164,7 @@ export default function AppHeader({
             </div>
           )}
 
-          <div className={`header-actions${showExploreFiltersToggle ? " has-filter-toggle" : ""}`}>
+          <div className={`header-actions${showExploreFiltersToggle ? " has-filter-toggle" : ""}${isAdminUser ? " is-admin" : ""}`}>
             {showExploreFiltersToggle && (
               <button
                 type="button"

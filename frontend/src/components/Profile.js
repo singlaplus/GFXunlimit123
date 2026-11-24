@@ -4,8 +4,47 @@ import axios from "axios";
 import AdminPanel from "./AdminPanel";
 import { toast } from "react-toastify";
 import { buildAuthHeaders, getEffectiveAuthToken } from "../utils/authSession";
+import { getBackendRetryDelay, isRetryableBackendError } from "../utils/backendRetry";
 import { useStartupReadiness } from "../startup/StartupReadinessProvider";
 import "./Profile.css";
+
+export function formatAccountCreatedDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return "Unavailable";
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+export function formatAccountAge(createdValue, todayValue = new Date()) {
+  const created = createdValue instanceof Date ? createdValue : new Date(createdValue);
+  const today = todayValue instanceof Date ? todayValue : new Date(todayValue);
+  if (!createdValue || Number.isNaN(created.getTime()) || Number.isNaN(today.getTime()) || created > today) {
+    return "Unavailable";
+  }
+
+  let years = today.getUTCFullYear() - created.getUTCFullYear();
+  let months = today.getUTCMonth() - created.getUTCMonth();
+  let days = today.getUTCDate() - created.getUTCDate();
+
+  if (days < 0) {
+    months -= 1;
+    const previousMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 0));
+    days += previousMonth.getUTCDate();
+  }
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+
+  const parts = [];
+  if (years > 0) parts.push(`${years} ${years === 1 ? "year" : "years"}`);
+  if (months > 0) parts.push(`${months} ${months === 1 ? "month" : "months"}`);
+  if (days > 0 && years === 0) parts.push(`${days} ${days === 1 ? "day" : "days"}`);
+  return parts.length > 0 ? parts.join(", ") : "Today";
+}
 
 function Profile({ darkMode = false }) {
 
@@ -15,9 +54,17 @@ function Profile({ darkMode = false }) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [stats, setStats] = useState(null);
   const { reportResource, retryKey, routeId } = useStartupReadiness();
+  const [autoRetryAttempt, setAutoRetryAttempt] = useState(0);
+  const retryTimerRef = useRef(null);
+  const retryCountRef = useRef(0);
+  const previousRetryKeyRef = useRef(retryKey);
 
   useEffect(() => {
     let active = true;
+    if (previousRetryKeyRef.current !== retryKey) {
+      previousRetryKeyRef.current = retryKey;
+      retryCountRef.current = 0;
+    }
 
     const fetchProfile = async (throwOnError = true) => {
       try {
@@ -98,12 +145,19 @@ function Profile({ darkMode = false }) {
         throw statsResult.reason;
       }
       reportResource("profile", "ready", "", routeId);
+      retryCountRef.current = 0;
     };
 
     loadProfile().catch((err) => {
       if (!active) return;
       console.error("Failed to load profile readiness data", err);
       reportResource("profile", "error", "Unable to load your profile. Please retry.", routeId);
+      if (isRetryableBackendError(err)) {
+        retryTimerRef.current = window.setTimeout(() => {
+          retryCountRef.current += 1;
+          setAutoRetryAttempt((attempt) => attempt + 1);
+        }, getBackendRetryDelay(retryCountRef.current));
+      }
     });
 
     const onCreditsUpdated = async () => {
@@ -120,10 +174,14 @@ function Profile({ darkMode = false }) {
     window.addEventListener('creditsUpdated', onCreditsUpdated);
     return () => {
       active = false;
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
       window.removeEventListener('creditsUpdated', onCreditsUpdated);
     };
 
-  }, [reportResource, retryKey, routeId]);
+  }, [autoRetryAttempt, reportResource, retryKey, routeId]);
   const addCredits = async (credits) => {
 
   try {
@@ -245,6 +303,14 @@ function Profile({ darkMode = false }) {
           <div ref={creditsRef} className="profile-info-row profile-credits-row">
             <strong>Credits:</strong>
             <span>₹ {Number(profile.credits || 0).toFixed(2)}</span>
+          </div>
+          <div className="profile-info-row">
+            <strong>Account created:</strong>
+            <span>{formatAccountCreatedDate(profile.created_at)}</span>
+          </div>
+          <div className="profile-info-row">
+            <strong>Account age:</strong>
+            <span>{formatAccountAge(profile.created_at)}</span>
           </div>
         </div>
       </section>

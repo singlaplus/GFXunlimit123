@@ -13842,6 +13842,7 @@ app.get("/profile", async (req, res) => {
           email,
           role,
           credits,
+          created_at,
           custom_permissions,
           (
             SELECT tf.status
