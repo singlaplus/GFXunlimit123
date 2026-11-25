@@ -216,6 +216,64 @@ describe("BulkUploadPage", () => {
     expect(axios.post).not.toHaveBeenCalled();
   });
 
+  it("accepts dropped files and adds them to the upload queue", () => {
+    axios.post.mockResolvedValue(finalizedResponse(404));
+    render(<BulkUploadPage />);
+
+    const dropZone = screen.getByText(/choose assets from your device/i).closest("label");
+    fireEvent.drop(dropZone, {
+      dataTransfer: {
+        files: [
+          new File(["first"], "first.jpg"),
+          new File(["second"], "second.jpg")
+        ]
+      }
+    });
+
+    expect(screen.getByText("2 / 10 selected")).toBeInTheDocument();
+  });
+
+  it("rejects more than ten dropped files", async () => {
+    render(<BulkUploadPage />);
+    const dropZone = screen.getByText(/choose assets from your device/i).closest("label");
+
+    fireEvent.drop(dropZone, {
+      dataTransfer: {
+        files: Array.from({ length: 11 }, (_, index) => new File(["asset"], `drop-${index}.jpg`))
+      }
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/maximum of 10/i);
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it("removes completed items after thirty seconds and releases their batch slots", async () => {
+    const originalSetTimeout = window.setTimeout.bind(window);
+    jest.spyOn(window, "setTimeout").mockImplementation((callback, delay, ...args) => {
+      const fastDelay = delay === 2000 || delay === 30000 ? 0 : delay;
+      return originalSetTimeout(callback, fastDelay, ...args);
+    });
+    axios.post.mockResolvedValue(finalizedResponse(305));
+    axios.get.mockResolvedValue({
+      data: [{ id: 305, generated_thumbnail_status: "READY" }]
+    });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [new File(["asset"], "release-slot.jpg")] }
+    });
+
+    await waitFor(() => expect(screen.queryByText("1 / 10 selected")).not.toBeInTheDocument());
+    expect(screen.queryByText("1 / 10 selected")).not.toBeInTheDocument();
+
+    fireEvent.drop(screen.getByText(/choose assets from your device/i).closest("label"), {
+      dataTransfer: {
+        files: [new File(["next"], "next.jpg")]
+      }
+    });
+    expect(screen.getByText("1 / 10 selected")).toBeInTheDocument();
+  });
+
   it("marks the bulk asset file selector as required", () => {
     render(<BulkUploadPage />);
 

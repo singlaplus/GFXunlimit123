@@ -30,12 +30,17 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
   const [queue, setQueue] = useState([]);
   const [message, setMessage] = useState("");
   const [removedCount, setRemovedCount] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
   const queueRef = useRef([]);
   const activeUploadRef = useRef(null);
+  const dragDepthRef = useRef(0);
   const thumbnailPollsRef = useRef(new Map());
+  const completedRemovalTimersRef = useRef(new Map());
   useEffect(() => () => {
     for (const controller of thumbnailPollsRef.current.values()) controller.abort();
     thumbnailPollsRef.current.clear();
+    for (const timer of completedRemovalTimersRef.current.values()) window.clearTimeout(timer);
+    completedRemovalTimersRef.current.clear();
     const activeUpload = activeUploadRef.current;
     if (activeUpload) {
       activeUpload.cancelled = true;
@@ -86,6 +91,22 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     replaceQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
   };
 
+  const removeCompletedItem = (queueItemId) => {
+    const timer = completedRemovalTimersRef.current.get(queueItemId);
+    if (timer) window.clearTimeout(timer);
+    completedRemovalTimersRef.current.delete(queueItemId);
+    const existed = queueRef.current.some((item) => item.id === queueItemId);
+    if (!existed) return;
+    replaceQueue((current) => current.filter((item) => item.id !== queueItemId));
+    setRemovedCount((count) => count + 1);
+  };
+
+  const scheduleCompletedRemoval = (queueItemId) => {
+    if (completedRemovalTimersRef.current.has(queueItemId)) return;
+    const timer = window.setTimeout(() => removeCompletedItem(queueItemId), 30000);
+    completedRemovalTimersRef.current.set(queueItemId, timer);
+  };
+
   const waitForThumbnail = async (assetId, queueItemId) => {
     thumbnailPollsRef.current.get(queueItemId)?.abort();
     const controller = new AbortController();
@@ -127,6 +148,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
         const thumbnailStatus = String(asset.generated_thumbnail_status || asset.thumbnail_status || "").toUpperCase();
         if (thumbnailStatus === "READY") {
           updateItem(queueItemId, { status: "completed", progress: 100, error: "" });
+          scheduleCompletedRemoval(queueItemId);
           if (typeof fetchImages === "function") fetchImages();
           return;
         }
@@ -224,12 +246,14 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     }
   };
 
-  const handleFilesSelected = (event) => {
-    const selectedFiles = Array.from(event.target.files || []);
-    event.target.value = "";
+  const addSelectedFiles = (selectedFileList) => {
+    if (activeUploadRef.current) {
+      return;
+    }
+    const selectedFiles = Array.from(selectedFileList || []);
     if (selectedFiles.length === 0) return;
 
-    if (selectedFiles.length > MAX_BULK_UPLOAD_FILES || queue.length + selectedFiles.length > MAX_BULK_UPLOAD_FILES) {
+    if (selectedFiles.length > MAX_BULK_UPLOAD_FILES || queueRef.current.length + selectedFiles.length > MAX_BULK_UPLOAD_FILES) {
       const error = `You can upload a maximum of ${MAX_BULK_UPLOAD_FILES} assets per batch.`;
       setMessage(error);
       toast.error(error);
@@ -241,6 +265,41 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     setRemovedCount(0);
     replaceQueue((current) => [...current, ...items]);
     void pumpQueue();
+  };
+
+  const handleFilesSelected = (event) => {
+    addSelectedFiles(event.target.files);
+    event.target.value = "";
+  };
+
+  const handleDragEnter = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (activeHttpUpload) return;
+    dragDepthRef.current += 1;
+    setIsDragging(true);
+  };
+
+  const handleDragOver = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = activeHttpUpload ? "none" : "copy";
+  };
+
+  const handleDragLeave = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragging(false);
+  };
+
+  const handleDrop = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDragging(false);
+    if (activeHttpUpload) return;
+    addSelectedFiles(event.dataTransfer?.files);
   };
 
   const retryItem = async (item) => {
@@ -269,6 +328,9 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
 
   const removeQueuedItem = (item) => {
     thumbnailPollsRef.current.get(item.id)?.abort();
+    const timer = completedRemovalTimersRef.current.get(item.id);
+    if (timer) window.clearTimeout(timer);
+    completedRemovalTimersRef.current.delete(item.id);
     replaceQueue((current) => current.filter((entry) => entry.id !== item.id));
     setRemovedCount((count) => count + 1);
   };
@@ -288,6 +350,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     : 0;
   const activeUploads = Boolean(activeUploadRef.current) ||
     queue.some((item) => ["queued", "uploading", "processing"].includes(item.status));
+  const activeHttpUpload = Boolean(activeUploadRef.current);
   const progressBarColor = isDarkMode ? "#a5b4fc" : "#4f46e5";
   const statusStyles = {
     queued: { background: isDarkMode ? "#29364a" : "#eef2f7", color: colors.muted },
@@ -368,6 +431,10 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
 
         <label
           htmlFor="bulk-upload-files"
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
           style={{
             display: "flex",
             alignItems: "center",
@@ -377,21 +444,25 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
             minHeight: "146px",
             marginTop: "22px",
             padding: "22px",
-            border: `1.5px dashed ${isDarkMode ? "#53617a" : "#b7c3d7"}`,
+            border: `1.5px dashed ${isDragging ? colors.accentStrong : (isDarkMode ? "#53617a" : "#b7c3d7")}`,
             borderRadius: "16px",
-            background: colors.raised,
-            cursor: activeUploads ? "not-allowed" : "pointer",
-            opacity: activeUploads ? 0.65 : 1,
+            background: isDragging
+              ? (isDarkMode ? "rgba(129,140,248,.16)" : "#f0f1ff")
+              : colors.raised,
+            cursor: activeHttpUpload ? "not-allowed" : "pointer",
+            opacity: activeHttpUpload ? 0.65 : 1,
             textAlign: "left"
           }}
         >
           <span aria-hidden="true" style={{ display: "grid", placeItems: "center", width: "54px", height: "54px", flex: "0 0 54px", borderRadius: "15px", background: isDarkMode ? "#2b3155" : "#e9eaff", color: colors.accent, fontSize: "26px", fontWeight: 500 }}>↑</span>
           <span>
             <strong style={{ display: "block", fontSize: "16px" }}>
-              Choose assets from your device
+              {isDragging ? "Drop assets here" : "Choose assets from your device"}
               <span aria-hidden="true" style={{ color: "#dc2626", fontSize: "0.75em", marginLeft: "3px" }}>*</span>
             </strong>
-            <span style={{ display: "block", marginTop: "6px", color: colors.muted, fontSize: "13px" }}>Select files to begin · Maximum 10 per batch</span>
+            <span style={{ display: "block", marginTop: "6px", color: colors.muted, fontSize: "13px" }}>
+              Drag and drop or browse · Maximum 10 per batch
+            </span>
           </span>
           <span style={{ marginLeft: "auto", padding: "11px 16px", borderRadius: "10px", background: colors.accentStrong, color: "#fff", fontSize: "13px", fontWeight: 750, whiteSpace: "nowrap" }}>
             Browse files
@@ -404,7 +475,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
           multiple
           required
           onChange={handleFilesSelected}
-          disabled={activeUploads}
+          disabled={activeHttpUpload}
           style={{ display: "none" }}
         />
         {message && <p role="alert" style={{ margin: "12px 0 0", padding: "11px 14px", borderRadius: "10px", background: isDarkMode ? "#451f27" : "#fff0f0", color: isDarkMode ? "#fda4af" : "#b42318" }}>{message}</p>}
