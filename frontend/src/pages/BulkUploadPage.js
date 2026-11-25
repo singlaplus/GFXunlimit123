@@ -686,6 +686,7 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
                 cancelled: "CANCELLED"
               }[item.status];
               const extension = item.file.name.split(".").pop()?.toUpperCase() || "FILE";
+              const fileTypeLabel = extension === "FILE" ? "File" : `${extension} file`;
               const fileSize = item.file.size < 1024 * 1024
                 ? `${Math.max(1, Math.round(item.file.size / 1024))} KB`
                 : `${(item.file.size / (1024 * 1024)).toFixed(1)} MB`;
@@ -698,8 +699,8 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <strong title={item.file.name} style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "14px" }}>{item.file.name}</strong>
                       <span style={{ display: "block", marginTop: "4px", color: colors.muted, fontSize: "12px" }}>
-                        {item.file.type || `.${extension.toLowerCase()}`} · {fileSize}
-                        {item.status === "processing" ? " · Upload confirmed; thumbnail processing" : item.status === "completed" ? " · Private draft in Not Submitted" : item.status === "failed" || item.status === "thumbnail-failed" ? " · This file needs attention" : ""}
+                        {fileTypeLabel} · {fileSize}
+                        {item.status === "processing" ? " · Upload confirmed; thumbnail processing" : item.status === "completed" ? " · Draft saved to Not Submitted" : item.status === "failed" || item.status === "thumbnail-failed" ? " · This file needs attention" : ""}
                       </span>
                     </div>
                     <span aria-live="polite" style={{ ...statusStyles[item.status], flex: "0 0 auto", padding: "7px 10px", borderRadius: "999px", fontSize: "11px", fontWeight: 750 }}>

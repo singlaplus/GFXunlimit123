@@ -294,6 +294,25 @@ describe("BulkUploadPage", () => {
     );
   });
 
+  it("shows a readable file type and draft status instead of the raw MIME type", async () => {
+    const waitForPolling = useFastThumbnailPolling();
+    configureChunkedUpload(() => 311);
+    axios.get.mockResolvedValue({
+      data: [{ id: 311, generated_thumbnail_status: "READY" }]
+    });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: {
+        files: [new File(["asset"], "vector.eps", { type: "application/postscript" })]
+      }
+    });
+
+    await waitForPolling(() => screen.queryByText("Completed - ready to submit"));
+    expect(screen.getByText("EPS file · 1 KB · Draft saved to Not Submitted")).toBeInTheDocument();
+    expect(screen.queryByText(/application\/postscript/)).not.toBeInTheDocument();
+  });
+
   it("retains thumbnail-failed handling and the backend error when FAILED is reported", async () => {
     const waitForPolling = useFastThumbnailPolling();
     configureChunkedUpload(() => 302);
