@@ -726,11 +726,9 @@ const popupProps = {
         pathname={location.pathname}
       />
 
-      {!isBlankSeoPage && (isAuthBusy || isBackendBusy) && (
+      {!isBlankSeoPage && isAuthBusy && (
         <div
-          role={isBackendBusy ? "status" : undefined}
-          aria-label={isBackendBusy ? "Loading data from the server" : undefined}
-          data-testid={isBackendBusy ? "backend-loading-overlay" : undefined}
+          data-testid="auth-loading-overlay"
           style={{
             position: "fixed",
             inset: 0,
@@ -800,6 +798,18 @@ const popupProps = {
               G
             </span>
           )}
+        </div>
+      )}
+
+      {!isBlankSeoPage && isBackendBusy && !isAuthBusy && (
+        <div
+          className="backend-request-indicator"
+          role="status"
+          aria-label="Loading data from the server"
+          data-testid="backend-loading-indicator"
+        >
+          <span className="backend-request-indicator__spinner" aria-hidden="true" />
+          <span>Working with server...</span>
         </div>
       )}
 

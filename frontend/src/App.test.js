@@ -5,6 +5,7 @@ import Pagination from './components/Pagination';
 import { useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { BACKEND_REQUEST_FINISHED, BACKEND_REQUEST_STARTED } from './utils/backendRequestLoading';
+import { AUTH_BUSY_END, AUTH_BUSY_START } from './utils/authBusyEvents';
 
 jest.mock('axios');
 
@@ -81,7 +82,7 @@ test('renders the home hero content after route availability is confirmed', asyn
   expect(await screen.findByText(/Discover Millions of/i)).toBeInTheDocument();
 });
 
-test('shows the branded loading animation while backend data is pending', async () => {
+test('shows a non-blocking corner indicator while backend data is pending', async () => {
   render(<App />);
 
   fireEvent(
@@ -89,7 +90,10 @@ test('shows the branded loading animation while backend data is pending', async 
     new CustomEvent(BACKEND_REQUEST_STARTED, { detail: { pendingRequests: 1 } })
   );
 
-  expect(await screen.findByTestId('backend-loading-overlay')).toBeInTheDocument();
+  const indicator = await screen.findByTestId('backend-loading-indicator');
+  expect(indicator).toBeInTheDocument();
+  expect(indicator).toHaveClass('backend-request-indicator');
+  expect(screen.queryByTestId('backend-loading-overlay')).not.toBeInTheDocument();
 
   fireEvent(
     window,
@@ -97,11 +101,11 @@ test('shows the branded loading animation while backend data is pending', async 
   );
 
   await waitFor(() => {
-    expect(screen.queryByTestId('backend-loading-overlay')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('backend-loading-indicator')).not.toBeInTheDocument();
   });
 });
 
-test('does not flash the branded loading animation for brief backend requests', () => {
+test('does not flash the backend indicator for brief requests', () => {
   render(<App />);
   jest.useFakeTimers();
 
@@ -110,17 +114,36 @@ test('does not flash the branded loading animation for brief backend requests', 
     new CustomEvent(BACKEND_REQUEST_STARTED, { detail: { pendingRequests: 1 } })
   );
   act(() => jest.advanceTimersByTime(799));
-  expect(screen.queryByTestId('backend-loading-overlay')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('backend-loading-indicator')).not.toBeInTheDocument();
 
   act(() => jest.advanceTimersByTime(1));
-  expect(screen.getByTestId('backend-loading-overlay')).toBeInTheDocument();
+  expect(screen.getByTestId('backend-loading-indicator')).toBeInTheDocument();
 
   fireEvent(
     window,
     new CustomEvent(BACKEND_REQUEST_FINISHED, { detail: { pendingRequests: 0 } })
   );
-  expect(screen.queryByTestId('backend-loading-overlay')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('backend-loading-indicator')).not.toBeInTheDocument();
   jest.useRealTimers();
+});
+
+test('keeps the blocking overlay for authentication work', () => {
+  render(<App />);
+
+  fireEvent(
+    window,
+    new CustomEvent(AUTH_BUSY_START, { detail: { type: 'login' } })
+  );
+
+  expect(screen.getByTestId('auth-loading-overlay')).toHaveStyle({
+    position: 'fixed',
+    inset: '0',
+    pointerEvents: 'all',
+  });
+  expect(screen.queryByTestId('backend-loading-indicator')).not.toBeInTheDocument();
+
+  fireEvent(window, new Event(AUTH_BUSY_END));
+  expect(screen.queryByTestId('auth-loading-overlay')).not.toBeInTheDocument();
 });
 
 test('uses the local brand title and favicon when branding is unavailable', async () => {

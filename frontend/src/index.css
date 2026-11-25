@@ -95,6 +95,48 @@ canvas {
   overflow-x: clip;
 }
 
+.backend-request-indicator {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 99998;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: calc(100vw - 36px);
+  padding: 11px 15px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.94);
+  box-shadow: 0 8px 26px rgba(15, 23, 42, 0.24);
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+.backend-request-indicator__spinner {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  border: 2px solid rgba(248, 250, 252, 0.35);
+  border-top-color: #f8fafc;
+  border-radius: 50%;
+  animation: backend-request-spinner 800ms linear infinite;
+}
+
+@keyframes backend-request-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backend-request-indicator__spinner {
+    animation-duration: 2.4s;
+  }
+}
+
 .app-shell main,
 .app-shell section,
 .app-shell article,
