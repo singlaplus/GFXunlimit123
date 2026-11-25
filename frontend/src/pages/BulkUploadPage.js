@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { buildAuthHeaders } from "../utils/authSession";
+import { formatUploadLimit, getUploadLimitConfig } from "../utils/uploadLimits";
 import "./BulkUploadPage.css";
 
 const MAX_BULK_UPLOAD_FILES = 10;
@@ -33,6 +34,14 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
   const [message, setMessage] = useState("");
   const [removedCount, setRemovedCount] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+  const currentUserRole = (localStorage.getItem("userRole") || "").toLowerCase();
+  let storedPermissions = {};
+  try {
+    storedPermissions = JSON.parse(localStorage.getItem("userPermissions") || "{}") || {};
+  } catch (_error) {
+    storedPermissions = {};
+  }
+  const uploadLimitConfig = getUploadLimitConfig(storedPermissions, currentUserRole);
   const queueRef = useRef([]);
   const activeUploadRef = useRef(null);
   const dragDepthRef = useRef(0);
@@ -328,6 +337,14 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
       return;
     }
 
+    const oversizedFile = selectedFiles.find((file) => file.size > uploadLimitConfig.bytes);
+    if (oversizedFile) {
+      const error = `${oversizedFile.name} exceeds your ${formatUploadLimit(uploadLimitConfig.bytes)} upload limit.`;
+      setMessage(error);
+      toast.error(error);
+      return;
+    }
+
     setMessage("");
     const items = selectedFiles.map(createQueueItem);
     setRemovedCount(0);
@@ -489,6 +506,9 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
           <div>
             <h2 style={{ margin: 0, fontSize: "21px", letterSpacing: "-.02em" }}>Start a new batch</h2>
             <p style={{ margin: "7px 0 0", color: colors.muted, lineHeight: 1.55 }}>Choose up to 10 files. Each file is finalized by the server before the next queued file starts.</p>
+            <p style={{ margin: "5px 0 0", color: colors.muted, fontSize: "13px" }}>
+              Active per-file upload limit: {uploadLimitConfig.label}
+            </p>
           </div>
           <span style={{ padding: "8px 12px", borderRadius: "10px", background: isDarkMode ? "#252f45" : "#f1f3ff", color: colors.accent, fontSize: "13px", fontWeight: 750 }}>
             {queue.length} / {MAX_BULK_UPLOAD_FILES} selected

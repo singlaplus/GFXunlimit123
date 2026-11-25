@@ -31,6 +31,8 @@ describe("BulkUploadPage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.setItem("token", "test-token");
+    localStorage.setItem("userRole", "contributor");
+    localStorage.setItem("userPermissions", JSON.stringify({}));
     axios.get.mockResolvedValue({ data: [] });
   });
 
@@ -214,6 +216,39 @@ describe("BulkUploadPage", () => {
     });
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/maximum of 10/i);
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it("shows and enforces the active per-file upload limit before transferring a large file", async () => {
+    render(<BulkUploadPage />);
+    expect(screen.getByText("Active per-file upload limit: 20 MB")).toBeInTheDocument();
+
+    const oversizedFile = new File(["asset"], "large.eps");
+    Object.defineProperty(oversizedFile, "size", { value: 20 * 1024 * 1024 + 1 });
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [oversizedFile] }
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/large\.eps exceeds your 20 MB upload limit/i);
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(screen.getByText("0 / 10 selected")).toBeInTheDocument();
+  });
+
+  it("uses the configured contributor limit instead of treating it as display-only", async () => {
+    localStorage.setItem("userPermissions", JSON.stringify({
+      upload_limit_value: 100,
+      upload_limit_unit: "MB"
+    }));
+    render(<BulkUploadPage />);
+    expect(screen.getByText("Active per-file upload limit: 100 MB")).toBeInTheDocument();
+
+    const oversizedFile = new File(["asset"], "over-configured-limit.eps");
+    Object.defineProperty(oversizedFile, "size", { value: 100 * 1024 * 1024 + 1 });
+    fireEvent.drop(screen.getByText(/choose assets from your device/i).closest("label"), {
+      dataTransfer: { files: [oversizedFile] }
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/exceeds your 100 MB upload limit/i);
     expect(axios.post).not.toHaveBeenCalled();
   });
 

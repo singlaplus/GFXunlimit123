@@ -250,33 +250,24 @@ const storage = multer.diskStorage({
 
 });
 
-const upload = multer({
-
-  storage: storage,
-
-  limits: {
-    fileSize: assetThumbnails.MAX_SOURCE_BYTES
-  },
-
+const createUploadMiddleware = (fileSize = assetThumbnails.MAX_SOURCE_BYTES) => multer({
+  storage,
+  limits: { fileSize },
   fileFilter: (req, file, cb) => {
-
     const isAllowed = isAllowedAssetUploadFile(file);
-
     if (isAllowed) {
       cb(null, true);
     } else {
-      cb(
-        new Error(
-          file.fieldname === "thumbnail"
-            ? "Optional thumbnail must be an image file such as JPG, PNG, WEBP, GIF, or SVG."
-            : "Only supported image, design, document, video, and project files are allowed"
-        )
-      );
+      cb(new Error(
+        file.fieldname === "thumbnail"
+          ? "Optional thumbnail must be an image file such as JPG, PNG, WEBP, GIF, or SVG."
+          : "Only supported image, design, document, video, and project files are allowed"
+      ));
     }
-
   }
-
 });
+
+const upload = createUploadMiddleware();
 
 const newsletterAttachmentUpload = multer({
   storage: multer.memoryStorage(),
@@ -9714,8 +9705,21 @@ const cleanupUploadStaging = async (req) => {
   }
 };
 
+const resolveEffectiveUploadLimitBytes = (user) => {
+  const systemMaximum = assetThumbnails.MAX_SOURCE_BYTES;
+  if (String(user?.role || "").toLowerCase() !== "contributor") return systemMaximum;
+  return Math.min(resolveUploadLimitBytes(user.custom_permissions), systemMaximum);
+};
+
+const formatUploadLimit = (bytes) => (
+  bytes >= 1024 ** 3 && bytes % (1024 ** 3) === 0
+    ? `${bytes / (1024 ** 3)} GB`
+    : `${Math.round(bytes / (1024 * 1024))} MB`
+);
+
 const parseUploadFiles = (req, res, next) => {
-  upload.fields([
+  req.uploadLimitBytes = resolveEffectiveUploadLimitBytes(req.uploadUser);
+  createUploadMiddleware(req.uploadLimitBytes).fields([
     { name: "image", maxCount: 1 },
     { name: "thumbnail", maxCount: 1 }
   ])(req, res, (error) => {
@@ -9724,7 +9728,14 @@ const parseUploadFiles = (req, res, next) => {
       releaseContributorUploadLock(req);
       if (!res.headersSent) {
         const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
-        res.status(status).json({ error: error.message || "Invalid multipart upload." });
+        const isContributor = String(req.uploadUser?.role || "").toLowerCase() === "contributor";
+        let message = error.message || "Invalid multipart upload.";
+        if (error.code === "LIMIT_FILE_SIZE") {
+          message = isContributor
+            ? `Uploaded file exceeds your ${formatUploadLimit(req.uploadLimitBytes)} upload limit.`
+            : `Uploaded file exceeds the ${formatUploadLimit(req.uploadLimitBytes)} system maximum.`;
+        }
+        res.status(status).json({ error: message });
       }
     }).catch((cleanupError) => {
       releaseContributorUploadLock(req);
@@ -9842,13 +9853,10 @@ app.post(
 
       if (
         String(user.role || "").toLowerCase() === "contributor" &&
-        Number(originalFile.size) > resolveUploadLimitBytes(user.custom_permissions)
+        Number(originalFile.size) > resolveEffectiveUploadLimitBytes(user)
       ) {
-        const maxUploadMegabytes = Math.round(
-          resolveUploadLimitBytes(user.custom_permissions) / (1024 * 1024)
-        );
         return await respondAfterStagingCleanup(413, {
-          error: `Uploaded file exceeds your ${maxUploadMegabytes} MB upload limit.`,
+          error: `Uploaded file exceeds your ${formatUploadLimit(resolveEffectiveUploadLimitBytes(user))} upload limit.`,
         });
       }
       if (isPreSubmissionUpload && String(user.role || "").toLowerCase() !== "contributor") {
