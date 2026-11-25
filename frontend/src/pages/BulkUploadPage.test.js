@@ -36,6 +36,7 @@ describe("BulkUploadPage", () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+    jest.useRealTimers();
   });
 
   it("keeps one active transfer, allows queued removal, and waits for backend finalization", async () => {
@@ -245,6 +246,113 @@ describe("BulkUploadPage", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/maximum of 10/i);
     expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it("restarts an upload after ten seconds without progress using the same request ID", async () => {
+    jest.useFakeTimers();
+    const requests = [];
+    axios.post.mockImplementation((_url, _formData, config) => {
+      requests.push(config);
+      return new Promise((_resolve, reject) => {
+        config.signal.addEventListener("abort", () => reject({ name: "CanceledError" }), { once: true });
+      });
+    });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [new File(["asset"], "stalled.jpg")] }
+    });
+    act(() => requests[0].onUploadProgress({ loaded: 10, total: 100 }));
+    await act(async () => {
+      jest.advanceTimersByTime(9000);
+      await Promise.resolve();
+    });
+    expect(axios.post).toHaveBeenCalledTimes(1);
+
+    act(() => requests[0].onUploadProgress({ loaded: 20, total: 100 }));
+    await act(async () => {
+      jest.advanceTimersByTime(9000);
+      await Promise.resolve();
+    });
+    expect(axios.post).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      jest.advanceTimersByTime(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(axios.post).toHaveBeenCalledTimes(2);
+    expect(requests[0].signal.aborted).toBe(true);
+    expect(requests[1].headers["Idempotency-Key"]).toBe(requests[0].headers["Idempotency-Key"]);
+    expect(screen.getByText("UPLOADING · 0%")).toBeInTheDocument();
+    expect(screen.getByText(/restarting from 0% \(attempt 2 of 3\)/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel upload" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
+  it("does not reset the stall timer for byte progress that leaves the displayed percent unchanged", async () => {
+    jest.useFakeTimers();
+    const requests = [];
+    axios.post.mockImplementation((_url, _formData, config) => {
+      requests.push(config);
+      return new Promise((_resolve, reject) => {
+        config.signal.addEventListener("abort", () => reject({ name: "CanceledError" }), { once: true });
+      });
+    });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [new File([new Uint8Array(10_000)], "same-percent.jpg")] }
+    });
+    act(() => requests[0].onUploadProgress({ loaded: 100, total: 10_000 }));
+    expect(screen.getByText("UPLOADING · 1%")).toBeInTheDocument();
+
+    await act(async () => {
+      jest.advanceTimersByTime(9000);
+      await Promise.resolve();
+    });
+    act(() => requests[0].onUploadProgress({ loaded: 110, total: 10_000 }));
+    expect(screen.getByText("UPLOADING · 1%")).toBeInTheDocument();
+
+    await act(async () => {
+      jest.advanceTimersByTime(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(axios.post).toHaveBeenCalledTimes(2);
+    expect(requests[0].signal.aborted).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel upload" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
+  it("marks the upload failed after three consecutive stalled attempts", async () => {
+    jest.useFakeTimers();
+    axios.post.mockImplementation((_url, _formData, config) => new Promise((_resolve, reject) => {
+      config.signal.addEventListener("abort", () => reject({ name: "CanceledError" }), { once: true });
+    }));
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [new File(["asset"], "always-stalled.jpg")] }
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(10_000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    expect(axios.post).toHaveBeenCalledTimes(3);
+    expect(screen.getByText("FAILED")).toBeInTheDocument();
+    expect(screen.getByText(/after 3 attempts/i)).toBeInTheDocument();
   });
 
   it("removes completed items after thirty seconds and releases their batch slots", async () => {

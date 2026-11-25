@@ -6,6 +6,8 @@ import { buildAuthHeaders } from "../utils/authSession";
 import "./BulkUploadPage.css";
 
 const MAX_BULK_UPLOAD_FILES = 10;
+const UPLOAD_STALL_TIMEOUT_MS = 10_000;
+const MAX_UPLOAD_ATTEMPTS = 3;
 
 const createUploadRequestId = () => {
   if (window.crypto?.randomUUID) return window.crypto.randomUUID();
@@ -189,56 +191,122 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     const item = queueRef.current.find((entry) => entry.status === "queued");
     if (!item) return;
 
-    const activeUpload = { id: item.id, controller: new AbortController(), cancelled: false };
+    const activeUpload = { id: item.id, controller: null, cancelled: false, stallDetected: false };
     activeUploadRef.current = activeUpload;
     updateItem(item.id, { status: "uploading", progress: 0, failureStage: null, error: "" });
-    const formData = new FormData();
-    formData.append("image", item.file);
-    formData.append("preSubmission", "true");
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/upload`, formData, {
-        headers: {
-          ...buildAuthHeaders(),
-          "Idempotency-Key": item.uploadRequestId
-        },
-        signal: activeUpload.controller.signal,
-        skipGlobalLoading: true,
-        onUploadProgress: (event) => {
-          if (activeUpload.cancelled || !event.total) return;
-          updateItem(item.id, { progress: Math.min(99, Math.round((event.loaded * 100) / event.total)) });
+      for (let attempt = 1; attempt <= MAX_UPLOAD_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        activeUpload.controller = controller;
+        activeUpload.stallDetected = false;
+        let lastProgressPercent = 0;
+        let requestBodySent = false;
+        let stallTimeout = null;
+        const clearStallTimeout = () => {
+          if (stallTimeout !== null) {
+            window.clearTimeout(stallTimeout);
+            stallTimeout = null;
+          }
+        };
+        const armStallTimeout = () => {
+          clearStallTimeout();
+          if (requestBodySent || activeUpload.cancelled) return;
+          stallTimeout = window.setTimeout(() => {
+            activeUpload.stallDetected = true;
+            controller.abort();
+          }, UPLOAD_STALL_TIMEOUT_MS);
+        };
+        const formData = new FormData();
+        formData.append("image", item.file);
+        formData.append("preSubmission", "true");
+        armStallTimeout();
+
+        try {
+          const response = await axios.post(`${API_BASE_URL}/upload`, formData, {
+            headers: {
+              ...buildAuthHeaders(),
+              "Idempotency-Key": item.uploadRequestId
+            },
+            signal: controller.signal,
+            skipGlobalLoading: true,
+            onUploadProgress: (event) => {
+              if (activeUpload.cancelled) return;
+              const loaded = Number(event.loaded) || 0;
+              const total = Number(event.total) || 0;
+              const progressPercent = Math.min(
+                99,
+                Math.round((loaded * 100) / (total > 0 ? total : item.file.size))
+              );
+              const progressAdvanced = progressPercent > lastProgressPercent;
+              if (total > 0 && loaded >= total) {
+                requestBodySent = true;
+                clearStallTimeout();
+              } else if (progressAdvanced) {
+                lastProgressPercent = progressPercent;
+                armStallTimeout();
+              }
+              if (!requestBodySent && total <= 0 && loaded >= item.file.size) {
+                requestBodySent = true;
+                clearStallTimeout();
+              }
+              updateItem(item.id, {
+                progress: progressPercent,
+                ...(progressAdvanced ? { error: "" } : {})
+              });
+            }
+          });
+          clearStallTimeout();
+          const uploadedAssetId = response.data?.id;
+          if (
+            !Number.isSafeInteger(uploadedAssetId) ||
+            uploadedAssetId <= 0 ||
+            response.data?.upload_complete !== true ||
+            response.data?.finalized !== true ||
+            response.data?.file_size !== item.file.size
+          ) {
+            throw new Error("The server did not confirm that this file was fully received and finalized.");
+          }
+          updateItem(item.id, { assetId: uploadedAssetId, progress: 100, status: "processing", error: "" });
+          void waitForThumbnail(uploadedAssetId, item.id).catch((error) => {
+            const messageText = error.response?.data?.error || error.response?.data || error.message || "Unable to check thumbnail status.";
+            updateItem(item.id, {
+              status: "thumbnail-failed",
+              failureStage: "thumbnail",
+              error: typeof messageText === "string" ? messageText : "Unable to check thumbnail status."
+            });
+          });
+          if (typeof fetchImages === "function") fetchImages();
+          return;
+        } catch (error) {
+          clearStallTimeout();
+          if (activeUpload.cancelled) {
+            updateItem(item.id, { status: "cancelled", progress: 0, error: "" });
+            return;
+          }
+          if (activeUpload.stallDetected) {
+            if (attempt < MAX_UPLOAD_ATTEMPTS) {
+              updateItem(item.id, {
+                progress: 0,
+                error: `No upload progress for 10 seconds. Restarting from 0% (attempt ${attempt + 1} of ${MAX_UPLOAD_ATTEMPTS}).`
+              });
+              continue;
+            }
+            updateItem(item.id, {
+              status: "failed",
+              failureStage: "upload",
+              error: `Upload made no progress for 10 seconds after ${MAX_UPLOAD_ATTEMPTS} attempts. Retry to try again.`
+            });
+            return;
+          }
+          const messageText = error.response?.data?.error || error.response?.data || error.message || "Upload failed.";
+          updateItem(item.id, {
+            status: "failed",
+            failureStage: "upload",
+            error: typeof messageText === "string" ? messageText : "Upload failed."
+          });
+          return;
         }
-      });
-      const uploadedAssetId = response.data?.id;
-      if (
-        !Number.isSafeInteger(uploadedAssetId) ||
-        uploadedAssetId <= 0 ||
-        response.data?.upload_complete !== true ||
-        response.data?.finalized !== true ||
-        response.data?.file_size !== item.file.size
-      ) {
-        throw new Error("The server did not confirm that this file was fully received and finalized.");
-      }
-      updateItem(item.id, { assetId: uploadedAssetId, progress: 100, status: "processing" });
-      void waitForThumbnail(uploadedAssetId, item.id).catch((error) => {
-        const messageText = error.response?.data?.error || error.response?.data || error.message || "Unable to check thumbnail status.";
-        updateItem(item.id, {
-          status: "thumbnail-failed",
-          failureStage: "thumbnail",
-          error: typeof messageText === "string" ? messageText : "Unable to check thumbnail status."
-        });
-      });
-      if (typeof fetchImages === "function") fetchImages();
-    } catch (error) {
-      if (activeUpload.cancelled) {
-        updateItem(item.id, { status: "cancelled", progress: 0, error: "" });
-      } else {
-        const messageText = error.response?.data?.error || error.response?.data || error.message || "Upload failed.";
-        updateItem(item.id, {
-          status: "failed",
-          failureStage: "upload",
-          error: typeof messageText === "string" ? messageText : "Upload failed."
-        });
       }
     } finally {
       if (activeUploadRef.current === activeUpload) activeUploadRef.current = null;
@@ -348,8 +416,6 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
   const overallProgress = queue.length
     ? Math.round(queue.reduce((total, item) => total + item.progress, 0) / queue.length)
     : 0;
-  const activeUploads = Boolean(activeUploadRef.current) ||
-    queue.some((item) => ["queued", "uploading", "processing"].includes(item.status));
   const activeHttpUpload = Boolean(activeUploadRef.current);
   const progressBarColor = isDarkMode ? "#a5b4fc" : "#4f46e5";
   const statusStyles = {
