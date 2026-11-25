@@ -61,6 +61,15 @@ const { deleteAssetVideoPreview } = require("./services/assetVideoPreviewDeletio
 const { moveAssetFileAndUpdate } = require("./services/assetFileMove");
 const { resolveUploadLimitBytes } = require("./uploadLimits");
 const {
+  CHUNK_UPLOAD_SIZE_BYTES,
+  assembleChunkedUpload,
+  cleanupChunkUploadSession,
+  cleanupExpiredChunkUploads,
+  initializeChunkUpload,
+  readSession,
+  saveUploadChunk,
+} = require("./services/chunkedAssetUpload");
+const {
   ensureSafeParent,
   recoverAssetLifecycleOperations,
 } = require("./services/assetLifecycleOperations");
@@ -94,6 +103,7 @@ const {
 } = require("./services/assetUploadFilename");
 const {
   createRemoteAssetUploadProxy,
+  createRemoteChunkedUploadProxy,
   shouldProxyRemoteAssetUpload,
 } = require("./services/remoteAssetUploadProxy");
 const {
@@ -9747,45 +9757,49 @@ const parseUploadFiles = (req, res, next) => {
   });
 };
 
-app.post(
-  "/upload",
-  createRemoteAssetUploadProxy({
-    verifyUser: (req) => {
-      const authHeader = String(req.headers.authorization || "");
-      const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-      if (!tokenMatch) {
-        const error = new Error("Access denied");
-        error.statusCode = 401;
-        throw error;
-      }
-      let decoded;
-      try {
-        decoded = verifyJwtToken(tokenMatch[1]);
-      } catch (_error) {
-        const error = new Error("Access denied");
-        error.statusCode = 401;
-        throw error;
-      }
-      const userId = Number(decoded.user);
-      if (!Number.isSafeInteger(userId) || userId <= 0) {
-        const error = new Error("Access denied");
-        error.statusCode = 401;
-        throw error;
-      }
-      return userId;
-    },
-    getAuthorization: assetThumbnails.getRemoteAssetAuthorization,
-    shouldProxy: () => shouldProxyRemoteAssetUpload() && !assetStorageConnections.get().assetRoot,
-  })
+const verifyRemoteUploadUser = (req) => {
+  const authHeader = String(req.headers.authorization || "");
+  const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!tokenMatch) {
+    const error = new Error("Access denied");
+    error.statusCode = 401;
+    throw error;
+  }
+  let decoded;
+  try {
+    decoded = verifyJwtToken(tokenMatch[1]);
+  } catch (_error) {
+    const error = new Error("Access denied");
+    error.statusCode = 401;
+    throw error;
+  }
+  const userId = Number(decoded.user);
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    const error = new Error("Access denied");
+    error.statusCode = 401;
+    throw error;
+  }
+  return userId;
+};
+const shouldProxyChunkedUpload = () => (
+  shouldProxyRemoteAssetUpload() && !assetStorageConnections.get().assetRoot
 );
+const remoteChunkedUploadProxy = createRemoteChunkedUploadProxy({
+  verifyUser: verifyRemoteUploadUser,
+  getAuthorization: assetThumbnails.getRemoteAssetAuthorization,
+  shouldProxy: shouldProxyChunkedUpload,
+});
 
 app.post(
   "/upload",
-  authenticateUploadRequest,
-  lockContributorUpload,
-  prepareUploadStaging,
-  parseUploadFiles,
-  async (req, res) => {
+  createRemoteAssetUploadProxy({
+    verifyUser: verifyRemoteUploadUser,
+    getAuthorization: assetThumbnails.getRemoteAssetAuthorization,
+    shouldProxy: shouldProxyChunkedUpload,
+  })
+);
+
+const finalizeUploadedAsset = async (req, res) => {
     let finalizedFilePath = null;
     let finalizedAssetId = null;
     let uploadRequestId = null;
@@ -10297,7 +10311,320 @@ app.post(
         });
       }
     }
+};
 
+app.post(
+  "/upload",
+  authenticateUploadRequest,
+  lockContributorUpload,
+  prepareUploadStaging,
+  parseUploadFiles,
+  finalizeUploadedAsset
+);
+
+const parseChunkUploadBody = express.raw({
+  type: "application/octet-stream",
+  limit: CHUNK_UPLOAD_SIZE_BYTES
+});
+
+app.post(
+  "/upload/chunked/init",
+  remoteChunkedUploadProxy,
+  authenticateUploadRequest,
+  async (req, res) => {
+  try {
+    const user = req.uploadUser;
+    const fieldName = req.body?.fieldname || "image";
+    const preSubmission = req.body?.preSubmission === true || req.body?.preSubmission === "true";
+    const filename = String(req.body?.filename || "");
+    const mimeType = String(req.body?.mime_type || "").slice(0, 255);
+    const fileSize = Number(req.body?.file_size);
+    const parentUploadId = req.body?.parent_upload_id || null;
+    const allowedFormFields = ["title", "category", "collection", "keywords", "description", "type"];
+    const formFields = {};
+    if (
+      req.body?.form_fields !== undefined &&
+      (!req.body.form_fields || typeof req.body.form_fields !== "object" || Array.isArray(req.body.form_fields))
+    ) {
+      return res.status(400).json({ error: "Invalid upload metadata." });
+    }
+    for (const field of allowedFormFields) {
+      const value = req.body?.form_fields?.[field];
+      if (value !== undefined && typeof value !== "string") {
+        return res.status(400).json({ error: `Invalid upload metadata field: ${field}.` });
+      }
+      if (value !== undefined) formFields[field] = value;
+    }
+    if (
+      !filename ||
+      filename.length > 512 ||
+      !["image", "thumbnail"].includes(fieldName) ||
+      !isAllowedAssetUploadFile({ fieldname: fieldName, originalname: filename, mimetype: mimeType })
+    ) {
+      return res.status(400).json({ error: "Unsupported upload filename or file type." });
+    }
+    if (preSubmission && String(user.role || "").toLowerCase() !== "contributor") {
+      return res.status(403).json({ error: "Only contributors can create pre-submission uploads." });
+    }
+    if (fieldName === "thumbnail") {
+      if (preSubmission || Object.keys(formFields).length > 0) {
+        return res.status(400).json({ error: "Thumbnail uploads cannot include asset metadata." });
+      }
+      const { session: parentSession } = await readSession(
+        assetThumbnails.getOriginalAssetStorageRoot(),
+        parentUploadId,
+        req.uploadDecoded.user
+      );
+      if (parentSession.fieldName !== "image" || parentSession.preSubmission) {
+        return res.status(400).json({ error: "A thumbnail must be attached to an image upload session." });
+      }
+    } else if (parentUploadId) {
+      return res.status(400).json({ error: "Image upload sessions cannot have a parent session." });
+    }
+    let uploadRequestId;
+    try {
+      uploadRequestId = normalizeUploadRequestId(req.headers["idempotency-key"]);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    await cleanupExpiredChunkUploads(assetThumbnails.getOriginalAssetStorageRoot());
+    const initialized = await initializeChunkUpload({
+      assetRoot: assetThumbnails.getOriginalAssetStorageRoot(),
+      userId: req.uploadDecoded.user,
+      uploadRequestId,
+      filename,
+      mimeType,
+      fileSize,
+      fieldName,
+      formFields,
+      preSubmission,
+      parentUploadId,
+      maxFileSize: resolveEffectiveUploadLimitBytes(user),
+    });
+    return res.status(201).json({
+      upload_id: initialized.session.uploadId,
+      upload_request_id: initialized.session.uploadRequestId,
+      file_size: initialized.session.fileSize,
+      chunk_size: initialized.session.chunkSize,
+      total_chunks: initialized.session.totalChunks,
+      received_chunks: initialized.receivedChunks,
+    });
+  } catch (error) {
+    console.error("Could not initialize chunked upload:", error);
+    return res.status(error.statusCode || 500).json({ error: error.message || "Could not initialize chunked upload." });
+  }
+  }
+);
+
+app.put(
+  "/upload/chunked/:uploadId/parts/:chunkIndex",
+  remoteChunkedUploadProxy,
+  authenticateUploadRequest,
+  (req, res, next) => parseChunkUploadBody(req, res, (error) => {
+    if (!error) return next();
+    const status = error.type === "entity.too.large" ? 413 : 400;
+    return res.status(status).json({
+      error: status === 413 ? "Upload chunk exceeds the maximum allowed chunk size." : "Invalid upload chunk body.",
+    });
+  }),
+  async (req, res) => {
+    try {
+      const { session } = await readSession(
+        assetThumbnails.getOriginalAssetStorageRoot(),
+        req.params.uploadId,
+        req.uploadDecoded.user
+      );
+      if (session.fileSize > resolveEffectiveUploadLimitBytes(req.uploadUser)) {
+        return res.status(413).json({
+          error: `Uploaded file exceeds your ${formatUploadLimit(resolveEffectiveUploadLimitBytes(req.uploadUser))} upload limit.`,
+        });
+      }
+      const chunkIndex = Number(req.params.chunkIndex);
+      const result = await saveUploadChunk({
+        assetRoot: assetThumbnails.getOriginalAssetStorageRoot(),
+        uploadId: req.params.uploadId,
+        userId: req.uploadDecoded.user,
+        chunkIndex,
+        contents: req.body,
+      });
+      return res.json(result);
+    } catch (error) {
+      if (error.statusCode >= 500) console.error("Could not save upload chunk:", error);
+      return res.status(error.statusCode || 500).json({ error: error.message || "Could not save upload chunk." });
+    }
+  }
+);
+
+app.post(
+  "/upload/chunked/:uploadId/complete",
+  remoteChunkedUploadProxy,
+  authenticateUploadRequest,
+  lockContributorUpload,
+  async (req, res) => {
+    let responseFinished;
+    try {
+      const assetRoot = assetThumbnails.getOriginalAssetStorageRoot();
+      const { session } = await readSession(
+        assetRoot,
+        req.params.uploadId,
+        req.uploadDecoded.user
+      );
+      if (session.fieldName !== "image") {
+        const error = new Error("Only an image upload session can be finalized.");
+        error.statusCode = 400;
+        throw error;
+      }
+      if (session.preSubmission && String(req.uploadUser.role || "").toLowerCase() !== "contributor") {
+        const error = new Error("Only contributors can create pre-submission uploads.");
+        error.statusCode = 403;
+        throw error;
+      }
+      const uploadRequestId = normalizeUploadRequestId(req.headers["idempotency-key"]);
+      if (uploadRequestId !== session.uploadRequestId) {
+        const error = new Error("Upload request ID does not match the chunked upload session.");
+        error.statusCode = 409;
+        throw error;
+      }
+      if (session.fileSize > resolveEffectiveUploadLimitBytes(req.uploadUser)) {
+        const error = new Error(
+          `Uploaded file exceeds your ${formatUploadLimit(resolveEffectiveUploadLimitBytes(req.uploadUser))} upload limit.`
+        );
+        error.statusCode = 413;
+        throw error;
+      }
+      let thumbnailSession = null;
+      const thumbnailUploadId = req.body?.thumbnail_upload_id;
+      if (thumbnailUploadId) {
+        if (session.preSubmission) {
+          const error = new Error("Pre-submission uploads cannot include an optional thumbnail.");
+          error.statusCode = 400;
+          throw error;
+        }
+        const thumbnailResult = await readSession(
+          assetRoot,
+          thumbnailUploadId,
+          req.uploadDecoded.user
+        );
+        thumbnailSession = thumbnailResult.session;
+        if (
+          thumbnailSession.fieldName !== "thumbnail" ||
+          thumbnailSession.parentUploadId !== session.uploadId ||
+          thumbnailSession.preSubmission
+        ) {
+          const error = new Error("Thumbnail upload session does not match this image upload.");
+          error.statusCode = 409;
+          throw error;
+        }
+        if (thumbnailSession.fileSize > resolveEffectiveUploadLimitBytes(req.uploadUser)) {
+          const error = new Error(
+            `Uploaded thumbnail exceeds your ${formatUploadLimit(resolveEffectiveUploadLimitBytes(req.uploadUser))} upload limit.`
+          );
+          error.statusCode = 413;
+          throw error;
+        }
+      }
+
+      await new Promise((resolve, reject) => {
+        prepareUploadStaging(req, res, (error) => error ? reject(error) : resolve());
+      });
+      const assembledPath = path.join(req.uploadStagingPath, `assembled-${crypto.randomUUID()}`);
+      const assembled = await assembleChunkedUpload({
+        assetRoot,
+        uploadId: req.params.uploadId,
+        userId: req.uploadDecoded.user,
+        destinationPath: assembledPath,
+      });
+      const assembledThumbnailPath = thumbnailSession
+        ? path.join(req.uploadStagingPath, `assembled-thumbnail-${crypto.randomUUID()}`)
+        : null;
+      const assembledThumbnail = thumbnailSession
+        ? await assembleChunkedUpload({
+            assetRoot,
+            uploadId: thumbnailUploadId,
+            userId: req.uploadDecoded.user,
+            destinationPath: assembledThumbnailPath,
+          })
+        : null;
+      req.headers["idempotency-key"] = uploadRequestId;
+      req.body = {
+        ...session.formFields,
+        preSubmission: session.preSubmission ? "true" : "",
+      };
+      req.files = {
+        image: [{
+          fieldname: "image",
+          originalname: session.filename,
+          encoding: "7bit",
+          mimetype: session.mimeType,
+          destination: req.uploadStagingPath,
+          filename: path.basename(assembledPath),
+          path: assembledPath,
+          size: assembled.size,
+        }],
+        ...(assembledThumbnail ? {
+          thumbnail: [{
+            fieldname: "thumbnail",
+            originalname: thumbnailSession.filename,
+            encoding: "7bit",
+            mimetype: thumbnailSession.mimeType,
+            destination: req.uploadStagingPath,
+            filename: path.basename(assembledThumbnailPath),
+            path: assembledThumbnailPath,
+            size: assembledThumbnail.size,
+          }],
+        } : {}),
+      };
+      responseFinished = new Promise((resolve) => {
+        res.once("finish", () => resolve(true));
+        res.once("close", () => resolve(false));
+      });
+      await finalizeUploadedAsset(req, res);
+      const responseWasSent = await responseFinished;
+      if (responseWasSent && res.statusCode >= 200 && res.statusCode < 300) {
+        try {
+          await cleanupChunkUploadSession(assetRoot, req.params.uploadId);
+          if (thumbnailUploadId) {
+            await cleanupChunkUploadSession(assetRoot, thumbnailUploadId);
+          }
+        } catch (cleanupError) {
+          console.error("Could not remove completed chunked upload session:", cleanupError);
+        }
+      }
+    } catch (error) {
+      if (req.uploadStagingPath) {
+        await cleanupUploadStaging(req).catch((cleanupError) => {
+          console.error("Could not clean assembled upload staging:", cleanupError);
+        });
+      }
+      releaseContributorUploadLock(req);
+      if (res.headersSent || res.destroyed) return;
+      if (error.missingChunks) {
+        return res.status(error.statusCode || 409).json({
+          error: error.message,
+          missing_chunks: error.missingChunks,
+        });
+      }
+      return res.status(error.statusCode || 500).json({
+        error: error.message || "Could not finalize chunked upload.",
+      });
+    }
+  }
+);
+
+app.delete(
+  "/upload/chunked/:uploadId",
+  remoteChunkedUploadProxy,
+  authenticateUploadRequest,
+  async (req, res) => {
+  try {
+    const assetRoot = assetThumbnails.getOriginalAssetStorageRoot();
+    await readSession(assetRoot, req.params.uploadId, req.uploadDecoded.user);
+    await cleanupChunkUploadSession(assetRoot, req.params.uploadId);
+    return res.status(204).end();
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message || "Could not cancel chunked upload." });
+  }
   }
 );
 
@@ -17410,6 +17737,12 @@ async function initializeThumbnailSystem() {
         assetRoot: assetThumbnails.getOriginalAssetStorageRoot(),
         configuredAssetRoot: assetStorageConnections.getConfiguredStorageRoots().assetsRoot,
       });
+      const expiredChunkSessions = await cleanupExpiredChunkUploads(
+        assetThumbnails.getOriginalAssetStorageRoot()
+      );
+      if (expiredChunkSessions > 0) {
+        console.log(`Removed ${expiredChunkSessions} expired chunked upload session(s).`);
+      }
       if (uploadStagingCleanup.removed > 0) {
         console.log(`Removed ${uploadStagingCleanup.removed} abandoned upload staging directory(s).`);
       }
@@ -17552,6 +17885,16 @@ if (require.main === module) {
       process.exitCode = 1;
       return;
     }
+    const chunkSessionCleanupTimer = setInterval(() => {
+      cleanupExpiredChunkUploads(assetThumbnails.getOriginalAssetStorageRoot())
+        .then((removed) => {
+          if (removed > 0) console.log(`Removed ${removed} expired chunked upload session(s).`);
+        })
+        .catch((error) => {
+          console.error("Could not clean expired chunked upload sessions:", error);
+        });
+    }, 60 * 60 * 1000);
+    chunkSessionCleanupTimer.unref();
     app.listen(PORT, process.env.HOST || "0.0.0.0", () => {
       console.log(`Server running on port ${PORT}`);
     });

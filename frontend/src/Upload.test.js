@@ -8,6 +8,42 @@ jest.mock("react-toastify", () => ({
   toast: { success: jest.fn(), error: jest.fn(), warning: jest.fn() }
 }));
 
+const configureChunkedUploadApi = () => {
+  const sessions = new Map();
+  let nextSession = 1;
+  axios.post.mockImplementation((url, body, config) => {
+    if (url.endsWith("/upload/chunked/init")) {
+      const uploadId = `single-session-${nextSession++}`;
+      sessions.set(uploadId, { fileSize: body.file_size, body, headers: config.headers });
+      return Promise.resolve({
+        data: {
+          upload_id: uploadId,
+          file_size: body.file_size,
+          chunk_size: 8 * 1024 * 1024,
+          total_chunks: Math.ceil(body.file_size / (8 * 1024 * 1024)),
+          received_chunks: []
+        }
+      });
+    }
+    const uploadId = decodeURIComponent(url.split("/").at(-2));
+    const session = sessions.get(uploadId);
+    return Promise.resolve({
+      data: {
+        id: 1,
+        file_size: session.fileSize,
+        status: "upload_processing",
+        upload_complete: true,
+        finalized: true,
+        thumbnail_processing_status: "PROCESSING"
+      }
+    });
+  });
+  axios.put.mockImplementation((_url, chunk, config) => {
+    config.onUploadProgress?.({ loaded: chunk.size, total: chunk.size });
+    return Promise.resolve({ data: { received: true } });
+  });
+};
+
 describe("Single Upload", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -26,19 +62,10 @@ describe("Single Upload", () => {
       }
       return Promise.resolve({ data: [] });
     });
-    axios.post.mockResolvedValue({
-      data: {
-        id: 1,
-        file_size: 5,
-        status: "upload_processing",
-        upload_complete: true,
-        finalized: true,
-        thumbnail_processing_status: "PROCESSING"
-      }
-    });
+    configureChunkedUploadApi();
   });
 
-  it("keeps the existing single-upload request and does not opt into pre-submission", async () => {
+  it("uploads a single asset in chunks and preserves its standard metadata submission", async () => {
     const { container } = render(<Upload darkMode={false} fetchImages={jest.fn()} />);
     await screen.findByRole("option", { name: "Photos" });
     fireEvent.change(screen.getByLabelText(/Title/), { target: { value: "Single upload" } });
@@ -55,29 +82,53 @@ describe("Single Upload", () => {
 
     await waitFor(() => {
       expect(axios.post).toHaveBeenCalledWith(
-        "http://localhost:5000/upload",
-        expect.any(FormData),
-        expect.objectContaining({ onUploadProgress: expect.any(Function) })
+        "http://localhost:5000/upload/chunked/init",
+        expect.objectContaining({
+          filename: "single.jpg",
+          file_size: 5,
+          fieldname: "image",
+          preSubmission: false,
+          form_fields: expect.objectContaining({
+            title: "Single upload",
+            description: "Forest image",
+            category: "Nature",
+            collection: "Photos",
+            keywords: "forest",
+            type: "commercial"
+          })
+        }),
+        expect.objectContaining({ skipGlobalLoading: true })
       );
     });
-    expect(axios.post.mock.calls[0][1].get("preSubmission")).toBeNull();
-    expect(axios.post.mock.calls[0][2].headers["Idempotency-Key"]).toMatch(
+    const initCall = axios.post.mock.calls.find((call) => call[0].endsWith("/upload/chunked/init"));
+    expect(initCall[2].headers["Idempotency-Key"]).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     );
+    expect(axios.put).toHaveBeenCalledTimes(1);
+    expect(axios.post.mock.calls.some((call) => call[0].endsWith("/complete"))).toBe(true);
   });
 
   it("reuses a request key after an upload response is lost", async () => {
-    axios.post
-      .mockRejectedValueOnce({ message: "Connection reset." })
-      .mockResolvedValueOnce({
-        data: {
-          id: 2,
-          file_size: 5,
-          upload_complete: true,
-          finalized: true,
-          thumbnail_processing_status: "PROCESSING"
-        }
+    let initCount = 0;
+    axios.post.mockImplementation((url, body, config) => {
+      if (url.endsWith("/upload/chunked/init")) {
+        initCount += 1;
+        if (initCount === 1) return Promise.reject({ message: "Connection reset." });
+        return Promise.resolve({
+          data: {
+            upload_id: "retry-single-session",
+            file_size: body.file_size,
+            chunk_size: 8 * 1024 * 1024,
+            total_chunks: 1,
+            received_chunks: [],
+            request_id: config.headers["Idempotency-Key"]
+          }
+        });
+      }
+      return Promise.resolve({
+        data: { id: 2, file_size: 5, upload_complete: true, finalized: true, thumbnail_processing_status: "PROCESSING" }
       });
+    });
     const { container } = render(<Upload darkMode={false} fetchImages={jest.fn()} />);
     await screen.findByRole("option", { name: "Photos" });
     fireEvent.change(screen.getByLabelText(/Title/), { target: { value: "Single upload" } });
@@ -96,8 +147,11 @@ describe("Single Upload", () => {
     const requestId = axios.post.mock.calls[0][2].headers["Idempotency-Key"];
     fireEvent.click(screen.getByRole("button", { name: "Upload" }));
 
-    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
-    expect(axios.post.mock.calls[1][2].headers["Idempotency-Key"]).toBe(requestId);
+    await waitFor(() => expect(axios.post.mock.calls.filter((call) => (
+      call[0].endsWith("/upload/chunked/init")
+    ))).toHaveLength(2));
+    const initCalls = axios.post.mock.calls.filter((call) => call[0].endsWith("/upload/chunked/init"));
+    expect(initCalls[1][2].headers["Idempotency-Key"]).toBe(requestId);
   });
 
   it("requires and uploads a thumbnail when Templates is selected", async () => {
@@ -123,8 +177,17 @@ describe("Single Upload", () => {
     expect(screen.getByRole("button", { name: "Upload" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Upload" }));
 
-    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(1));
-    expect(axios.post.mock.calls[0][1].get("thumbnail")).toBe(thumbnailFile);
+    await waitFor(() => expect(axios.put).toHaveBeenCalledTimes(2));
+    const initCalls = axios.post.mock.calls.filter((call) => call[0].endsWith("/upload/chunked/init"));
+    expect(initCalls).toHaveLength(2);
+    expect(initCalls[0][1].fieldname).toBe("image");
+    expect(initCalls[1][1]).toEqual(expect.objectContaining({
+      filename: thumbnailFile.name,
+      fieldname: "thumbnail",
+      parent_upload_id: "single-session-1"
+    }));
+    const completeCall = axios.post.mock.calls.find((call) => call[0].endsWith("/complete"));
+    expect(completeCall[1].thumbnail_upload_id).toBe("single-session-2");
   });
 
   it("marks the required upload fields with small red stars", async () => {

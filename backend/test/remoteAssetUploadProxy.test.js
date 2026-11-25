@@ -2,8 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PassThrough, Readable } = require('node:stream');
 const {
+  MAX_REMOTE_CHUNK_UPLOAD_REQUEST_BYTES,
   MAX_REMOTE_UPLOAD_RESPONSE_BYTES,
   createRemoteAssetUploadProxy,
+  createRemoteChunkedUploadProxy,
   shouldProxyRemoteAssetUpload,
 } = require('../services/remoteAssetUploadProxy');
 
@@ -53,6 +55,117 @@ function createResponse() {
   };
   return response;
 }
+
+test('proxies chunk initialization JSON with server credentials and the caller idempotency key', async () => {
+  let requestOptions;
+  const middleware = createRemoteChunkedUploadProxy({
+    verifyUser: async () => 71,
+    getAuthorization: async () => 'Bearer server-generated-owner-token',
+    shouldProxy: () => true,
+    getBaseUrl: () => 'http://127.0.0.1:5000',
+    httpClient: {
+      request: async (options) => {
+        requestOptions = options;
+        return {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+          data: Buffer.from('{"upload_id":"session"}'),
+        };
+      },
+    },
+  });
+  const req = Readable.from([]);
+  req.method = 'POST';
+  req.path = '/upload/chunked/init';
+  req.originalUrl = req.path;
+  req.body = { filename: 'asset.eps', file_size: 100 };
+  req.headers = {
+    'content-type': 'application/json',
+    'idempotency-key': 'c99547ed-2ff2-44c6-9fbf-218e3b61f1b9',
+  };
+  const res = createResponse();
+  const responseBodyPromise = new Promise((resolve) => {
+    const chunks = [];
+    res.on('data', (chunk) => chunks.push(chunk));
+    res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+  });
+
+  await middleware(req, res, () => {
+    throw new Error('Remote chunked upload should not fall through locally.');
+  });
+  assert.equal(requestOptions.url, 'http://127.0.0.1:5000/upload/chunked/init');
+  assert.equal(requestOptions.data, req.body);
+  assert.equal(requestOptions.headers.authorization, 'Bearer server-generated-owner-token');
+  assert.equal(requestOptions.headers['idempotency-key'], req.headers['idempotency-key']);
+  assert.equal(res.statusCode, 201);
+  assert.equal(await responseBodyPromise, '{"upload_id":"session"}');
+});
+
+test('relays bounded raw chunk requests without buffering the incoming stream in the proxy', async () => {
+  let requestOptions;
+  const uploadId = 'a'.repeat(64);
+  const req = Readable.from([Buffer.from('chunk-body')]);
+  req.method = 'PUT';
+  req.path = `/upload/chunked/${uploadId}/parts/0`;
+  req.originalUrl = req.path;
+  req.headers = {
+    'content-type': 'application/octet-stream',
+    'content-length': '10',
+  };
+  const middleware = createRemoteChunkedUploadProxy({
+    verifyUser: async () => 71,
+    getAuthorization: async () => 'Bearer server-token',
+    shouldProxy: () => true,
+    getBaseUrl: () => 'http://127.0.0.1:5000',
+    httpClient: {
+      request: async (options) => {
+        requestOptions = options;
+        return {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          data: Buffer.from('{"received":true}'),
+        };
+      },
+    },
+  });
+  const res = createResponse();
+
+  await middleware(req, res, () => {
+    throw new Error('Remote chunked upload should not fall through locally.');
+  });
+  assert.equal(requestOptions.method, 'PUT');
+  assert.equal(requestOptions.data, req);
+  assert.equal(requestOptions.maxBodyLength, MAX_REMOTE_CHUNK_UPLOAD_REQUEST_BYTES);
+  assert.equal(res.statusCode, 200);
+});
+
+test('rejects oversized raw chunks before relaying them', async () => {
+  let upstreamCalled = false;
+  const req = Readable.from([]);
+  req.method = 'PUT';
+  req.path = `/upload/chunked/${'a'.repeat(64)}/parts/0`;
+  req.originalUrl = req.path;
+  req.headers = {
+    'content-type': 'application/octet-stream',
+    'content-length': String(MAX_REMOTE_CHUNK_UPLOAD_REQUEST_BYTES + 1),
+  };
+  const middleware = createRemoteChunkedUploadProxy({
+    verifyUser: async () => 71,
+    getAuthorization: async () => 'Bearer unused',
+    shouldProxy: () => true,
+    getBaseUrl: () => 'http://127.0.0.1:5000',
+    httpClient: {
+      request: async () => {
+        upstreamCalled = true;
+      },
+    },
+  });
+  const res = createResponse();
+
+  await middleware(req, res, () => {});
+  assert.equal(res.statusCode, 413);
+  assert.equal(upstreamCalled, false);
+});
 
 test('relays a valid finalized response with server credentials and preserves the idempotency key', async () => {
   let requestOptions;

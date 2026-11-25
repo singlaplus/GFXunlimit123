@@ -37,6 +37,86 @@ function formatUploadLimit(bytes) {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
+async function uploadFileInChunks({
+  file,
+  uploadRequestId,
+  fieldName,
+  formFields = {},
+  parentUploadId = null,
+  progress
+}) {
+  const headers = { ...buildAuthHeaders(), "Idempotency-Key": uploadRequestId };
+  const initResponse = await axios.post(
+    `${API_BASE_URL}/upload/chunked/init`,
+    {
+      filename: file.name,
+      mime_type: file.type,
+      file_size: file.size,
+      fieldname: fieldName,
+      form_fields: formFields,
+      parent_upload_id: parentUploadId,
+      preSubmission: false
+    },
+    { headers, skipGlobalLoading: true }
+  );
+  const session = initResponse.data;
+  const uploadId = session?.upload_id;
+  const chunkSize = Number(session?.chunk_size);
+  const totalChunks = Number(session?.total_chunks);
+  if (
+    typeof uploadId !== "string" ||
+    !uploadId ||
+    session.file_size !== file.size ||
+    !Number.isSafeInteger(chunkSize) ||
+    chunkSize <= 0 ||
+    !Number.isSafeInteger(totalChunks) ||
+    totalChunks !== Math.ceil(file.size / chunkSize) ||
+    !Array.isArray(session.received_chunks)
+  ) {
+    throw new Error("The server returned invalid chunked upload details.");
+  }
+
+  const receivedChunks = new Set(
+    session.received_chunks.filter((index) => (
+      Number.isSafeInteger(index) && index >= 0 && index < totalChunks
+    ))
+  );
+  for (const index of receivedChunks) {
+    progress.completedBytes += Math.min(chunkSize, file.size - index * chunkSize);
+  }
+  const reportProgress = (bytesInCurrentChunk = 0) => {
+    const percent = Math.min(
+      99,
+      Math.round(((progress.completedBytes + bytesInCurrentChunk) * 100) / progress.totalBytes)
+    );
+    progress.onProgress(percent);
+  };
+  reportProgress();
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+    if (receivedChunks.has(chunkIndex)) continue;
+    const start = chunkIndex * chunkSize;
+    const end = Math.min(start + chunkSize, file.size);
+    const chunk = file.slice(start, end);
+    await axios.put(
+      `${API_BASE_URL}/upload/chunked/${encodeURIComponent(uploadId)}/parts/${chunkIndex}`,
+      chunk,
+      {
+        headers: { ...headers, "Content-Type": "application/octet-stream" },
+        skipGlobalLoading: true,
+        onUploadProgress: (event) => {
+          const loaded = Math.min(end - start, Number(event.loaded) || 0);
+          const total = Number(event.total) || 0;
+          reportProgress(total > 0 ? Math.min(loaded, total) : loaded);
+        }
+      }
+    );
+    progress.completedBytes += end - start;
+    reportProgress();
+  }
+  return uploadId;
+}
+
 function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
   const [title, setTitle] = useState(editingAsset?.title || "");
   const [category, setCategory] = useState(
@@ -282,7 +362,6 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
       return;
     }
 
-    const formData = new FormData();
     const fingerprint = JSON.stringify([
       image.name,
       image.size,
@@ -298,46 +377,53 @@ function Upload({ fetchImages, darkMode, editingAsset = null, onSaved }) {
       thumbnail?.lastModified || 0
     ]);
     if (!uploadRequestRef.current || uploadRequestRef.current.fingerprint !== fingerprint) {
-      uploadRequestRef.current = { fingerprint, id: createUploadRequestId() };
+      uploadRequestRef.current = {
+        fingerprint,
+        id: createUploadRequestId(),
+        thumbnailId: thumbnail ? createUploadRequestId() : null
+      };
     }
-
-    formData.append("title", trimmedTitle);
-    formData.append("category", category.join(","));
-    formData.append("collection", collection);
-    formData.append("keywords", trimmedKeywords);
-    formData.append("description", trimmedDescription);
-    formData.append("type", type);
-    formData.append("image", image);
-    if (thumbnail) {
-      formData.append("thumbnail", thumbnail);
-    }
+    const uploadRequest = uploadRequestRef.current;
 
     try {
       setLoading(true);
-setUploadProgress(0);
-
+      setUploadProgress(0);
+      const progress = {
+        completedBytes: 0,
+        totalBytes: image.size + (thumbnail?.size || 0),
+        onProgress: setUploadProgress
+      };
+      const uploadId = await uploadFileInChunks({
+        file: image,
+        uploadRequestId: uploadRequest.id,
+        fieldName: "image",
+        formFields: {
+          title: trimmedTitle,
+          category: category.join(","),
+          collection,
+          keywords: trimmedKeywords,
+          description: trimmedDescription,
+          type
+        },
+        progress
+      });
+      const thumbnailUploadId = thumbnail
+        ? await uploadFileInChunks({
+            file: thumbnail,
+            uploadRequestId: uploadRequest.thumbnailId,
+            fieldName: "thumbnail",
+            parentUploadId: uploadId,
+            progress
+          })
+        : null;
       const res = await axios.post(
-  `${API_BASE_URL}/upload`,
-  formData,
-  {
-    headers: {
-      "Idempotency-Key": uploadRequestRef.current.id,
-      Authorization: `Bearer ${token}`
-    },
-
-    onUploadProgress: (progressEvent) => {
-      const percentCompleted =
-        Math.round(
-          (progressEvent.loaded * 100) /
-          progressEvent.total
-        );
-
-      setUploadProgress(
-        percentCompleted
+        `${API_BASE_URL}/upload/chunked/${encodeURIComponent(uploadId)}/complete`,
+        { thumbnail_upload_id: thumbnailUploadId },
+        {
+          headers: { ...buildAuthHeaders(), "Idempotency-Key": uploadRequest.id },
+          skipGlobalLoading: true
+        }
       );
-    }
-  }
-);
 
       if (
         res.data?.upload_complete !== true ||

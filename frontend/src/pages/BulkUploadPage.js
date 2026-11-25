@@ -21,6 +21,7 @@ const createUploadRequestId = () => {
 const createQueueItem = (file) => ({
   id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   uploadRequestId: createUploadRequestId(),
+  chunkUploadId: null,
   file,
   progress: 0,
   status: "queued",
@@ -205,118 +206,199 @@ export default function BulkUploadPage({ darkMode, fetchImages }) {
     updateItem(item.id, { status: "uploading", progress: 0, failureStage: null, error: "" });
 
     try {
-      for (let attempt = 1; attempt <= MAX_UPLOAD_ATTEMPTS; attempt += 1) {
-        const controller = new AbortController();
-        activeUpload.controller = controller;
-        activeUpload.stallDetected = false;
-        let lastProgressPercent = 0;
-        let requestBodySent = false;
-        let stallTimeout = null;
-        const clearStallTimeout = () => {
-          if (stallTimeout !== null) {
-            window.clearTimeout(stallTimeout);
-            stallTimeout = null;
-          }
-        };
-        const armStallTimeout = () => {
-          clearStallTimeout();
-          if (requestBodySent || activeUpload.cancelled) return;
-          stallTimeout = window.setTimeout(() => {
-            activeUpload.stallDetected = true;
-            controller.abort();
-          }, UPLOAD_STALL_TIMEOUT_MS);
-        };
-        const formData = new FormData();
-        formData.append("image", item.file);
-        formData.append("preSubmission", "true");
-        armStallTimeout();
-
-        try {
-          const response = await axios.post(`${API_BASE_URL}/upload`, formData, {
-            headers: {
-              ...buildAuthHeaders(),
-              "Idempotency-Key": item.uploadRequestId
-            },
-            signal: controller.signal,
-            skipGlobalLoading: true,
-            onUploadProgress: (event) => {
-              if (activeUpload.cancelled) return;
-              const loaded = Number(event.loaded) || 0;
-              const total = Number(event.total) || 0;
-              const progressPercent = Math.min(
-                99,
-                Math.round((loaded * 100) / (total > 0 ? total : item.file.size))
-              );
-              const progressAdvanced = progressPercent > lastProgressPercent;
-              if (total > 0 && loaded >= total) {
-                requestBodySent = true;
-                clearStallTimeout();
-              } else if (progressAdvanced) {
-                lastProgressPercent = progressPercent;
-                armStallTimeout();
-              }
-              if (!requestBodySent && total <= 0 && loaded >= item.file.size) {
-                requestBodySent = true;
-                clearStallTimeout();
-              }
-              updateItem(item.id, {
-                progress: progressPercent,
-                ...(progressAdvanced ? { error: "" } : {})
-              });
-            }
-          });
-          clearStallTimeout();
-          const uploadedAssetId = response.data?.id;
-          if (
-            !Number.isSafeInteger(uploadedAssetId) ||
-            uploadedAssetId <= 0 ||
-            response.data?.upload_complete !== true ||
-            response.data?.finalized !== true ||
-            response.data?.file_size !== item.file.size
-          ) {
-            throw new Error("The server did not confirm that this file was fully received and finalized.");
-          }
-          updateItem(item.id, { assetId: uploadedAssetId, progress: 100, status: "processing", error: "" });
-          void waitForThumbnail(uploadedAssetId, item.id).catch((error) => {
-            const messageText = error.response?.data?.error || error.response?.data || error.message || "Unable to check thumbnail status.";
-            updateItem(item.id, {
-              status: "thumbnail-failed",
-              failureStage: "thumbnail",
-              error: typeof messageText === "string" ? messageText : "Unable to check thumbnail status."
-            });
-          });
-          if (typeof fetchImages === "function") fetchImages();
-          return;
-        } catch (error) {
-          clearStallTimeout();
-          if (activeUpload.cancelled) {
-            updateItem(item.id, { status: "cancelled", progress: 0, error: "" });
-            return;
-          }
-          if (activeUpload.stallDetected) {
-            if (attempt < MAX_UPLOAD_ATTEMPTS) {
-              updateItem(item.id, {
-                progress: 0,
-                error: `No upload progress for 10 seconds. Restarting from 0% (attempt ${attempt + 1} of ${MAX_UPLOAD_ATTEMPTS}).`
-              });
-              continue;
-            }
-            updateItem(item.id, {
-              status: "failed",
-              failureStage: "upload",
-              error: `Upload made no progress for 10 seconds after ${MAX_UPLOAD_ATTEMPTS} attempts. Retry to try again.`
-            });
-            return;
-          }
-          const messageText = error.response?.data?.error || error.response?.data || error.message || "Upload failed.";
-          updateItem(item.id, {
-            status: "failed",
-            failureStage: "upload",
-            error: typeof messageText === "string" ? messageText : "Upload failed."
-          });
-          return;
+      const requestHeaders = {
+        ...buildAuthHeaders(),
+        "Idempotency-Key": item.uploadRequestId
+      };
+      let uploadId = item.chunkUploadId;
+      const initController = new AbortController();
+      activeUpload.controller = initController;
+      const initResponse = await axios.post(
+        `${API_BASE_URL}/upload/chunked/init`,
+        {
+          filename: item.file.name,
+          mime_type: item.file.type,
+          file_size: item.file.size,
+          preSubmission: true
+        },
+        { headers: requestHeaders, signal: initController.signal, skipGlobalLoading: true }
+      );
+      const session = initResponse.data;
+      if (!uploadId) {
+        uploadId = session?.upload_id;
+        if (typeof uploadId !== "string" || !uploadId) {
+          throw new Error("The server did not create an upload session.");
         }
+        updateItem(item.id, { chunkUploadId: uploadId });
       }
+      activeUpload.chunkUploadId = uploadId;
+
+      const chunkSize = Number(session?.chunk_size);
+      const totalChunks = Number(session?.total_chunks);
+      if (
+        session?.upload_id !== uploadId ||
+        session?.file_size !== item.file.size ||
+        !Number.isSafeInteger(chunkSize) ||
+        chunkSize <= 0 ||
+        !Number.isSafeInteger(totalChunks) ||
+        totalChunks !== Math.ceil(item.file.size / chunkSize)
+      ) {
+        throw new Error("The server returned invalid chunked upload details.");
+      }
+      const receivedChunks = new Set(
+        (Array.isArray(session.received_chunks) ? session.received_chunks : [])
+          .filter((index) => Number.isSafeInteger(index) && index >= 0 && index < totalChunks)
+      );
+      let completedBytes = [...receivedChunks].reduce((total, index) => (
+        total + Math.min(chunkSize, item.file.size - index * chunkSize)
+      ), 0);
+      const getProgressPercent = (bytes) => Math.min(
+        99,
+        Math.round((bytes * 100) / item.file.size)
+      );
+      updateItem(item.id, { progress: getProgressPercent(completedBytes) });
+      const uploadChunk = async ({ chunkIndex, start, end, chunk, completedBeforeChunk }) => {
+        for (let attempt = 1; attempt <= MAX_UPLOAD_ATTEMPTS; attempt += 1) {
+          const controller = new AbortController();
+          activeUpload.controller = controller;
+          activeUpload.stallDetected = false;
+          let lastProgressPercent = getProgressPercent(completedBeforeChunk);
+          let requestBodySent = false;
+          let stallTimeout = null;
+          const clearStallTimeout = () => {
+            if (stallTimeout !== null) {
+              window.clearTimeout(stallTimeout);
+              stallTimeout = null;
+            }
+          };
+          const armStallTimeout = () => {
+            clearStallTimeout();
+            if (requestBodySent || activeUpload.cancelled) return;
+            stallTimeout = window.setTimeout(() => {
+              activeUpload.stallDetected = true;
+              controller.abort();
+            }, UPLOAD_STALL_TIMEOUT_MS);
+          };
+          armStallTimeout();
+
+          try {
+            await axios.put(
+              `${API_BASE_URL}/upload/chunked/${encodeURIComponent(uploadId)}/parts/${chunkIndex}`,
+              chunk,
+              {
+                headers: { ...requestHeaders, "Content-Type": "application/octet-stream" },
+                signal: controller.signal,
+                skipGlobalLoading: true,
+                onUploadProgress: (event) => {
+                  if (activeUpload.cancelled) return;
+                  const loaded = Number(event.loaded) || 0;
+                  const total = Number(event.total) || 0;
+                  const chunkProgress = Math.min(end - start, loaded);
+                  const progressPercent = getProgressPercent(
+                    completedBeforeChunk + (total > 0 ? Math.min(chunkProgress, total) : chunkProgress)
+                  );
+                  if ((total > 0 && loaded >= total) || (total <= 0 && loaded >= end - start)) {
+                    requestBodySent = true;
+                    clearStallTimeout();
+                  }
+                  const progressAdvanced = progressPercent > lastProgressPercent;
+                  if (progressAdvanced && !requestBodySent) {
+                    lastProgressPercent = progressPercent;
+                    armStallTimeout();
+                  }
+                  updateItem(item.id, {
+                    progress: progressPercent,
+                    ...(progressAdvanced ? { error: "" } : {})
+                  });
+                }
+              }
+            );
+            clearStallTimeout();
+            updateItem(item.id, {
+              progress: getProgressPercent(completedBeforeChunk + end - start),
+              error: ""
+            });
+            return;
+          } catch (error) {
+            clearStallTimeout();
+            if (activeUpload.cancelled) throw error;
+            if (activeUpload.stallDetected) {
+              if (attempt < MAX_UPLOAD_ATTEMPTS) {
+                updateItem(item.id, {
+                  error: `No upload progress for 10 seconds. Retrying chunk ${chunkIndex + 1} (attempt ${attempt + 1} of ${MAX_UPLOAD_ATTEMPTS}).`
+                });
+                continue;
+              }
+              throw new Error(`Upload made no progress for 10 seconds after ${MAX_UPLOAD_ATTEMPTS} attempts.`);
+            }
+            throw error;
+          }
+        }
+      };
+
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        if (receivedChunks.has(chunkIndex)) continue;
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(start + chunkSize, item.file.size);
+        const chunk = item.file.slice(start, end);
+        await uploadChunk({ chunkIndex, start, end, chunk, completedBeforeChunk: completedBytes });
+        completedBytes += end - start;
+      }
+
+      if (activeUpload.cancelled) throw new Error("Upload was cancelled.");
+      const controller = new AbortController();
+      activeUpload.controller = controller;
+      const response = await axios.post(
+        `${API_BASE_URL}/upload/chunked/${encodeURIComponent(uploadId)}/complete`,
+        {},
+        { headers: requestHeaders, signal: controller.signal, skipGlobalLoading: true }
+      );
+      const uploadedAssetId = response.data?.id;
+      if (
+        !Number.isSafeInteger(uploadedAssetId) ||
+        uploadedAssetId <= 0 ||
+        response.data?.upload_complete !== true ||
+        response.data?.finalized !== true ||
+        response.data?.file_size !== item.file.size
+      ) {
+        throw new Error("The server did not confirm that this file was fully received and finalized.");
+      }
+      updateItem(item.id, {
+        assetId: uploadedAssetId,
+        chunkUploadId: null,
+        progress: 100,
+        status: "processing",
+        error: ""
+      });
+      void waitForThumbnail(uploadedAssetId, item.id).catch((error) => {
+        const messageText = error.response?.data?.error || error.response?.data || error.message || "Unable to check thumbnail status.";
+        updateItem(item.id, {
+          status: "thumbnail-failed",
+          failureStage: "thumbnail",
+          error: typeof messageText === "string" ? messageText : "Unable to check thumbnail status."
+        });
+      });
+      if (typeof fetchImages === "function") fetchImages();
+    } catch (error) {
+      if (activeUpload.cancelled) {
+        updateItem(item.id, { status: "cancelled", progress: 0, error: "" });
+        const uploadId = activeUpload.chunkUploadId || item.chunkUploadId;
+        if (uploadId) {
+          void axios.delete(`${API_BASE_URL}/upload/chunked/${encodeURIComponent(uploadId)}`, {
+            headers: buildAuthHeaders(),
+            skipGlobalLoading: true
+          }).catch((cleanupError) => {
+            console.error("Could not remove cancelled chunked upload session:", cleanupError);
+          });
+        }
+        return;
+      }
+      const messageText = error.response?.data?.error || error.response?.data || error.message || "Upload failed.";
+      updateItem(item.id, {
+        status: "failed",
+        failureStage: "upload",
+        error: typeof messageText === "string" ? messageText : "Upload failed."
+      });
     } finally {
       if (activeUploadRef.current === activeUpload) activeUploadRef.current = null;
       void pumpQueue();

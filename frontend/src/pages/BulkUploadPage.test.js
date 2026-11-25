@@ -11,6 +11,36 @@ const finalizedResponse = (id, fileSize = 5) => ({
   data: { id, upload_complete: true, finalized: true, file_size: fileSize }
 });
 
+const configureChunkedUpload = (assetIdForSession = () => 101) => {
+  const sessions = new Map();
+  let nextSessionId = 1;
+  let nextAssetId = 101;
+  axios.post.mockImplementation((url, body) => {
+    if (url.endsWith("/upload/chunked/init")) {
+      const uploadId = `session-${nextSessionId++}`;
+      sessions.set(uploadId, { fileSize: body.file_size, filename: body.filename });
+      return Promise.resolve({
+        data: {
+          upload_id: uploadId,
+          file_size: body.file_size,
+          chunk_size: 8 * 1024 * 1024,
+          total_chunks: Math.ceil(body.file_size / (8 * 1024 * 1024)),
+          received_chunks: []
+        }
+      });
+    }
+    const uploadId = decodeURIComponent(url.split("/").at(-2));
+    const session = sessions.get(uploadId);
+    return Promise.resolve(finalizedResponse(assetIdForSession(session, nextAssetId++), session.fileSize));
+  });
+  axios.put.mockImplementation((_url, chunk, config) => {
+    config.onUploadProgress?.({ loaded: chunk.size, total: chunk.size });
+    return Promise.resolve({ data: { received: true } });
+  });
+  axios.delete.mockResolvedValue({ status: 204 });
+  return sessions;
+};
+
 const useFastThumbnailPolling = () => {
   const originalSetTimeout = window.setTimeout.bind(window);
   jest.spyOn(window, "setTimeout").mockImplementation((callback, delay, ...args) => (
@@ -30,6 +60,7 @@ const useFastThumbnailPolling = () => {
 describe("BulkUploadPage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    configureChunkedUpload();
     localStorage.setItem("token", "test-token");
     localStorage.setItem("userRole", "contributor");
     localStorage.setItem("userPermissions", JSON.stringify({}));
@@ -44,15 +75,30 @@ describe("BulkUploadPage", () => {
   it("keeps one active transfer, allows queued removal, and waits for backend finalization", async () => {
     const files = Array.from({ length: 10 }, (_, index) => new File(["asset"], `asset-${index + 1}.jpg`));
     const requests = new Map();
+    const sessions = new Map();
+    let nextSessionId = 1;
     let activeTransfers = 0;
     let maximumTransfers = 0;
-    axios.post.mockImplementation((_url, formData, config) => {
-      const file = formData.get("image");
+    axios.post.mockImplementation((url, body, config) => {
+      if (url.endsWith("/upload/chunked/init")) {
+        const uploadId = `session-${nextSessionId++}`;
+        sessions.set(uploadId, body);
+        return Promise.resolve({
+          data: {
+            upload_id: uploadId,
+            file_size: body.file_size,
+            chunk_size: 8 * 1024 * 1024,
+            total_chunks: 1,
+            received_chunks: []
+          }
+        });
+      }
+      const uploadId = decodeURIComponent(url.split("/").at(-2));
+      const file = sessions.get(uploadId);
       activeTransfers += 1;
       maximumTransfers = Math.max(maximumTransfers, activeTransfers);
-      config.onUploadProgress({ loaded: 5, total: 5 });
       return new Promise((resolve, reject) => {
-        requests.set(file.name, {
+        requests.set(file.filename, {
           resolve: (response) => {
             activeTransfers -= 1;
             resolve(response);
@@ -65,11 +111,16 @@ describe("BulkUploadPage", () => {
         });
       });
     });
+    axios.put.mockImplementation((_url, chunk, config) => {
+      config.onUploadProgress({ loaded: chunk.size, total: chunk.size });
+      return Promise.resolve({ data: { received: true } });
+    });
 
     render(<BulkUploadPage />);
     fireEvent.change(screen.getByLabelText(/upload assets/i), { target: { files } });
 
-    expect(axios.post).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(axios.put).toHaveBeenCalledTimes(1));
+    expect(axios.put).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("UPLOADING · 99%")).toBeInTheDocument();
     expect(await screen.findAllByText("QUEUED")).toHaveLength(9);
 
@@ -78,14 +129,14 @@ describe("BulkUploadPage", () => {
     expect(screen.queryByText("asset-5.jpg")).not.toBeInTheDocument();
 
     requests.get("asset-1.jpg").resolve(finalizedResponse(101));
-    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(axios.put).toHaveBeenCalledTimes(2));
     expect(requests.has("asset-2.jpg")).toBe(true);
     expect(requests.has("asset-5.jpg")).toBe(false);
     expect(maximumTransfers).toBe(1);
 
     requests.get("asset-2.jpg").reject({ response: { data: "Upload failed" } });
     expect(await screen.findByText("Upload failed")).toBeInTheDocument();
-    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(axios.put).toHaveBeenCalledTimes(3));
     expect(requests.has("asset-3.jpg")).toBe(true);
     expect(maximumTransfers).toBe(1);
   });
@@ -93,34 +144,68 @@ describe("BulkUploadPage", () => {
   it("aborts the active HTTP transfer and advances to the next queued item", async () => {
     const firstFile = new File(["asset"], "cancel-me.jpg");
     const secondFile = new File(["asset"], "next.jpg");
+    const sessions = new Map();
     let firstSignal;
-    axios.post.mockImplementation((_url, formData, config) => {
-      if (formData.get("image").name === "cancel-me.jpg") {
+    axios.post.mockImplementation((url, body) => {
+      if (url.endsWith("/upload/chunked/init")) {
+        const uploadId = `session-${body.filename}`;
+        sessions.set(uploadId, body);
+        return Promise.resolve({
+          data: {
+            upload_id: uploadId,
+            file_size: body.file_size,
+            chunk_size: 8 * 1024 * 1024,
+            total_chunks: 1,
+            received_chunks: []
+          }
+        });
+      }
+      return Promise.resolve(finalizedResponse(202, 5));
+    });
+    axios.put.mockImplementation((url, chunk, config) => {
+      const uploadId = decodeURIComponent(url.split("/").at(-3));
+      if (sessions.get(uploadId).filename === "cancel-me.jpg") {
         firstSignal = config.signal;
         return new Promise((_resolve, reject) => {
           config.signal.addEventListener("abort", () => reject({ name: "CanceledError" }));
         });
       }
-      return Promise.resolve(finalizedResponse(202));
+      config.onUploadProgress({ loaded: chunk.size, total: chunk.size });
+      return Promise.resolve({ data: { received: true } });
     });
 
     render(<BulkUploadPage />);
     fireEvent.change(screen.getByLabelText(/upload assets/i), {
       target: { files: [firstFile, secondFile] }
     });
+    await waitFor(() => expect(axios.put).toHaveBeenCalledTimes(1));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel upload" }));
 
     await waitFor(() => expect(firstSignal.aborted).toBe(true));
-    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(axios.put).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("CANCELLED")).toBeInTheDocument();
-    expect(axios.post.mock.calls[1][1].get("image").name).toBe("next.jpg");
+    expect(axios.post.mock.calls.find((call) => call[1]?.filename === "next.jpg")).toBeDefined();
   });
 
   it("reuses the same idempotency key when retrying an upload request", async () => {
     const waitForPolling = useFastThumbnailPolling();
-    axios.post
-      .mockRejectedValueOnce({ message: "Connection reset." })
-      .mockResolvedValueOnce(finalizedResponse(203));
+    let initCount = 0;
+    axios.post.mockImplementation((url, body) => {
+      if (url.endsWith("/upload/chunked/init")) {
+        initCount += 1;
+        if (initCount === 1) return Promise.reject({ message: "Connection reset." });
+        return Promise.resolve({
+          data: {
+            upload_id: "retry-session",
+            file_size: body.file_size,
+            chunk_size: 8 * 1024 * 1024,
+            total_chunks: 1,
+            received_chunks: []
+          }
+        });
+      }
+      return Promise.resolve(finalizedResponse(203, 5));
+    });
     axios.get.mockResolvedValue({
       data: [{ id: 203, generated_thumbnail_status: "READY" }]
     });
@@ -136,15 +221,45 @@ describe("BulkUploadPage", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
-    expect(axios.post.mock.calls[1][2].headers["Idempotency-Key"]).toBe(firstHeaders["Idempotency-Key"]);
-    expect(axios.post.mock.calls[1][2].skipGlobalLoading).toBe(true);
+    await waitFor(() => expect(
+      axios.post.mock.calls.filter((call) => call[0].endsWith("/upload/chunked/init"))
+    ).toHaveLength(2));
+    const initCalls = axios.post.mock.calls.filter((call) => call[0].endsWith("/upload/chunked/init"));
+    expect(initCalls[1][2].headers["Idempotency-Key"]).toBe(firstHeaders["Idempotency-Key"]);
+    expect(initCalls[1][2].skipGlobalLoading).toBe(true);
     await waitForPolling(() => screen.queryByText("Completed - ready to submit"));
+  });
+
+  it("resumes an existing session without retransmitting chunks already received", async () => {
+    const chunkSize = 8 * 1024 * 1024;
+    axios.post.mockImplementation((url) => {
+      if (url.endsWith("/upload/chunked/init")) {
+        return Promise.resolve({
+          data: {
+            upload_id: "resume-session",
+            file_size: chunkSize + 2,
+            chunk_size: chunkSize,
+            total_chunks: 2,
+            received_chunks: [0]
+          }
+        });
+      }
+      return Promise.resolve(finalizedResponse(204, chunkSize + 2));
+    });
+
+    render(<BulkUploadPage />);
+    fireEvent.change(screen.getByLabelText(/upload assets/i), {
+      target: { files: [new File([new Uint8Array(chunkSize + 2)], "resume.eps")] }
+    });
+
+    await waitFor(() => expect(axios.put).toHaveBeenCalledTimes(1));
+    expect(axios.put.mock.calls[0][0]).toMatch(/\/upload\/chunked\/resume-session\/parts\/1$/);
+    expect(axios.put.mock.calls[0][1].size).toBe(2);
   });
 
   it("continues polling when the asset is temporarily missing, then completes when READY", async () => {
     const waitForPolling = useFastThumbnailPolling();
-    axios.post.mockResolvedValue(finalizedResponse(301));
+    configureChunkedUpload(() => 301);
     axios.get
       .mockResolvedValueOnce({ data: [] })
       .mockResolvedValueOnce({
@@ -160,8 +275,13 @@ describe("BulkUploadPage", () => {
     expect(screen.getByText("Completed - ready to submit")).toBeInTheDocument();
     expect(axios.get).toHaveBeenCalledTimes(2);
     expect(axios.post).toHaveBeenCalledWith(
-      "http://localhost:5000/upload",
-      expect.any(FormData),
+      "http://localhost:5000/upload/chunked/init",
+      expect.objectContaining({ filename: "ready.jpg", file_size: 5 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal), skipGlobalLoading: true })
+    );
+    expect(axios.put).toHaveBeenCalledWith(
+      expect.stringMatching(/\/upload\/chunked\/.+\/parts\/0$/),
+      expect.any(Blob),
       expect.objectContaining({
         signal: expect.any(AbortSignal),
         skipGlobalLoading: true,
@@ -176,7 +296,7 @@ describe("BulkUploadPage", () => {
 
   it("retains thumbnail-failed handling and the backend error when FAILED is reported", async () => {
     const waitForPolling = useFastThumbnailPolling();
-    axios.post.mockResolvedValue(finalizedResponse(302));
+    configureChunkedUpload(() => 302);
     axios.get.mockResolvedValue({
       data: [{ id: 302, generated_thumbnail_status: "FAILED", thumbnail_error: "Processor failed." }]
     });
@@ -194,7 +314,7 @@ describe("BulkUploadPage", () => {
 
   it("reports an availability timeout if the asset never appears during polling", async () => {
     const waitForPolling = useFastThumbnailPolling();
-    axios.post.mockResolvedValue(finalizedResponse(303));
+    configureChunkedUpload(() => 303);
     axios.get.mockResolvedValue({ data: [] });
 
     render(<BulkUploadPage />);
@@ -253,7 +373,7 @@ describe("BulkUploadPage", () => {
   });
 
   it("accepts dropped files and adds them to the upload queue", () => {
-    axios.post.mockResolvedValue(finalizedResponse(404));
+    configureChunkedUpload(() => 404);
     render(<BulkUploadPage />);
 
     const dropZone = screen.getByText(/choose assets from your device/i).closest("label");
@@ -286,7 +406,7 @@ describe("BulkUploadPage", () => {
   it("restarts an upload after ten seconds without progress using the same request ID", async () => {
     jest.useFakeTimers();
     const requests = [];
-    axios.post.mockImplementation((_url, _formData, config) => {
+    axios.put.mockImplementation((_url, _chunk, config) => {
       requests.push(config);
       return new Promise((_resolve, reject) => {
         config.signal.addEventListener("abort", () => reject({ name: "CanceledError" }), { once: true });
@@ -295,32 +415,35 @@ describe("BulkUploadPage", () => {
 
     render(<BulkUploadPage />);
     fireEvent.change(screen.getByLabelText(/upload assets/i), {
-      target: { files: [new File(["asset"], "stalled.jpg")] }
+      target: { files: [new File([new Uint8Array(100)], "stalled.jpg")] }
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
     });
     act(() => requests[0].onUploadProgress({ loaded: 10, total: 100 }));
     await act(async () => {
       jest.advanceTimersByTime(9000);
       await Promise.resolve();
     });
-    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(axios.put).toHaveBeenCalledTimes(1);
 
     act(() => requests[0].onUploadProgress({ loaded: 20, total: 100 }));
     await act(async () => {
       jest.advanceTimersByTime(9000);
       await Promise.resolve();
     });
-    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(axios.put).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       jest.advanceTimersByTime(1000);
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(axios.post).toHaveBeenCalledTimes(2);
+    expect(axios.put).toHaveBeenCalledTimes(2);
     expect(requests[0].signal.aborted).toBe(true);
     expect(requests[1].headers["Idempotency-Key"]).toBe(requests[0].headers["Idempotency-Key"]);
-    expect(screen.getByText("UPLOADING · 0%")).toBeInTheDocument();
-    expect(screen.getByText(/restarting from 0% \(attempt 2 of 3\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/retrying chunk 1 \(attempt 2 of 3\)/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel upload" }));
     await act(async () => {
@@ -331,7 +454,7 @@ describe("BulkUploadPage", () => {
   it("does not reset the stall timer for byte progress that leaves the displayed percent unchanged", async () => {
     jest.useFakeTimers();
     const requests = [];
-    axios.post.mockImplementation((_url, _formData, config) => {
+    axios.put.mockImplementation((_url, _chunk, config) => {
       requests.push(config);
       return new Promise((_resolve, reject) => {
         config.signal.addEventListener("abort", () => reject({ name: "CanceledError" }), { once: true });
@@ -341,6 +464,10 @@ describe("BulkUploadPage", () => {
     render(<BulkUploadPage />);
     fireEvent.change(screen.getByLabelText(/upload assets/i), {
       target: { files: [new File([new Uint8Array(10_000)], "same-percent.jpg")] }
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
     });
     act(() => requests[0].onUploadProgress({ loaded: 100, total: 10_000 }));
     expect(screen.getByText("UPLOADING · 1%")).toBeInTheDocument();
@@ -357,7 +484,7 @@ describe("BulkUploadPage", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(axios.post).toHaveBeenCalledTimes(2);
+    expect(axios.put).toHaveBeenCalledTimes(2);
     expect(requests[0].signal.aborted).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel upload" }));
@@ -368,13 +495,17 @@ describe("BulkUploadPage", () => {
 
   it("marks the upload failed after three consecutive stalled attempts", async () => {
     jest.useFakeTimers();
-    axios.post.mockImplementation((_url, _formData, config) => new Promise((_resolve, reject) => {
+    axios.put.mockImplementation((_url, _chunk, config) => new Promise((_resolve, reject) => {
       config.signal.addEventListener("abort", () => reject({ name: "CanceledError" }), { once: true });
     }));
 
     render(<BulkUploadPage />);
     fireEvent.change(screen.getByLabelText(/upload assets/i), {
       target: { files: [new File(["asset"], "always-stalled.jpg")] }
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -385,7 +516,7 @@ describe("BulkUploadPage", () => {
       });
     }
 
-    expect(axios.post).toHaveBeenCalledTimes(3);
+    expect(axios.put).toHaveBeenCalledTimes(3);
     expect(screen.getByText("FAILED")).toBeInTheDocument();
     expect(screen.getByText(/after 3 attempts/i)).toBeInTheDocument();
   });
@@ -396,7 +527,7 @@ describe("BulkUploadPage", () => {
       const fastDelay = delay === 2000 || delay === 30000 ? 0 : delay;
       return originalSetTimeout(callback, fastDelay, ...args);
     });
-    axios.post.mockResolvedValue(finalizedResponse(305));
+    configureChunkedUpload(() => 305);
     axios.get.mockResolvedValue({
       data: [{ id: 305, generated_thumbnail_status: "READY" }]
     });

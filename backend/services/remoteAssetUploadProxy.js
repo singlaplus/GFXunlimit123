@@ -1,9 +1,11 @@
 const axios = require('axios');
 const { randomUUID } = require('node:crypto');
 const { getAssetServerHttpOrigin } = require('../config');
+const { CHUNK_UPLOAD_SIZE_BYTES } = require('./chunkedAssetUpload');
 
 const MAX_REMOTE_UPLOAD_DURATION_MS = 15 * 60 * 1000;
 const MAX_REMOTE_UPLOAD_RESPONSE_BYTES = 1024 * 1024;
+const MAX_REMOTE_CHUNK_UPLOAD_REQUEST_BYTES = CHUNK_UPLOAD_SIZE_BYTES;
 
 async function readResponseBody(stream) {
   const chunks = [];
@@ -172,10 +174,115 @@ function createRemoteAssetUploadProxy({
   };
 }
 
+function createRemoteChunkedUploadProxy({
+  verifyUser,
+  getAuthorization,
+  httpClient = axios,
+  shouldProxy = () => shouldProxyRemoteAssetUpload(),
+  getBaseUrl = () => getRemoteUploadBaseUrl(),
+}) {
+  if (typeof verifyUser !== 'function' || typeof getAuthorization !== 'function') {
+    throw new TypeError('Remote chunked upload proxy requires authenticated user and SERVER authorization providers.');
+  }
+
+  return async function remoteChunkedUploadProxy(req, res, next) {
+    if (!shouldProxy(req)) return next();
+    const requestPath = String(req.path || '');
+    const allowedPath = requestPath === '/upload/chunked/init' ||
+      /^\/upload\/chunked\/[a-f0-9]{64}(?:\/parts\/\d+|\/complete)?$/i.test(requestPath);
+    if (!allowedPath) return res.status(404).json({ error: 'Chunked upload route not found.' });
+
+    const contentLength = Number(req.headers['content-length']);
+    if (
+      Number.isFinite(contentLength) &&
+      contentLength > MAX_REMOTE_CHUNK_UPLOAD_REQUEST_BYTES
+    ) {
+      return res.status(413).json({ error: 'Upload chunk exceeds the maximum allowed chunk size.' });
+    }
+
+    let response;
+    const controller = new AbortController();
+    const abortUpstream = () => controller.abort();
+    const abortIfClientClosed = () => {
+      if (!res.writableFinished) abortUpstream();
+    };
+    req.once('aborted', abortUpstream);
+    res.once('close', abortIfClientClosed);
+
+    try {
+      const userId = await verifyUser(req);
+      let authorization;
+      try {
+        authorization = await getAuthorization(userId);
+      } catch (error) {
+        if (Number.isInteger(error.statusCode)) throw error;
+        const authorizationError = new Error('SERVER upload authorization is unavailable.');
+        authorizationError.statusCode = 503;
+        throw authorizationError;
+      }
+
+      const method = String(req.method || '').toUpperCase();
+      const isRawChunk = method === 'PUT' && /\/parts\/\d+$/i.test(requestPath);
+      response = await httpClient.request({
+        method,
+        url: `${getBaseUrl()}${req.originalUrl || requestPath}`,
+        data: isRawChunk ? req : (method === 'DELETE' ? undefined : req.body),
+        responseType: 'arraybuffer',
+        timeout: MAX_REMOTE_UPLOAD_DURATION_MS,
+        maxBodyLength: MAX_REMOTE_CHUNK_UPLOAD_REQUEST_BYTES,
+        maxContentLength: MAX_REMOTE_UPLOAD_RESPONSE_BYTES,
+        maxRedirects: 0,
+        signal: controller.signal,
+        validateStatus: () => true,
+        headers: {
+          authorization,
+          accept: 'application/json',
+          ...(req.headers['content-type'] ? { 'content-type': req.headers['content-type'] } : {}),
+          ...(req.headers['content-length'] ? { 'content-length': req.headers['content-length'] } : {}),
+          ...(req.headers['idempotency-key']
+            ? { 'idempotency-key': String(req.headers['idempotency-key']) }
+            : {}),
+        },
+      });
+
+      const body = Buffer.isBuffer(response.data)
+        ? response.data
+        : Buffer.from(response.data || '');
+      if (body.length > MAX_REMOTE_UPLOAD_RESPONSE_BYTES) {
+        return res.status(502).json({ error: 'SERVER chunked upload response exceeded the relay limit.' });
+      }
+      res.status(response.status);
+      const contentType = String(response.headers?.['content-type'] || '').trim();
+      if (contentType) res.setHeader('Content-Type', contentType);
+      return res.end(body);
+    } catch (error) {
+      if (controller.signal.aborted || req.aborted || res.destroyed) return;
+      console.error(`SERVER chunked upload relay failed (${String(error.code || 'UNKNOWN').replace(/[^A-Z0-9_-]/gi, '').slice(0, 32)}).`);
+      if (!response && Number.isInteger(error.statusCode)) {
+        return res.status(error.statusCode).json({
+          error: error.statusCode === 401 ? 'Access denied' : 'SERVER upload authorization is unavailable.',
+        });
+      }
+      const timedOut = isTimeoutError(error);
+      return res.status(timedOut ? 504 : 502).json({
+        error: timedOut
+          ? 'SERVER chunked upload timed out. Retry this upload to safely resume it.'
+          : 'SERVER chunked upload could not be confirmed. Retry this upload to safely resume it.',
+        ...(response ? { retryable: true } : {}),
+      });
+    } finally {
+      req.removeListener('aborted', abortUpstream);
+      res.removeListener('close', abortIfClientClosed);
+    }
+  };
+}
+
 module.exports = {
   MAX_REMOTE_UPLOAD_DURATION_MS,
   MAX_REMOTE_UPLOAD_RESPONSE_BYTES,
+  MAX_REMOTE_CHUNK_UPLOAD_REQUEST_BYTES,
   createRemoteAssetUploadProxy,
+  createRemoteChunkedUploadProxy,
   getRemoteUploadBaseUrl,
   shouldProxyRemoteAssetUpload,
 };
