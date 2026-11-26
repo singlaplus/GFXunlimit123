@@ -4712,6 +4712,79 @@ describe("AdminPanel collection controls", () => {
     expect(await screen.findByText("1 of 1 approved")).toBeInTheDocument();
   });
 
+  it("rejects and deletes selected assets sequentially with action-specific progress", async () => {
+    useLocation.mockReturnValue({ search: "?status=pending" });
+    axios.get.mockImplementation((url) => {
+      if (url.includes("/admin/images")) {
+        return Promise.resolve({
+          data: [
+            { id: 31, title: "Pending asset A", status: "pending", filename: "pending-a.jpg", category: "Images", keywords: "", description: "", type: "image" },
+            { id: 32, title: "Pending asset B", status: "pending", filename: "pending-b.jpg", category: "Images", keywords: "", description: "", type: "image" }
+          ]
+        });
+      }
+      if (url.includes("/admin/categories")) return Promise.resolve({ data: [{ id: 1, name: "Images" }] });
+      if (url.includes("/admin/collections")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
+    });
+
+    let resolveFirstReject;
+    let resolveFirstDelete;
+    axios.put.mockImplementation((url) => (
+      url.includes("/admin/reject/31")
+        ? new Promise((resolve) => { resolveFirstReject = resolve; })
+        : Promise.resolve({ data: { success: true } })
+    ));
+    axios.delete.mockImplementation((url) => (
+      url.includes("/images/31")
+        ? new Promise((resolve) => { resolveFirstDelete = resolve; })
+        : Promise.resolve({ data: { success: true } })
+    ));
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+    try {
+      render(<AdminPanel />);
+      await screen.findByRole("heading", { name: "Pending Panel" });
+      fireEvent.click(await screen.findByRole("button", { name: "Select" }));
+      fireEvent.click(await screen.findByRole("checkbox", { name: "Select Pending asset A" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select Pending asset B" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+      await waitFor(() => {
+        expect(axios.put.mock.calls.filter(([url]) => url.includes("/admin/reject/"))).toHaveLength(1);
+      });
+      expect(screen.getByText("Rejecting 1 of 2: Pending asset A")).toBeInTheDocument();
+
+      await act(async () => {
+        resolveFirstReject({ data: { success: true } });
+      });
+      await waitFor(() => {
+        expect(axios.put.mock.calls.filter(([url]) => url.includes("/admin/reject/"))).toHaveLength(2);
+      });
+      expect(await screen.findByText("2 of 2 rejected")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select Pending asset A" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select Pending asset B" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+      await waitFor(() => {
+        expect(confirmSpy).toHaveBeenCalledTimes(1);
+        expect(axios.delete.mock.calls.filter(([url]) => url.includes("/images/"))).toHaveLength(1);
+      });
+      expect(screen.getByText("Deleting 1 of 2: Pending asset A")).toBeInTheDocument();
+
+      await act(async () => {
+        resolveFirstDelete({ data: { success: true } });
+      });
+      await waitFor(() => {
+        expect(axios.delete.mock.calls.filter(([url]) => url.includes("/images/"))).toHaveLength(2);
+      });
+      expect(await screen.findByText("2 of 2 deleted")).toBeInTheDocument();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
   it("offers the same bulk selection actions in the approved assets view", async () => {
     useLocation.mockReturnValue({ search: "?status=approved" });
     axios.get.mockImplementation((url) => {

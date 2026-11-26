@@ -2380,7 +2380,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [isLiveAssetSelectionMode, setIsLiveAssetSelectionMode] = useState(false);
   const [selectedLiveAssetIds, setSelectedLiveAssetIds] = useState(() => new Set());
   const [bulkLiveAssetAction, setBulkLiveAssetAction] = useState("");
-  const [bulkApprovalProgress, setBulkApprovalProgress] = useState(null);
+  const [bulkAssetProgress, setBulkAssetProgress] = useState(null);
   const [selectedImage, setSelectedImage] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [thumbnailFile, setThumbnailFile] = useState(null);
@@ -7666,9 +7666,15 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     }
   };
 
+  const bulkAssetActionLabels = {
+    approve: { present: "Approving", past: "Approved", pastTense: "approved" },
+    reject: { present: "Rejecting", past: "Rejected", pastTense: "rejected" },
+    delete: { present: "Deleting", past: "Deleted", pastTense: "deleted" }
+  };
+
   const applyBulkLiveAssetAction = async (action, assetIdsOverride = null) => {
     const assetIds = assetIdsOverride || Array.from(selectedLiveAssetIds);
-    const isSingleAssetRetry = action === "approve" && assetIdsOverride?.length === 1;
+    const isSingleAssetRetry = assetIdsOverride?.length === 1;
     if ((assetIds.length < 2 && !isSingleAssetRetry) || bulkLiveAssetAction) return;
 
     if (action === "delete") {
@@ -7683,70 +7689,56 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     let succeededIds = [];
     let failedIds = [];
 
-    if (action === "approve") {
-      const progressItems = assetIds.map((id) => {
-        const image = images.find((item) => String(item.id) === String(id));
-        return {
-          id,
-          title: image?.title || image?.filename || `Asset ${id}`,
-          status: "Pending",
-          errorMessage: ""
-        };
-      });
-      setBulkApprovalProgress({
-        items: progressItems,
-        total: progressItems.length,
-        completed: 0,
-        isRunning: true
-      });
-
-      const updateApprovalProgress = (id, status, completed, errorMessage = "") => {
-        setBulkApprovalProgress((current) => current && ({
-          ...current,
-          completed: completed ?? current.completed,
-          items: current.items.map((item) => (
-            String(item.id) === String(id) ? { ...item, status, errorMessage } : item
-          ))
-        }));
+    const actionLabel = bulkAssetActionLabels[action];
+    const progressItems = assetIds.map((id) => {
+      const image = images.find((item) => String(item.id) === String(id));
+      return {
+        id,
+        title: image?.title || image?.filename || `Asset ${id}`,
+        status: "Pending",
+        errorMessage: ""
       };
+    });
+    setBulkAssetProgress({
+      action,
+      items: progressItems,
+      total: progressItems.length,
+      completed: 0,
+      isRunning: true
+    });
 
-      for (let index = 0; index < assetIds.length; index += 1) {
-        const id = assetIds[index];
-        updateApprovalProgress(id, "Approving");
-        try {
+    const updateProgress = (id, status, completed, errorMessage = "") => {
+      setBulkAssetProgress((current) => current && ({
+        ...current,
+        completed: completed ?? current.completed,
+        items: current.items.map((item) => (
+          String(item.id) === String(id) ? { ...item, status, errorMessage } : item
+        ))
+      }));
+    };
+
+    for (let index = 0; index < assetIds.length; index += 1) {
+      const id = assetIds[index];
+      updateProgress(id, actionLabel.present);
+      try {
+        if (action === "delete") {
+          await axios.delete(`${API_BASE_URL}/images/${id}`, { headers: getAuthHeaders() });
+        } else {
           await axios.put(
-            `${API_BASE_URL}/admin/approve/${id}`,
-            {},
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
-          succeededIds.push(id);
-          updateApprovalProgress(id, "Approved", index + 1);
-        } catch (err) {
-          failedIds.push(id);
-          console.error(`Failed to approve live asset ${id}`, err);
-          const errorData = err?.response?.data;
-          const errorMessage = errorData?.error || (typeof errorData === "string" ? errorData : null) || err?.message || "Approval failed.";
-          updateApprovalProgress(id, "Failed", index + 1, errorMessage);
-        }
-      }
-    } else {
-      setBulkApprovalProgress(null);
-      const results = await Promise.allSettled(
-        assetIds.map((id) => action === "delete"
-          ? axios.delete(`${API_BASE_URL}/images/${id}`, { headers: getAuthHeaders() })
-          : axios.put(
             `${API_BASE_URL}/admin/${action}/${id}`,
             {},
             { headers: { Authorization: `Bearer ${token}` } }
-          ))
-      );
-      succeededIds = assetIds.filter((_, index) => results[index].status === "fulfilled");
-      failedIds = assetIds.filter((_, index) => results[index].status === "rejected");
-      results.forEach((result, index) => {
-        if (result.status === "rejected") {
-          console.error(`Failed to ${action} live asset ${assetIds[index]}`, result.reason);
+          );
         }
-      });
+        succeededIds.push(id);
+        updateProgress(id, actionLabel.past, index + 1);
+      } catch (err) {
+        failedIds.push(id);
+        console.error(`Failed to ${action} live asset ${id}`, err);
+        const errorData = err?.response?.data;
+        const errorMessage = errorData?.error || (typeof errorData === "string" ? errorData : null) || err?.message || `${actionLabel.past} failed.`;
+        updateProgress(id, "Failed", index + 1, errorMessage);
+      }
     }
 
     if (succeededIds.length > 0) {
@@ -7766,17 +7758,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       toast.error(`Failed to ${action} ${failedIds.length} selected asset${failedIds.length === 1 ? "" : "s"}.`);
     }
 
-    const actionPastTense = action === "approve" ? "approved" : action === "reject" ? "rejected" : "deleted";
     setSelectedLiveAssetIds(new Set(failedIds));
     setBulkLiveAssetAction("");
-    if (action === "approve") {
-      setBulkApprovalProgress((current) => current && ({
-        ...current,
-        isRunning: false
-      }));
-    }
+    setBulkAssetProgress((current) => current && ({ ...current, isRunning: false }));
     if (succeededIds.length > 0) {
-      toast.success(`${succeededIds.length} asset${succeededIds.length === 1 ? "" : "s"} ${actionPastTense} successfully.`);
+      toast.success(`${succeededIds.length} asset${succeededIds.length === 1 ? "" : "s"} ${actionLabel.pastTense} successfully.`);
     }
   };
 
@@ -7836,87 +7822,106 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     </>
   ) : null;
 
-  const currentBulkApprovalItem = bulkApprovalProgress?.items.find((item) => item.status === "Approving");
-  const failedBulkApprovalIds = bulkApprovalProgress?.items
+  const currentBulkAssetItem = bulkAssetProgress?.items.find((item) => item.status === bulkAssetActionLabels[bulkAssetProgress.action].present);
+  const failedBulkAssetIds = bulkAssetProgress?.items
     .filter((item) => item.status === "Failed")
     .map((item) => item.id) || [];
-  const approvedBulkAssetCount = bulkApprovalProgress?.items
-    .filter((item) => item.status === "Approved").length || 0;
-  const bulkApprovalProgressDisplay = isBulkAssetSelectionView && bulkApprovalProgress ? (
+  const completedBulkAssetCount = bulkAssetProgress?.items
+    .filter((item) => item.status === bulkAssetActionLabels[bulkAssetProgress.action].past).length || 0;
+  const pendingBulkAssetCount = bulkAssetProgress?.items
+    .filter((item) => item.status === "Pending").length || 0;
+  const bulkAssetProgressPercent = bulkAssetProgress
+    ? Math.round((bulkAssetProgress.completed / bulkAssetProgress.total) * 100)
+    : 0;
+  const bulkAssetProgressDisplay = isBulkAssetSelectionView && bulkAssetProgress ? (
     <section
-      aria-label="Bulk approval progress"
-      style={{
-        marginBottom: "16px",
-        padding: "14px",
-        border: isDarkMode ? "1px solid rgba(148, 163, 184, 0.3)" : "1px solid #cbd5e1",
-        borderRadius: "10px",
-        background: isDarkMode ? "#1f2937" : "#f8fafc",
-        color: isDarkMode ? "#f8fafc" : "#111827"
-      }}
+      aria-label={`Bulk ${bulkAssetProgress.action} progress`}
+      className={`bulk-asset-queue${isDarkMode ? " bulk-asset-queue--dark" : ""} bulk-asset-queue--${bulkAssetProgress.action}`}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-        <strong aria-live="polite">
-          {bulkApprovalProgress.isRunning
-            ? currentBulkApprovalItem
-              ? `Approving ${bulkApprovalProgress.completed + 1} of ${bulkApprovalProgress.total}: ${currentBulkApprovalItem.title}`
-              : `Processed ${bulkApprovalProgress.completed} of ${bulkApprovalProgress.total}`
-            : `${approvedBulkAssetCount} of ${bulkApprovalProgress.total} approved`}
-        </strong>
-        {!bulkApprovalProgress.isRunning && (
-          <div style={{ display: "flex", gap: "8px" }}>
-            {failedBulkApprovalIds.length > 0 && (
-              <button
-                type="button"
-                onClick={() => applyBulkLiveAssetAction("approve", failedBulkApprovalIds)}
-                style={{ border: "none", borderRadius: "6px", padding: "6px 10px", background: "#2e7d32", color: "white", cursor: "pointer" }}
-              >
-                Retry failed ({failedBulkApprovalIds.length})
-              </button>
-            )}
+      <header className="bulk-asset-queue__header">
+        <div className="bulk-asset-queue__identity">
+          <span className="bulk-asset-queue__icon" aria-hidden="true">
+            {bulkAssetProgress.action === "approve" ? "✓" : bulkAssetProgress.action === "reject" ? "↗" : "⌫"}
+          </span>
+          <div className="bulk-asset-queue__heading">
+            <span className="bulk-asset-queue__eyebrow">ASSET QUEUE</span>
+            <h3>Bulk {bulkAssetProgress.action}</h3>
+            <span className="bulk-asset-queue__subheading">Processing one asset at a time</span>
+          </div>
+        </div>
+        <div className="bulk-asset-queue__actions">
+          {!bulkAssetProgress.isRunning && (
+            <>
+              {failedBulkAssetIds.length > 0 && (
+                <button
+                  type="button"
+                  className="bulk-asset-queue__button bulk-asset-queue__button--retry"
+                  onClick={() => applyBulkLiveAssetAction(bulkAssetProgress.action, failedBulkAssetIds)}
+                >
+                  Retry failed ({failedBulkAssetIds.length})
+                </button>
+              )}
             <button
               type="button"
-              onClick={() => setBulkApprovalProgress(null)}
-              style={{ border: "none", borderRadius: "6px", padding: "6px 10px", background: isDarkMode ? "#334155" : "#e2e8f0", color: isDarkMode ? "#f8fafc" : "#1e293b", cursor: "pointer" }}
+              className="bulk-asset-queue__button bulk-asset-queue__button--dismiss"
+              onClick={() => setBulkAssetProgress(null)}
             >
               Dismiss
             </button>
-          </div>
-        )}
+            </>
+          )}
+        </div>
+      </header>
+      <div className="bulk-asset-queue__summary">
+        <div className="bulk-asset-queue__current" aria-live="polite">
+          <span className="bulk-asset-queue__current-label">{bulkAssetProgress.isRunning ? "CURRENT TASK" : "RESULT"}</span>
+          <strong>
+            {bulkAssetProgress.isRunning
+              ? currentBulkAssetItem
+                ? `${bulkAssetActionLabels[bulkAssetProgress.action].present} ${bulkAssetProgress.completed + 1} of ${bulkAssetProgress.total}: ${currentBulkAssetItem.title}`
+                : `Processed ${bulkAssetProgress.completed} of ${bulkAssetProgress.total}`
+              : `${completedBulkAssetCount} of ${bulkAssetProgress.total} ${bulkAssetActionLabels[bulkAssetProgress.action].pastTense}`}
+          </strong>
+        </div>
+        <div className="bulk-asset-queue__stats" aria-label="Queue totals">
+          <span><strong>{completedBulkAssetCount}</strong> completed</span>
+          <span><strong>{pendingBulkAssetCount}</strong> pending</span>
+          {failedBulkAssetIds.length > 0 && <span className="bulk-asset-queue__failed-count"><strong>{failedBulkAssetIds.length}</strong> failed</span>}
+        </div>
+      </div>
+      <div className="bulk-asset-queue__progress-heading">
+        <span>Overall progress</span>
+        <strong>{bulkAssetProgressPercent}%</strong>
       </div>
       <div
         role="progressbar"
-        aria-label="Approval progress"
+        aria-label={`${bulkAssetActionLabels[bulkAssetProgress.action].present} progress`}
         aria-valuemin={0}
-        aria-valuemax={bulkApprovalProgress.total}
-        aria-valuenow={bulkApprovalProgress.completed}
-        style={{ height: "8px", margin: "10px 0", borderRadius: "999px", background: isDarkMode ? "#334155" : "#e2e8f0", overflow: "hidden" }}
+        aria-valuemax={bulkAssetProgress.total}
+        aria-valuenow={bulkAssetProgress.completed}
+        className="bulk-asset-queue__progress-track"
       >
         <div
-          style={{
-            width: `${(bulkApprovalProgress.completed / bulkApprovalProgress.total) * 100}%`,
-            height: "100%",
-            background: "#2563eb",
-            transition: "width 180ms ease"
-          }}
+          className="bulk-asset-queue__progress-fill"
+          style={{ width: `${bulkAssetProgressPercent}%` }}
         />
       </div>
-      <div style={{ display: "grid", gap: "6px", maxHeight: "220px", overflowY: "auto" }}>
-        {bulkApprovalProgress.items.map((item) => (
+      <div className="bulk-asset-queue__list" aria-label="Assets in queue">
+        {bulkAssetProgress.items.map((item, index) => (
           <div
             key={item.id}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 1fr) auto",
-              alignItems: "start",
-              gap: "12px",
-              fontSize: "0.9rem"
-            }}
+            className="bulk-asset-queue__item"
+            data-status={item.status.toLowerCase()}
+            aria-current={item.status === bulkAssetActionLabels[bulkAssetProgress.action].present ? "step" : undefined}
           >
-            <span>{item.title}</span>
-            <span style={{ color: item.status === "Approved" ? "#16a34a" : item.status === "Failed" ? "#dc2626" : item.status === "Approving" ? "#2563eb" : (isDarkMode ? "#cbd5e1" : "#64748b") }}>
-              {item.status === "Approving" ? "Approving…" : item.status}
+            <span className="bulk-asset-queue__item-number">{item.status === bulkAssetActionLabels[bulkAssetProgress.action].past ? "✓" : index + 1}</span>
+            <div className="bulk-asset-queue__item-copy">
+              <span className="bulk-asset-queue__item-title">{item.title}</span>
+              {item.errorMessage && <span role="alert" className="bulk-asset-queue__item-error">{item.errorMessage}</span>}
+            </div>
+            <span className={`bulk-asset-queue__status bulk-asset-queue__status--${item.status.toLowerCase()}`}>
+              {item.status === bulkAssetActionLabels[bulkAssetProgress.action].present ? `${bulkAssetActionLabels[bulkAssetProgress.action].present}…` : item.status}
             </span>
-            {item.errorMessage && <span role="alert" style={{ gridColumn: "1 / -1", color: "#dc2626" }}>{item.errorMessage}</span>}
           </div>
         ))}
       </div>
@@ -8092,7 +8097,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         )
       )}
 
-      {bulkApprovalProgressDisplay}
+      {bulkAssetProgressDisplay}
 
       {shouldShowImageGrid && (
         <p>
