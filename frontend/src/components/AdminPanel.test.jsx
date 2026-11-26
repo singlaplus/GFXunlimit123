@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import AdminPanel from "./AdminPanel";
 import { buildAnimatedCountSteps, getAnimatedCountDuration, getAnimatedCountIncrement, renderTaxFormTemplate } from "./AdminPanel";
 import { useLocation } from "react-router-dom";
@@ -4630,7 +4630,7 @@ describe("AdminPanel collection controls", () => {
     });
   });
 
-  it("offers the same bulk selection actions in the pending assets view", async () => {
+  it("approves selected pending assets sequentially, tracks progress, and retries failures", async () => {
     useLocation.mockReturnValue({ search: "?status=pending" });
     axios.get.mockImplementation((url) => {
       if (url.includes("/admin/images")) {
@@ -4649,16 +4649,25 @@ describe("AdminPanel collection controls", () => {
       }
       return Promise.resolve({ data: [] });
     });
-    axios.put.mockResolvedValue({ data: { success: true } });
+    let rejectFirstApproval;
+    let firstApprovalCallCount = 0;
+    axios.put.mockImplementation((url) => {
+      if (url.includes("/admin/approve/6") && firstApprovalCallCount++ === 0) {
+        return new Promise((resolve, reject) => {
+          rejectFirstApproval = reject;
+        });
+      }
+      return Promise.resolve({ data: { success: true } });
+    });
 
     render(<AdminPanel />);
     expect(await screen.findByRole("heading", { name: "Pending Panel" })).toBeInTheDocument();
+    const pendingHeading = await screen.findByRole("heading", { name: "Pending Panel" });
     const totalAssetsCount = document.querySelector(".admin-asset-count");
     expect(totalAssetsCount).toHaveClass("admin-asset-count");
     expect(totalAssetsCount.parentElement).toHaveTextContent("Total Assets:");
     expect(totalAssetsCount).toHaveTextContent("0");
     await waitFor(() => expect(totalAssetsCount).toHaveTextContent("2"), { timeout: 3000 });
-    const pendingHeading = await screen.findByRole("heading", { name: "Pending Panel" });
     const selectButton = screen.getByRole("button", { name: "Select" });
     expect(pendingHeading.parentElement).toContainElement(selectButton);
     expect(pendingHeading.parentElement).toHaveStyle({ justifyContent: "space-between" });
@@ -4670,20 +4679,37 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
     expect(pendingHeading.parentElement).toContainElement(screen.getByRole("button", { name: "Approve" }));
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(pendingHeading.parentElement).toContainElement(screen.getByRole("button", { name: "Approve" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => {
-      expect(axios.put).toHaveBeenCalledWith(
-        expect.stringContaining("/admin/approve/6"),
-        {},
-        expect.anything()
-      );
-      expect(axios.put).toHaveBeenCalledWith(
-        expect.stringContaining("/admin/approve/7"),
-        {},
-        expect.anything()
-      );
+      expect(axios.put.mock.calls.filter(([url]) => url.includes("/admin/approve/"))).toHaveLength(1);
     });
+    expect(axios.put.mock.calls.find(([url]) => url.includes("/admin/approve/"))[0]).toContain("/admin/approve/6");
+    expect(screen.getByText("Approving 1 of 2: Pending asset A")).toBeInTheDocument();
+
+    await act(async () => {
+      rejectFirstApproval({ response: { data: { error: "Temporary approval error" } } });
+    });
+
+    await waitFor(() => {
+      expect(axios.put.mock.calls
+        .filter(([url]) => url.includes("/admin/approve/"))
+        .map(([url]) => url)).toEqual([
+        expect.stringContaining("/admin/approve/6"),
+        expect.stringContaining("/admin/approve/7")
+      ]);
+    });
+    expect(await screen.findByText("Temporary approval error")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Retry failed (1)" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry failed (1)" }));
+    await waitFor(() => {
+      expect(axios.put.mock.calls.filter(([url]) => url.includes("/admin/approve/6"))).toHaveLength(2);
+    });
+    expect(await screen.findByText("1 of 1 approved")).toBeInTheDocument();
   });
 
   it("offers the same bulk selection actions in the approved assets view", async () => {

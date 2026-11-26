@@ -2380,6 +2380,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [isLiveAssetSelectionMode, setIsLiveAssetSelectionMode] = useState(false);
   const [selectedLiveAssetIds, setSelectedLiveAssetIds] = useState(() => new Set());
   const [bulkLiveAssetAction, setBulkLiveAssetAction] = useState("");
+  const [bulkApprovalProgress, setBulkApprovalProgress] = useState(null);
   const [selectedImage, setSelectedImage] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [thumbnailFile, setThumbnailFile] = useState(null);
@@ -7665,9 +7666,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     }
   };
 
-  const applyBulkLiveAssetAction = async (action) => {
-    const assetIds = Array.from(selectedLiveAssetIds);
-    if (assetIds.length < 2 || bulkLiveAssetAction) return;
+  const applyBulkLiveAssetAction = async (action, assetIdsOverride = null) => {
+    const assetIds = assetIdsOverride || Array.from(selectedLiveAssetIds);
+    const isSingleAssetRetry = action === "approve" && assetIdsOverride?.length === 1;
+    if ((assetIds.length < 2 && !isSingleAssetRetry) || bulkLiveAssetAction) return;
 
     if (action === "delete") {
       const confirmDelete = window.confirm(
@@ -7678,22 +7680,74 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
 
     setBulkLiveAssetAction(action);
     const token = typeof window !== "undefined" ? getEffectiveAuthToken() : null;
-    const results = await Promise.allSettled(
-      assetIds.map((id) => action === "delete"
-        ? axios.delete(`${API_BASE_URL}/images/${id}`, { headers: getAuthHeaders() })
-        : axios.put(
-          `${API_BASE_URL}/admin/${action}/${id}`,
-          {},
-          { headers: { Authorization: `Bearer ${token}` } }
-        ))
-    );
-    const succeededIds = assetIds.filter((_, index) => results[index].status === "fulfilled");
-    const failedIds = assetIds.filter((_, index) => results[index].status === "rejected");
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        console.error(`Failed to ${action} live asset ${assetIds[index]}`, result.reason);
+    let succeededIds = [];
+    let failedIds = [];
+
+    if (action === "approve") {
+      const progressItems = assetIds.map((id) => {
+        const image = images.find((item) => String(item.id) === String(id));
+        return {
+          id,
+          title: image?.title || image?.filename || `Asset ${id}`,
+          status: "Pending",
+          errorMessage: ""
+        };
+      });
+      setBulkApprovalProgress({
+        items: progressItems,
+        total: progressItems.length,
+        completed: 0,
+        isRunning: true
+      });
+
+      const updateApprovalProgress = (id, status, completed, errorMessage = "") => {
+        setBulkApprovalProgress((current) => current && ({
+          ...current,
+          completed: completed ?? current.completed,
+          items: current.items.map((item) => (
+            String(item.id) === String(id) ? { ...item, status, errorMessage } : item
+          ))
+        }));
+      };
+
+      for (let index = 0; index < assetIds.length; index += 1) {
+        const id = assetIds[index];
+        updateApprovalProgress(id, "Approving");
+        try {
+          await axios.put(
+            `${API_BASE_URL}/admin/approve/${id}`,
+            {},
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          succeededIds.push(id);
+          updateApprovalProgress(id, "Approved", index + 1);
+        } catch (err) {
+          failedIds.push(id);
+          console.error(`Failed to approve live asset ${id}`, err);
+          const errorData = err?.response?.data;
+          const errorMessage = errorData?.error || (typeof errorData === "string" ? errorData : null) || err?.message || "Approval failed.";
+          updateApprovalProgress(id, "Failed", index + 1, errorMessage);
+        }
       }
-    });
+    } else {
+      setBulkApprovalProgress(null);
+      const results = await Promise.allSettled(
+        assetIds.map((id) => action === "delete"
+          ? axios.delete(`${API_BASE_URL}/images/${id}`, { headers: getAuthHeaders() })
+          : axios.put(
+            `${API_BASE_URL}/admin/${action}/${id}`,
+            {},
+            { headers: { Authorization: `Bearer ${token}` } }
+          ))
+      );
+      succeededIds = assetIds.filter((_, index) => results[index].status === "fulfilled");
+      failedIds = assetIds.filter((_, index) => results[index].status === "rejected");
+      results.forEach((result, index) => {
+        if (result.status === "rejected") {
+          console.error(`Failed to ${action} live asset ${assetIds[index]}`, result.reason);
+        }
+      });
+    }
 
     if (succeededIds.length > 0) {
       if (action !== "delete") {
@@ -7715,6 +7769,12 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
     const actionPastTense = action === "approve" ? "approved" : action === "reject" ? "rejected" : "deleted";
     setSelectedLiveAssetIds(new Set(failedIds));
     setBulkLiveAssetAction("");
+    if (action === "approve") {
+      setBulkApprovalProgress((current) => current && ({
+        ...current,
+        isRunning: false
+      }));
+    }
     if (succeededIds.length > 0) {
       toast.success(`${succeededIds.length} asset${succeededIds.length === 1 ? "" : "s"} ${actionPastTense} successfully.`);
     }
@@ -7774,6 +7834,93 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         </button>
       ))}
     </>
+  ) : null;
+
+  const currentBulkApprovalItem = bulkApprovalProgress?.items.find((item) => item.status === "Approving");
+  const failedBulkApprovalIds = bulkApprovalProgress?.items
+    .filter((item) => item.status === "Failed")
+    .map((item) => item.id) || [];
+  const approvedBulkAssetCount = bulkApprovalProgress?.items
+    .filter((item) => item.status === "Approved").length || 0;
+  const bulkApprovalProgressDisplay = isBulkAssetSelectionView && bulkApprovalProgress ? (
+    <section
+      aria-label="Bulk approval progress"
+      style={{
+        marginBottom: "16px",
+        padding: "14px",
+        border: isDarkMode ? "1px solid rgba(148, 163, 184, 0.3)" : "1px solid #cbd5e1",
+        borderRadius: "10px",
+        background: isDarkMode ? "#1f2937" : "#f8fafc",
+        color: isDarkMode ? "#f8fafc" : "#111827"
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+        <strong aria-live="polite">
+          {bulkApprovalProgress.isRunning
+            ? currentBulkApprovalItem
+              ? `Approving ${bulkApprovalProgress.completed + 1} of ${bulkApprovalProgress.total}: ${currentBulkApprovalItem.title}`
+              : `Processed ${bulkApprovalProgress.completed} of ${bulkApprovalProgress.total}`
+            : `${approvedBulkAssetCount} of ${bulkApprovalProgress.total} approved`}
+        </strong>
+        {!bulkApprovalProgress.isRunning && (
+          <div style={{ display: "flex", gap: "8px" }}>
+            {failedBulkApprovalIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => applyBulkLiveAssetAction("approve", failedBulkApprovalIds)}
+                style={{ border: "none", borderRadius: "6px", padding: "6px 10px", background: "#2e7d32", color: "white", cursor: "pointer" }}
+              >
+                Retry failed ({failedBulkApprovalIds.length})
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setBulkApprovalProgress(null)}
+              style={{ border: "none", borderRadius: "6px", padding: "6px 10px", background: isDarkMode ? "#334155" : "#e2e8f0", color: isDarkMode ? "#f8fafc" : "#1e293b", cursor: "pointer" }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+      </div>
+      <div
+        role="progressbar"
+        aria-label="Approval progress"
+        aria-valuemin={0}
+        aria-valuemax={bulkApprovalProgress.total}
+        aria-valuenow={bulkApprovalProgress.completed}
+        style={{ height: "8px", margin: "10px 0", borderRadius: "999px", background: isDarkMode ? "#334155" : "#e2e8f0", overflow: "hidden" }}
+      >
+        <div
+          style={{
+            width: `${(bulkApprovalProgress.completed / bulkApprovalProgress.total) * 100}%`,
+            height: "100%",
+            background: "#2563eb",
+            transition: "width 180ms ease"
+          }}
+        />
+      </div>
+      <div style={{ display: "grid", gap: "6px", maxHeight: "220px", overflowY: "auto" }}>
+        {bulkApprovalProgress.items.map((item) => (
+          <div
+            key={item.id}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1fr) auto",
+              alignItems: "start",
+              gap: "12px",
+              fontSize: "0.9rem"
+            }}
+          >
+            <span>{item.title}</span>
+            <span style={{ color: item.status === "Approved" ? "#16a34a" : item.status === "Failed" ? "#dc2626" : item.status === "Approving" ? "#2563eb" : (isDarkMode ? "#cbd5e1" : "#64748b") }}>
+              {item.status === "Approving" ? "Approving…" : item.status}
+            </span>
+            {item.errorMessage && <span role="alert" style={{ gridColumn: "1 / -1", color: "#dc2626" }}>{item.errorMessage}</span>}
+          </div>
+        ))}
+      </div>
+    </section>
   ) : null;
 
   const downloadOriginalFile = async (imageId) => {
@@ -7944,6 +8091,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           <h2>{adminPageHeading}</h2>
         )
       )}
+
+      {bulkApprovalProgressDisplay}
 
       {shouldShowImageGrid && (
         <p>
