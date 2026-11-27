@@ -1138,6 +1138,20 @@
   align-items: start;
 }
 
+.promotions-simple-form--wide-submit > button[type="submit"] {
+  min-height: 44px;
+  grid-column: 1 / -1;
+  justify-self: end;
+  min-width: 180px;
+}
+
+@media (max-width: 680px) {
+  .promotions-simple-form--wide-submit > button[type="submit"] {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
 .promotions-form-grid .flash-sale-submit {
   grid-column: 1 / -1;
   justify-self: start;
@@ -2524,6 +2538,32 @@
 
 .promotions-list-item .promotions-muted {
   margin-top: 2px;
+}
+
+.promotions-activity-section .promotions-list {
+  gap: 8px;
+}
+
+.promotions-activity-section .promotions-list-item {
+  justify-content: flex-start;
+  min-height: 0;
+  padding: 14px 16px;
+}
+
+.promotions-activity-section .promotions-list-item > div:first-child {
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.promotions-activity-section .promotions-list-item strong,
+.promotions-activity-section .promotions-list-item .promotions-muted {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 680px) {
+  .promotions-activity-section .promotions-list-item {
+    padding: 12px 14px;
+  }
 }
 
 .promotions-offer-list-item {
@@ -3954,6 +3994,12 @@
     grid-row: auto;
   }
 
+  .promotions-date-picker--banner .promotions-date-picker-popover {
+    right: auto;
+    left: 50%;
+    margin-left: -146px;
+  }
+
   .promotions-banner-assets-filters {
     grid-template-columns: minmax(0, 1fr);
     padding: 12px 16px;
@@ -4455,6 +4501,29 @@
   content: "03";
 }
 
+.promotions-reports-section > .promotions-card {
+  padding: clamp(18px, 2.5vw, 28px);
+}
+
+.promotions-reports-section > .promotions-card .promotions-card-header {
+  margin-bottom: 20px;
+}
+
+.promotions-reports-section .promotions-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.promotions-reports-section .promotions-list-item {
+  min-height: 104px;
+  padding: 18px;
+}
+
+.promotions-reports-section .promotions-list-item strong {
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
+}
+
 .dark-mode .promotions-panel {
   --promotions-accent: #ff737b;
   background:
@@ -4496,6 +4565,21 @@
   .promotions-analytics-section .promotions-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .promotions-reports-section .promotions-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .promotions-reports-section .promotions-card-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .promotions-reports-section .promotions-card-header > span {
+    max-width: none;
+    text-align: left;
+  }
 }
 
 @media (max-width: 680px) {
@@ -4505,6 +4589,7 @@
   }
 
   .promotions-sidebar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 5px;
     padding: 12px;
   }
@@ -4545,6 +4630,15 @@
 
   .promotions-analytics-section .promotions-list-item {
     min-height: 142px;
+  }
+
+  .promotions-reports-section .promotions-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .promotions-reports-section .promotions-list-item {
+    min-height: 64px;
+    padding: 14px 16px;
   }
 }
 
@@ -4912,10 +5006,23 @@
   position: absolute;
   top: calc(100% + 8px);
   left: 50%;
+  width: max-content;
+  max-width: none;
   color: var(--promotions-muted);
   font-size: 0.56rem;
   white-space: nowrap;
   transform: translateX(-50%);
+}
+
+.promotions-coupon-trend-bar:first-child .promotions-coupon-trend-tick {
+  left: 0;
+  transform: none;
+}
+
+.promotions-coupon-trend-bar:last-child .promotions-coupon-trend-tick {
+  right: 0;
+  left: auto;
+  transform: none;
 }
 
 .promotions-period-comparison {
@@ -5006,9 +5113,21 @@
   }
 }
 
+@media (max-width: 900px) {
+  .promotions-coupon-trend-bar:nth-last-child(2) .promotions-coupon-trend-tick {
+    display: none;
+  }
+}
+
 @media (max-width: 680px) {
   .promotions-dashboard-insights {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .promotions-coupon-library .promotions-inline-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
   }
 
   .promotions-coupon-trend-card {
@@ -5053,8 +5172,58 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .promotions-coupon-trend-card .promotions-dashboard-section-heading {
+    flex-direction: column;
+  }
+
   .promotions-top-performer,
   .promotions-upcoming-item {
     padding: 9px;
+  }
+}
+
+.promotions-newsletter-link-label {
+  display: none;
+}
+
+@media (max-width: 680px) {
+  .promotions-newsletter-toolbar {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .promotions-newsletter-toolbar-select,
+  .promotions-newsletter-color {
+    grid-column: span 2;
+    min-width: 0;
+  }
+
+  .promotions-newsletter-toolbar-select select {
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    padding-right: 5px;
+    padding-left: 5px;
+  }
+
+  .promotions-newsletter-toolbar button {
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    padding: 0;
+  }
+
+  .promotions-newsletter-toolbar button[aria-label="Insert link"] {
+    display: flex;
+    grid-column: span 2;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .promotions-newsletter-link-label {
+    display: inline;
+    font-size: 0.72rem;
+    font-weight: 700;
   }
 }

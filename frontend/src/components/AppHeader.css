@@ -730,6 +730,7 @@
 
   .account-menu-wrapper {
     order: 100;
+    margin-left: auto;
   }
 
   .mobile-menu-toggle {
@@ -1386,9 +1387,10 @@
     animation: none;
   }
 }
-.header-notification-button { display: inline-flex; align-items: center; gap: 7px; padding: 9px 11px; color: #202020; background: transparent; border: 1px solid #e5e5e5; border-radius: 999px; font: inherit; font-size: 14px; cursor: pointer; }
+.header-notification-button { position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 9px 11px; color: #202020; background: transparent; border: 1px solid #e5e5e5; border-radius: 999px; font: inherit; font-size: 14px; cursor: pointer; }
 .header-notification-button:hover { color: #ed2224; border-color: #ed2224; }
 .header-notification-button strong { min-width: 16px; color: #fff; background: #ed2224; border-radius: 999px; font-size: 10px; line-height: 16px; text-align: center; }
+.header-notification-button .header-notification-count { position: absolute; top: -5px; right: -6px; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 0; height: auto; padding: 0; color: #ed2224; background: transparent; border: 0; border-radius: 0; box-shadow: none; font-size: 12px; font-weight: 800; line-height: 1; }
 .app-header.dark .header-notification-button { color: #fff; border-color: #3a3a3a; }
 .header-notification-dropdown { position: absolute; z-index: 30; top: calc(100% + 12px); right: 0; width: min(360px, calc(100vw - 32px)); padding: 16px; color: #202020; background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; box-shadow: 0 18px 45px rgba(0, 0, 0, .16); }
 .header-notification-dropdown.is-dark { color: #fff; background: #1d2024; border-color: #3a3a3a; }
@@ -1831,6 +1833,10 @@
     display: contents;
   }
 
+  .app-header-container.is-admin .account-menu-wrapper {
+    margin-left: auto;
+  }
+
   .app-header-container.is-admin .header-nav .tools-menu-wrap {
     order: 1;
   }
@@ -1970,5 +1976,287 @@
 
   .app-header-container:has(.cart-button) .header-actions .account-menu-wrapper {
     order: 3;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1359px) {
+  .app-header-container:not(.is-admin).desktop-nav-overflow .header-actions .mobile-header-controls {
+    display: flex;
+    align-items: center;
+    position: static;
+    flex: 0 0 auto;
+    order: -1;
+  }
+
+  .app-header-container:not(.is-admin).desktop-nav-overflow .header-actions .mobile-menu-toggle {
+    display: inline-flex;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1359px) {
+  .app-header-container:not(.is-admin).desktop-menu-full .header-nav {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    width: auto;
+    min-width: 0;
+    order: initial;
+    margin-left: 0;
+  }
+
+  .app-header-container:not(.is-admin).desktop-menu-full .header-nav .nav-link-btn,
+  .app-header-container:not(.is-admin).desktop-menu-full .header-nav .credits-dropdown {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 0;
+    min-height: 38px;
+    padding: 7px 8px;
+    box-sizing: border-box;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .app-header-container:not(.is-admin).desktop-menu-full .header-actions .mobile-header-controls,
+  .app-header-container:not(.is-admin).desktop-menu-full .mobile-menu-toggle {
+    display: none;
+  }
+
+  .app-header-container:not(.is-admin).desktop-menu-full .header-actions {
+    flex: 0 0 auto;
+  }
+}
+
+@media (min-width: 901px) {
+  .app-header-container {
+    position: static;
+  }
+
+  .app-header-container {
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+
+  .app-header-container .header-actions,
+  .app-header-container.is-admin .header-actions,
+  .app-header-container:not(.is-admin) .header-actions {
+    position: static;
+    width: auto;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+  }
+
+  .app-header-container .header-nav,
+  .app-header-container.is-admin .header-nav,
+  .app-header-container:not(.is-admin) .header-nav {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 4px;
+    width: auto;
+    min-width: 0;
+    margin-right: 10px;
+    margin-left: 0;
+    order: initial;
+  }
+
+  .app-header-container .header-actions .mobile-header-controls {
+    display: none;
+    align-items: center;
+    position: static;
+    flex: 0 0 auto;
+  }
+
+  .app-header-container .header-actions .mobile-menu-toggle {
+    display: none;
+  }
+
+  .app-header-container.desktop-nav-overflow .header-actions .mobile-header-controls {
+    display: flex;
+    align-items: center;
+    position: static;
+    flex: 0 0 auto;
+    order: -1;
+  }
+
+  .app-header-container.desktop-nav-overflow .header-actions .mobile-menu-toggle {
+    display: inline-flex;
+  }
+
+  .app-header-container .header-nav .desktop-nav-overflow-item {
+    display: none;
+  }
+
+  .app-header-container.mobile-menu-open .header-nav .desktop-nav-overflow-item {
+    position: absolute;
+    top: calc(var(--desktop-nav-overflow-top, 0px) + var(--desktop-overflow-top-offset, 12px));
+    left: calc(var(--desktop-nav-overflow-left, 0px) + 12px);
+    right: auto;
+    z-index: 10002;
+    display: inline-flex;
+    width: max-content;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .app-header.mobile-menu-open .app-header-container .header-nav {
+    position: static;
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    grid-template-columns: none;
+    width: auto;
+    max-height: none;
+    overflow: visible;
+    margin: 0 10px 0 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .app-header-container .header-nav .desktop-nav-fit-item {
+    flex: 0 0 auto;
+    width: max-content;
+    white-space: nowrap;
+  }
+
+  .app-header.mobile-menu-open .app-header-container .header-nav .mobile-messages-link {
+    display: none;
+  }
+
+  .app-header.mobile-menu-open:has(.app-header-container.desktop-nav-overflow)::after {
+    position: absolute;
+    top: var(--desktop-nav-overflow-top, 0px);
+    left: var(--desktop-nav-overflow-left, 0px);
+    right: auto;
+    z-index: 10001;
+    width: min(var(--desktop-nav-overflow-width, 0px), calc(100vw - 32px));
+    height: var(--desktop-nav-overflow-height, 24px);
+    border: 1px solid #e5e5e5;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 14px 35px rgba(0, 0, 0, 0.16);
+    content: "";
+    pointer-events: none;
+  }
+
+  .app-header.dark.mobile-menu-open:has(.app-header-container.desktop-nav-overflow)::after {
+    border-color: #3a3a3a;
+    background: #171717;
+  }
+
+  .app-header-container.is-admin.desktop-nav-overflow .header-actions .mobile-header-controls,
+  .app-header-container.is-admin.desktop-nav-overflow .header-actions .mobile-menu-toggle {
+    display: flex;
+  }
+
+  .app-header-container.is-admin.desktop-nav-overflow .header-actions .mobile-menu-toggle {
+    display: inline-flex;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1359px) {
+  .app-header-container .header-nav .nav-link-btn,
+  .app-header-container .header-actions .nav-link-btn,
+  .app-header-container.is-admin .header-nav .nav-link-btn,
+  .app-header-container.is-admin .header-actions .nav-link-btn {
+    min-height: 0;
+    padding: 7px 6px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .app-header-container .header-notification-button {
+    gap: 4px;
+    padding: 7px 8px;
+    font-size: 12px;
+  }
+
+  .app-header-container .header-actions .darkmode-btn {
+    padding: 8px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+}
+
+@media (min-width: 901px) {
+  .header-notification-button {
+    position: relative;
+    box-sizing: border-box;
+    width: 54px;
+    min-width: 54px;
+    height: 34px;
+    justify-content: center;
+  }
+
+  .app-header-container .header-nav > .nav-link-btn:hover,
+  .app-header-container .header-nav > .nav-link-btn:focus-visible {
+    color: #fff !important;
+    background: #ed2224;
+    border-color: #ed2224;
+  }
+
+  .app-header-container .header-nav > .nav-link-btn.is-active {
+    color: #fff !important;
+    background: #ed2224;
+    border-color: #ed2224;
+  }
+}
+
+@keyframes header-notification-count-bounce {
+  0%, 86%, 100% {
+    transform: translateY(0);
+  }
+  90% {
+    transform: translateY(-2px);
+  }
+  94% {
+    transform: translateY(0);
+  }
+  97% {
+    transform: translateY(-1px);
+  }
+}
+
+.header-notification-count {
+  animation: header-notification-count-bounce 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .header-notification-count {
+    animation: none;
+  }
+}
+
+@media (min-width: 901px) {
+  .app-header-container.is-admin .header-notification-wrap,
+  .app-header-container.is-admin .header-nav,
+  .app-header-container.is-admin .header-actions {
+    gap: 12px;
+  }
+
+  .app-header-container.is-admin .header-nav > .nav-link-btn,
+  .app-header-container.is-admin .header-nav .tools-menu-wrap > .nav-link-btn,
+  .app-header-container.is-admin .header-notification-wrap .admin-menu-wrap > .nav-link-btn,
+  .app-header-container.is-admin .header-actions > .darkmode-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    height: 42px;
+    min-height: 42px;
+    padding: 8px 12px;
+    line-height: 1.2;
+  }
+
+  .app-header-container.is-admin .header-notification-button {
+    height: 42px;
+    min-height: 42px;
   }
 }

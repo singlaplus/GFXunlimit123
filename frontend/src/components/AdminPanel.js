@@ -2624,6 +2624,8 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const isRejectedAssetsView = !tabParam && statusFilter === "rejected";
   const isPendingAssetsView = !tabParam && statusFilter === "pending";
   const isApprovedAssetsView = !tabParam && statusFilter === "approved";
+  const isReviewedAssetsView = !tabParam && statusFilter === "reviewed";
+  const isAllAssetsView = !tabParam && statusFilter === "all";
   const isBulkAssetSelectionView = isLiveAssetsTab || isRejectedAssetsView || isPendingAssetsView || isApprovedAssetsView;
   const isUsersTab = tabParam === "users";
   const isContributorDetailsTab = tabParam === "contributordetails";
@@ -8009,7 +8011,22 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   };
 
   return (
-    <div style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}>
+    <div
+      className={
+        isRejectedAssetsView
+          ? `admin-rejected-assets-page${isDarkMode ? " admin-rejected-assets-page--dark" : ""}`
+          : isPendingAssetsView
+            ? `admin-pending-assets-page${isDarkMode ? " admin-pending-assets-page--dark" : ""}`
+            : isApprovedAssetsView
+              ? `admin-approved-assets-page${isDarkMode ? " admin-approved-assets-page--dark" : ""}`
+              : isAllAssetsView
+                ? `admin-all-assets-page${isDarkMode ? " admin-all-assets-page--dark" : ""}`
+                : isReviewedAssetsView
+                  ? `admin-reviewed-assets-page${isDarkMode ? " admin-reviewed-assets-page--dark" : ""}`
+                  : undefined
+      }
+      style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}
+    >
       {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && !isControlsAssetsTab && !isThumbnailGenerationSettingsTab && (
         isUsersTab ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
@@ -8073,9 +8090,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             </div>
           </div>
         ) : isPendingAssetsView || isRejectedAssetsView || isApprovedAssetsView ? (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
+          <div className={isPendingAssetsView ? "admin-pending-assets-heading" : isApprovedAssetsView ? "admin-approved-assets-heading" : isRejectedAssetsView ? "admin-rejected-assets-heading" : undefined} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
             <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
-            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div className={isApprovedAssetsView ? "admin-approved-assets-heading__controls" : isRejectedAssetsView ? "admin-rejected-assets-heading__controls" : undefined} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
               {bulkSelectionControls}
               {bulkAssetSelectionToggle}
               {bulkSelectionCount}
@@ -8093,14 +8110,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             </button>
           </div>
         ) : (
-          <h2>{adminPageHeading}</h2>
+          <h2 className={isAllAssetsView ? "admin-all-assets-title" : isReviewedAssetsView ? "admin-reviewed-assets-title" : undefined}>{adminPageHeading}</h2>
         )
       )}
 
       {bulkAssetProgressDisplay}
 
       {shouldShowImageGrid && (
-        <p>
+        <p className={isPendingAssetsView ? "admin-pending-assets-count" : isApprovedAssetsView ? "admin-approved-assets-count" : isRejectedAssetsView ? "admin-rejected-assets-count" : isAllAssetsView ? "admin-all-assets-count" : isReviewedAssetsView ? "admin-reviewed-assets-count" : undefined}>
           Total Assets:{" "}
           <AnimatedAssetCount value={images.length} />
         </p>
@@ -13975,7 +13992,21 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           )}
 
           <div
-            className={isLiveAssetsTab ? `admin-live-assets-grid${isDarkMode ? " admin-live-assets-grid--dark" : ""}` : undefined}
+            className={
+              isPendingAssetsView
+                ? "admin-pending-assets-grid"
+                : isRejectedAssetsView
+                  ? "admin-rejected-assets-grid"
+                  : isApprovedAssetsView
+                    ? "admin-approved-assets-grid"
+                    : isAllAssetsView
+                      ? "admin-all-assets-grid"
+                      : isReviewedAssetsView
+                        ? "admin-reviewed-assets-grid"
+                        : isLiveAssetsTab
+                          ? `admin-live-assets-grid${isDarkMode ? " admin-live-assets-grid--dark" : ""}`
+                          : undefined
+            }
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(4, 1fr)",
@@ -13985,7 +14016,21 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           >
             {renderedImages.map((image) => (
               <div
-                className={isLiveAssetsTab ? `admin-live-assets-card${isDarkMode ? " admin-live-assets-card--dark" : ""}` : undefined}
+                className={
+                  isPendingAssetsView
+                    ? `admin-pending-assets-card${isDarkMode ? " admin-pending-assets-card--dark" : ""}`
+                    : isRejectedAssetsView
+                      ? `admin-rejected-assets-card${isDarkMode ? " admin-rejected-assets-card--dark" : ""}`
+                      : isApprovedAssetsView
+                        ? `admin-approved-assets-card${isDarkMode ? " admin-approved-assets-card--dark" : ""}`
+                        : isAllAssetsView
+                          ? `admin-all-assets-card${isDarkMode ? " admin-all-assets-card--dark" : ""}`
+                          : isReviewedAssetsView
+                            ? `admin-reviewed-assets-card${isDarkMode ? " admin-reviewed-assets-card--dark" : ""}`
+                            : isLiveAssetsTab
+                              ? `admin-live-assets-card${isDarkMode ? " admin-live-assets-card--dark" : ""}`
+                              : undefined
+                }
                 key={image.id}
                 style={{
                   border: isDarkMode ? "1px solid rgba(148, 163, 184, 0.25)" : "1px solid #ddd",
@@ -14069,6 +14114,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 )}
                 {statusFilter === "reviewed" && (
                   <div
+                    className={isReviewedAssetsView ? "admin-reviewed-assets-card__status" : undefined}
                     style={{
                       display: "flex",
                       flexDirection: "column",
@@ -14108,7 +14154,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     </p>
                   </div>
                 )}
-                <div className={isLiveAssetsTab ? "admin-live-assets-card__actions" : undefined} style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
+                <div className={isPendingAssetsView ? "admin-pending-assets-card__actions" : isApprovedAssetsView ? "admin-approved-assets-card__actions" : isRejectedAssetsView ? "admin-rejected-assets-card__actions" : isAllAssetsView ? "admin-all-assets-card__actions" : isReviewedAssetsView ? "admin-reviewed-assets-card__actions" : isLiveAssetsTab ? "admin-live-assets-card__actions" : undefined} style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
                   <button
                     onClick={() => openImage(image, true)}
                     style={{
@@ -14157,7 +14203,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     Active
                   </button>
                 </div>
-                <div className={isLiveAssetsTab ? "admin-live-assets-card__downloads" : undefined} style={{ display: "flex", gap: "5px", marginTop: "6px" }}>
+                <div className={isPendingAssetsView ? "admin-pending-assets-card__downloads" : isApprovedAssetsView ? "admin-approved-assets-card__downloads" : isRejectedAssetsView ? "admin-rejected-assets-card__downloads" : isAllAssetsView ? "admin-all-assets-card__downloads" : isReviewedAssetsView ? "admin-reviewed-assets-card__downloads" : isLiveAssetsTab ? "admin-live-assets-card__downloads" : undefined} style={{ display: "flex", gap: "5px", marginTop: "6px" }}>
                   <button
                     onClick={() => downloadOriginalFile(image.id)}
                     title="Download Original File"

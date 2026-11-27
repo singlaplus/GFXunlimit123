@@ -195,6 +195,12 @@
     padding: 18px;
   }
 
+  .newsletter-smtp-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
   .newsletter-smtp-fields {
     grid-template-columns: minmax(0, 1fr);
   }

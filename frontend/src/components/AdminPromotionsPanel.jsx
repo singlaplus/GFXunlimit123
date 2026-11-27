@@ -4199,7 +4199,7 @@ function AdminPromotionsPanel() {
                 <button type="submit">{editingCouponId ? "Update Coupon" : "Create Coupon"}</button>
               </form>
             </div>
-            <div className="promotions-card">
+            <div className="promotions-card promotions-coupon-library">
               <div className="promotions-card-header">
                 <h3>Coupon Library</h3>
                 <div className="promotions-inline-controls">
@@ -5273,6 +5273,7 @@ function AdminPromotionsPanel() {
                       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <path d="M10 13.5a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.7 1.7M14 10.5a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 19.2l1.7-1.7" />
                       </svg>
+                      <span className="promotions-newsletter-link-label">Link</span>
                     </button>
                     <label className="promotions-newsletter-color">
                       <span>Text color</span>
@@ -5612,7 +5613,7 @@ function AdminPromotionsPanel() {
         );
       case "reports":
         return (
-          <div className="promotions-stack">
+          <div className="promotions-stack promotions-reports-section">
             <div className="promotions-card">
               <div className="promotions-card-header">
                 <h3>Reports</h3>
@@ -5634,7 +5635,7 @@ function AdminPromotionsPanel() {
         );
       case "activity":
         return (
-          <div className="promotions-stack">
+          <div className="promotions-stack promotions-activity-section">
             <div className="promotions-card">
               <div className="promotions-card-header">
                 <h3>Activity Log</h3>
@@ -6087,6 +6088,10 @@ function AdminPromotionsPanel() {
   };
 
   const renderSimpleSection = (title, resource, items, draft, setter, resetDraft, successMessage, fields) => {
+    const hasWideSubmit = resource === "popup"
+      || resource === "announcement"
+      || resource === "push_notification"
+      || resource === "automation";
     const handleSimpleSubmit = async (event) => {
       event.preventDefault();
       await persistResource(resource, "create", draft, successMessage);
@@ -6100,7 +6105,10 @@ function AdminPromotionsPanel() {
             <h3>{title}</h3>
             <span>Persist and review entries in PostgreSQL immediately.</span>
           </div>
-          <form className="promotions-form-grid" onSubmit={handleSimpleSubmit}>
+          <form
+            className={`promotions-form-grid${hasWideSubmit ? " promotions-simple-form--wide-submit" : ""}`}
+            onSubmit={handleSimpleSubmit}
+          >
             {fields.map((field) => (
               <div key={field.key} className="promotions-field-group">
                 {field.type === "select" ? (

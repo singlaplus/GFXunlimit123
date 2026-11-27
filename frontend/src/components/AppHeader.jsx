@@ -142,6 +142,10 @@ export default function AppHeader({
   const flashSaleGroupRef = useRef(null);
   const flashSaleLivePanelRef = useRef(null);
   const notificationWrapRef = useRef(null);
+  const headerContainerRef = useRef(null);
+  const [desktopNavOverflowCount, setDesktopNavOverflowCount] = useState(0);
+  const [desktopNavOverflowWidth, setDesktopNavOverflowWidth] = useState(0);
+  const [desktopNavOverflowPosition, setDesktopNavOverflowPosition] = useState({ left: 0, top: 0 });
 
   useEffect(() => {
     const timer = setInterval(() => setFlashSaleCountdownNow(Date.now()), 1000);
@@ -164,6 +168,159 @@ export default function AppHeader({
   const isAdminUser = hasActiveSession() && isAdminRole(normalizedRole);
   const isHomePage = location.pathname === "/";
   const unreadNotificationCount = Number(notificationCount || 0) || (notifications || []).length;
+  const getHeaderNavLinkClassName = (to) => {
+    const [pathname, query] = to.split("?");
+    const active = location.pathname === pathname
+      && (!query || new URLSearchParams(location.search).toString() === query);
+    return `nav-link-btn${active ? " is-active" : ""}`;
+  };
+
+  useEffect(() => {
+    const container = headerContainerRef.current;
+    if (!container) return undefined;
+    const nav = container.querySelector(".header-nav");
+
+    const updateDesktopNavOverflow = () => {
+      const viewportWidth = window.innerWidth;
+
+      if (viewportWidth < 901) {
+        setDesktopNavOverflowCount(0);
+        setDesktopNavOverflowWidth(0);
+        setDesktopNavOverflowPosition({ left: 0, top: 0 });
+        container.querySelectorAll(".desktop-nav-fit-item, .desktop-nav-overflow-item").forEach((item) => {
+          item.classList.remove("desktop-nav-fit-item", "desktop-nav-overflow-item");
+        });
+        return;
+      }
+
+      const logo = container.querySelector(".logo");
+      const notification = container.querySelector(".header-notification-wrap");
+      const actions = container.querySelector(".header-actions");
+      if (!nav || !logo || !notification || !actions) {
+        setDesktopNavOverflowCount(0);
+        setDesktopNavOverflowWidth(0);
+        setDesktopNavOverflowPosition({ left: 0, top: 0 });
+        return;
+      }
+
+      const originalNavStyle = nav.style.cssText;
+      const navItems = Array.from(nav.children).filter((item) => !item.classList.contains("mobile-messages-link"));
+      const originalItemStyles = navItems.map((item) => item.style.cssText);
+      const containerWidth = container.getBoundingClientRect().width;
+      const containerStyles = window.getComputedStyle(container);
+      const horizontalPadding = (Number.parseFloat(containerStyles.paddingLeft) || 0)
+        + (Number.parseFloat(containerStyles.paddingRight) || 0);
+      const leftFixedWidth = logo.getBoundingClientRect().width
+        + notification.getBoundingClientRect().width;
+      const menuWidth = 40;
+      const renderedMenuControl = actions.querySelector(".mobile-header-controls");
+      const renderedMenuWidth = renderedMenuControl?.getBoundingClientRect().width || 0;
+      const rightFixedWidth = actions.getBoundingClientRect().width - renderedMenuWidth;
+
+      nav.style.display = "flex";
+      nav.style.flex = "0 0 auto";
+      nav.style.flexWrap = "nowrap";
+      nav.style.width = "max-content";
+      nav.style.order = "initial";
+      nav.style.marginLeft = "0";
+      nav.style.position = "absolute";
+      nav.style.visibility = "hidden";
+
+      navItems.forEach((item) => {
+        item.classList.remove("desktop-nav-fit-item", "desktop-nav-overflow-item");
+        item.style.display = "inline-flex";
+        item.style.flex = "0 0 auto";
+        item.style.width = "max-content";
+        item.style.minWidth = "0";
+        item.style.position = "static";
+      });
+
+      const navGap = Number.parseFloat(window.getComputedStyle(nav).gap) || 4;
+      const itemWidths = navItems.map((item) => item.getBoundingClientRect().width);
+      const minimumNavGap = 10;
+      const availableWidthWithoutMenu = containerWidth
+        - horizontalPadding
+        - leftFixedWidth
+        - rightFixedWidth
+        - (minimumNavGap * 2);
+      const totalNavWidth = itemWidths.reduce((width, itemWidth) => width + itemWidth, 0)
+        + (navGap * Math.max(0, itemWidths.length - 1));
+      const needsMenu = totalNavWidth > availableWidthWithoutMenu;
+      const availableNavWidth = availableWidthWithoutMenu - (needsMenu ? menuWidth : 0);
+
+      let fittingWidth = 0;
+      let fittingCount = needsMenu ? 0 : navItems.length;
+      if (needsMenu) {
+        for (let index = 0; index < itemWidths.length; index += 1) {
+          const nextWidth = fittingWidth + itemWidths[index] + (index > 0 ? navGap : 0);
+          if (nextWidth > availableNavWidth) break;
+          fittingWidth = nextWidth;
+          fittingCount += 1;
+        }
+      }
+
+      nav.style.cssText = originalNavStyle;
+      navItems.forEach((item, index) => {
+        item.style.cssText = originalItemStyles[index];
+      });
+
+      navItems.forEach((item, index) => {
+        item.classList.toggle("desktop-nav-fit-item", index < fittingCount);
+        item.classList.toggle("desktop-nav-overflow-item", index >= fittingCount);
+        if (index >= fittingCount) {
+          item.style.setProperty("--desktop-overflow-top-offset", `${16 + (index - fittingCount) * 48}px`);
+        } else {
+          item.style.removeProperty("--desktop-overflow-top-offset");
+        }
+      });
+      const overflowCount = Math.max(0, navItems.length - fittingCount);
+      setDesktopNavOverflowCount(overflowCount);
+      const overflowWidth = itemWidths.slice(fittingCount).reduce((width, itemWidth) => Math.max(width, itemWidth), 0);
+      setDesktopNavOverflowWidth(overflowCount > 0 ? Math.ceil(overflowWidth + 24) : 0);
+      const header = container.closest(".app-header");
+      const menuButton = actions.querySelector(".mobile-menu-toggle");
+      const menuRect = menuButton?.getBoundingClientRect();
+      const headerRect = header?.getBoundingClientRect();
+      if (overflowCount > 0 && menuRect?.width && headerRect) {
+        const panelWidth = Math.min(Math.ceil(overflowWidth + 24), window.innerWidth - 32);
+        const maxLeft = Math.max(16, headerRect.width - panelWidth - 16);
+        const left = Math.round(Math.max(
+          16,
+          Math.min(menuRect.left - headerRect.left + ((menuRect.width - panelWidth) / 2), maxLeft),
+        ));
+        const top = Math.round(Math.max(0, menuRect.bottom - headerRect.top + 8));
+        setDesktopNavOverflowPosition((position) => (
+          position.left === left && position.top === top ? position : { left, top }
+        ));
+      } else {
+        setDesktopNavOverflowPosition((position) => (
+          position.left === 0 && position.top === 0 ? position : { left: 0, top: 0 }
+        ));
+      }
+    };
+
+    updateDesktopNavOverflow();
+
+    let resizeObserver;
+    let resizeFrame = 0;
+    const scheduleUpdate = () => {
+      if (resizeFrame) cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(updateDesktopNavOverflow);
+    };
+    window.addEventListener("resize", scheduleUpdate);
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(scheduleUpdate);
+      [container, ...(nav ? [nav, ...Array.from(nav.children)] : []), ...container.querySelectorAll(
+        ".logo, .header-notification-wrap, .header-actions, .mobile-menu-toggle",
+      )].forEach((element) => resizeObserver.observe(element));
+    }
+
+    return () => {
+      if (resizeFrame) cancelAnimationFrame(resizeFrame);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleUpdate);
+    };
+  }, [isAdminUser, isCustomerUser, isContributorUser]);
 
   useEffect(() => {
     if (!notificationOpen) return undefined;
@@ -519,6 +676,22 @@ export default function AppHeader({
   }, [location.pathname]);
 
   useEffect(() => {
+    if (!mobileMenuOpen || desktopNavOverflowCount === 0 || window.innerWidth < 901) {
+      return undefined;
+    }
+
+    const handleOutsidePointerDown = (event) => {
+      if (!(event.target instanceof Element)) return;
+      if (!event.target.closest(".mobile-menu-toggle, .desktop-nav-overflow-item")) {
+        setMobileMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handleOutsidePointerDown);
+    return () => document.removeEventListener("pointerdown", handleOutsidePointerDown);
+  }, [mobileMenuOpen, desktopNavOverflowCount]);
+
+  useEffect(() => {
     if (!isCustomerUser) {
       setCartCount(0);
       return;
@@ -625,6 +798,12 @@ export default function AppHeader({
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [showAccountMenu]);
+
+  useEffect(() => {
+    const closeAccountMenu = () => setShowAccountMenu(false);
+    window.addEventListener("auth-changed", closeAccountMenu);
+    return () => window.removeEventListener("auth-changed", closeAccountMenu);
+  }, []);
 
   const addCredits = async (amount) => {
     try {
@@ -759,8 +938,19 @@ export default function AppHeader({
           PREMIUM HEADER
       ========================== */}
 
-      <header className={`app-header ${darkMode ? "dark" : ""}`}>
-        <div className={`app-header-container${mobileMenuOpen ? " mobile-menu-open" : ""}${isAdminUser ? " is-admin" : ""}`}>
+      <header
+        className={`app-header${darkMode ? " dark" : ""}${mobileMenuOpen ? " mobile-menu-open" : ""}`}
+        style={{
+          "--desktop-nav-overflow-height": `${Math.min(desktopNavOverflowCount * 48 + 12, window.innerHeight - 90)}px`,
+          "--desktop-nav-overflow-width": `${desktopNavOverflowWidth}px`,
+          "--desktop-nav-overflow-left": `${desktopNavOverflowPosition.left}px`,
+          "--desktop-nav-overflow-top": `${desktopNavOverflowPosition.top}px`,
+        }}
+      >
+            <div
+              ref={headerContainerRef}
+                  className={`app-header-container${desktopNavOverflowCount > 0 ? " desktop-nav-overflow" : ""}${mobileMenuOpen ? " mobile-menu-open" : ""}${isAdminUser ? " is-admin" : ""}`}
+            >
           <Link to="/" className="logo">
             {branding?.logo ? (
               <img
@@ -780,7 +970,10 @@ export default function AppHeader({
           {hasActiveSession() && (isCustomerUser || isContributorUser || isAdminUser) && (
             <div className="header-notification-wrap" ref={notificationWrapRef}>
               <button className="header-notification-button" type="button" onClick={() => setNotificationOpen((open) => !open)} aria-expanded={notificationOpen} aria-label={`Notifications, ${unreadNotificationCount} unread`}>
-                <span aria-hidden="true">🔔</span><strong>{unreadNotificationCount}</strong>
+                <span aria-hidden="true">🔔</span>
+                {unreadNotificationCount > 0 && (
+                  <strong className="header-notification-count">{unreadNotificationCount}</strong>
+                )}
               </button>
               {isAdminUser ? (
                 <>
@@ -871,7 +1064,7 @@ export default function AppHeader({
             <div className="header-nav" id="mobile-header-navigation">
               <Link
                 to="/messages"
-                className="nav-link-btn mobile-messages-link"
+                className={`${getHeaderNavLinkClassName("/messages")} mobile-messages-link`}
                 aria-label={`Messages, ${messageUnreadCount} unread`}
                 onClick={handleHeaderLinkClick}
               >
@@ -879,14 +1072,14 @@ export default function AppHeader({
               </Link>
               <Link
                 to="/explore"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/explore")}
                 onClick={(event) => handleHeaderLinkClick(event, resetExploreState)}
               >
                 Explore
               </Link>
               <Link
                 to="/favorites"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/favorites")}
                 onClick={handleHeaderLinkClick}
               >
                 My Collections
@@ -904,14 +1097,14 @@ export default function AppHeader({
               
               <Link
                 to="/orders"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/orders")}
                 onClick={handleHeaderLinkClick}
               >
                 Orders
               </Link>
               <Link
                 to="/downloads"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/downloads")}
                 onClick={handleHeaderLinkClick}
               >
                 My Downloads
@@ -934,7 +1127,7 @@ export default function AppHeader({
               </div>
               <Link
                 to="/payments"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/payments")}
                 onClick={(event) => handleHeaderLinkClick(event, () => {
                   window.dispatchEvent(new Event('paymentsRequested'));
                 })}
@@ -948,7 +1141,7 @@ export default function AppHeader({
             <div className="header-nav" id="mobile-header-navigation">
               <Link
                 to="/messages"
-                className="nav-link-btn mobile-messages-link"
+                className={`${getHeaderNavLinkClassName("/messages")} mobile-messages-link`}
                 aria-label={`Messages, ${messageUnreadCount} unread`}
                 onClick={handleHeaderLinkClick}
               >
@@ -956,7 +1149,7 @@ export default function AppHeader({
               </Link>
               <Link
                 to="/upload"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/upload")}
                 onClick={handleHeaderLinkClick}
               >
                 Uploads
@@ -965,7 +1158,7 @@ export default function AppHeader({
               {hasBulkUploadPermission && (
                 <Link
                   to="/bulk-upload"
-                  className="nav-link-btn"
+                  className={getHeaderNavLinkClassName("/bulk-upload")}
                   onClick={handleHeaderLinkClick}
                 >
                   Bulk Upload
@@ -974,7 +1167,7 @@ export default function AppHeader({
 
               <Link
                 to="/myuploads"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/myuploads")}
                 onClick={handleHeaderLinkClick}
               >
                 My Uploads
@@ -982,7 +1175,7 @@ export default function AppHeader({
 
               <Link
                 to="/dashboard?tab=analytics"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/dashboard?tab=analytics")}
                 onClick={handleHeaderLinkClick}
               >
                 Analytics
@@ -990,7 +1183,7 @@ export default function AppHeader({
 
               <Link
                 to="/payments"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/payments")}
                 onClick={(event) => handleHeaderLinkClick(event, () => {
                   window.dispatchEvent(new Event('paymentsRequested'));
                 })}
@@ -1000,7 +1193,7 @@ export default function AppHeader({
 
               <Link
                 to="/orders"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/orders")}
                 onClick={handleHeaderLinkClick}
               >
                 Orders
@@ -1008,7 +1201,7 @@ export default function AppHeader({
 
               <Link
                 to="/favorites"
-                className="nav-link-btn"
+                className={getHeaderNavLinkClassName("/favorites")}
                 onClick={handleHeaderLinkClick}
               >
                 My Collection

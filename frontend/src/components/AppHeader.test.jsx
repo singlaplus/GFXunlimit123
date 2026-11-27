@@ -53,6 +53,35 @@ describe('AppHeader customer navigation', () => {
     axios.post.mockResolvedValue({ data: {} });
   });
 
+  it('animates a positive notification count and hides a zero count', () => {
+    localStorage.setItem('token', 'demo-token');
+
+    const headerProps = {
+      showNotifications: false,
+      setShowNotifications: jest.fn(),
+      setNotificationCount: jest.fn(),
+      setShowLoginModal: jest.fn(),
+      setShowJoinModal: jest.fn(),
+      showLoginModal: false,
+      showJoinModal: false,
+      joinModalAccountType: '',
+      setJoinModalAccountType: jest.fn(),
+      darkMode: false,
+      notifications: [],
+      setDarkMode: jest.fn(),
+      userRole: 'customer',
+    };
+    const { rerender } = render(
+      <AppHeader {...headerProps} notificationCount={3} />
+    );
+
+    expect(screen.getByText('3')).toHaveClass('header-notification-count');
+
+    rerender(<AppHeader {...headerProps} notificationCount={0} />);
+
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+  });
+
   it('shows customer navigation links without a search bar on the explore page', async () => {
     localStorage.setItem('token', 'demo-token');
 
@@ -135,7 +164,7 @@ describe('AppHeader customer navigation', () => {
     expect(container.querySelector('.app-header-container')).not.toHaveClass('mobile-menu-open');
   });
 
-  it('opens the account menu with the user name, account, profile, and logout actions', async () => {
+  it('closes the account menu on auth changes and preserves its account actions', async () => {
     localStorage.setItem('token', 'demo-token');
     localStorage.setItem('username', 'jane');
     localStorage.setItem('fullName', 'Jane Doe');
@@ -159,13 +188,19 @@ describe('AppHeader customer navigation', () => {
       />
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /open account menu for jane doe/i }));
+    const accountButton = screen.getByRole('button', { name: /open account menu for jane doe/i });
+    await userEvent.click(accountButton);
 
     expect(screen.getByText('Jane Doe')).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: /^my account$/i })).toHaveLength(1);
     expect(screen.getAllByRole('link', { name: /^profile$/i })).toHaveLength(1);
     expect(screen.getByRole('button', { name: /^logout$/i })).toBeInTheDocument();
 
+    act(() => window.dispatchEvent(new Event('auth-changed')));
+    expect(accountButton).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Jane Doe')).not.toBeInTheDocument();
+
+    await userEvent.click(accountButton);
     await userEvent.click(screen.getByRole('link', { name: /^my account$/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/customer');
   });

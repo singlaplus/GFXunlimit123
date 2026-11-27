@@ -1260,7 +1260,7 @@
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 820px) {
   .google-analytics-dashboard {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1337,5 +1337,46 @@
   .google-analytics-connect,
   .google-analytics-connect button {
     width: 100%;
+  }
+}
+
+@media (max-width: 380px) {
+  .google-analytics-dialog-backdrop {
+    padding: 12px;
+  }
+
+  .google-analytics-dialog {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .google-analytics-dialog-header {
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .google-analytics-method-card {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .google-analytics-method-icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .google-analytics-method-meta {
+    display: flex;
+    grid-column: 2;
+    align-items: center;
+    justify-items: initial;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .google-analytics-method-arrow {
+    margin-left: auto;
   }
 }
