@@ -121,6 +121,27 @@ describe("AdminPanel collection controls", () => {
     expect(screen.getByRole("heading", { name: "Redirection" })).toBeInTheDocument();
   });
 
+  it("filters Controls cards by their labels and restores them when cleared", async () => {
+    render(<AdminPanel />);
+
+    const search = screen.getByRole("searchbox", { name: "Search controls and settings" });
+    const cards = document.querySelectorAll(".admin-controls-page-grid > .admin-panel-card");
+    expect(cards.length).toBeGreaterThan(1);
+
+    fireEvent.change(search, { target: { value: "favicon" } });
+    await waitFor(() => {
+      expect(document.querySelectorAll(".admin-controls-page-grid > .admin-panel-card:not([hidden])").length).toBe(2);
+    });
+
+    fireEvent.change(search, { target: { value: "no matching setting" } });
+    expect(await screen.findByRole("status")).toHaveTextContent("No matching controls found.");
+
+    fireEvent.change(search, { target: { value: "" } });
+    await waitFor(() => {
+      expect(document.querySelectorAll(".admin-controls-page-grid > .admin-panel-card:not([hidden])").length).toBe(cards.length);
+    });
+  });
+
   it("renders and counts up the thumbnail generation quality settings in Controls", async () => {
     render(<AdminPanel />);
 
@@ -3040,6 +3061,7 @@ describe("AdminPanel collection controls", () => {
 
     render(<AdminPanel />);
 
+    expect(screen.getAllByRole("heading", { name: "Database Connection", level: 2 })).toHaveLength(1);
     expect(await screen.findByText("F:\\GFXunlimitDatabase")).toBeInTheDocument();
     expect(screen.getByText("Database: stocksite")).toBeInTheDocument();
     expect(screen.getByText("Database size: 512.00 MB")).toBeInTheDocument();

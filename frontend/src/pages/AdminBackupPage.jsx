@@ -1606,7 +1606,7 @@ export default function AdminBackupPage({ isDarkMode, apiBaseUrl, getAuthToken, 
           <button type="button" onClick={() => refreshHistory().catch((error) => setPageError(error.response?.data?.error || "Could not refresh backup history."))} disabled={busy} style={buttonStyle()}>Refresh</button>
         </div>
         {history.length === 0 ? <p style={{ color: palette.muted, margin: 0 }}>No server-side backup jobs have been recorded yet.</p> : (
-          <div style={{ display: "grid", gap: 8 }}>
+          <div className="gfx-backup-history-list" style={{ display: "grid", gap: 8 }}>
             {history.map((entry) => (
               <div key={entry.id} className="gfx-backup-history-row" style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1.5fr) repeat(7, minmax(90px, 1fr))", gap: 10, alignItems: "center", padding: 11, borderRadius: 9, background: palette.panel, fontSize: 13 }}>
                 <span><strong>{entry.id}</strong><span style={{ display: "block", color: palette.muted }}>{entry.startedAt ? `${formatIndiaDateTime(entry.startedAt)} IST` : "Date unavailable"}</span></span>

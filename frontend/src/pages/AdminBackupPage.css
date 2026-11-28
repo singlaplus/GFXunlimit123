@@ -583,6 +583,13 @@
   transition: border-color 150ms ease, transform 150ms ease;
 }
 
+.gfx-backup-history-list {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
 .gfx-backup-history-row:hover {
   transform: translateY(-1px);
   border-color: var(--backup-border);
@@ -657,10 +664,6 @@
   .gfx-backup-selected-total {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .gfx-backup-history {
-    overflow-x: auto;
   }
 
   .gfx-backup-history-row {

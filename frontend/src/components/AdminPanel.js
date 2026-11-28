@@ -3725,6 +3725,39 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
   const [isLayoutEditMode, setIsLayoutEditMode] = useState(false);
   const [cardOrder, setCardOrder] = useState(DEFAULT_CARD_ORDER);
   const [layoutSaving, setLayoutSaving] = useState(false);
+  const [controlsSearchTerm, setControlsSearchTerm] = useState("");
+  const [controlsSearchHasResults, setControlsSearchHasResults] = useState(true);
+  const controlsGridRef = useRef(null);
+
+  useEffect(() => {
+    const grid = controlsGridRef.current;
+    if (!grid) return;
+
+    const query = controlsSearchTerm.trim().toLocaleLowerCase();
+    const cards = grid.querySelectorAll(":scope > .admin-panel-card");
+    let visibleCardCount = 0;
+
+    cards.forEach((card) => {
+      const fieldText = Array.from(card.querySelectorAll("input, textarea, select, button"))
+        .map((field) => [
+          field.getAttribute("aria-label"),
+          field.getAttribute("placeholder"),
+          field.getAttribute("title"),
+          field.value
+        ].filter(Boolean).join(" "))
+        .join(" ");
+      const cardText = `${card.innerText || card.textContent || ""} ${fieldText}`.toLocaleLowerCase();
+      const matches = !query || cardText.includes(query);
+      card.hidden = !matches;
+      if (matches) visibleCardCount += 1;
+    });
+
+    setControlsSearchHasResults(visibleCardCount > 0);
+  }, [controlsSearchTerm, isControlsTab]);
+
+  useEffect(() => {
+    if (!isControlsTab) setControlsSearchTerm("");
+  }, [isControlsTab]);
   
   const EMAIL_MODAL_TITLES = {
     settings: 'Email Configuration',
@@ -8027,7 +8060,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
       }
       style={{ marginTop: "30px", colorScheme: isDarkMode ? "dark" : "light" }}
     >
-      {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && !isControlsAssetsTab && !isThumbnailGenerationSettingsTab && (
+      {!isAdminDashboardTab && !isControlsTab && !isBackupTab && !isEmptyAdminBodyTab && !isContributorDetailsTab && !isControlsAssetsTab && !isControlsDatabaseTab && !isThumbnailGenerationSettingsTab && (
         isUsersTab ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
             <h2 aria-label={adminPageHeading} style={{ display: "flex", alignItems: "baseline", gap: "8px", margin: 0 }}>
@@ -9467,7 +9500,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         </>
       ) : isControlsDatabaseTab ? (
         <>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px" }}>
+          <div className="admin-database-page-header">
             <div>
               <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
             </div>
@@ -9481,21 +9514,21 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   window.dispatchEvent(new PopStateEvent("popstate"));
                 }
               }}
+              className="admin-database-back-button"
               style={{ background: "#1976d2", color: "white", border: "none", padding: "10px 20px", borderRadius: "8px", cursor: "pointer", fontWeight: 600 }}
             >
               Back to Controls
             </button>
           </div>
-          <div className="admin-panel-controls-grid" style={{ display: "flex", flexWrap: "wrap", gap: "20px", justifyContent: "flex-start" }}>
-            <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="database-connection-page">
-              <h3>Database Connection</h3>
+          <div className="admin-panel-controls-grid admin-database-page-grid">
+            <CardWrapper className="admin-database-page-card" cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="database-connection-page">
               <div style={{ display: "grid", gap: "12px" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                <div className="admin-database-status-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
                   <span style={{ color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.9rem" }}>Connection status</span>
-                  <span style={{ padding: "4px 8px", borderRadius: "999px", background: databaseConnectionStatus === "Connected" ? "#dcfce7" : "#fee2e2", color: databaseConnectionStatus === "Connected" ? "#166534" : "#991b1b", fontSize: "0.72rem", fontWeight: 800 }}>{databaseConnectionStatus}</span>
+                  <span className="admin-database-status-pill" style={{ padding: "4px 8px", borderRadius: "999px", background: databaseConnectionStatus === "Connected" ? "#dcfce7" : "#fee2e2", color: databaseConnectionStatus === "Connected" ? "#166534" : "#991b1b", fontSize: "0.72rem", fontWeight: 800 }}>{databaseConnectionStatus}</span>
                 </div>
                 <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.92rem" }}>{databaseConnectionStatus === "Connected" ? "The primary database is online and ready for application requests." : "The primary database connection could not be confirmed."}</p>
-                <div style={{ padding: "12px 14px", borderRadius: "8px", background: isDarkMode ? "#0f172a" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", color: isDarkMode ? "#e2e8f0" : "#0f172a", overflowWrap: "anywhere" }}>
+                <div className="admin-database-details" style={{ padding: "12px 14px", borderRadius: "8px", background: isDarkMode ? "#0f172a" : "#f8fafc", border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0", color: isDarkMode ? "#e2e8f0" : "#0f172a", overflowWrap: "anywhere" }}>
                   <strong style={{ display: "block", marginBottom: "6px" }}>Database stored at</strong>
                   {databaseConnectionStatus !== "Connected"
                     ? <span role="alert">{databaseDataDirectoryError || "Database connection is unavailable."}</span>
@@ -9521,12 +9554,13 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         </>
       ) : isControlsAssetsTab ? (
         <>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px", flexWrap: "wrap" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <div className="assets-connection-page-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px", flexWrap: "wrap" }}>
+            <div className="assets-connection-page-heading" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
               <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
               <div ref={addStorageMenuRef} style={{ position: "relative" }}>
                 <button
                   type="button"
+                  className="assets-connection-add-button"
                   aria-haspopup="menu"
                   aria-expanded={isAddStorageMenuOpen}
                   onClick={() => setIsAddStorageMenuOpen((open) => !open)}
@@ -9535,9 +9569,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   Add
                 </button>
                 {isAddStorageMenuOpen && (
-                  <div role="menu" aria-label="Add storage location" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 20, display: "grid", minWidth: "190px", padding: "6px", borderRadius: "8px", background: isDarkMode ? "#1e293b" : "#fff", border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1", boxShadow: "0 8px 24px rgba(15,23,42,0.18)" }}>
+                  <div className="assets-connection-add-menu" role="menu" aria-label="Add storage location" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 20, display: "grid", minWidth: "190px", padding: "6px", borderRadius: "8px", background: isDarkMode ? "#1e293b" : "#fff", border: isDarkMode ? "1px solid #475569" : "1px solid #cbd5e1", boxShadow: "0 8px 24px rgba(15,23,42,0.18)" }}>
                     <button
                       type="button"
+                      className="assets-connection-add-menu-item"
                       role="menuitem"
                       onClick={() => {
                         setIsAddStorageMenuOpen(false);
@@ -9550,6 +9585,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     </button>
                     <button
                       type="button"
+                      className="assets-connection-add-menu-item"
                       role="menuitem"
                       onClick={() => {
                         setIsAddStorageMenuOpen(false);
@@ -9564,9 +9600,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 )}
               </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div className="assets-connection-page-actions" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <button
                 type="button"
+                className="assets-connection-back-button"
                 onClick={() => {
                   const nextUrl = `${adminBasePath}?tab=controls`;
                   if (typeof window !== "undefined") {
@@ -9581,13 +9618,14 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               </button>
             </div>
           </div>
-          <div className="admin-panel-controls-grid storage-connections-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 360px))", gridAutoRows: "350px", gap: "20px", justifyContent: "flex-start", alignItems: "stretch" }}>
+          <div className="admin-panel-controls-grid storage-connections-grid assets-connection-page-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 360px))", gridAutoRows: "350px", gap: "20px", justifyContent: "flex-start", alignItems: "stretch" }}>
             <CardWrapper
               cardOrder={cardOrder}
               isLayoutEditMode={isLayoutEditMode}
               isDarkMode={isDarkMode}
               moveCard={moveCard}
               cardId="assets-connection-page"
+              className="assets-connection-status-card"
               style={{ width: "100%", height: "350px", minHeight: "350px", overflowY: "visible", background: isDarkMode ? "linear-gradient(145deg, #111827, #172554)" : "linear-gradient(145deg, #ffffff, #eff6ff)", border: isDarkMode ? "1px solid #334155" : "1px solid #bfdbfe", boxShadow: isDarkMode ? "0 18px 40px rgba(2, 6, 23, 0.4)" : "0 18px 40px rgba(37, 99, 235, 0.1)" }}
             >
               <div style={{ display: "grid", gap: "18px" }}>
@@ -9596,7 +9634,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     <span style={{ display: "block", color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.72rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>Storage control</span>
                     <h3 style={{ margin: "6px 0 0", fontSize: "1.2rem" }}>Connection status</h3>
                   </div>
-                  <span style={{ padding: "6px 10px", borderRadius: "999px", background: storageConnections.assets && storageConnections.thumbnails ? (isDarkMode ? "#14532d" : "#dcfce7") : (isDarkMode ? "#7f1d1d" : "#fee2e2"), color: storageConnections.assets && storageConnections.thumbnails ? (isDarkMode ? "#bbf7d0" : "#166534") : (isDarkMode ? "#fecaca" : "#991b1b"), fontSize: "0.72rem", fontWeight: 800 }}>
+                  <span className="assets-connection-health-pill" style={{ padding: "6px 10px", borderRadius: "999px", background: storageConnections.assets && storageConnections.thumbnails ? (isDarkMode ? "#14532d" : "#dcfce7") : (isDarkMode ? "#7f1d1d" : "#fee2e2"), color: storageConnections.assets && storageConnections.thumbnails ? (isDarkMode ? "#bbf7d0" : "#166534") : (isDarkMode ? "#fecaca" : "#991b1b"), fontSize: "0.72rem", fontWeight: 800 }}>
                     {storageConnections.assets && storageConnections.thumbnails ? "Connected" : storageConnections.assets || storageConnections.thumbnails ? "Partially connected" : "Disconnected"}
                   </span>
                 </div>
@@ -9798,6 +9836,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             })}
           </div>
           <section
+            className="assets-storage-configuration"
             aria-labelledby="storage-locations-title"
             style={{
               display: "grid",
@@ -9812,9 +9851,9 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           >
             <div>
               <span style={{ color: isDarkMode ? "#93c5fd" : "#2563eb", fontSize: "0.72rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>Storage configuration</span>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", flexWrap: "wrap" }}>
+              <div className="assets-storage-configuration__heading" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", flexWrap: "wrap" }}>
                 <h3 id="storage-locations-title" style={{ margin: "6px 0", fontSize: "1.2rem" }}>Choose new storage locations</h3>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                <div className="assets-storage-configuration__selectors" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                   <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.82rem", fontWeight: 700 }}>
                     Assets card
                     <select
@@ -9853,7 +9892,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 Select separate folders for original assets and thumbnails. Existing files will stay where they are; they will not be moved.
               </p>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "14px" }}>
+            <div className="assets-storage-configuration__folders" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "14px" }}>
               {[
                 { target: "assets", label: "Assets folder", value: assetLocationDraft },
                 { target: "thumbnails", label: "Thumbnails folder", value: thumbnailLocationDraft },
@@ -9865,7 +9904,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                 </div>
               ))}
             </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <div className="assets-storage-configuration__actions" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
               <p role="status" style={{ margin: 0, color: storageLocationMessage ? (storageLocationMessage.startsWith("Storage locations updated") ? (isDarkMode ? "#86efac" : "#15803d") : "#dc2626") : (isDarkMode ? "#94a3b8" : "#64748b"), fontSize: "0.85rem" }}>{storageLocationMessage || "Locations apply immediately after saving."}</p>
               <button type="button" onClick={saveStorageLocations} disabled={storageLocationsSaving || (!assetLocationDraft.trim() || assetLocationDraft.trim() === (assetStorageLocations[assetLocationTarget - 1]?.path || "")) && (!thumbnailLocationDraft.trim() || thumbnailLocationDraft.trim() === (thumbnailStorageLocations[thumbnailLocationTarget - 1]?.path || ""))} style={{ padding: "11px 20px", border: 0, borderRadius: "9px", background: "#2563eb", color: "#fff", fontWeight: 800, cursor: storageLocationsSaving ? "wait" : "pointer", opacity: storageLocationsSaving || ((!assetLocationDraft.trim() || assetLocationDraft.trim() === (assetStorageLocations[assetLocationTarget - 1]?.path || "")) && (!thumbnailLocationDraft.trim() || thumbnailLocationDraft.trim() === (thumbnailStorageLocations[thumbnailLocationTarget - 1]?.path || ""))) ? 0.6 : 1 }}>
                 {storageLocationsSaving ? "Saving locations..." : "Save locations"}
@@ -9874,7 +9913,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           </section>
           {storageBrowseTarget && (
             <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setStorageBrowseTarget(""); }} style={{ position: "fixed", inset: 0, zIndex: 10001, display: "grid", placeItems: "center", padding: "20px", background: "rgba(15,23,42,0.58)" }}>
-              <section role="dialog" aria-modal="true" aria-labelledby="storage-browser-title" style={{ display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)", gap: "14px", width: "min(680px, 100%)", height: "min(640px, calc(100vh - 40px))", maxHeight: "calc(100vh - 40px)", minHeight: 0, overflow: "hidden", padding: "22px", borderRadius: "16px", background: isDarkMode ? "#111827" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+              <section className="assets-storage-folder-dialog" role="dialog" aria-modal="true" aria-labelledby="storage-browser-title" style={{ display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)", gap: "14px", width: "min(680px, 100%)", height: "min(640px, calc(100vh - 40px))", maxHeight: "calc(100vh - 40px)", minHeight: 0, overflow: "hidden", padding: "22px", borderRadius: "16px", background: isDarkMode ? "#111827" : "#fff", color: isDarkMode ? "#f8fafc" : "#0f172a", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                   <div>
                     <h3 id="storage-browser-title" style={{ margin: 0 }}>Browse {storageBrowseTarget.includes("assets") ? "Assets" : storageBrowseTarget === "sitemap" ? "Sitemap" : "Thumbnails"} folders</h3>
@@ -9924,7 +9963,16 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
         )
       ) : isControlsTab ? (
         <>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "20px" }}>
+          <div className="admin-controls-search">
+            <input
+              type="search"
+              aria-label="Search controls and settings"
+              value={controlsSearchTerm}
+              onChange={(event) => setControlsSearchTerm(event.target.value)}
+              placeholder="Search settings..."
+            />
+          </div>
+          <div className="admin-controls-header">
             <div>
               <h2 style={{ margin: 0 }}>{adminPageHeading}</h2>
               {isLayoutEditMode && <p style={{ color: "#666", marginTop: "4px", fontSize: "0.9rem" }}>Use the left/right arrows to reorder cards</p>}
@@ -9953,7 +10001,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               {layoutSaving ? "Saving..." : isLayoutEditMode ? "Save Layout" : "Edit Layout"}
             </button>
           </div>
-          <div className="admin-panel-controls-grid" style={{ display: "flex", flexWrap: "wrap", gap: "20px", justifyContent: "flex-start" }}>
+          <div className="admin-panel-controls-grid admin-controls-page-grid" ref={controlsGridRef}>
+            {controlsSearchTerm.trim() && !controlsSearchHasResults && (
+              <p className="admin-controls-search-empty" role="status">No matching controls found.</p>
+            )}
           <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="contributor-details">
             <h3>Contributor Details</h3>
             <p style={{ color: isDarkMode ? "#cbd5e1" : "#555", margin: "8px 0 16px" }}>Manage contributor accounts and submitted tax information.</p>
@@ -10157,86 +10208,78 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
             <div style={{ marginTop: "12px" }} />
           </CardWrapper>
 
-          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="website-branding">
-            <h3 style={{ margin: 0 }}>Website Branding</h3>
-            <form onSubmit={uploadBranding} style={{ display: "grid", gap: "12px" }}>
-              <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Add new Logo</span>
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="website-branding" className="website-branding-card">
+            <h3 className="website-branding-title">Website Branding</h3>
+            <form className="website-branding-form" onSubmit={uploadBranding}>
+              <label className="website-branding-field">
+                <span>Add new Logo</span>
                 <input
                   type="file"
                   accept="image/*"
                   onChange={(e) => setBrandingLogoFile(e.target.files?.[0] || null)}
-                  style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }}
                 />
               </label>
-              <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Add new Favicon</span>
+              <label className="website-branding-field">
+                <span>Add new Favicon</span>
                 <input
                   type="file"
                   accept="image/*"
                   onChange={(e) => setBrandingFaviconFile(e.target.files?.[0] || null)}
-                  style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }}
                 />
               </label>
               <button
                 type="submit"
-                style={{
-                  background: "#2196f3",
-                  color: "white",
-                  border: "none",
-                  padding: "10px 18px",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  width: "100%"
-                }}
+                className="website-branding-save"
                 disabled={brandingUploading}
               >
                 {brandingUploading ? "Saving..." : "Save Branding"}
               </button>
             </form>
             {brandingConfig?.logo || brandingConfig?.favicon ? (
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", paddingTop: "4px" }}>
+              <div className="website-branding-preview">
                 {brandingConfig.logo && (
-                  <img
-                    src={`${API_BASE_URL}${brandingConfig.logo}`}
-                    alt="Current logo"
-                    style={{ height: "36px", width: "auto", objectFit: "contain" }}
-                  />
+                  <div className="website-branding-preview-item">
+                    <span>Current logo</span>
+                    <img src={`${API_BASE_URL}${brandingConfig.logo}`} alt="Current logo" className="website-branding-logo-preview" />
+                  </div>
                 )}
                 {brandingConfig.favicon && (
-                  <img
-                    src={`${API_BASE_URL}${brandingConfig.favicon}`}
-                    alt="Current favicon"
-                    style={{ height: "24px", width: "24px", objectFit: "contain" }}
-                  />
+                  <div className="website-branding-preview-item">
+                    <span>Current favicon</span>
+                    <img src={`${API_BASE_URL}${brandingConfig.favicon}`} alt="Current favicon" className="website-branding-favicon-preview" />
+                  </div>
                 )}
               </div>
             ) : null}
-            {brandingMessage ? <p style={{ margin: 0, color: brandingMessage.includes("Failed") ? "#d32f2f" : "#2e7d32" }}>{brandingMessage}</p> : null}
+            {brandingMessage ? (
+              <p className={`website-branding-message ${brandingMessage.includes("Failed") ? "is-error" : "is-success"}`}>
+                {brandingMessage}
+              </p>
+            ) : null}
           </CardWrapper>
 
-          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="profile-icons">
-            <h3 style={{ margin: 0 }}>Profile Icons</h3>
-            <p style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.9rem" }}>
+          <CardWrapper cardOrder={cardOrder} isLayoutEditMode={isLayoutEditMode} isDarkMode={isDarkMode} moveCard={moveCard} cardId="profile-icons" className="profile-icons-premium-card">
+            <h3 className="profile-icons-premium-title" style={{ margin: 0 }}>Profile Icons</h3>
+            <p className="profile-icons-premium-description" style={{ margin: 0, color: isDarkMode ? "#cbd5e1" : "#555", fontSize: "0.9rem" }}>
               Upload PNG replacements for the customer crown, contributor ribbon, and admin tick. Each image is displayed automatically at the current icon size.
             </p>
-            <form onSubmit={uploadProfileIcons} style={{ display: "grid", gap: "12px" }}>
-              <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <form className="profile-icons-premium-form" onSubmit={uploadProfileIcons} style={{ display: "grid", gap: "12px" }}>
+              <label className="profile-icons-upload-field" style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Customer icon (29 x 17 px)</span>
-                <input type="file" accept="image/png" onChange={(e) => setProfileIconCustomerFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }} />
+                <input className="profile-icons-file-input" type="file" accept="image/png" onChange={(e) => setProfileIconCustomerFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }} />
               </label>
-              <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label className="profile-icons-upload-field" style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Contributor icon (30 x 27 px)</span>
-                <input type="file" accept="image/png" onChange={(e) => setProfileIconContributorFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }} />
+                <input className="profile-icons-file-input" type="file" accept="image/png" onChange={(e) => setProfileIconContributorFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }} />
               </label>
-              <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label className="profile-icons-upload-field" style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 <span style={{ fontSize: "0.95rem", color: isDarkMode ? "#e2e8f0" : "#333", fontWeight: 600 }}>Admin icon (23 x 23 px)</span>
-                <input type="file" accept="image/png" onChange={(e) => setProfileIconAdminFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }} />
+                <input className="profile-icons-file-input" type="file" accept="image/png" onChange={(e) => setProfileIconAdminFile(e.target.files?.[0] || null)} style={{ padding: "10px", background: isDarkMode ? "#0f172a" : "white", borderRadius: "8px", border: isDarkMode ? "1px solid #475569" : "1px solid #ccc", color: isDarkMode ? "#f8fafc" : "#0f172a" }} />
               </label>
-              <button type="submit" disabled={brandingUploading} style={{ background: "#2196f3", color: "white", border: "none", padding: "10px 18px", borderRadius: "8px", cursor: brandingUploading ? "not-allowed" : "pointer", width: "100%" }}>
+              <button className="profile-icons-save-button" type="submit" disabled={brandingUploading} style={{ background: "#2196f3", color: "white", border: "none", padding: "10px 18px", borderRadius: "8px", cursor: brandingUploading ? "not-allowed" : "pointer", width: "100%" }}>
                 {brandingUploading ? "Saving..." : "Save Profile Icons"}
               </button>
-              <button type="button" onClick={restoreDefaultProfileIcons} disabled={brandingUploading} style={{ background: "#64748b", color: "white", border: "none", padding: "10px 18px", borderRadius: "8px", cursor: brandingUploading ? "not-allowed" : "pointer", width: "100%" }}>
+              <button className="profile-icons-restore-button" type="button" onClick={restoreDefaultProfileIcons} disabled={brandingUploading} style={{ background: "#64748b", color: "white", border: "none", padding: "10px 18px", borderRadius: "8px", cursor: brandingUploading ? "not-allowed" : "pointer", width: "100%" }}>
                 Restore Default Icons
               </button>
             </form>
@@ -13347,105 +13390,57 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           {/* Category Grid Modal */}
           {showCategoryGrid && (
             <div
+              className="category-grid-backdrop"
               role="dialog"
               aria-modal="true"
               aria-labelledby="category-grid-title"
               onClick={() => setShowCategoryGrid(false)}
-              style={{
-                position: "fixed",
-                inset: 0,
-                background: "rgba(0,0,0,0.55)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: "24px",
-                zIndex: 1150
-              }}
             >
               <div
+                className="category-grid-modal"
                 onClick={(event) => event.stopPropagation()}
-                style={{
-                  width: "90%",
-                  maxWidth: "1000px",
-                  maxHeight: "80vh",
-                  background: "white",
-                  borderRadius: "14px",
-                  boxShadow: "0 24px 60px rgba(0,0,0,0.25)",
-                  overflow: "auto",
-                  display: "flex",
-                  flexDirection: "column"
-                }}
               >
-                <div style={{ padding: "18px 20px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "inherit", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <h3 id="category-grid-title" style={{ margin: 0 }}>Categories</h3>
+                <div className="category-grid-header">
+                  <h3 id="category-grid-title">Categories</h3>
                   <button
                     type="button"
+                    className="category-grid-icon-close"
                     aria-label="Close categories"
                     onClick={() => setShowCategoryGrid(false)}
-                    style={{ background: "transparent", border: "none", fontSize: "1.4rem", lineHeight: 1, cursor: "pointer", color: "inherit" }}
                   >
-                    X
+                    ×
                   </button>
                 </div>
-                <div style={{ padding: "20px", flex: 1 }}>
+                <div className="category-grid-content">
                   {visibleCategories.length === 0 ? (
-                    <div style={{ padding: "20px", borderRadius: "10px", border: "1px dashed #cbd5e1", textAlign: "center", color: "#475569" }}>
+                    <div className="category-grid-empty">
                       No categories yet. Add one using the form above.
                     </div>
                   ) : (
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
+                    <div className="category-grid-list">
                       {visibleCategories.map((categoryItem) => (
                         <div
+                          className="category-grid-card"
                           key={categoryItem.id}
-                          style={{
-                            padding: "14px",
-                            borderRadius: "12px",
-                            border: "1px solid #ddd",
-                            background: "inherit",
-                            display: "flex",
-                            flexDirection: "column",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            gap: "10px",
-                            color: "inherit",
-                            textAlign: "center",
-                            minHeight: "100px"
-                          }}
                         >
-                          <span style={{ color: "inherit", fontWeight: 600, fontSize: "0.95rem" }}>{categoryItem.name || "Unnamed category"}</span>
-                          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
+                          <span className="category-grid-card-name">{categoryItem.name || "Unnamed category"}</span>
+                          <div className="category-grid-actions">
                             <button
                               type="button"
+                              className="category-grid-action category-grid-action--edit"
                               onClick={() => {
                                 setEditingCategoryInModal(categoryItem.id);
                                 setEditingCategoryNameInModal(categoryItem.name || "");
-                              }}
-                              style={{
-                                background: "#1976d2",
-                                color: "white",
-                                border: "none",
-                                padding: "8px 16px",
-                                borderRadius: "8px",
-                                cursor: "pointer",
-                                fontSize: "0.9rem"
                               }}
                             >
                               Modify
                             </button>
                             <button
                               type="button"
+                              className="category-grid-action category-grid-action--delete"
                               onClick={() => {
                                 deleteCategory(categoryItem.id);
                                 setShowCategoryGrid(false);
-                              }}
-                              style={{
-                                background: "#e53935",
-                                color: "white",
-                                border: "none",
-                                padding: "8px 16px",
-                                borderRadius: "8px",
-                                cursor: "pointer",
-                                fontSize: "0.9rem"
                               }}
                             >
                               Delete
@@ -13456,18 +13451,11 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     </div>
                   )}
                 </div>
-                <div style={{ padding: "18px 20px", borderTop: "1px solid #eee", textAlign: "right", background: "white" }}>
+                <div className="category-grid-footer">
                   <button
                     type="button"
+                    className="category-grid-footer-close"
                     onClick={() => setShowCategoryGrid(false)}
-                    style={{
-                      background: "#757575",
-                      color: "white",
-                      border: "none",
-                      padding: "10px 18px",
-                      borderRadius: "8px",
-                      cursor: "pointer"
-                    }}
                   >
                     Close
                   </button>

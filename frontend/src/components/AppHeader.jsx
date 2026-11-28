@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "../utils/apiBaseUrl.js";
-import { useCallback, useState, useRef, useEffect } from "react";
+import { useCallback, useState, useRef, useEffect, useLayoutEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import "./AppHeader.css";
@@ -151,6 +151,50 @@ export default function AppHeader({
     const timer = setInterval(() => setFlashSaleCountdownNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useLayoutEffect(() => {
+    if (!toolsMenuOpen && !seoMenuOpen) return undefined;
+
+    const positionOpenMenus = () => {
+      document.querySelectorAll(".tools-menu-wrap.is-open").forEach((menuWrapper) => {
+        const trigger = menuWrapper.querySelector("button");
+        const menu = menuWrapper.querySelector(".tools-menu-dropdown");
+        if (!trigger || !menu) return;
+
+        const triggerRect = trigger.getBoundingClientRect();
+        const horizontalGutter = 12;
+        ["position", "top", "left", "right"].forEach((property) => menu.style.removeProperty(property));
+        const menuRect = menu.getBoundingClientRect();
+        if (
+          window.innerWidth > 900
+          && menuRect.left >= horizontalGutter
+          && menuRect.right <= window.innerWidth - horizontalGutter
+        ) return;
+
+        const left = Math.max(
+          horizontalGutter,
+          Math.min(triggerRect.left, window.innerWidth - menuRect.width - horizontalGutter)
+        );
+        const top = triggerRect.bottom + menuRect.height > window.innerHeight - 8
+          ? Math.max(8, triggerRect.top - menuRect.height)
+          : triggerRect.bottom;
+
+        menu.style.position = "fixed";
+        menu.style.top = `${top}px`;
+        menu.style.left = `${left}px`;
+        menu.style.right = "auto";
+      });
+    };
+
+    positionOpenMenus();
+    window.addEventListener("resize", positionOpenMenus);
+    window.visualViewport?.addEventListener("resize", positionOpenMenus);
+    return () => {
+      window.removeEventListener("resize", positionOpenMenus);
+      window.visualViewport?.removeEventListener("resize", positionOpenMenus);
+    };
+  }, [toolsMenuOpen, seoMenuOpen]);
+
   const storedRole = typeof window !== "undefined" ? localStorage.getItem("userRole") || "" : "";
   const resolvedRole = userRole || storedRole || "";
   const normalizedRole = normalizeRole(resolvedRole);

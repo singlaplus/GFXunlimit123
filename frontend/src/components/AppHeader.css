@@ -1311,6 +1311,20 @@
   display: flex;
   animation: admin-menu-reveal 180ms ease-out both;
 }
+@media (max-width: 900px) {
+  .header-nav .tools-menu-dropdown {
+    right: auto;
+    left: 0;
+    max-width: calc(100vw - 24px);
+  }
+
+  .header-nav .admin-menu-dropdown {
+    right: 0;
+    left: auto;
+    max-width: calc(100vw - 24px);
+  }
+}
+
 .tools-menu-dropdown .nav-link-btn {
   width: max-content;
   max-width: none;
