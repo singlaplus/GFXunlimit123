@@ -279,15 +279,15 @@ function renderSitemapPage(groups, totalUrls, generatedAt) {
       <nav aria-label="Legal">
         <h3>Legal</h3>
         <ul class="footer-links">
-          <li><a href="/privacy">Privacy Policy</a></li>
-          <li><a href="/terms">Terms &amp; Conditions</a></li>
-          <li><a href="/cookies">Cookie Policy</a></li>
+          <li><a href="/privacy-policy">Privacy Policy</a></li>
+          <li><a href="/terms-and-conditions">Terms &amp; Conditions</a></li>
+          <li><a href="/cookie-policy">Cookie Policy</a></li>
         </ul>
       </nav>
       <nav aria-label="For You">
         <h3>For You</h3>
         <ul class="footer-links">
-          <li><a href="/help">Help Center</a></li>
+          <li><a href="/help-center">Help Center</a></li>
         </ul>
       </nav>
       <nav aria-label="Resources">

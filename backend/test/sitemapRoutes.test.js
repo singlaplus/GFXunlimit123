@@ -160,6 +160,11 @@ test("protects generation, status, and download routes while serving published s
   assert.match(siteMapPage, /View XML sitemap/);
   assert.match(siteMapPage, /<footer class="site-footer">/);
   assert.match(siteMapPage, /We provide high-quality stock images for creators, designers and teams\./);
+  assert.match(siteMapPage, /<a href="\/privacy-policy">Privacy Policy<\/a>/);
+  assert.match(siteMapPage, /<a href="\/terms-and-conditions">Terms &amp; Conditions<\/a>/);
+  assert.match(siteMapPage, /<a href="\/cookie-policy">Cookie Policy<\/a>/);
+  assert.match(siteMapPage, /<a href="\/help-center">Help Center<\/a>/);
+  assert.doesNotMatch(siteMapPage, /href="\/privacy">Privacy Policy/);
   assert.match(siteMapPage, /<a href="\/sitemap">Sitemap<\/a>/);
 
   const stylesheetResponse = await request(baseUrl, "/sitemap.xsl");

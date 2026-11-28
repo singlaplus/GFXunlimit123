@@ -89,6 +89,12 @@ const { createRedirectRulesService } = require("./services/redirectRules");
 const { createSitemapGenerator } = require("./services/sitemapGenerator");
 const { createSitemapScheduleSettings, createSitemapScheduler } = require("./services/sitemapSchedule");
 const { createSitemapRouter } = require("./routes/sitemap-routes");
+const { createPrivacyPolicyRouter } = require("./routes/privacy-policy-routes");
+const { createTermsAndConditionsRouter } = require("./routes/terms-and-conditions-routes");
+const { createCookiePolicyRouter } = require("./routes/cookie-policy-routes");
+const { createHelpCenterRouter } = require("./routes/help-center-routes");
+const { createDevelopersRouter } = require("./routes/developers-routes");
+const { createPartnersRouter } = require("./routes/partners-routes");
 const { createLinksScanner } = require("./services/linksScanner");
 const { createLinksScanRouter } = require("./routes/links-scan-routes");
 const { createThumbnailGenerationSettingsRouter } = require("./routes/thumbnail-generation-settings-routes");
@@ -3634,6 +3640,12 @@ app.use(createSitemapRouter({
   verifyAdmin,
   pool,
 }));
+app.use(createPrivacyPolicyRouter({ pool, verifyAdmin }));
+app.use(createTermsAndConditionsRouter({ pool, verifyAdmin }));
+app.use(createCookiePolicyRouter({ pool, verifyAdmin }));
+app.use(createHelpCenterRouter({ pool, verifyAdmin }));
+app.use(createDevelopersRouter({ pool, verifyAdmin }));
+app.use(createPartnersRouter({ pool, verifyAdmin }));
 app.use(createLinksScanRouter({
   scanner: linksScanner,
   verifyAdmin,
@@ -17712,6 +17724,36 @@ async function initializeThumbnailSystem() {
         "utf8"
       );
       await pool.query(productionVideoPreviewsMigration);
+      const privacyPolicySettingsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "040_privacy_policy_settings.sql"),
+        "utf8"
+      );
+      await pool.query(privacyPolicySettingsMigration);
+      const termsAndConditionsSettingsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "041_terms_and_conditions_settings.sql"),
+        "utf8"
+      );
+      await pool.query(termsAndConditionsSettingsMigration);
+      const cookiePolicySettingsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "042_cookie_policy_settings.sql"),
+        "utf8"
+      );
+      await pool.query(cookiePolicySettingsMigration);
+      const helpCenterSettingsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "043_help_center_settings.sql"),
+        "utf8"
+      );
+      await pool.query(helpCenterSettingsMigration);
+      const developersPageSettingsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "044_developers_page_settings.sql"),
+        "utf8"
+      );
+      await pool.query(developersPageSettingsMigration);
+      const partnersPageSettingsMigration = fs.readFileSync(
+        path.join(__dirname, "migrations", "045_partners_page_settings.sql"),
+        "utf8"
+      );
+      await pool.query(partnersPageSettingsMigration);
       console.log("✓ Database migrations completed");
     } catch (err) {
       console.warn("Migration warning:", err.message);

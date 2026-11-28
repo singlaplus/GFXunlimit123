@@ -22,7 +22,7 @@ jest.mock("../pages/ExplorePage", () => () => <div>Explore Page</div>);
 jest.mock("../pages/OrderHistoryPage", () => () => <div>Order History</div>);
 jest.mock("../pages/CartPage", () => () => <div>Cart Page</div>);
 jest.mock("./CompanyPage", () => ({ slug }) => (
-  <main><a href="http://localhost:3000/privacy">Privacy Policy</a><a href="http://localhost:3000/terms">Terms</a>{slug}</main>
+  <main><a href="http://localhost:3000/privacy-policy">Privacy Policy</a><a href="http://localhost:3000/terms">Terms</a>{slug}</main>
 ));
 jest.mock("../startup/StartupReadinessProvider", () => ({
   useStartupReadiness: jest.fn(),
@@ -84,6 +84,195 @@ describe("AppRoutes", () => {
     render(<AppRoutes userRole="customer" />);
 
     expect(await screen.findByText("/")).toBeInTheDocument();
+  });
+
+  it("renders the Privacy Policy page at the canonical URL", async () => {
+    mockLocation.pathname = "/privacy-policy";
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("heading", { name: "Privacy Policy" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Privacy Policy sections" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Privacy Policy customization" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Privacy Policy editor only for the verified admin role", async () => {
+    mockLocation.pathname = "/privacy-policy";
+    useStartupReadiness.mockReturnValue({
+      auth: { status: "authenticated", role: "admin" },
+      routeId: "privacy-policy-admin",
+      reportResource: jest.fn(),
+      reportAvailability: jest.fn(),
+      availabilityRetryKey: 0,
+    });
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("complementary", { name: "Privacy Policy customization" })).toBeInTheDocument();
+  });
+
+  it("does not show the Privacy Policy editor from an unverified cached admin role", async () => {
+    mockLocation.pathname = "/privacy-policy";
+
+    render(<AppRoutes userRole="admin" activePage="home" />);
+
+    expect(await screen.findByRole("navigation", { name: "Privacy Policy sections" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Privacy Policy customization" })).not.toBeInTheDocument();
+  });
+
+  it.each(["/privacy", "/privacy/"])("redirects the legacy Privacy Policy URL %s to the canonical URL", async (pathname) => {
+    mockLocation.pathname = pathname;
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByText("/privacy-policy")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Privacy Policy" })).not.toBeInTheDocument();
+  });
+
+  it("renders Terms & Conditions on the canonical route", async () => {
+    mockLocation.pathname = "/terms-and-conditions";
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("heading", { name: "Terms & Conditions" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Terms & Conditions sections" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Terms & Conditions customization" })).not.toBeInTheDocument();
+  });
+
+  it.each(["/terms", "/terms/"])("redirects the legacy Terms URL %s to the canonical URL", async (pathname) => {
+    mockLocation.pathname = pathname;
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByText("/terms-and-conditions")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Terms & Conditions" })).not.toBeInTheDocument();
+  });
+
+  it("shows Terms & Conditions editing controls only to the verified admin", async () => {
+    mockLocation.pathname = "/terms-and-conditions";
+    useStartupReadiness.mockReturnValue({
+      auth: { status: "authenticated", role: "admin" },
+      routeId: "terms-and-conditions-admin",
+      reportResource: jest.fn(),
+      reportAvailability: jest.fn(),
+      availabilityRetryKey: 0,
+    });
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("complementary", { name: "Terms & Conditions customization" })).toBeInTheDocument();
+  });
+
+  it("renders Cookie Policy on the canonical route", async () => {
+    mockLocation.pathname = "/cookie-policy";
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("heading", { name: "Cookie Policy" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Cookie Policy sections" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Cookie Policy customization" })).not.toBeInTheDocument();
+  });
+
+  it.each(["/cookies", "/cookies/"])("redirects the legacy Cookie Policy URL %s to the canonical URL", async (pathname) => {
+    mockLocation.pathname = pathname;
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByText("/cookie-policy")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Cookie Policy" })).not.toBeInTheDocument();
+  });
+
+  it("shows Cookie Policy editing controls only to the verified admin", async () => {
+    mockLocation.pathname = "/cookie-policy";
+    useStartupReadiness.mockReturnValue({
+      auth: { status: "authenticated", role: "admin" },
+      routeId: "cookie-policy-admin",
+      reportResource: jest.fn(),
+      reportAvailability: jest.fn(),
+      availabilityRetryKey: 0,
+    });
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("complementary", { name: "Cookie Policy customization" })).toBeInTheDocument();
+  });
+
+  it("renders the Help Center on its canonical route", async () => {
+    mockLocation.pathname = "/help-center";
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("heading", { name: "Help Center" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Help Center sections" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Help Center customization" })).not.toBeInTheDocument();
+  });
+
+  it.each(["/help", "/help/", "/help-center/"])("redirects Help Center alias %s to the canonical route", async (pathname) => {
+    mockLocation.pathname = pathname;
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByText("/help-center")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Help Center" })).not.toBeInTheDocument();
+  });
+
+  it("shows Help Center editing controls only to the verified admin", async () => {
+    mockLocation.pathname = "/help-center";
+    useStartupReadiness.mockReturnValue({
+      auth: { status: "authenticated", role: "admin" },
+      routeId: "help-center-admin",
+      reportResource: jest.fn(),
+      reportAvailability: jest.fn(),
+      availabilityRetryKey: 0,
+    });
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("complementary", { name: "Help Center customization" })).toBeInTheDocument();
+  });
+
+  it("renders the Developers page and hides customization from visitors", async () => {
+    mockLocation.pathname = "/developers";
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("heading", { name: "Developers" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Developers sections" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Developers customization" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Developers editor only to the verified admin", async () => {
+    mockLocation.pathname = "/developers";
+    useStartupReadiness.mockReturnValue({
+      auth: { status: "authenticated", role: "admin" },
+      routeId: "developers-admin",
+      reportResource: jest.fn(),
+      reportAvailability: jest.fn(),
+      availabilityRetryKey: 0,
+    });
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("complementary", { name: "Developers customization" })).toBeInTheDocument();
+  });
+
+  it("renders the Partners page and hides customization from visitors", async () => {
+    mockLocation.pathname = "/partners";
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("heading", { name: "Partners" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Partners sections" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Partners customization" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Partners editor only to the verified admin", async () => {
+    mockLocation.pathname = "/partners";
+    useStartupReadiness.mockReturnValue({
+      auth: { status: "authenticated", role: "admin" },
+      routeId: "partners-admin",
+      reportResource: jest.fn(),
+      reportAvailability: jest.fn(),
+      availabilityRetryKey: 0,
+    });
+
+    render(<AppRoutes userRole="customer" activePage="home" />);
+
+    expect(await screen.findByRole("complementary", { name: "Partners customization" })).toBeInTheDocument();
   });
 
   it("renders the Google Search Console connection section", () => {
@@ -524,8 +713,18 @@ describe("AppRoutes", () => {
     expect(screen.getByLabelText("Cover image")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Publish" })).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "Schedule" })[1]);
-    expect(screen.getByLabelText("Schedule publish date and time")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Schedule publish date and time"), { target: { value: "2099-09-19T20:00" } });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule publish date and time" }));
+    expect(screen.getByRole("dialog", { name: "Choose schedule date and time" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Schedule hour")).toBeInTheDocument();
+    expect(screen.getByLabelText("Schedule minute")).toBeInTheDocument();
+    expect(screen.getByLabelText("Schedule period")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next month" }));
+    fireEvent.click(screen.getAllByRole("button", { name: /^Select .* 1,/ })[0]);
+    fireEvent.change(screen.getByLabelText("Schedule period"), { target: { value: "AM" } });
+    fireEvent.change(screen.getByLabelText("Schedule hour"), { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("Schedule minute"), { target: { value: "30" } });
+    fireEvent.change(screen.getByLabelText("Schedule period"), { target: { value: "PM" } });
+    expect(screen.getByRole("button", { name: "Schedule publish date and time" })).toHaveTextContent("08:30 PM IST");
     expect(screen.getByRole("button", { name: "Schedule Publish" })).toBeInTheDocument();
   });
 
@@ -753,6 +952,24 @@ describe("AppRoutes", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/blog/news/published-post_9");
   });
 
+  it("shows scheduled posts with their queue status and edit action", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
+    mockLocation.search = "?tab=controls_blog&section=schedule";
+    const publishAt = new Date(Date.now() + (3 * 24 + 3) * 60 * 60 * 1000).toISOString();
+    axios.get.mockResolvedValueOnce({ data: { drafts: [{ id: 12, title: "Scheduled article", excerpt: "Ready to launch", category: "News", addedBy: "ankit1", status: "scheduled", publishAt, content: "Scheduled content" }] } });
+
+    render(<AppRoutes userRole="admin" activePage="admin" />);
+
+    expect(await screen.findByRole("heading", { name: "Scheduled Blogs" })).toBeInTheDocument();
+    expect(screen.getByText("Publishing queue")).toBeInTheDocument();
+    expect(await screen.findByText("Scheduled article")).toBeInTheDocument();
+    expect(screen.getByText("Scheduled", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Scheduled for publication")).toBeInTheDocument();
+    expect(screen.getByText(/\d+ days?, \d+ hours? left/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Scheduled article" }));
+    expect(screen.getByRole("heading", { name: "Add New Blog" })).toBeInTheDocument();
+  });
+
   it("shows five latest published blogs per page", async () => {
     mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
     mockLocation.search = "?tab=controls_blog&section=view";
@@ -763,6 +980,7 @@ describe("AppRoutes", () => {
     expect(await screen.findByText("Post 1")).toBeInTheDocument();
     expect(screen.getByText("Post 5")).toBeInTheDocument();
     expect(screen.queryByText("Post 6")).not.toBeInTheDocument();
+    expect(screen.getByText("Total Blogs: 6")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "2" }));
     expect(screen.getByText("Post 6")).toBeInTheDocument();
     expect(screen.queryByText("Post 1")).not.toBeInTheDocument();
@@ -785,6 +1003,24 @@ describe("AppRoutes", () => {
     const firstBlogTitle = screen.getAllByRole("row")[1].textContent;
     expect(firstBlogTitle).toContain("Alpha");
     fireEvent.click(titleHeader);
+    expect(screen.getAllByRole("row")[1].textContent).toContain("Charlie");
+  });
+
+  it("sorts published blogs from the responsive sort controls", async () => {
+    mockLocation.pathname = "/asdfghjkl_a_qwertyuiop_d_zxcvbnm_m_qwertyuiop_i_asdfghjkl_n_zxcvbnm";
+    mockLocation.search = "?tab=controls_blog&section=view";
+    axios.get.mockResolvedValueOnce({ data: { drafts: [
+      { id: 1, title: "Alpha", publishAt: "2026-09-17T10:00:00.000Z" },
+      { id: 2, title: "Charlie", publishAt: "2026-09-19T10:00:00.000Z" },
+      { id: 3, title: "Bravo", publishAt: "2026-09-18T10:00:00.000Z" },
+    ] } });
+
+    render(<AppRoutes userRole="admin" activePage="admin" />);
+
+    expect(await screen.findByText("Charlie")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Sort posts"), { target: { value: "title" } });
+    expect(screen.getAllByRole("row")[1].textContent).toContain("Alpha");
+    fireEvent.click(screen.getByRole("button", { name: "Sort descending" }));
     expect(screen.getAllByRole("row")[1].textContent).toContain("Charlie");
   });
 
@@ -1115,7 +1351,7 @@ describe("AppRoutes", () => {
       data: {
         available: true,
         path: "/pricing",
-        disabledLinks: [{ href: "http://localhost:3000/privacy", linkText: "Privacy Policy" }],
+        disabledLinks: [{ href: "http://localhost:3000/privacy-policy", linkText: "Privacy Policy" }],
       },
     });
 

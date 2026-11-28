@@ -755,9 +755,45 @@
     height: auto;
     min-height: 200px;
   }
+
+  .company-page-shell--about .company-page-hero-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .company-page-shell--about .company-page-hero-copy,
+  .company-page-shell--about .company-page-hero-actions {
+    width: 100%;
+    max-width: none;
+  }
+
+  .company-page-shell--about .company-page-hero-actions a {
+    box-sizing: border-box;
+    max-width: 100%;
+    white-space: normal;
+    text-align: center;
+  }
+
+  .company-page-shell--about .company-page-stat-card {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
 }
 
 @media (max-width: 600px) {
+  .company-page-shell--about {
+    padding: 16px 12px 36px;
+  }
+
+  .company-page-shell--about .company-page-main {
+    gap: 16px;
+  }
+
+  .company-page-shell--about .company-page-hero {
+    padding: 22px 18px;
+    border-radius: 22px;
+  }
+
   .company-page-shell--about .company-page-cta-banner {
     min-height: 160px;
     padding: 20px;
@@ -768,6 +804,502 @@
     min-width: 0;
     padding: 16px 20px;
     white-space: normal;
+  }
+}
+
+@media (max-width: 360px) {
+  .company-page-shell--about {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .company-page-shell--about .company-page-hero {
+    padding: 18px 14px;
+    border-radius: 18px;
+  }
+
+  .company-page-shell--about .company-page-stat-card {
+    padding: 16px;
+  }
+}
+
+.company-page-shell--about {
+  background:
+    radial-gradient(ellipse at 12% 2%, rgba(191, 219, 254, 0.48), transparent 34%),
+    radial-gradient(ellipse at 94% 48%, rgba(221, 214, 254, 0.34), transparent 30%),
+    linear-gradient(180deg, #f8faff 0%, #f3f6fc 52%, #f8faff 100%);
+}
+
+.company-page-shell--about .company-page-grid:not(.admin-layout) {
+  max-width: 1180px;
+}
+
+.company-page-shell--about .company-page-main {
+  gap: clamp(20px, 3vw, 30px);
+}
+
+.company-page-shell--about .company-page-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: clamp(34px, 5vw, 62px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 32px;
+  background:
+    radial-gradient(circle at 88% 18%, rgba(129, 140, 248, 0.34), transparent 30%),
+    radial-gradient(circle at 8% 100%, rgba(56, 189, 248, 0.2), transparent 35%),
+    linear-gradient(122deg, #0b1222 0%, #152b58 55%, #263b91 100%);
+  box-shadow: 0 28px 70px rgba(20, 38, 84, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.company-page-shell--about .company-page-hero::before {
+  position: absolute;
+  z-index: -1;
+  top: -155px;
+  right: -85px;
+  width: 390px;
+  height: 390px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 50%;
+  box-shadow: 0 0 0 28px rgba(255, 255, 255, 0.035), 0 0 0 58px rgba(255, 255, 255, 0.025);
+  content: "";
+  pointer-events: none;
+}
+
+.company-page-shell--about .company-page-about-art {
+  position: absolute;
+  top: 50%;
+  right: clamp(30px, 6vw, 78px);
+  z-index: 0;
+  width: 250px;
+  height: 270px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.company-page-shell--about .company-page-about-art-card {
+  position: absolute;
+  inset: 14px 18px 12px 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+  padding: 21px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 21px;
+  color: #172033;
+  background:
+    radial-gradient(circle at 82% 18%, rgba(255, 255, 255, 0.78), transparent 25%),
+    linear-gradient(145deg, #f8d9cb 0%, #e7dffc 52%, #cde9f4 100%);
+  box-shadow: 0 24px 60px rgba(2, 6, 23, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  transform: rotate(5deg);
+}
+
+.company-page-shell--about .company-page-about-art-label,
+.company-page-shell--about .company-page-about-art-caption {
+  color: #475569;
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: 0.17em;
+}
+
+.company-page-shell--about .company-page-about-art-card strong {
+  position: relative;
+  z-index: 1;
+  color: #172033;
+  font-size: 31px;
+  font-weight: 850;
+  letter-spacing: -0.07em;
+  line-height: 0.98;
+}
+
+.company-page-shell--about .company-page-about-art-mark {
+  position: absolute;
+  right: 15px;
+  bottom: 42px;
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 17px;
+  color: #fff;
+  background: linear-gradient(145deg, #7666e8, #4438a6);
+  box-shadow: 0 10px 24px rgba(68, 56, 166, 0.25);
+  font-size: 25px;
+}
+
+.company-page-shell--about .company-page-about-art-orbit {
+  position: absolute;
+  top: -3px;
+  right: 2px;
+  width: 72px;
+  height: 72px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 50%;
+  box-shadow: 0 0 0 12px rgba(255, 255, 255, 0.045);
+}
+
+.company-page-shell--about .company-page-about-art-spark {
+  position: absolute;
+  bottom: -3px;
+  left: 0;
+  color: #fbbf24;
+  font-size: 26px;
+  text-shadow: 0 0 22px rgba(251, 191, 36, 0.7);
+}
+
+.company-page-shell--about .company-page-hero-row {
+  position: relative;
+  z-index: 1;
+  gap: 28px;
+}
+
+.company-page-shell--about .company-page-hero-copy {
+  max-width: min(680px, calc(100% - 310px));
+}
+
+.company-page-shell--about .company-page-hero-copy > div:first-child {
+  padding: 8px 13px !important;
+  border: 1px solid rgba(191, 219, 254, 0.22);
+  background: rgba(148, 163, 184, 0.12) !important;
+  color: #dbeafe;
+  backdrop-filter: blur(12px);
+}
+
+.company-page-shell--about .company-page-hero-title {
+  max-width: 780px;
+  font-size: clamp(2.2rem, 5.2vw, 4.25rem);
+  font-weight: 800;
+  letter-spacing: -0.055em;
+  line-height: 1.04 !important;
+  text-wrap: balance;
+}
+
+.company-page-shell--about .company-page-hero-copy > p {
+  max-width: 700px;
+  color: #d7e2f5;
+  font-size: clamp(1rem, 1.35vw, 1.14rem) !important;
+  line-height: 1.75 !important;
+}
+
+.company-page-shell--about .company-page-hero-actions a {
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow: 0 12px 24px rgba(2, 6, 23, 0.18);
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.company-page-shell--about .company-page-hero-actions {
+  max-width: calc(100% - 310px);
+}
+
+.company-page-shell--about .company-page-hero-actions a:hover {
+  filter: brightness(1.05);
+  transform: translateY(-2px);
+  box-shadow: 0 16px 30px rgba(2, 6, 23, 0.24);
+}
+
+.company-page-shell--about .company-page-stats {
+  position: relative;
+  z-index: 2;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: -38px clamp(14px, 3vw, 38px) 0;
+}
+
+.company-page-shell--about .company-page-stat-card {
+  position: relative;
+  overflow: hidden;
+  padding: 24px;
+  border: 1px solid rgba(203, 213, 225, 0.78);
+  border-radius: 20px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 255, 0.96));
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08), inset 0 1px 0 #fff;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.company-page-shell--about .company-page-stat-card::before {
+  position: absolute;
+  top: 0;
+  left: 24px;
+  width: 42px;
+  height: 3px;
+  border-radius: 0 0 4px 4px;
+  background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+  content: "";
+}
+
+.company-page-shell--about .company-page-stat-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 20px 38px rgba(15, 23, 42, 0.12), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--about .company-page-stat-card > div:first-child {
+  margin-bottom: 4px !important;
+  color: #315ed0 !important;
+  font-size: clamp(1.55rem, 3vw, 2rem) !important;
+  letter-spacing: -0.045em;
+}
+
+.company-page-shell--about .company-page-stat-card > div:last-child {
+  color: #66748a !important;
+  font-size: 0.88rem;
+  font-weight: 650 !important;
+}
+
+.company-page-shell--about .company-page-features {
+  grid-template-columns: minmax(0, 1.35fr) minmax(250px, 0.65fr);
+  gap: 18px;
+}
+
+.company-page-shell--about .company-page-highlight-card,
+.company-page-shell--about .company-page-promise-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  border-radius: 22px;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.07);
+}
+
+.company-page-shell--about .company-page-highlight-card {
+  background: linear-gradient(145deg, #fff 0%, #f7f9ff 100%);
+}
+
+.company-page-shell--about .company-page-highlight-card h2,
+.company-page-shell--about .company-page-promise-card h2 {
+  font-size: 1.3rem !important;
+  font-weight: 780;
+  letter-spacing: -0.035em;
+}
+
+.company-page-shell--about .company-page-highlight-card ul {
+  color: #53627a !important;
+  line-height: 1.75 !important;
+}
+
+.company-page-shell--about .company-page-highlight-card li {
+  padding-left: 4px;
+}
+
+.company-page-shell--about .company-page-promise-card {
+  border-color: rgba(129, 140, 248, 0.26);
+  background:
+    radial-gradient(circle at 100% 0, rgba(167, 139, 250, 0.28), transparent 40%),
+    linear-gradient(145deg, #172554 0%, #312e81 100%);
+}
+
+.company-page-shell--about .company-page-promise-card p {
+  color: #e0e7ff;
+  font-size: 1rem;
+}
+
+.company-page-shell--about .company-page-cta-banner {
+  position: relative;
+  overflow: hidden;
+  min-height: 210px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at 85% 50%, rgba(129, 140, 248, 0.3), transparent 34%),
+    linear-gradient(118deg, #0f172a, #1d3473 68%, #293b8b);
+  box-shadow: 0 20px 48px rgba(20, 38, 84, 0.17);
+}
+
+.company-page-shell--about .company-page-cta-button {
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow: 0 14px 30px rgba(2, 6, 23, 0.24);
+}
+
+.company-page-shell--about .company-page-cta-button:hover {
+  background: #eaf0ff;
+}
+
+.company-page-shell--about .company-page-hero-image-input,
+.company-page-shell--pricing .company-page-hero-image-input,
+.company-page-shell--careers .company-page-hero-image-input,
+.company-page-shell--contact .company-page-hero-image-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 10px !important;
+  border: 1px dashed #b9c5dc;
+  border-radius: 13px;
+  color: #5b667a;
+  background: linear-gradient(145deg, #fff, #f4f6ff);
+  font-size: 12px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.company-page-shell--about .company-page-hero-image-input::file-selector-button,
+.company-page-shell--about .company-page-hero-image-input::-webkit-file-upload-button,
+.company-page-shell--pricing .company-page-hero-image-input::file-selector-button,
+.company-page-shell--pricing .company-page-hero-image-input::-webkit-file-upload-button,
+.company-page-shell--careers .company-page-hero-image-input::file-selector-button,
+.company-page-shell--careers .company-page-hero-image-input::-webkit-file-upload-button,
+.company-page-shell--contact .company-page-hero-image-input::file-selector-button,
+.company-page-shell--contact .company-page-hero-image-input::-webkit-file-upload-button {
+  margin-right: 10px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(135deg, #6d5ce8, #4841b8);
+  box-shadow: 0 5px 12px rgba(72, 65, 184, 0.2);
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+  transition: filter 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.company-page-shell--about .company-page-hero-image-input:hover,
+.company-page-shell--pricing .company-page-hero-image-input:hover,
+.company-page-shell--careers .company-page-hero-image-input:hover,
+.company-page-shell--contact .company-page-hero-image-input:hover {
+  border-color: #8174e9;
+  box-shadow: 0 0 0 3px rgba(109, 92, 232, 0.1);
+}
+
+.company-page-shell--about .company-page-hero-image-input::file-selector-button:hover,
+.company-page-shell--about .company-page-hero-image-input::-webkit-file-upload-button:hover,
+.company-page-shell--pricing .company-page-hero-image-input::file-selector-button:hover,
+.company-page-shell--pricing .company-page-hero-image-input::-webkit-file-upload-button:hover,
+.company-page-shell--careers .company-page-hero-image-input::file-selector-button:hover,
+.company-page-shell--careers .company-page-hero-image-input::-webkit-file-upload-button:hover,
+.company-page-shell--contact .company-page-hero-image-input::file-selector-button:hover,
+.company-page-shell--contact .company-page-hero-image-input::-webkit-file-upload-button:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(72, 65, 184, 0.26);
+}
+
+.company-page-shell--about .company-page-hero-image-input:focus-visible,
+.company-page-shell--pricing .company-page-hero-image-input:focus-visible,
+.company-page-shell--careers .company-page-hero-image-input:focus-visible,
+.company-page-shell--contact .company-page-hero-image-input:focus-visible {
+  outline: 3px solid rgba(109, 92, 232, 0.3);
+  outline-offset: 3px;
+}
+
+.dark-mode .company-page-shell--about .company-page-hero-image-input,
+.dark-mode .company-page-shell--pricing .company-page-hero-image-input,
+.dark-mode .company-page-shell--careers .company-page-hero-image-input,
+.dark-mode .company-page-shell--contact .company-page-hero-image-input {
+  border-color: #475569;
+  color: #cbd5e1;
+  background: linear-gradient(145deg, #111b30, #0d1628);
+}
+
+.dark-mode .company-page-shell--about .company-page-hero-image-input:hover,
+.dark-mode .company-page-shell--pricing .company-page-hero-image-input:hover,
+.dark-mode .company-page-shell--careers .company-page-hero-image-input:hover,
+.dark-mode .company-page-shell--contact .company-page-hero-image-input:hover {
+  border-color: #958af3;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-hero-image-input {
+  border: 1px dashed #475569 !important;
+  color: #cbd5e1 !important;
+  background: linear-gradient(145deg, #111b30, #0d1628) !important;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-hero-image-input:hover {
+  border-color: #958af3 !important;
+}
+
+.dark-mode .company-page-shell--about {
+  background:
+    radial-gradient(ellipse at 12% 2%, rgba(30, 58, 138, 0.2), transparent 34%),
+    radial-gradient(ellipse at 94% 48%, rgba(76, 29, 149, 0.16), transparent 30%),
+    linear-gradient(180deg, #050b18 0%, #080f20 52%, #050b18 100%);
+}
+
+.dark-mode .company-page-shell--about .company-page-stat-card,
+.dark-mode .company-page-shell--about .company-page-highlight-card {
+  border-color: rgba(100, 116, 139, 0.42);
+  background: linear-gradient(145deg, #111b30, #0d1628);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.dark-mode .company-page-shell--about .company-page-stat-card > div:first-child {
+  color: #a5b4fc !important;
+}
+
+.dark-mode .company-page-shell--about .company-page-stat-card > div:last-child,
+.dark-mode .company-page-shell--about .company-page-highlight-card ul {
+  color: #b7c3d6 !important;
+}
+
+.dark-mode .company-page-shell--about .company-page-promise-card {
+  border-color: rgba(129, 140, 248, 0.24);
+  background: linear-gradient(145deg, #111c35, #201e55);
+}
+
+@media (max-width: 900px) {
+  .company-page-shell--about .company-page-about-art {
+    display: none;
+  }
+
+  .company-page-shell--about .company-page-hero-copy,
+  .company-page-shell--about .company-page-hero-actions {
+    max-width: none;
+  }
+
+  .company-page-shell--about .company-page-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: -26px;
+  }
+
+  .company-page-shell--about .company-page-features {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-shell--about .company-page-hero {
+    padding: 28px 22px;
+    border-radius: 24px;
+  }
+
+  .company-page-shell--about .company-page-stats {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin: -20px 10px 0;
+  }
+
+  .company-page-shell--about .company-page-stat-card {
+    padding: 19px;
+  }
+
+  .company-page-shell--about .company-page-highlight-card,
+  .company-page-shell--about .company-page-promise-card {
+    padding: 22px;
+    border-radius: 19px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .company-page-shell--about .company-page-stat-card,
+  .company-page-shell--about .company-page-hero-actions a,
+  .company-page-shell--about .company-page-cta-button,
+  .company-page-shell--about .company-page-hero-image-input,
+  .company-page-shell--about .company-page-hero-image-input::file-selector-button,
+  .company-page-shell--about .company-page-hero-image-input::-webkit-file-upload-button,
+  .company-page-shell--pricing .company-page-hero-image-input,
+  .company-page-shell--pricing .company-page-hero-image-input::file-selector-button,
+  .company-page-shell--pricing .company-page-hero-image-input::-webkit-file-upload-button,
+  .company-page-shell--careers .company-page-hero-image-input,
+  .company-page-shell--careers .company-page-hero-image-input::file-selector-button,
+  .company-page-shell--careers .company-page-hero-image-input::-webkit-file-upload-button,
+  .company-page-shell--contact .company-page-hero-image-input,
+  .company-page-shell--contact .company-page-hero-image-input::file-selector-button,
+  .company-page-shell--contact .company-page-hero-image-input::-webkit-file-upload-button {
+    transition: none;
+  }
+
+  .company-page-shell--about .company-page-stat-card:hover,
+  .company-page-shell--about .company-page-hero-actions a:hover,
+  .company-page-shell--about .company-page-cta-button:hover {
+    transform: none;
   }
 }
 
@@ -786,6 +1318,22 @@
 
 .company-page-shell--pricing .company-page-grid {
   max-width: none;
+}
+
+.company-page-shell--pricing .company-page-editor-fields {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.company-page-shell--pricing .company-page-editor-fields > * {
+  min-width: 0;
+}
+
+.company-page-shell--pricing .company-page-editor-fields input:not([type="color"]),
+.company-page-shell--pricing .company-page-editor-fields textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
 }
 
 .company-page-shell--pricing .company-page-hero,
@@ -833,6 +1381,701 @@
   }
 }
 
+.company-page-shell--pricing .company-page-plans {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+}
+
+.company-page-shell--pricing .company-page-plan-offer,
+.company-page-shell--pricing .company-page-plan-card {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.company-page-shell--pricing .company-page-plan-heading h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.company-page-shell--pricing .company-page-plan-selected-price strong {
+  min-width: 0;
+  font-size: clamp(1.05rem, 4vw, 1.45rem);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.company-page-shell--pricing .company-page-plan-buy {
+  display: flex;
+  min-height: 44px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+}
+
+.company-page-shell--pricing .company-page-currency-control {
+  flex-wrap: wrap;
+}
+
+.company-page-shell--pricing .company-page-cta-modal-backdrop {
+  z-index: 10001;
+}
+
+@media (max-width: 900px) {
+  .company-page-shell--pricing .company-page-grid.admin-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .company-page-shell--pricing .company-page-grid.admin-layout > *,
+  .company-page-shell--pricing .company-page-sidebar {
+    min-width: 0;
+  }
+
+  .company-page-shell--pricing .company-page-sidebar {
+    width: 100%;
+  }
+
+  .company-page-shell--pricing .company-page-plans {
+    gap: 16px;
+  }
+
+  .company-page-shell--pricing .company-page-plan-card {
+    padding: 22px;
+    border-radius: 20px;
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-shell--pricing {
+    padding: 16px 12px 36px;
+  }
+
+  .company-page-shell--pricing .company-page-main {
+    gap: 16px;
+  }
+
+  .company-page-shell--pricing .company-page-hero {
+    padding: 22px 18px;
+    border-radius: 22px;
+  }
+
+  .company-page-shell--pricing .company-page-plans {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .company-page-shell--pricing .company-page-plan-card {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    overflow: visible;
+    padding: 20px;
+  }
+
+  .company-page-shell--pricing .company-page-plan-duration-toggle {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
+  }
+
+  .company-page-shell--pricing .company-page-plan-duration-toggle button {
+    min-height: 40px;
+    padding: 9px 7px;
+  }
+
+  .company-page-shell--pricing .company-page-plan-selected-price {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .company-page-shell--pricing .company-page-plan-buy {
+    margin: 12px 0 0;
+  }
+
+  .company-page-shell--pricing .company-page-currency-control {
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .company-page-shell--pricing .company-page-currency-control select {
+    flex: 1 1 120px;
+    min-width: 0;
+  }
+
+  .company-page-shell--pricing .company-page-cta-modal-backdrop {
+    padding: 12px;
+  }
+
+  .company-page-shell--pricing .company-page-cta-modal {
+    width: 100%;
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    padding: 24px 18px 18px;
+    border-radius: 20px;
+  }
+
+  .company-page-shell--pricing .company-page-email-row {
+    flex-wrap: wrap;
+  }
+
+  .company-page-shell--pricing .company-page-email-row input {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 360px) {
+  .company-page-shell--pricing {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .company-page-shell--pricing .company-page-plan-card {
+    padding: 16px;
+  }
+
+  .company-page-shell--pricing .company-page-plan-heading {
+    flex-wrap: wrap;
+  }
+
+  .company-page-shell--pricing .company-page-plan-duration-toggle button {
+    font-size: 0.72rem;
+  }
+}
+
+.company-page-shell--pricing {
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(191, 219, 254, 0.42), transparent 34%),
+    radial-gradient(ellipse at 96% 38%, rgba(221, 214, 254, 0.3), transparent 32%),
+    linear-gradient(180deg, #f7f9ff 0%, #f2f5fc 54%, #f8faff 100%);
+}
+
+.company-page-shell--pricing .company-page-sidebar {
+  border-color: rgba(209, 219, 235, 0.85);
+  border-radius: 26px;
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.98), rgba(247, 249, 255, 0.96));
+  box-shadow: 0 24px 58px rgba(27, 44, 83, 0.1), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--pricing .company-page-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: clamp(36px, 4vw, 58px) clamp(28px, 4vw, 50px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 32px;
+  background:
+    radial-gradient(ellipse at 88% 14%, rgba(129, 140, 248, 0.34), transparent 31%),
+    radial-gradient(ellipse at 4% 100%, rgba(56, 189, 248, 0.18), transparent 38%),
+    linear-gradient(122deg, #0b1222 0%, #14264f 52%, #273b91 100%);
+  box-shadow: 0 30px 68px rgba(22, 38, 82, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.company-page-shell--pricing .company-page-hero::before {
+  position: absolute;
+  z-index: -1;
+  top: -190px;
+  right: -80px;
+  width: 410px;
+  height: 410px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 50%;
+  box-shadow: 0 0 0 28px rgba(255, 255, 255, 0.035), 0 0 0 60px rgba(255, 255, 255, 0.025);
+  content: "";
+  pointer-events: none;
+}
+
+.company-page-shell--pricing .company-page-hero-row {
+  position: relative;
+  z-index: 1;
+  gap: 24px;
+}
+
+.company-page-shell--pricing .company-page-hero-copy {
+  max-width: 720px;
+}
+
+.company-page-shell--pricing .company-page-hero-copy > div:first-child {
+  margin-bottom: 18px !important;
+  padding: 8px 13px !important;
+  border: 1px solid rgba(191, 219, 254, 0.22);
+  background: rgba(148, 163, 184, 0.12) !important;
+  color: #dbeafe;
+  backdrop-filter: blur(12px);
+}
+
+.company-page-shell--pricing .company-page-hero-title {
+  max-width: 780px;
+  font-size: clamp(2.35rem, 4vw, 4rem);
+  font-weight: 820;
+  letter-spacing: -0.055em;
+  line-height: 1.04 !important;
+  text-wrap: balance;
+}
+
+.company-page-shell--pricing .company-page-hero-copy > p {
+  max-width: 700px;
+  color: #d7e2f5;
+  font-size: clamp(1rem, 1.3vw, 1.12rem) !important;
+  line-height: 1.75 !important;
+}
+
+.company-page-shell--pricing .company-page-hero-actions a {
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.22);
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.company-page-shell--pricing .company-page-hero-actions a:hover {
+  filter: brightness(1.05);
+  transform: translateY(-2px);
+  box-shadow: 0 17px 32px rgba(2, 6, 23, 0.28);
+}
+
+.company-page-shell--pricing .company-page-stats {
+  position: relative;
+  z-index: 2;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: -34px 22px 0;
+}
+
+.company-page-shell--pricing .company-page-stat-card {
+  position: relative;
+  overflow: hidden;
+  padding: 22px 24px;
+  border: 1px solid rgba(210, 220, 237, 0.9);
+  border-radius: 20px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.99), rgba(247, 249, 255, 0.97));
+  box-shadow: 0 16px 34px rgba(20, 34, 68, 0.09), inset 0 1px 0 #fff;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.company-page-shell--pricing .company-page-stat-card::before {
+  position: absolute;
+  top: 0;
+  left: 22px;
+  width: 40px;
+  height: 3px;
+  border-radius: 0 0 4px 4px;
+  background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+  content: "";
+}
+
+.company-page-shell--pricing .company-page-stat-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 22px 40px rgba(20, 34, 68, 0.13), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--pricing .company-page-stat-card > div:first-child {
+  margin-bottom: 4px !important;
+  color: #315ed0 !important;
+  font-size: clamp(1.5rem, 2.5vw, 1.9rem) !important;
+  letter-spacing: -0.045em;
+}
+
+.company-page-shell--pricing .company-page-stat-card > div:last-child {
+  color: #66748a !important;
+  font-size: 0.88rem;
+  font-weight: 650 !important;
+}
+
+.company-page-shell--pricing .company-page-currency-control {
+  width: fit-content;
+  max-width: 100%;
+  justify-self: end;
+  gap: 12px;
+  margin: 0 12px -4px;
+  padding: 9px 10px 9px 16px;
+  border: 1px solid rgba(210, 220, 237, 0.9);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 8px 22px rgba(26, 43, 82, 0.06);
+  color: #52617a;
+  font-size: 0.82rem;
+  backdrop-filter: blur(12px);
+}
+
+.company-page-shell--pricing .company-page-currency-control select {
+  min-width: 112px;
+  border-color: #d9e1ef;
+  border-radius: 11px;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+  font-weight: 750;
+}
+
+.company-page-shell--pricing .company-page-plan-card {
+  height: auto;
+  min-height: 410px;
+  flex: 1;
+  overflow: visible;
+  padding: 27px;
+  border: 1px solid #dfe6f2;
+  border-radius: 23px;
+  background:
+    radial-gradient(ellipse at 100% 0%, rgba(219, 234, 254, 0.34), transparent 42%),
+    linear-gradient(155deg, #ffffff 0%, #fbfcff 100%);
+  box-shadow: 0 18px 42px rgba(20, 34, 68, 0.09), inset 0 1px 0 #fff;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.company-page-shell--pricing .company-page-plan-card:hover {
+  transform: translateY(-4px);
+  border-color: #c8d5f0;
+  box-shadow: 0 25px 48px rgba(25, 45, 93, 0.14), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--pricing .company-page-plan-card::before {
+  height: 5px;
+  background: linear-gradient(90deg, #38bdf8, #6366f1 58%, #a78bfa);
+}
+
+.company-page-shell--pricing .company-page-plan-heading h2 {
+  color: #17213a;
+  font-size: 1.22rem;
+  font-weight: 780;
+  letter-spacing: -0.035em;
+}
+
+.company-page-shell--pricing .company-page-plan-heading span {
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  background: linear-gradient(135deg, #fbbf24, #f97316);
+  box-shadow: 0 5px 12px rgba(217, 119, 6, 0.2);
+}
+
+.company-page-shell--pricing .company-page-plan-duration-toggle {
+  gap: 5px;
+  padding: 5px;
+  border-color: #e2e8f3;
+  border-radius: 13px;
+  background: #f3f6fc;
+}
+
+.company-page-shell--pricing .company-page-plan-duration-toggle button {
+  min-height: 38px;
+  border-radius: 9px;
+  color: #64748b;
+  transition: color 150ms ease, background 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.company-page-shell--pricing .company-page-plan-duration-toggle button:hover {
+  color: #273b8a;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.company-page-shell--pricing .company-page-plan-duration-toggle button.is-selected {
+  background: linear-gradient(135deg, #315ed0, #6558d9);
+  color: #fff !important;
+  box-shadow: 0 6px 14px rgba(62, 86, 194, 0.26);
+}
+
+.company-page-shell--pricing .company-page-plan-selected-price {
+  margin-top: 12px;
+  border-color: #e6ebf4;
+  padding-top: 15px;
+}
+
+.company-page-shell--pricing .company-page-plan-selected-price span {
+  color: #7b879b;
+  font-size: 0.83rem;
+  font-weight: 650;
+}
+
+.company-page-shell--pricing .company-page-plan-selected-price strong {
+  color: #1b2f6d;
+  font-size: clamp(1.25rem, 2vw, 1.65rem);
+  font-weight: 820;
+  letter-spacing: -0.035em;
+}
+
+.company-page-shell--pricing .company-page-plan-meta {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 14px;
+  padding: 6px 10px;
+  border: 1px solid #dce7fa;
+  border-radius: 999px;
+  background: #eff5ff;
+  color: #35559a;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.company-page-shell--pricing .company-page-plan-description {
+  margin-top: 14px;
+  padding-left: 19px;
+  color: #56647a;
+  line-height: 1.75;
+}
+
+.company-page-shell--pricing .company-page-plan-description li {
+  padding-left: 2px;
+}
+
+.company-page-shell--pricing .company-page-plan-description li::marker {
+  color: #6474db;
+}
+
+.company-page-shell--pricing .company-page-plan-buy {
+  margin: 13px 0 0;
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: linear-gradient(120deg, #10192f, #283c87);
+  box-shadow: 0 10px 22px rgba(23, 39, 90, 0.18);
+  transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.company-page-shell--pricing .company-page-plan-buy:hover {
+  background: linear-gradient(120deg, #315ed0, #6558d9);
+  transform: translateY(-2px);
+  box-shadow: 0 14px 28px rgba(49, 94, 208, 0.25);
+}
+
+.company-page-shell--pricing .company-page-cta-banner {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  height: auto;
+  min-height: clamp(160px, 17vw, 210px);
+  padding: clamp(22px, 3vw, 34px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 28px;
+  background:
+    radial-gradient(ellipse at 84% 26%, rgba(129, 140, 248, 0.36), transparent 34%),
+    radial-gradient(ellipse at 10% 110%, rgba(56, 189, 248, 0.18), transparent 38%),
+    linear-gradient(120deg, #0b1222, #1d3473 68%, #293b8b);
+  box-shadow: 0 22px 48px rgba(20, 38, 84, 0.18);
+}
+
+.company-page-shell--pricing .company-page-cta-banner::before {
+  position: absolute;
+  z-index: -1;
+  top: -130px;
+  right: 12%;
+  width: 300px;
+  height: 300px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 50%;
+  box-shadow: 0 0 0 24px rgba(255, 255, 255, 0.035), 0 0 0 52px rgba(255, 255, 255, 0.025);
+  content: "";
+  pointer-events: none;
+}
+
+.company-page-shell--pricing .company-page-cta-button {
+  position: relative;
+  z-index: 1;
+  min-height: 52px;
+  padding: 16px 28px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background: linear-gradient(145deg, #ffffff, #edf2ff);
+  color: #17213a;
+  box-shadow: 0 14px 30px rgba(2, 6, 23, 0.24), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--pricing .company-page-cta-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 36px rgba(2, 6, 23, 0.3), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--pricing .company-page-features {
+  grid-template-columns: minmax(0, 1.3fr) minmax(240px, 0.7fr);
+  gap: 18px;
+}
+
+.company-page-shell--pricing .company-page-highlight-card,
+.company-page-shell--pricing .company-page-promise-card {
+  overflow: hidden;
+  border: 1px solid rgba(209, 219, 235, 0.85);
+  border-radius: 22px;
+  box-shadow: 0 16px 36px rgba(20, 34, 68, 0.08);
+}
+
+.company-page-shell--pricing .company-page-highlight-card {
+  background: linear-gradient(145deg, #ffffff, #f7f9ff);
+}
+
+.company-page-shell--pricing .company-page-promise-card {
+  border-color: rgba(129, 140, 248, 0.24);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(129, 140, 248, 0.25), transparent 42%),
+    linear-gradient(145deg, #172554, #312e81);
+}
+
+.company-page-shell--pricing .company-page-cta-modal {
+  border-color: rgba(203, 213, 225, 0.68);
+  border-radius: 26px;
+  box-shadow: 0 34px 90px rgba(12, 20, 42, 0.34), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--pricing .company-page-custom-form input:focus,
+.company-page-shell--pricing .company-page-custom-form select:focus {
+  outline: 3px solid rgba(99, 102, 241, 0.14);
+  border-color: #6366f1;
+}
+
+@media (max-width: 900px) {
+  .company-page-shell--pricing .company-page-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: -26px 16px 0;
+  }
+
+  .company-page-shell--pricing .company-page-features {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-shell--pricing .company-page-hero {
+    padding: 28px 22px;
+  }
+
+  .company-page-shell--pricing .company-page-hero-title {
+    font-size: clamp(2rem, 8vw, 2.8rem);
+  }
+
+  .company-page-shell--pricing .company-page-stats {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    margin: -20px 10px 0;
+  }
+
+  .company-page-shell--pricing .company-page-stat-card {
+    padding: 18px 20px;
+  }
+
+  .company-page-shell--pricing .company-page-currency-control {
+    width: 100%;
+    justify-self: stretch;
+    margin: 0;
+  }
+
+  .company-page-shell--pricing .company-page-plan-card {
+    min-height: 0;
+    flex: 0 0 auto;
+    padding: 20px;
+  }
+
+  .company-page-shell--pricing .company-page-cta-banner {
+    min-height: 160px;
+    padding: 20px;
+  }
+
+  .company-page-shell--pricing .company-page-highlight-card,
+  .company-page-shell--pricing .company-page-promise-card {
+    padding: 22px;
+  }
+}
+
+.dark-mode .company-page-shell--pricing {
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(30, 58, 138, 0.2), transparent 34%),
+    radial-gradient(ellipse at 96% 38%, rgba(76, 29, 149, 0.16), transparent 32%),
+    linear-gradient(180deg, #050b18 0%, #080f20 54%, #050b18 100%);
+}
+
+.dark-mode .company-page-shell--pricing .company-page-sidebar,
+.dark-mode .company-page-shell--pricing .company-page-stat-card,
+.dark-mode .company-page-shell--pricing .company-page-highlight-card {
+  border-color: rgba(100, 116, 139, 0.42);
+  background: linear-gradient(145deg, #111b30, #0d1628);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.dark-mode .company-page-shell--pricing .company-page-stat-card > div:first-child {
+  color: #a5b4fc !important;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-stat-card > div:last-child {
+  color: #b7c3d6 !important;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-currency-control {
+  border-color: #334155;
+  background: rgba(15, 23, 42, 0.88);
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-card {
+  border-color: #334155;
+  background:
+    radial-gradient(ellipse at 100% 0%, rgba(49, 46, 129, 0.2), transparent 42%),
+    linear-gradient(155deg, #111b30, #0d1628);
+  box-shadow: 0 20px 42px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-card:hover {
+  border-color: #4b5c88;
+  box-shadow: 0 25px 48px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-heading h2,
+.dark-mode .company-page-shell--pricing .company-page-plan-selected-price strong {
+  color: #f1f5ff !important;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-selected-price,
+.dark-mode .company-page-shell--pricing .company-page-plan-prices div {
+  border-color: #334155;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-meta {
+  border-color: #34466d;
+  background: #172746;
+  color: #bfdbfe;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-description {
+  color: #cbd5e1;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-description li::marker {
+  color: #a5b4fc;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-duration-toggle {
+  border-color: #334155;
+  background: #1e293b;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-duration-toggle button {
+  color: #cbd5e1 !important;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-duration-toggle button.is-selected {
+  color: #fff !important;
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-buy {
+  background: linear-gradient(120deg, #25345f, #3c438c);
+}
+
+.dark-mode .company-page-shell--pricing .company-page-plan-buy:hover {
+  background: linear-gradient(120deg, #315ed0, #6558d9);
+}
+
+.dark-mode .company-page-shell--pricing .company-page-promise-card {
+  border-color: rgba(129, 140, 248, 0.24);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(129, 140, 248, 0.2), transparent 42%),
+    linear-gradient(145deg, #111c35, #201e55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .company-page-shell--pricing .company-page-stat-card,
+  .company-page-shell--pricing .company-page-plan-card,
+  .company-page-shell--pricing .company-page-plan-duration-toggle button,
+  .company-page-shell--pricing .company-page-plan-buy,
+  .company-page-shell--pricing .company-page-hero-actions a,
+  .company-page-shell--pricing .company-page-cta-button {
+    transition: none;
+  }
+
+  .company-page-shell--pricing .company-page-stat-card:hover,
+  .company-page-shell--pricing .company-page-plan-card:hover,
+  .company-page-shell--pricing .company-page-plan-buy:hover,
+  .company-page-shell--pricing .company-page-hero-actions a:hover,
+  .company-page-shell--pricing .company-page-cta-button:hover {
+    transform: none;
+  }
+}
+
 .company-page-shell--careers {
   box-sizing: border-box;
   min-width: 0;
@@ -848,6 +2091,22 @@
 
 .company-page-shell--careers .company-page-grid {
   max-width: none;
+}
+
+.company-page-shell--careers .company-page-editor-fields {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.company-page-shell--careers .company-page-editor-fields > * {
+  min-width: 0;
+}
+
+.company-page-shell--careers .company-page-editor-fields input:not([type="color"]),
+.company-page-shell--careers .company-page-editor-fields textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
 }
 
 .company-page-shell--careers .company-page-hero,
@@ -867,6 +2126,19 @@
 }
 
 @media (max-width: 900px) {
+  .company-page-shell--careers .company-page-grid.admin-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .company-page-shell--careers .company-page-grid.admin-layout > *,
+  .company-page-shell--careers .company-page-sidebar {
+    min-width: 0;
+  }
+
+  .company-page-shell--careers .company-page-sidebar {
+    width: 100%;
+  }
+
   .company-page-shell--careers .company-page-cta-banner {
     height: auto;
     min-height: 200px;
@@ -874,6 +2146,18 @@
 }
 
 @media (max-width: 600px) {
+  .company-page-shell--careers {
+    padding: 16px 12px 36px;
+  }
+
+  .company-page-shell--careers .company-page-main {
+    gap: 16px;
+  }
+
+  .company-page-shell--careers .company-page-hero {
+    padding: 22px 18px;
+  }
+
   .company-page-shell--careers .company-page-hero-title {
     font-size: clamp(1.65rem, 5vw, 3rem);
     overflow-wrap: anywhere;
@@ -892,6 +2176,397 @@
   }
 }
 
+.company-page-shell--careers {
+  background:
+    radial-gradient(ellipse at 10% 3%, rgba(191, 219, 254, 0.42), transparent 34%),
+    radial-gradient(ellipse at 96% 42%, rgba(221, 214, 254, 0.28), transparent 32%),
+    linear-gradient(180deg, #f8faff 0%, #f2f5fc 54%, #f8faff 100%);
+}
+
+.company-page-shell--careers .company-page-main {
+  align-content: start;
+  gap: clamp(20px, 2.5vw, 30px);
+}
+
+.company-page-shell--careers .company-page-sidebar {
+  border-color: rgba(209, 219, 235, 0.9);
+  border-radius: 26px;
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.99), rgba(247, 249, 255, 0.97));
+  box-shadow: 0 24px 58px rgba(27, 44, 83, 0.1), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--careers .company-page-editor-fields > div[style*="border"] {
+  padding: 14px !important;
+  border-color: #e1e7f2 !important;
+  border-radius: 16px !important;
+  background: linear-gradient(145deg, #fff, #f8faff) !important;
+  box-shadow: 0 6px 18px rgba(30, 48, 86, 0.045);
+}
+
+.company-page-shell--careers .company-page-editor-fields input:not([type="color"]),
+.company-page-shell--careers .company-page-editor-fields textarea {
+  border-color: #d3ddec !important;
+  border-radius: 10px !important;
+  color: #172033;
+  font: inherit;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.company-page-shell--careers .company-page-editor-fields input[type="file"].company-page-hero-image-input {
+  font-size: 12px;
+}
+
+.company-page-shell--careers .company-page-editor-fields .company-page-hero-image-input::file-selector-button,
+.company-page-shell--careers .company-page-editor-fields .company-page-hero-image-input::-webkit-file-upload-button {
+  margin-right: 8px;
+  padding: 8px 10px;
+}
+
+.company-page-shell--careers .company-page-editor-fields input:not([type="color"]):focus,
+.company-page-shell--careers .company-page-editor-fields textarea:focus {
+  border-color: #667eea !important;
+  outline: 0;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.14);
+}
+
+.company-page-shell--careers .company-page-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: clamp(36px, 4vw, 58px) clamp(28px, 4vw, 50px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 32px;
+  background:
+    radial-gradient(ellipse at 88% 14%, rgba(129, 140, 248, 0.34), transparent 31%),
+    radial-gradient(ellipse at 4% 100%, rgba(56, 189, 248, 0.18), transparent 38%),
+    linear-gradient(122deg, #0b1222 0%, #14264f 52%, #273b91 100%);
+  box-shadow: 0 30px 68px rgba(22, 38, 82, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.company-page-shell--careers .company-page-hero::before {
+  position: absolute;
+  z-index: -1;
+  top: -190px;
+  right: -80px;
+  width: 410px;
+  height: 410px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 50%;
+  box-shadow: 0 0 0 28px rgba(255, 255, 255, 0.035), 0 0 0 60px rgba(255, 255, 255, 0.025);
+  content: "";
+  pointer-events: none;
+}
+
+.company-page-shell--careers .company-page-hero-row {
+  position: relative;
+  z-index: 1;
+  gap: 24px;
+}
+
+.company-page-shell--careers .company-page-hero-copy {
+  max-width: 720px;
+}
+
+.company-page-shell--careers .company-page-hero-copy > div:first-child {
+  box-sizing: border-box;
+  max-width: 100%;
+  margin-bottom: 18px !important;
+  padding: 8px 13px !important;
+  border: 1px solid rgba(191, 219, 254, 0.22);
+  background: rgba(148, 163, 184, 0.12) !important;
+  color: #dbeafe;
+  backdrop-filter: blur(12px);
+}
+
+.company-page-shell--careers .company-page-hero-title {
+  max-width: 780px;
+  font-size: clamp(2.2rem, 4vw, 4rem);
+  font-weight: 820;
+  letter-spacing: -0.055em;
+  line-height: 1.04 !important;
+  text-wrap: balance;
+}
+
+.company-page-shell--careers .company-page-hero-copy > p {
+  max-width: 700px;
+  color: #d7e2f5;
+  font-size: clamp(1rem, 1.3vw, 1.12rem) !important;
+  line-height: 1.75 !important;
+}
+
+.company-page-shell--careers .company-page-hero-actions a {
+  color: var(--company-page-action-text) !important;
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.22);
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.company-page-shell--careers .company-page-hero-actions a:hover {
+  filter: brightness(1.05);
+  transform: translateY(-2px);
+  box-shadow: 0 17px 32px rgba(2, 6, 23, 0.28);
+}
+
+.company-page-shell--careers .company-page-stats {
+  position: relative;
+  z-index: 2;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: -34px clamp(14px, 3vw, 34px) 0;
+}
+
+.company-page-shell--careers .company-page-stat-card {
+  position: relative;
+  overflow: hidden;
+  padding: 24px;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  border-radius: 20px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.99), rgba(247, 250, 255, 0.97));
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08), inset 0 1px 0 #fff;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.company-page-shell--careers .company-page-stat-card::before {
+  position: absolute;
+  top: 0;
+  left: 24px;
+  width: 42px;
+  height: 3px;
+  border-radius: 0 0 4px 4px;
+  background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+  content: "";
+}
+
+.company-page-shell--careers .company-page-stat-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 20px 38px rgba(15, 23, 42, 0.12), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--careers .company-page-stat-card > div:first-child {
+  margin-bottom: 4px !important;
+  color: #315ed0 !important;
+  font-size: clamp(1.55rem, 3vw, 2rem) !important;
+  letter-spacing: -0.045em;
+}
+
+.company-page-shell--careers .company-page-stat-card > div:last-child {
+  color: #66748a !important;
+  font-size: 0.88rem;
+  font-weight: 650 !important;
+}
+
+.company-page-shell--careers .company-page-cta-banner {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 210px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at 85% 50%, rgba(129, 140, 248, 0.3), transparent 34%),
+    linear-gradient(118deg, #0f172a, #1d3473 68%, #293b8b);
+  box-shadow: 0 20px 48px rgba(20, 38, 84, 0.17);
+}
+
+.company-page-shell--careers .company-page-cta-banner::before {
+  position: absolute;
+  z-index: -1;
+  top: -105px;
+  right: -20px;
+  width: 260px;
+  height: 260px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 50%;
+  box-shadow: 0 0 0 24px rgba(255, 255, 255, 0.035), 0 0 0 50px rgba(255, 255, 255, 0.025);
+  content: "";
+  pointer-events: none;
+}
+
+.company-page-shell--careers .company-page-cta-button {
+  position: relative;
+  z-index: 1;
+  min-height: 54px;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow: 0 14px 30px rgba(2, 6, 23, 0.24);
+}
+
+.company-page-shell--careers .company-page-cta-button:hover {
+  background: #eaf0ff;
+}
+
+.company-page-shell--careers .company-page-cta-modal-backdrop {
+  z-index: 10001;
+}
+
+.company-page-shell--careers .company-page-features {
+  grid-template-columns: minmax(0, 1.25fr) minmax(240px, 0.75fr);
+  gap: 18px;
+}
+
+.company-page-shell--careers .company-page-highlight-card,
+.company-page-shell--careers .company-page-promise-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(203, 213, 225, 0.76);
+  border-radius: 22px;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.07);
+}
+
+.company-page-shell--careers .company-page-highlight-card {
+  background: linear-gradient(145deg, #fff 0%, #f7f9ff 100%);
+}
+
+.company-page-shell--careers .company-page-highlight-card h2,
+.company-page-shell--careers .company-page-promise-card h2 {
+  font-size: 1.3rem !important;
+  font-weight: 780;
+  letter-spacing: -0.035em;
+}
+
+.company-page-shell--careers .company-page-highlight-card ul {
+  color: #53627a !important;
+  line-height: 1.75 !important;
+}
+
+.company-page-shell--careers .company-page-promise-card {
+  border-color: rgba(129, 140, 248, 0.26);
+  background:
+    radial-gradient(circle at 100% 0, rgba(167, 139, 250, 0.28), transparent 40%),
+    linear-gradient(145deg, #172554 0%, #312e81 100%);
+}
+
+.company-page-shell--careers .company-page-promise-card p {
+  color: #e0e7ff;
+  font-size: 1rem;
+}
+
+.dark-mode .company-page-shell--careers {
+  background:
+    radial-gradient(ellipse at 10% 3%, rgba(30, 58, 138, 0.2), transparent 34%),
+    radial-gradient(ellipse at 96% 42%, rgba(76, 29, 149, 0.16), transparent 32%),
+    linear-gradient(180deg, #050b18 0%, #080f20 54%, #050b18 100%);
+}
+
+.dark-mode .company-page-shell--careers .company-page-sidebar {
+  border-color: rgba(100, 116, 139, 0.42);
+  background: linear-gradient(155deg, #111b30, #0d1628);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+.dark-mode .company-page-shell--careers .company-page-sidebar h2 {
+  color: #f8fafc !important;
+}
+
+.dark-mode .company-page-shell--careers .company-page-sidebar > p {
+  color: #a7b3c5 !important;
+}
+
+.dark-mode .company-page-shell--careers .company-page-editor-fields span {
+  color: #cbd5e1 !important;
+}
+
+.dark-mode .company-page-shell--careers .company-page-editor-fields > div[style*="border"] {
+  border-color: #334155 !important;
+  background: linear-gradient(145deg, #111b30, #0d1628) !important;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.14);
+}
+
+.dark-mode .company-page-shell--careers .company-page-editor-fields input:not([type="color"]),
+.dark-mode .company-page-shell--careers .company-page-editor-fields textarea {
+  border-color: #475569 !important;
+  background: #0f172a !important;
+  color: #e2e8f0 !important;
+}
+
+.dark-mode .company-page-shell--careers .company-page-editor-fields input:not([type="color"]):focus,
+.dark-mode .company-page-shell--careers .company-page-editor-fields textarea:focus {
+  border-color: #818cf8 !important;
+}
+
+.dark-mode .company-page-shell--careers .company-page-stat-card,
+.dark-mode .company-page-shell--careers .company-page-highlight-card {
+  border-color: rgba(100, 116, 139, 0.42);
+  background: linear-gradient(145deg, #111b30, #0d1628);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.dark-mode .company-page-shell--careers .company-page-stat-card > div:first-child {
+  color: #a5b4fc !important;
+}
+
+.dark-mode .company-page-shell--careers .company-page-stat-card > div:last-child,
+.dark-mode .company-page-shell--careers .company-page-highlight-card ul {
+  color: #b7c3d6 !important;
+}
+
+.dark-mode .company-page-shell--careers .company-page-promise-card {
+  border-color: rgba(129, 140, 248, 0.24);
+  background: linear-gradient(145deg, #111c35, #201e55);
+}
+
+@media (max-width: 900px) {
+  .company-page-shell--careers .company-page-cta-banner {
+    height: auto;
+    min-height: 200px;
+  }
+
+  .company-page-shell--careers .company-page-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: -24px;
+  }
+
+  .company-page-shell--careers .company-page-features {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-shell--careers .company-page-hero {
+    padding: 28px 22px;
+    border-radius: 24px;
+  }
+
+  .company-page-shell--careers .company-page-cta-banner {
+    min-height: 160px;
+  }
+
+  .company-page-shell--careers .company-page-hero-title {
+    font-size: clamp(1.65rem, 5vw, 3rem);
+  }
+
+  .company-page-shell--careers .company-page-stats {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin: -20px 10px 0;
+  }
+
+  .company-page-shell--careers .company-page-stat-card {
+    padding: 19px;
+  }
+
+  .company-page-shell--careers .company-page-highlight-card,
+  .company-page-shell--careers .company-page-promise-card {
+    padding: 22px;
+    border-radius: 19px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .company-page-shell--careers .company-page-stat-card,
+  .company-page-shell--careers .company-page-hero-actions a,
+  .company-page-shell--careers .company-page-cta-button,
+  .company-page-shell--careers .company-page-editor-fields input,
+  .company-page-shell--careers .company-page-editor-fields textarea {
+    transition: none;
+  }
+
+  .company-page-shell--careers .company-page-stat-card:hover,
+  .company-page-shell--careers .company-page-hero-actions a:hover,
+  .company-page-shell--careers .company-page-cta-button:hover {
+    transform: none;
+  }
+}
+
 .company-page-shell--contact {
   box-sizing: border-box;
   min-width: 0;
@@ -905,8 +2580,28 @@
   width: 100%;
 }
 
+.company-page-shell--contact .company-page-main {
+  align-content: start;
+}
+
 .company-page-shell--contact .company-page-grid {
   max-width: none;
+}
+
+.company-page-shell--contact .company-page-editor-fields {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.company-page-shell--contact .company-page-editor-fields > * {
+  min-width: 0;
+}
+
+.company-page-shell--contact .company-page-editor-fields input:not([type="color"]),
+.company-page-shell--contact .company-page-editor-fields textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
 }
 
 .company-page-shell--contact .company-page-hero,
@@ -925,7 +2620,24 @@
   max-width: 1200px;
 }
 
+.company-page-shell--contact .company-page-cta-modal-backdrop {
+  z-index: 10001;
+}
+
 @media (max-width: 900px) {
+  .company-page-shell--contact .company-page-grid.admin-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .company-page-shell--contact .company-page-grid.admin-layout > *,
+  .company-page-shell--contact .company-page-sidebar {
+    min-width: 0;
+  }
+
+  .company-page-shell--contact .company-page-sidebar {
+    width: 100%;
+  }
+
   .company-page-shell--contact .company-page-cta-banner {
     height: auto;
     min-height: 200px;
@@ -933,6 +2645,18 @@
 }
 
 @media (max-width: 600px) {
+  .company-page-shell--contact {
+    padding: 16px 12px 36px;
+  }
+
+  .company-page-shell--contact .company-page-main {
+    gap: 16px;
+  }
+
+  .company-page-shell--contact .company-page-hero {
+    padding: 22px 18px;
+  }
+
   .company-page-shell--contact .company-page-hero-title {
     font-size: clamp(1.65rem, 5vw, 3rem);
     overflow-wrap: anywhere;
@@ -948,6 +2672,420 @@
     min-width: 0;
     padding: 16px 20px;
     white-space: normal;
+  }
+
+  body:has(.company-page-shell--contact) .promotion-banner-placement--right {
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    left: auto;
+    width: calc(100% - 24px);
+    max-width: 1380px;
+    margin: 8px auto 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    transform: none;
+    z-index: 1;
+  }
+
+  body:has(.company-page-shell--contact) .promotion-banner-placement--right .promotion-banner-placement-link,
+  body:has(.company-page-shell--contact) .promotion-banner-placement--right .promotion-banner-placement-link img {
+    width: 64px;
+    height: 64px;
+  }
+}
+
+.company-page-shell--contact {
+  background:
+    radial-gradient(ellipse at 10% 3%, rgba(153, 246, 228, 0.3), transparent 34%),
+    radial-gradient(ellipse at 96% 42%, rgba(191, 219, 254, 0.36), transparent 32%),
+    linear-gradient(180deg, #f8fbff 0%, #f1f6fc 54%, #f8fbff 100%);
+}
+
+.company-page-shell--contact .company-page-main {
+  gap: clamp(20px, 2.5vw, 30px);
+}
+
+.company-page-shell--contact .company-page-sidebar {
+  border-color: rgba(209, 219, 235, 0.9);
+  border-radius: 26px;
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.99), rgba(247, 249, 255, 0.97));
+  box-shadow: 0 24px 58px rgba(27, 44, 83, 0.1), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--contact .company-page-editor-fields > div[style*="border"] {
+  padding: 14px !important;
+  border-color: #e1e7f2 !important;
+  border-radius: 16px !important;
+  background: linear-gradient(145deg, #fff, #f8faff) !important;
+  box-shadow: 0 6px 18px rgba(30, 48, 86, 0.045);
+}
+
+.company-page-shell--contact .company-page-editor-fields input:not([type="color"]),
+.company-page-shell--contact .company-page-editor-fields textarea {
+  border-color: #d3ddec !important;
+  border-radius: 10px !important;
+  color: #172033;
+  font: inherit;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.company-page-shell--contact .company-page-editor-fields input[type="file"].company-page-hero-image-input {
+  font-size: 12px;
+}
+
+.company-page-shell--contact .company-page-editor-fields .company-page-hero-image-input::file-selector-button,
+.company-page-shell--contact .company-page-editor-fields .company-page-hero-image-input::-webkit-file-upload-button {
+  margin-right: 8px;
+  padding: 8px 10px;
+}
+
+.company-page-shell--contact .company-page-editor-fields input:not([type="color"]):focus,
+.company-page-shell--contact .company-page-editor-fields textarea:focus {
+  border-color: #0f9f9a !important;
+  outline: 0;
+  box-shadow: 0 0 0 3px rgba(15, 159, 154, 0.14);
+}
+
+.company-page-shell--contact .company-page-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: clamp(36px, 4vw, 58px) clamp(28px, 4vw, 50px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 32px;
+  background:
+    radial-gradient(ellipse at 88% 14%, rgba(45, 212, 191, 0.28), transparent 31%),
+    radial-gradient(ellipse at 4% 100%, rgba(96, 165, 250, 0.2), transparent 38%),
+    linear-gradient(122deg, #081a2b 0%, #12355b 52%, #164e82 100%);
+  box-shadow: 0 30px 68px rgba(15, 55, 81, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.company-page-shell--contact .company-page-hero::before {
+  position: absolute;
+  z-index: -1;
+  top: -190px;
+  right: -80px;
+  width: 410px;
+  height: 410px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 50%;
+  box-shadow: 0 0 0 28px rgba(255, 255, 255, 0.035), 0 0 0 60px rgba(255, 255, 255, 0.025);
+  content: "";
+  pointer-events: none;
+}
+
+.company-page-shell--contact .company-page-hero-row {
+  position: relative;
+  z-index: 1;
+  gap: 24px;
+}
+
+.company-page-shell--contact .company-page-hero-copy {
+  max-width: 720px;
+}
+
+.company-page-shell--contact .company-page-hero-copy > div:first-child {
+  box-sizing: border-box;
+  max-width: 100%;
+  margin-bottom: 18px !important;
+  padding: 8px 13px !important;
+  border: 1px solid rgba(153, 246, 228, 0.22);
+  background: rgba(148, 163, 184, 0.12) !important;
+  color: #ccfbf1;
+  backdrop-filter: blur(12px);
+}
+
+.company-page-shell--contact .company-page-hero-title {
+  max-width: 780px;
+  font-size: clamp(2.2rem, 4vw, 4rem);
+  font-weight: 820;
+  letter-spacing: -0.055em;
+  line-height: 1.04 !important;
+  text-wrap: balance;
+}
+
+.company-page-shell--contact .company-page-hero-copy > p {
+  max-width: 700px;
+  color: #d8e8f5;
+  font-size: clamp(1rem, 1.3vw, 1.12rem) !important;
+  line-height: 1.75 !important;
+}
+
+.company-page-shell--contact .company-page-hero-actions a {
+  color: var(--company-page-action-text) !important;
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.22);
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.company-page-shell--contact .company-page-hero-actions a:hover {
+  filter: brightness(1.05);
+  transform: translateY(-2px);
+  box-shadow: 0 17px 32px rgba(2, 6, 23, 0.28);
+}
+
+.company-page-shell--contact .company-page-stats {
+  position: relative;
+  z-index: 2;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: -34px 22px 0;
+}
+
+.company-page-shell--contact .company-page-stat-card {
+  position: relative;
+  overflow: hidden;
+  padding: 22px 24px;
+  border: 1px solid rgba(210, 220, 237, 0.9);
+  border-radius: 20px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.99), rgba(247, 249, 255, 0.97));
+  box-shadow: 0 16px 34px rgba(20, 34, 68, 0.09), inset 0 1px 0 #fff;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.company-page-shell--contact .company-page-stat-card::before {
+  position: absolute;
+  top: 0;
+  left: 22px;
+  width: 40px;
+  height: 3px;
+  border-radius: 0 0 4px 4px;
+  background: linear-gradient(90deg, #14b8a6, #3b82f6);
+  content: "";
+}
+
+.company-page-shell--contact .company-page-stat-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 22px 40px rgba(20, 34, 68, 0.13), inset 0 1px 0 #fff;
+}
+
+.company-page-shell--contact .company-page-stat-card > div:first-child {
+  margin-bottom: 4px !important;
+  color: #0f766e !important;
+  font-size: clamp(1.5rem, 2.5vw, 1.9rem) !important;
+  letter-spacing: -0.045em;
+  overflow-wrap: anywhere;
+}
+
+.company-page-shell--contact .company-page-stat-card > div:last-child {
+  color: #66748a !important;
+  font-size: 0.88rem;
+  font-weight: 650 !important;
+}
+
+.company-page-shell--contact .company-page-cta-banner {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 210px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at 85% 50%, rgba(45, 212, 191, 0.26), transparent 34%),
+    linear-gradient(118deg, #0b1c2d, #123f67 68%, #155e75);
+  box-shadow: 0 20px 48px rgba(15, 55, 81, 0.17);
+}
+
+.company-page-shell--contact .company-page-cta-banner::before {
+  position: absolute;
+  z-index: -1;
+  top: -105px;
+  right: -20px;
+  width: 260px;
+  height: 260px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 50%;
+  box-shadow: 0 0 0 24px rgba(255, 255, 255, 0.035), 0 0 0 50px rgba(255, 255, 255, 0.025);
+  content: "";
+  pointer-events: none;
+}
+
+.company-page-shell--contact .company-page-cta-button {
+  position: relative;
+  z-index: 1;
+  min-height: 54px;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow: 0 14px 30px rgba(2, 6, 23, 0.24);
+}
+
+.company-page-shell--contact .company-page-cta-button:hover {
+  background: #e6fffb;
+}
+
+.company-page-shell--contact .company-page-features {
+  grid-template-columns: minmax(0, 1.25fr) minmax(240px, 0.75fr);
+  gap: 18px;
+}
+
+.company-page-shell--contact .company-page-highlight-card,
+.company-page-shell--contact .company-page-promise-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(203, 213, 225, 0.76);
+  border-radius: 22px;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.07);
+}
+
+.company-page-shell--contact .company-page-highlight-card {
+  background: linear-gradient(145deg, #fff 0%, #f7f9ff 100%);
+}
+
+.company-page-shell--contact .company-page-highlight-card h2,
+.company-page-shell--contact .company-page-promise-card h2 {
+  font-size: 1.3rem !important;
+  font-weight: 780;
+  letter-spacing: -0.035em;
+}
+
+.company-page-shell--contact .company-page-highlight-card ul {
+  color: #53627a !important;
+  line-height: 1.75 !important;
+}
+
+.company-page-shell--contact .company-page-highlight-card li {
+  padding-left: 4px;
+  overflow-wrap: anywhere;
+}
+
+.company-page-shell--contact .company-page-promise-card {
+  border-color: rgba(45, 212, 191, 0.24);
+  background:
+    radial-gradient(circle at 100% 0, rgba(45, 212, 191, 0.22), transparent 40%),
+    linear-gradient(145deg, #10314a 0%, #164e63 100%);
+}
+
+.company-page-shell--contact .company-page-promise-card p {
+  color: #d9fffa;
+  font-size: 1rem;
+}
+
+.dark-mode .company-page-shell--contact {
+  background:
+    radial-gradient(ellipse at 10% 3%, rgba(13, 148, 136, 0.13), transparent 34%),
+    radial-gradient(ellipse at 96% 42%, rgba(30, 64, 175, 0.16), transparent 32%),
+    linear-gradient(180deg, #050b18 0%, #080f20 54%, #050b18 100%);
+}
+
+.dark-mode .company-page-shell--contact .company-page-sidebar {
+  border-color: rgba(100, 116, 139, 0.42);
+  background: linear-gradient(155deg, #111b30, #0d1628);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+.dark-mode .company-page-shell--contact .company-page-sidebar h2 {
+  color: #f8fafc !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-sidebar > p {
+  color: #a7b3c5 !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-editor-fields span {
+  color: #cbd5e1 !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-editor-fields > div[style*="border"] {
+  border-color: #334155 !important;
+  background: linear-gradient(145deg, #111b30, #0d1628) !important;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.14);
+}
+
+.dark-mode .company-page-shell--contact .company-page-editor-fields input:not([type="color"]),
+.dark-mode .company-page-shell--contact .company-page-editor-fields textarea {
+  border-color: #475569 !important;
+  background: #0f172a !important;
+  color: #e2e8f0 !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-editor-fields input:not([type="color"]):focus,
+.dark-mode .company-page-shell--contact .company-page-editor-fields textarea:focus {
+  border-color: #5eead4 !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-stat-card,
+.dark-mode .company-page-shell--contact .company-page-highlight-card {
+  border-color: rgba(100, 116, 139, 0.42);
+  background: linear-gradient(145deg, #111b30, #0d1628);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.dark-mode .company-page-shell--contact .company-page-stat-card > div:first-child {
+  color: #5eead4 !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-stat-card > div:last-child,
+.dark-mode .company-page-shell--contact .company-page-highlight-card ul {
+  color: #b7c3d6 !important;
+}
+
+.dark-mode .company-page-shell--contact .company-page-promise-card {
+  border-color: rgba(45, 212, 191, 0.2);
+  background: linear-gradient(145deg, #102637, #123b4b);
+}
+
+@media (max-width: 900px) {
+  .company-page-shell--contact .company-page-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: -24px;
+  }
+
+  .company-page-shell--contact .company-page-features {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .company-page-shell--contact .company-page-cta-banner {
+    min-height: 200px;
+  }
+}
+
+@media (max-width: 600px) {
+  .company-page-shell--contact .company-page-hero {
+    padding: 28px 22px;
+    border-radius: 24px;
+  }
+
+  .company-page-shell--contact .company-page-hero-title {
+    font-size: clamp(1.65rem, 5vw, 3rem);
+  }
+
+  .company-page-shell--contact .company-page-stats {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin: -20px 10px 0;
+  }
+
+  .company-page-shell--contact .company-page-stat-card {
+    padding: 19px;
+  }
+
+  .company-page-shell--contact .company-page-cta-banner {
+    min-height: 160px;
+  }
+
+  .company-page-shell--contact .company-page-highlight-card,
+  .company-page-shell--contact .company-page-promise-card {
+    padding: 22px;
+    border-radius: 19px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .company-page-shell--contact .company-page-stat-card,
+  .company-page-shell--contact .company-page-hero-actions a,
+  .company-page-shell--contact .company-page-cta-button,
+  .company-page-shell--contact .company-page-editor-fields input,
+  .company-page-shell--contact .company-page-editor-fields textarea {
+    transition: none;
+  }
+
+  .company-page-shell--contact .company-page-stat-card:hover,
+  .company-page-shell--contact .company-page-hero-actions a:hover,
+  .company-page-shell--contact .company-page-cta-button:hover {
+    transform: none;
   }
 }
 

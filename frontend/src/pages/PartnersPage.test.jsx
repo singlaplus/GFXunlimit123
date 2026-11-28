@@ -1,0 +1,46 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import axios from "axios";
+import PartnersPage from "./PartnersPage";
+
+jest.mock("axios");
+
+describe("PartnersPage", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem("token", "admin-token");
+    axios.get.mockResolvedValue({ data: { content: null } });
+    axios.put.mockImplementation((_url, content) => Promise.resolve({ data: { content } }));
+  });
+
+  it("renders public partnership information and section navigation", async () => {
+    render(<PartnersPage />);
+
+    expect(await screen.findByRole("heading", { name: "Partners" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Partners sections" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ways to work together" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Partners customization" })).not.toBeInTheDocument();
+  });
+
+  it("lets admins edit, arrange, and publish partnership information", async () => {
+    render(<PartnersPage isAdmin />);
+
+    const titleInput = await screen.findByLabelText("Page title");
+    fireEvent.change(titleInput, { target: { value: "Our Partners" } });
+    fireEvent.click(screen.getByRole("button", { name: "Partnership information" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add section" }));
+
+    expect(screen.getByLabelText("Section heading")).toHaveValue("New section");
+    fireEvent.click(screen.getByRole("button", { name: "Save for all visitors" }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/partners/content"),
+        expect.objectContaining({
+          hero: expect.objectContaining({ title: "Our Partners" }),
+          sections: expect.arrayContaining([expect.objectContaining({ title: "New section" })])
+        }),
+        expect.objectContaining({ headers: { Authorization: "Bearer admin-token" } })
+      );
+    });
+  });
+});

@@ -9,9 +9,9 @@ const FOOTER_LINKS = {
     { label: "Contact", href: "/contact" }
   ],
   legal: [
-    { label: "Privacy Policy", href: "/privacy" },
-    { label: "Terms & Conditions", href: "/terms" },
-    { label: "Cookie Policy", href: "/cookies" }
+    { label: "Privacy Policy", href: "/privacy-policy" },
+    { label: "Terms & Conditions", href: "/terms-and-conditions" },
+    { label: "Cookie Policy", href: "/cookie-policy" }
   ],
   resources: [
     { label: "Blog", href: "/blog" },
@@ -173,9 +173,9 @@ function Footer({ onOpenLogin, onOpenJoin, isLoggedIn = false }) {
         <div>
           <h4 style={{ margin: "0 0 8px 0" }}>Legal</h4>
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-            <li><a href="/privacy" style={{ color: "#cfe8ff" }}>Privacy Policy</a></li>
-            <li><a href="/terms" style={{ color: "#cfe8ff" }}>Terms & Conditions</a></li>
-            <li><a href="/cookies" style={{ color: "#cfe8ff" }}>Cookie Policy</a></li>
+            <li><a href="/privacy-policy" style={{ color: "#cfe8ff" }}>Privacy Policy</a></li>
+            <li><a href="/terms-and-conditions" style={{ color: "#cfe8ff" }}>Terms & Conditions</a></li>
+            <li><a href="/cookie-policy" style={{ color: "#cfe8ff" }}>Cookie Policy</a></li>
           </ul>
         </div>
 
@@ -218,7 +218,7 @@ function Footer({ onOpenLogin, onOpenJoin, isLoggedIn = false }) {
                 </li>
               </>
             )}
-            <li><a href="/help" style={{ color: "#cfe8ff" }}>Help Center</a></li>
+            <li><a href="/help-center" style={{ color: "#cfe8ff" }}>Help Center</a></li>
           </ul>
         </div>
 

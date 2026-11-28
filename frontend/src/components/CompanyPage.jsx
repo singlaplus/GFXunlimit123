@@ -421,7 +421,7 @@ export default function CompanyPage({ slug = "about" }) {
             </div>
             <p style={{ margin: "0 0 16px", color: "#64748b", fontSize: "0.92rem", lineHeight: 1.5 }}>Edit this page only. Changes appear instantly in the live preview.</p>
 
-            <div style={{ display: "grid", gap: "12px" }}>
+            <div className="company-page-editor-fields" style={{ display: "grid", gap: "12px" }}>
               <div style={{ padding: "12px", borderRadius: "14px", background: "#f8fafc", border: "1px solid #e2e8f0" }}>
                 <label style={{ display: "grid", gap: "6px" }}>
                   <span style={{ fontWeight: 700, fontSize: "0.85rem", color: "#334155" }}>Title</span>
@@ -474,7 +474,7 @@ export default function CompanyPage({ slug = "about" }) {
               <div style={{ padding: "12px", borderRadius: "14px", background: "#f8fafc", border: "1px solid #e2e8f0" }}>
                 <label style={{ display: "grid", gap: "6px" }}>
                   <span style={{ fontWeight: 700, fontSize: "0.85rem", color: "#334155" }}>Hero Image</span>
-                  <input type="file" accept="image/*" onChange={handleImageUpload} style={{ padding: "8px 0" }} />
+                  <input className="company-page-hero-image-input" type="file" accept="image/*" onChange={handleImageUpload} style={{ padding: "8px 0" }} />
                   {content.heroImage ? <img src={content.heroImage} alt="Hero preview" style={{ width: "100%", borderRadius: "10px", border: "1px solid #e2e8f0", objectFit: "cover", maxHeight: "140px" }} /> : null}
                 </label>
               </div>
@@ -519,6 +519,18 @@ export default function CompanyPage({ slug = "about" }) {
 
         <div className="company-page-main">
           <section className="company-page-hero">
+            {slug === "about" && (
+              <div className="company-page-about-art" aria-hidden="true">
+                <div className="company-page-about-art-card">
+                  <span className="company-page-about-art-label">GFXUNLIMIT · 2026</span>
+                  <strong>Ideas<br />in motion.</strong>
+                  <span className="company-page-about-art-mark">✦</span>
+                  <span className="company-page-about-art-caption">CURATED FOR CREATORS</span>
+                </div>
+                <span className="company-page-about-art-orbit" />
+                <span className="company-page-about-art-spark">✦</span>
+              </div>
+            )}
             <div className="company-page-hero-row">
               <div className="company-page-hero-copy">
                 <div style={{ display: "inline-block", padding: "8px 12px", borderRadius: "999px", background: "rgba(255,255,255,0.16)", fontSize: "0.85rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: "12px" }}>
@@ -534,6 +546,7 @@ export default function CompanyPage({ slug = "about" }) {
                       key={button.id || index}
                       href={button.link || "/"}
                       style={{
+                        "--company-page-action-text": button.textColor || "#0f1724",
                         background: button.backgroundColor || "#ffffff",
                         color: button.textColor || "#0f1724",
                         textDecoration: "none",

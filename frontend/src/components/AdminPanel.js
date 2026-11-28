@@ -13467,6 +13467,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
           {/* Collection Grid Modal */}
           {showCollectionGrid && (
             <div
+              className="admin-collections-overlay"
               role="dialog"
               aria-modal="true"
               aria-labelledby="collection-grid-title"
@@ -13483,6 +13484,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
               }}
             >
               <div
+                className="admin-collections-dialog"
                 onClick={(event) => event.stopPropagation()}
                 style={{
                   width: "90%",
@@ -13496,10 +13498,15 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                   flexDirection: "column"
                 }}
               >
-                <div style={{ padding: "18px 20px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "inherit", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <h3 id="collection-grid-title" style={{ margin: 0 }}>Collections</h3>
+                <div className="admin-collections-dialog-header" style={{ padding: "18px 20px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "inherit", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div className="admin-collections-dialog-heading">
+                    <span className="admin-collections-dialog-kicker">ASSET LIBRARY</span>
+                    <h3 id="collection-grid-title">Collections</h3>
+                    <p>Manage your active collections</p>
+                  </div>
                   <button
                     type="button"
+                    className="admin-collections-close"
                     aria-label="Close collections"
                     onClick={() => setShowCollectionGrid(false)}
                     style={{ background: "transparent", border: "none", fontSize: "1.4rem", lineHeight: 1, cursor: "pointer", color: "inherit" }}
@@ -13507,14 +13514,15 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     X
                   </button>
                 </div>
-                <div style={{ padding: "20px", flex: 1 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
+                <div className="admin-collections-dialog-body" style={{ padding: "20px", flex: 1 }}>
+                  <div className="admin-collections-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
                     {visibleCollections.length === 0 ? (
-                      <span style={{ color: "#777" }}>No active collections yet.</span>
+                      <span className="admin-collections-empty" style={{ color: "#777" }}>No active collections yet.</span>
                     ) : (
                       visibleCollections.map((collectionItem) => (
                         <div
                           key={collectionItem.id}
+                          className="admin-collections-grid-item"
                           style={{
                             padding: "14px",
                             borderRadius: "12px",
@@ -13530,14 +13538,15 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                             minHeight: "100px"
                           }}
                         >
-                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" }}>
-                            <span style={{ color: "inherit", fontWeight: 600, fontSize: "0.95rem" }}>{collectionItem.name || "Unnamed collection"}</span>
-                            <span style={{ color: "#64748b", fontSize: "0.8rem" }}>{Number(collectionItem.asset_count || 0)} total asset{Number(collectionItem.asset_count || 0) === 1 ? "" : "s"}</span>
-                            <span style={{ color: "#64748b", fontSize: "0.8rem" }}>{Number(collectionItem.live_asset_count || 0)} live asset{Number(collectionItem.live_asset_count || 0) === 1 ? "" : "s"}</span>
+                          <div className="admin-collections-grid-copy" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" }}>
+                            <span className="admin-collections-name" style={{ color: "inherit", fontWeight: 600, fontSize: "0.95rem" }}>{collectionItem.name || "Unnamed collection"}</span>
+                            <span className="admin-collections-stat" style={{ color: "#64748b", fontSize: "0.8rem" }}>{Number(collectionItem.asset_count || 0)} total asset{Number(collectionItem.asset_count || 0) === 1 ? "" : "s"}</span>
+                            <span className="admin-collections-stat admin-collections-stat--live" style={{ color: "#64748b", fontSize: "0.8rem" }}>{Number(collectionItem.live_asset_count || 0)} live asset{Number(collectionItem.live_asset_count || 0) === 1 ? "" : "s"}</span>
                           </div>
-                          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
+                          <div className="admin-collections-grid-actions" style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
                             <button
                               type="button"
+                              className="admin-collections-action admin-collections-action--modify"
                               onClick={() => {
                                 setEditingCollectionInModal(collectionItem.id);
                                 setEditingCollectionNameInModal(collectionItem.name || "");
@@ -13556,6 +13565,7 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                             </button>
                             <button
                               type="button"
+                              className="admin-collections-action admin-collections-action--delete"
                               onClick={() => {
                                 deleteCollection(collectionItem.id);
                                 setShowCollectionGrid(false);
@@ -13578,9 +13588,10 @@ function AdminPanel({ initialDailyReportSettingsPage = false, initialDailyReport
                     )}
                   </div>
                 </div>
-                <div style={{ padding: "18px 20px", borderTop: "1px solid #eee", textAlign: "right", background: "inherit" }}>
+                <div className="admin-collections-dialog-footer" style={{ padding: "18px 20px", borderTop: "1px solid #eee", textAlign: "right", background: "inherit" }}>
                   <button
                     type="button"
+                    className="admin-collections-footer-close"
                     onClick={() => setShowCollectionGrid(false)}
                     style={{
                       background: "#757575",

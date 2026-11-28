@@ -210,7 +210,7 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
   return (
     <section aria-label="Restore package generator" className="gfx-backup-section gfx-restore-package">
       {!job && (
-        <div style={{ display: "grid", justifyItems: "center", gap: 16, padding: "32px 16px", textAlign: "center" }}>
+        <div className="gfx-restore-package-intro" style={{ display: "grid", justifyItems: "center", gap: 16, padding: "32px 16px", textAlign: "center" }}>
           {previousJobId && (
             <div role="status">
               <p>A previous package job is linked to this tab. Checking will not cancel a live job; the SERVER may mark a job left RUNNING by a restart as failed and clean up its incomplete output.</p>
@@ -220,13 +220,13 @@ export default function RestorePackagePanel({ apiBaseUrl, getAuthToken }) {
             </div>
           )}
           <h3 style={{ margin: 0 }}>Prepare Stocksite restoration package</h3>
-          <p style={{ maxWidth: 660, margin: 0, color: "var(--backup-muted)" }}>
+          <p className="gfx-restore-package-copy" style={{ maxWidth: 660, margin: 0, color: "var(--backup-muted)" }}>
             START asks the configured SERVER backup engine to validate PostgreSQL, website code, original asset, and thumbnail sources, then prepare individually downloadable, verified restore artifacts. Source paths and credentials are read only from server configuration.
           </p>
-          <p role="note" style={{ maxWidth: 660, margin: 0, color: "var(--backup-muted)" }}>
+          <p className="gfx-restore-package-copy gfx-restore-package-warning" role="note" style={{ maxWidth: 660, margin: 0, color: "var(--backup-muted)" }}>
             A fresh Windows PC needs supported 64-bit Windows 11 (build 26200+/25H2+), Node.js 22+ on an active or maintenance LTS line, PostgreSQL 18+ server/client tools, and a manually created empty local database and role before restore. This package step does not provision Windows or PostgreSQL. In the local wizard, each database, extraction, configuration, dependency, build, and backend-start action requires a separate approval. It does not install system software, start Windows services, create database roles, or change Windows permissions. The helper does not verify full source/schema compatibility; it checks required asset lifecycle schema only. Normal Stocksite startup may run database initialization/migrations. Use only a disposable local database, and follow the included restore guide.
           </p>
-          <label style={{ maxWidth: 660, textAlign: "left", color: "var(--backup-muted)" }}>
+          <label className="gfx-restore-package-consent" style={{ maxWidth: 660, textAlign: "left", color: "var(--backup-muted)" }}>
             <input
               type="checkbox"
               checked={authorizeEncryptedConfiguration}
